@@ -1810,18 +1810,43 @@ def _annotate_paragraphs(anchors):
 _MARKER_FONT_SIZE = 4.0
 _MARKER_CHAR_WIDTH_EST = _MARKER_FONT_SIZE * 0.55
 _MARKER_RIGHT_INSET = 2.0
-# Place the marker baseline near the TOP of its line band so that in
-# GEOMETRIC reading order (used by Acrobat's rectangle / column select)
-# the marker sits above the body-text baseline on the same row.
-# Pleading-paper lines are ~14pt tall; y_mid is the gutter digit centre.
-# Subtracting 6.5pt from y_mid puts the marker baseline ~0.5pt below the
-# top of the band — visually in the right margin, geometrically first in row.
+# Place the marker in the blank gap ABOVE its line, centred in the
+# inter-line whitespace, rather than on the body-text baseline. The old
+# placement (baseline ~6.5pt above y_mid) sat inside the cap-height /
+# ascender zone of the line's own glyphs, so the white marker text punched
+# white notches into the black letters where they overlapped. Pleading
+# paper is double-spaced (~22-23pt line pitch) with ~13pt-tall text bands,
+# leaving a ~9pt clear gap between lines; dropping the 4pt marker into the
+# centre of that gap keeps it clear of every glyph on both the line above
+# and the line below. Vertically it now begins just above the associated
+# sentence, which is also where a drag-select that reaches the sentence's
+# top naturally picks it up.
+#
+# The line pitch is measured per page at runtime (gutter digit spacing) and
+# clamped to a sane range; the marker baseline is then placed half a pitch
+# above y_mid (into the gap) and nudged down by half the font size so the
+# glyph box straddles the gap centre.
+_MARKER_PITCH_FALLBACK = 22.0   # pt, used when a page has too few lines to measure
+_MARKER_PITCH_MIN = 12.0
+_MARKER_PITCH_MAX = 36.0
 # IMPORTANT: selection must be done with Acrobat's column/rectangle select
 # (Alt+drag), not the normal I-beam text-select, because insert_text()
 # appends markers to the PDF content stream after all body text.  For a
 # rectangular selection Acrobat uses visual geometry (correct order); for a
 # normal text-flow selection it uses stream order (wrong order).
-_MARKER_TOP_OFFSET = -6.5   # subtract from y_mid to reach near line-band top
+
+
+def _marker_line_pitch(anchors):
+    """Median vertical spacing between consecutive pleading-paper lines on a
+    page, clamped to a sane range. Used to drop each marker into the blank
+    gap above its line instead of on the text baseline."""
+    ys = sorted(a["y_mid"] for a in anchors)
+    diffs = [ys[i + 1] - ys[i] for i in range(len(ys) - 1) if ys[i + 1] > ys[i]]
+    if not diffs:
+        return _MARKER_PITCH_FALLBACK
+    import statistics
+    pitch = statistics.median(diffs)
+    return max(_MARKER_PITCH_MIN, min(_MARKER_PITCH_MAX, pitch))
 
 # Regex matching the exact marker formats produced below — used by
 # _insert_right_margin_markers to detect existing markers on a page and
@@ -1868,6 +1893,7 @@ def _insert_right_margin_markers(page, anchors, shortname, page_num, log=None):
         return 0
 
     page_width = page.rect.width
+    pitch = _marker_line_pitch(anchors)
     inserted = 0
     for a in anchors:
         line_num = a["line_num"]
@@ -1887,8 +1913,11 @@ def _insert_right_margin_markers(page, anchors, shortname, page_num, log=None):
         if marker_x < page_width - 80:
             marker_x = page_width - 80
 
-        # Baseline near the TOP of the line band (see _MARKER_TOP_OFFSET note).
-        marker_y = a["y_mid"] + _MARKER_TOP_OFFSET
+        # Baseline centred in the blank gap ABOVE the line: half a line pitch
+        # up from y_mid lands in the inter-line whitespace, then nudge down by
+        # half the font size so the glyph box straddles the gap centre and
+        # clears the text bands above and below (see marker-config note).
+        marker_y = a["y_mid"] - pitch / 2.0 + _MARKER_FONT_SIZE / 2.0
 
         try:
             page.insert_text(
