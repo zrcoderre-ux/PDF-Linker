@@ -121,6 +121,14 @@ _REPORTERS_RAW = [
     "Cal.App.", "Cal. App.",
     "Cal.Rptr.3d", "Cal. Rptr. 3d", "Cal.Rptr.2d", "Cal. Rptr. 2d",
     "Cal.Rptr.", "Cal. Rptr.",
+    # California Style Manual ultra-compact forms, ubiquitous in practitioner
+    # briefs and CEB/Witkin (e.g. "39 C3d 311", "116 CA4th 968", "216 CR 718",
+    # "11 CR3d 45"). C=Cal., CA=Cal.App., CR=Cal.Rptr. These are normalised to
+    # the canonical reporter for keys and search URLs (see _normalize_reporter)
+    # so a cite written only in compact form still resolves correctly.
+    "C5th", "C4th", "C3d", "C2d",
+    "CA5th", "CA4th", "CA3d", "CA2d",
+    "CR3d", "CR2d", "CR",
     # Federal
     "U.S.", "S.Ct.", "S. Ct.", "L.Ed.2d", "L. Ed. 2d", "L.Ed.", "L. Ed.",
     "F.4th", "F. 4th", "F.3d", "F. 3d", "F.2d", "F. 2d", "F.",
@@ -140,6 +148,25 @@ _REPORTERS_RAW = [
 ]
 REPORTERS_SORTED = sorted(_REPORTERS_RAW, key=len, reverse=True)
 REPORTER_PATTERN = "|".join(re.escape(r) for r in REPORTERS_SORTED)
+
+# California Style Manual compact reporter abbreviations → canonical compact
+# form (matching the rest of pdf_linker's keys). Keyed by the whitespace-
+# stripped matched text so both "CA4th" and a stray-spaced "CA 4th" normalise.
+_REPORTER_NORMALIZE = {
+    "C5th": "Cal.5th", "C4th": "Cal.4th", "C3d": "Cal.3d", "C2d": "Cal.2d",
+    "CA5th": "Cal.App.5th", "CA4th": "Cal.App.4th",
+    "CA3d": "Cal.App.3d", "CA2d": "Cal.App.2d",
+    "CR3d": "Cal.Rptr.3d", "CR2d": "Cal.Rptr.2d", "CR": "Cal.Rptr.",
+}
+
+
+def _normalize_reporter(reporter: str) -> str:
+    """Strip internal whitespace from a matched reporter and map California
+    Style Manual compact forms (C3d, CA4th, CR3d, …) to the canonical
+    reporter so citation keys and provider search URLs are consistent
+    regardless of which form the brief used."""
+    compact = re.sub(r"\s+", "", reporter)
+    return _REPORTER_NORMALIZE.get(compact, compact)
 
 # ────────────────────────────────────────────────────────────────────────────
 # Statute code recognition
@@ -956,14 +983,14 @@ def find_case_citations(text: str):
 
         if kind == "csm":
             year, vol, reporter, page = mm.group(1), mm.group(2), mm.group(3), mm.group(4)
-            rep_compact = re.sub(r"\s+", "", reporter)
+            rep_compact = _normalize_reporter(reporter)
             tail_for_key = f"({year}) {vol} {rep_compact} {page}"
         elif kind in ("bb", "flat"):
             # Group layout is identical: (vol, reporter, page, year).
             # The only structural difference is the comma at the start of BB,
             # which both patterns absorb internally before the captured groups.
             vol, reporter, page, year = mm.group(1), mm.group(2), mm.group(3), mm.group(4)
-            rep_compact = re.sub(r"\s+", "", reporter)
+            rep_compact = _normalize_reporter(reporter)
             tail_for_key = f"({year}) {vol} {rep_compact} {page}"
         elif kind == "wl":
             wl_year, wl_num, decision_year = mm.group(1), mm.group(2), mm.group(3)
@@ -1029,7 +1056,7 @@ def find_case_citations(text: str):
         if wl_only:
             key = f"{full_name} {wl_year} WL {wl_num}"
         else:
-            rep_compact = re.sub(r"\s+", "", reporter)
+            rep_compact = _normalize_reporter(reporter)
             key = f"{full_name} ({year}) {vol} {rep_compact} {page}"
         results.append({
             "kind": "case",
@@ -1047,7 +1074,7 @@ def find_case_citations(text: str):
             year, vol, reporter, page = m.group(2), m.group(3), m.group(4), m.group(5)
         else:
             vol, reporter, page, year = m.group(6), m.group(7), m.group(8), m.group(9)
-        rep_compact = re.sub(r"\s+", "", reporter)
+        rep_compact = _normalize_reporter(reporter)
         key = f"{name} ({year}) {vol} {rep_compact} {page}"
         results.append({
             "kind": "case",
