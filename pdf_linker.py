@@ -622,6 +622,22 @@ def _walk_back_for_name(text: str, v_pos: int):
         if not clean:
             break
 
+        # Citation-join boundary: two citations strung together with "and"
+        # (or "&") \u2014 "Orozco v. Casimiro (2004) 121 Cal.App.4th Supp. 7 and
+        # Del Monte ... v. Dolan ...". Walking back from the second "v." we
+        # must not cross into the first citation. If the connector's left
+        # neighbour is a citation tail (a page number, or a reporter
+        # abbreviation), the connector separates two citations rather than
+        # two words of one party name, so stop and keep the name gathered so
+        # far. A name-internal "&"/"and" ("Properties & Investments") has a
+        # capitalized word \u2014 not a number/reporter \u2014 to its left and is kept.
+        if clean.lower() in {"and", "&"} and tokens:
+            _left = re.search(r"(\S+)\s*$", text[:tok_start])
+            if _left:
+                _lt = _left.group(1).rstrip(",.;:")
+                if _lt.isdigit() or re.search(REPORTER_PATTERN, _lt):
+                    break
+
         # Pure-digit tokens. These appear in real party names ("Studio
         # 1220, Inc.", "Advanced Grp. 400" — though that one's on the
         # defendant side) but ALSO appear as page numbers in TOAs that
