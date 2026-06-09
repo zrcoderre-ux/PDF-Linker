@@ -244,14 +244,20 @@ def _build_statute_re():
         r"\b(?:Cal\.\s*|California\s+)?"
         rf"(?:{code_alt})"
         r",?\s*"
-        r"(?:§§?|sections?|secs?\.?)\s*"
+        # Section marker (§, "section", or "sec.") is OPTIONAL: practitioners
+        # routinely drop it, writing "Code of Civil Procedure 430.30(a)" or
+        # "Penal Code 187". We capture whether it was present in `mk` so the
+        # caller can apply a stricter section shape when it's absent (a bare
+        # code name followed by a list counter like "2." at a paragraph break
+        # must not be mistaken for a citation — see find_statute_citations).
+        r"(?:(?P<mk>§§?|sections?|secs?\.?)\s*)?"
         r"(?P<sec>\d+(?:\.\d+)?[a-z]?(?:\([a-z0-9]+\))*)"
     )
     # IGNORECASE so all-caps practitioner forms like "CAL. CIV. PROC. CODE
-    # § 1281.2" match alongside the conventional title-case forms. The
-    # required section marker (§, "section", or "sec.") after the code
-    # name keeps false-positive risk low — body text mentioning
-    # "civil procedure" generally won't be followed by "§ 1234".
+    # § 1281.2" match alongside the conventional title-case forms. False
+    # positives are held down by requiring the full code name AND, when no
+    # section marker is present, a section number distinctive enough not to
+    # be a list/paragraph counter (enforced in find_statute_citations).
     return re.compile(full, re.DOTALL | re.IGNORECASE)
 
 
@@ -932,6 +938,18 @@ def find_statute_citations(text: str):
         # First section: matched by the primary regex (anchored on a
         # code name).
         section = m.group("sec")
+        # When the citation had no explicit "§"/"section"/"sec." marker, the
+        # code name was directly followed by a number. Accept that only when
+        # the number is clearly a statute section — it has a decimal part
+        # ("430.30", "1010.6"), a letter suffix ("437c"), a subdivision
+        # ("(a)"), or is at least three digits ("187"). This rejects the
+        # paragraph/list counters ("1.", "2.") that frequently follow a code
+        # name at a numbered-list break and would otherwise be linked as a
+        # spurious "§ 2".
+        if not m.group("mk"):
+            distinctive = re.search(r"\.\d|[a-z]|\(", section, re.IGNORECASE)
+            if not distinctive and len(re.sub(r"\D", "", section)) < 3:
+                continue
         results.append({
             "kind": "statute",
             "key": f"{abbrev} § {section}",
@@ -1964,7 +1982,23 @@ def _merge_quads_by_line(quads, *, require_x_adjacent: bool = False):
     return merged
 
 
-def _safe_search_for_citation(page, match_text: str):
+def _statute_section_token(cite):
+    """Return the disambiguating section token for a statute cite, else None.
+
+    For a statute the code name ("Code of Civil Procedure") is shared by
+    every section of that code, so it is NOT distinctive — the section
+    number is. Callers use this token to refuse anchoring a link on a bare
+    code-name fragment. Returns the leading numeric part of the section
+    (e.g. "430.10" from key "CCP § 430.10(a)", "1010.6" from
+    "CCP § 1010.6", "1983" from "42 U.S.C. § 1983"); None for non-statutes.
+    """
+    if not cite or cite.get("kind") != "statute":
+        return None
+    m = re.search(r"§\s*(\d+(?:\.\d+)?)", cite.get("key", ""))
+    return m.group(1) if m else None
+
+
+def _safe_search_for_citation(page, match_text: str, cite=None):
     """Locate the citation `match_text` on `page`, handling multi-line wraps
     safely. Returns a list of fitz.Quad covering the citation's glyphs, or
     an empty list if not safely locatable.
@@ -1979,7 +2013,13 @@ def _safe_search_for_citation(page, match_text: str):
          "Smith" don't get linked together.
       3. If no fragment is safe, return [] — better to miss a link than to
          spray hyperlinks across unrelated text.
+
+    `cite` (optional) lets statute citations be matched safely: the code
+    name alone is not distinctive (every section shares it), so when a
+    wrapped statute citation falls back to fragments, only a fragment that
+    carries the section number may anchor the link.
     """
+    section_token = _statute_section_token(cite)
     # Step 1: full text search
     quads = page.search_for(match_text, quads=True)
     if quads:
@@ -2013,11 +2053,41 @@ def _safe_search_for_citation(page, match_text: str):
     if not fragment_hits:
         return []
 
-    # If only one fragment is safely findable, use just its quads — but
-    # only if the fragment is >= 20 chars (extra-safe threshold for
-    # standalone use).
+    # Statute guard: a section-bearing fragment must actually be present on
+    # this page. If only code-name fragments were found, the citation isn't
+    # really here (just a mention of the same code for a different section),
+    # so linking would point at the wrong section. Covers both the single-
+    # and multi-fragment branches below (e.g. a code name that wraps across
+    # several lines while the section sits on its own short line).
+    if section_token is not None and not any(
+        section_token in f for f, _ in fragment_hits
+    ):
+        return []
+
+    # If only one fragment is safely findable, decide whether it is
+    # distinctive enough to anchor the link by itself.
+    #
+    # For a STATUTE the code name is never distinctive on its own. A
+    # citation that wraps a line — e.g. "Code of Civil Procedure\nsection
+    # 430.10" — splits into a code-name fragment ("Code of Civil Procedure")
+    # and a section fragment ("section 430.10"). On a page that cites a
+    # *different* section of the same code ("Code of Civil Procedure
+    # § 1161(2)", or "...§ 1010.6"), only the generic code-name fragment is
+    # present. Anchoring on it would attach THIS citation's URL (§ 430.10) to
+    # a span that is really a different citation, so the reader clicks
+    # "...§ 1161(2)" and lands on § 430.10. We therefore require the lone
+    # fragment to carry the section number; a bare code name links nothing,
+    # and the citation is picked up wherever its section actually appears
+    # (via the full-text search in step 1 or the multi-fragment branch).
+    #
+    # For non-statutes the original rule stands: the fragment must be
+    # >= 20 chars and identify exactly one location on the page.
     if len(fragment_hits) == 1:
         frag, fq = fragment_hits[0]
+        if len(page.search_for(frag)) != 1:
+            return []
+        if section_token is not None:
+            return fq if section_token in frag else []
         if len(frag) >= 20:
             return fq
         return []
@@ -4695,7 +4765,7 @@ def process_pdf(pdf_path: Path, log: logging.Logger,
         match_text = cite["match_text"]
         found_anywhere = False
         for page in doc:
-            quads = _safe_search_for_citation(page, match_text)
+            quads = _safe_search_for_citation(page, match_text, cite)
             if not quads:
                 continue
             for q in quads:
