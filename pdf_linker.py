@@ -231,6 +231,13 @@ STATUTE_CODES = [
     # "Code Civ. Proc." and "Civ. Proc. Code" patterns win when present
     # (alternation tries patterns in length-descending order).
     (r"Civ\.\s*Proc\.", "CCP"),
+
+    # Bare initialism. "CCP" for Code of Civil Procedure is ubiquitous in
+    # California unlawful-detainer and law-and-motion practice ("CCP section
+    # 1170", "CCP § 1005"). Dots and spacing are optional so "C.C.P." and
+    # "C. C. P." also match. Like the other bare forms it only fires in
+    # citation position — a following section number is required.
+    (r"C\.?\s*C\.?\s*P\.?", "CCP"),
 ]
 STATUTE_CODES_SORTED = sorted(STATUTE_CODES, key=lambda x: len(x[0]), reverse=True)
 
@@ -305,6 +312,118 @@ ADDL_SEC_RE = re.compile(
     r"(?P<sec>\d+(?:\.\d+)?[a-z]?(?:\([a-z0-9]+\))*)",
     re.IGNORECASE,
 )
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Bare ("naked") section citations
+# ────────────────────────────────────────────────────────────────────────────
+# A section number with a marker (§ / "section" / "sec.") but NO code name —
+# "Section 1150", "§ 1177", "Section 1150 through 1179a". These are linked to
+# the code that is unambiguously referenced *around* them: if exactly one
+# California code is cited or named within _BARE_CONTEXT_WINDOW characters on
+# either side, that code is assumed (the common brief pattern where a writer
+# names "Code of Civil Procedure"/"CCP" once and then refers to bare sections
+# of it). When two different codes appear nearby (ambiguous), or none does,
+# the bare section is left unlinked. A distinctive section shape is required
+# so prose like "section 5 of the lease" or "Part 2" is not picked up.
+BARE_SECTION_RE = re.compile(
+    r"(?:§§?|sections?|secs?\.?)\s*"
+    r"(?P<sec>\d+(?:\.\d+)?[a-z]?(?:\([a-z0-9]+\))*)",
+    re.IGNORECASE,
+)
+
+# Continuation of a bare-section chain or range that inherits the inferred
+# code: "Section 1150 through 1179a", "§§ 1150 to 1179a", "Section 1150,
+# 1177, and 1179a". Same numeric shape as a primary section.
+BARE_CHAIN_RE = re.compile(
+    r"\s*(?:through|thru|to|[-‒–—−]|,\s*and|,|\s+and)\s+"
+    r"(?P<sec>\d+(?:\.\d+)?[a-z]?(?:\([a-z0-9]+\))*)",
+    re.IGNORECASE,
+)
+
+_BARE_CONTEXT_WINDOW = 1200  # characters on each side of a bare section
+
+
+def _build_code_name_re():
+    parts = [f"(?P<c{i}>{pat})" for i, (pat, _) in enumerate(STATUTE_CODES_SORTED)]
+    return re.compile(
+        r"\b(?:Cal\.\s*|California\s+)?(?:" + "|".join(parts) + r")",
+        re.DOTALL | re.IGNORECASE,
+    )
+
+
+# Matches any California code NAME (with or without a trailing section), used
+# only to locate code mentions for bare-section context inference.
+CODE_NAME_RE = _build_code_name_re()
+
+
+def _code_context_positions(text):
+    """Return [(center_index, abbrev)] for every California code name mentioned
+    in `text`, whether or not a section number follows."""
+    out = []
+    for m in CODE_NAME_RE.finditer(text):
+        for i, (_, abbrev) in enumerate(STATUTE_CODES_SORTED):
+            if m.group(f"c{i}"):
+                out.append(((m.start() + m.end()) // 2, abbrev))
+                break
+    return out
+
+
+def _section_is_distinctive(sec: str) -> bool:
+    """True if `sec` looks like a real statute section rather than a list or
+    paragraph counter: it has a decimal part, a letter suffix, a subdivision,
+    or is at least three digits."""
+    if re.search(r"\.\d|[a-z]|\(", sec, re.IGNORECASE):
+        return True
+    return len(re.sub(r"\D", "", sec)) >= 3
+
+
+def find_bare_section_citations(text, occupied_spans, code_positions):
+    """Link bare section citations to the single code referenced nearby.
+
+    `occupied_spans` are (start, end) ranges already claimed by code-named
+    statute citations, so a section that is part of one is not re-matched.
+    `code_positions` comes from `_code_context_positions`.
+    """
+    def _overlaps(a, b):
+        return a[0] < b[1] and b[0] < a[1]
+
+    def _infer(pos):
+        near = {ab for (cpos, ab) in code_positions
+                if abs(cpos - pos) <= _BARE_CONTEXT_WINDOW}
+        return next(iter(near)) if len(near) == 1 else None
+
+    results = []
+    for m in BARE_SECTION_RE.finditer(text):
+        if any(_overlaps(m.span(), sp) for sp in occupied_spans):
+            continue
+        if not _section_is_distinctive(m.group("sec")):
+            continue
+        abbrev = _infer((m.start() + m.end()) // 2)
+        if not abbrev:
+            continue
+        results.append({
+            "kind": "statute",
+            "key": f"{abbrev} § {m.group('sec')}",
+            "span": m.span(),
+            "match_text": m.group(0),
+        })
+        # Chain/range continuations ("through 1179a", ", 1177", "and 1179a")
+        # inherit the same inferred code.
+        scan = m.end()
+        while True:
+            cont = BARE_CHAIN_RE.match(text, scan)
+            if not cont:
+                break
+            if _section_is_distinctive(cont.group("sec")):
+                results.append({
+                    "kind": "statute",
+                    "key": f"{abbrev} § {cont.group('sec')}",
+                    "span": cont.span(),
+                    "match_text": text[cont.start():cont.end()].lstrip(),
+                })
+            scan = cont.end()
+    return results
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -1100,6 +1219,15 @@ def find_all_citations(text: str):
     norm = _normalize_for_detection(text)
     full_cases = find_case_citations(norm)
     statutes = find_statute_citations(norm)
+    # Bare section citations ("Section 1150 through 1179a") linked to the code
+    # referenced around them. Code-named statute citations already found take
+    # priority and define both the occupied spans and the surrounding context.
+    bare_sections = find_bare_section_citations(
+        norm,
+        [c["span"] for c in statutes],
+        _code_context_positions(norm),
+    )
+    statutes = statutes + bare_sections
     rules = find_rule_citations(norm)
 
     # Update match_text to use the original text (preserves original
