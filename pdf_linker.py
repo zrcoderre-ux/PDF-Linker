@@ -551,10 +551,10 @@ LEXIS_TAIL = re.compile(
 # search (handled in resolve_url via the slip_only branch).
 #
 # Match requirements:
-#   * Comma is optional (the spreadsheet has "Li v. Experian Info. Sols.,
-#     Inc. Case No. 25STCV22646" with no comma after "Inc.").
+#   * Comma is optional (the spreadsheet has "Lee v. Creditco Info. Sols.,
+#     Inc. Case No. 30STCV12347" with no comma after "Inc.").
 #   * Docket-id is letters, digits, and common docket punctuation
-#     (BCV-24-100951, 25STCV22646, 1:16-cv-12653-ADB, 19-cv-01080).
+#     (BCV-30-123456, 30STCV12347, 1:16-cv-12653-ADB, 19-cv-01080).
 #   * The court parenthetical may or may not contain a date — we don't
 #     require a year because slip cites without dates do exist ("(Sup. Ct.
 #     Cal. Los Angeles Cnty.)"). The parenthetical itself is required.
@@ -845,7 +845,7 @@ def _walk_back_for_name(text: str, v_pos: int):
         #   - Heading words ("TABLE", "AUTHORITIES", "DEFENDANT", "MOTION",
         #     "SUMMARY", "JUDGMENT") are almost always 5+ chars.
         # We also reject law-firm suffixes that commonly appear in page
-        # footers immediately above the body. "MORTENSON TAGGART ADAMS LLP"
+        # footers immediately above the body. "EXAMPLE COUNSEL GROUP LLP"
         # in a footer + "Santa Clara Valley Water Dist. v. ..." on the next
         # line yielded "LLP Santa Clara Valley..." as the captured plaintiff
         # before this guard.
@@ -861,7 +861,7 @@ def _walk_back_for_name(text: str, v_pos: int):
             #   (a) Part of the plaintiff name — "Smith LLC v. Jones". When
             #       walked backward from v., LLC is the FIRST token collected,
             #       directly attached to the rest of the party name.
-            #   (b) Page-footer artifact — "MORTENSON TAGGART ADAMS LLP\n
+            #   (b) Page-footer artifact — "EXAMPLE COUNSEL GROUP LLP\n
             #       Santa Clara Valley Water Dist. v. ...". Here LLC/LLP
             #       appears AFTER several plaintiff tokens have been
             #       collected, because the real plaintiff is "Santa Clara
