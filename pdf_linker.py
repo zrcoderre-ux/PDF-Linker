@@ -2524,11 +2524,19 @@ _TOC_END_RE = re.compile(
 # U+2024 ONE DOT LEADER, U+2025 TWO DOT LEADER, U+2026 HORIZONTAL ELLIPSIS.
 # Without these, a TOC whose leaders render as "……………" (the common case)
 # never matches and no entry is linked.
+#
+# Two leader shapes are allowed: 2+ characters of dots/ellipses/whitespace
+# (the usual long leader run, or wide whitespace alignment), OR a SINGLE
+# dot-leader/ellipsis character. The single-character case matters when a
+# long label nearly fills the line and only one "…" fits before the page
+# number ("…Personal Characteristics…8"); a lone ellipsis is still an
+# unambiguous leader (one "…" renders as three dots). Whitespace still needs
+# 2+ — a single space would match ordinary "word number" prose.
 _TOC_ENTRY_RE = re.compile(
     r"""
     ^
     (?P<label>\S.*?\S)
-    [\s.․‥…]{2,}
+    (?: [\s.․‥…]{2,} | [.․‥…]\s* )
     (?P<page>
         \d{1,4}
       | [ivxlcdm]{1,6}
@@ -2936,15 +2944,37 @@ def _link_toc_entries(doc, log: logging.Logger):
                 break
 
         entries_on_this_page = 0
+        # A TOC entry whose label is too long for one line wraps across
+        # several rows, with the dot leaders and page number only on the
+        # LAST row. We accumulate the leading rows in `pending` and attach
+        # them to the row that finally carries the page number, so the whole
+        # entry becomes one logical entry (clean merged label) and every one
+        # of its rows is made clickable — not just the final line.
+        pending = []           # [(text, bbox)] continuation rows
+        _PENDING_MAX = 5       # guard against runaway accumulation
+        top_band = _STAMP_BAND_PT
+        bot_band = page.rect.height - _STAMP_BAND_PT
         for line_text, bbox in page_lines:
             if _TOC_HEADING_RE.search(line_text):
+                pending = []
                 continue
             m = _TOC_ENTRY_RE.match(line_text)
             if not m:
-                # Not a TOC entry. If it's a terminator heading, stop;
-                # otherwise it's just a blank-ish line and we skip it.
+                # No trailing page number. Either a terminator (stop) or a
+                # continuation line of a wrapped entry. Only accumulate rows
+                # that sit in the page body and carry text — this excludes
+                # the running header/footer title and page-number stamps in
+                # the margin bands, which would otherwise prepend to the
+                # next entry's label.
                 if _TOC_END_RE.search(line_text):
                     break
+                y0, y1 = bbox[1], bbox[3]
+                in_margin = (y1 <= top_band) or (y0 >= bot_band)
+                if (not in_margin and not _PAGE_STAMP_RE.match(line_text)
+                        and any(ch.isalpha() for ch in line_text)):
+                    pending.append((line_text, bbox))
+                    if len(pending) > _PENDING_MAX:
+                        pending.pop(0)
                 continue
             # The line LOOKS like a TOC entry. Count it toward the "is
             # this page still part of the TOC?" signal whether or not we
@@ -2954,6 +2984,11 @@ def _link_toc_entries(doc, log: logging.Logger):
             # shouldn't abort the walk through subsequent TOC pages.
             entries_on_this_page += 1
 
+            # Continuation rows gathered since the previous entry belong to
+            # THIS entry; consume them whether or not the target resolves.
+            group_rows = pending + [(line_text, bbox)]
+            pending = []
+
             page_label = m.group("page").lower()
             target_idx = _resolve_target(printed_map, page_label, page_idx)
             if target_idx is None:
@@ -2962,42 +2997,51 @@ def _link_toc_entries(doc, log: logging.Logger):
             if target_idx == page_idx:
                 continue
 
+            # Merge the wrapped label: continuation text + this row's label.
+            label_parts = [t.strip() for t, _ in group_rows[:-1]]
+            label_parts.append(m.group("label").strip())
+            label = " ".join(p for p in label_parts if p)
+
             # Record this entry for the bookmark builder regardless of
             # whether we end up inserting a new link below — re-runs hit
             # the overlap-check skip path but should still surface the
             # same bookmark set as a first run.
-            label = m.group("label").strip()
             entries.append((label, target_idx))
 
-            rect = fitz.Rect(bbox)
-            # Skip if this rect overlaps an existing link annotation —
-            # primarily a re-run guard, but also catches the unlikely
-            # case of a TOC line that overlaps a citation rect.
-            already = False
-            for el in existing_links:
-                er = el.get("from")
-                if er and rect.intersects(er):
-                    already = True
-                    break
-            if already:
-                continue
-            page.insert_link({
-                "kind": fitz.LINK_GOTO,
-                "from": rect,
-                "page": target_idx,
-                "to": fitz.Point(0, 0),
-            })
-            existing_links.append({"from": rect, "kind": fitz.LINK_GOTO})
+            # Link EVERY row of the entry so the whole (possibly multi-line)
+            # entry is clickable, not just the final page-numbered line.
+            for _, gbbox in group_rows:
+                rect = fitz.Rect(gbbox)
+                # Skip if this rect overlaps an existing link annotation —
+                # primarily a re-run guard, but also catches the unlikely
+                # case of a TOC line that overlaps a citation rect.
+                already = False
+                for el in existing_links:
+                    er = el.get("from")
+                    if er and rect.intersects(er):
+                        already = True
+                        break
+                if already:
+                    continue
+                page.insert_link({
+                    "kind": fitz.LINK_GOTO,
+                    "from": rect,
+                    "page": target_idx,
+                    "to": fitz.Point(0, 0),
+                })
+                existing_links.append({"from": rect, "kind": fitz.LINK_GOTO})
+
             # Underline the trailing page number only, not the whole row —
             # underlining a full TOC line (which is mostly dot leaders)
             # looks like a typesetting error. We locate just the number
-            # via search_for, restricted to this line's bbox.
-            num_quads = page.search_for(m.group("page"), clip=rect, quads=True)
+            # via search_for, restricted to the final row's bbox.
+            final_rect = fitz.Rect(bbox)
+            num_quads = page.search_for(m.group("page"), clip=final_rect, quads=True)
             for q in num_quads:
                 qr = q.rect
                 # Only the right-most occurrence on this line — the leader
                 # number, not a digit that happens to appear in the label.
-                if qr.x1 < rect.x1 - 5:
+                if qr.x1 < final_rect.x1 - 5:
                     continue
                 underline_y = qr.y1 - 0.5
                 page.draw_line(
