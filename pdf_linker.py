@@ -2489,7 +2489,13 @@ def _link_short_form_cases(doc, full_cites,
 #   or bottom margin band, building a {printed -> pdf_index} map, and
 #   resolving each TOC entry through that map. Entries whose printed
 #   number can't be found are left unlinked (better no link than wrong).
-TOC_SCAN_PAGES = 5
+#
+# TOC_SCAN_PAGES is the budget for *finding the heading*. Pleading front
+# matter (multi-page Notice of Motion/Demurrer + caption) routinely pushes
+# the TOC to page 7 or later, so the budget is generous; _find_toc_heading's
+# standalone-row requirement is what keeps the wider scan from false-matching
+# body prose.
+TOC_SCAN_PAGES = 20
 
 _TOC_HEADING_RE = re.compile(
     r"\bT\s*A\s*B\s*L\s*E\s+O\s*F\s+C\s*O\s*N\s*T\s*E\s*N\s*T\s*S\b",
@@ -2509,14 +2515,28 @@ _TOC_END_RE = re.compile(
     re.IGNORECASE,
 )
 
-# A TOC entry line: some label text, then either dot leaders or wide
-# whitespace, then a trailing page number (arabic or roman). The label is
-# kept non-greedy so the longest trailing token is the page number.
+# A TOC entry line: some label text, then dot leaders or wide whitespace,
+# then a trailing page number (arabic or roman). The label is kept
+# non-greedy so the longest trailing token is the page number.
+#
+# The leader class accepts ASCII periods AND the Unicode dot-leader / ellipsis
+# characters Word and many PDF generators emit instead of literal periods:
+# U+2024 ONE DOT LEADER, U+2025 TWO DOT LEADER, U+2026 HORIZONTAL ELLIPSIS.
+# Without these, a TOC whose leaders render as "……………" (the common case)
+# never matches and no entry is linked.
+#
+# Two leader shapes are allowed: 2+ characters of dots/ellipses/whitespace
+# (the usual long leader run, or wide whitespace alignment), OR a SINGLE
+# dot-leader/ellipsis character. The single-character case matters when a
+# long label nearly fills the line and only one "…" fits before the page
+# number ("…Personal Characteristics…8"); a lone ellipsis is still an
+# unambiguous leader (one "…" renders as three dots). Whitespace still needs
+# 2+ — a single space would match ordinary "word number" prose.
 _TOC_ENTRY_RE = re.compile(
     r"""
     ^
     (?P<label>\S.*?\S)
-    [\s\.]{2,}
+    (?: [\s.․‥…]{2,} | [.․‥…]\s* )
     (?P<page>
         \d{1,4}
       | [ivxlcdm]{1,6}
@@ -2552,7 +2572,7 @@ _PAGE_STAMP_RE = re.compile(
 _STAMP_BAND_PT = 100.0
 
 
-def _collect_rows(page, y_tol: float = 4.0):
+def _collect_rows(page, y_tol: float = 4.0, drop_gutter_numbers: bool = False):
     """Return [(text, bbox)] for the page, grouping text runs that share a
     baseline. ReportLab and most pleading-paper layouts draw a TOC entry's
     label, dot leaders, and page number as separate text runs, which
@@ -2570,11 +2590,19 @@ def _collect_rows(page, y_tol: float = 4.0):
     "TABLE OF AUTHORITIES ... ii [Demurrer|p5:3]", which then fails
     `_TOC_ENTRY_RE`'s end-of-line page-number requirement — silently
     dropping every TOC entry on re-runs of an already-linked PDF.
+
+    `drop_gutter_numbers` removes pleading-paper gutter line-numbers (the
+    "1..28" column down the left edge) before grouping. On a TOC page these
+    share a baseline with each entry and would otherwise merge into the row
+    ("2 I. INTRODUCTION … 1"), polluting the entry label and stretching the
+    clickable rectangle across the left margin. Used by the TOC linker;
+    left off elsewhere so no other caller's behaviour changes.
     """
     try:
         d = page.get_text("dict")
     except Exception:
         return []
+    gutter_x_max = page.rect.width * 0.18
     runs = []  # (y_center, bbox, text)
     for block in d.get("blocks", []):
         if block.get("type") != 0:
@@ -2591,6 +2619,10 @@ def _collect_rows(page, y_tol: float = 4.0):
             # Skip pdf_linker's own right-margin markers; otherwise they
             # contaminate merged rows on re-runs of an already-linked PDF.
             if _MARKER_DETECT_RE.fullmatch(text):
+                continue
+            # Skip a left-margin gutter line-number when requested.
+            if (drop_gutter_numbers and bbox[0] < gutter_x_max
+                    and re.fullmatch(r"\d{1,2}", text) and 1 <= int(text) <= 40):
                 continue
             y_center = (bbox[1] + bbox[3]) / 2
             runs.append((y_center, bbox, text))
@@ -2619,13 +2651,24 @@ def _collect_rows(page, y_tol: float = 4.0):
 
 
 def _find_toc_heading(doc, max_pages: int):
-    """Return the PDF page index containing a 'Table of Contents' heading,
-    or None. Only the first `max_pages` pages are searched."""
+    """Return the PDF page index whose front matter carries a standalone
+    'Table of Contents' heading, or None.
+
+    The heading is required to be (essentially) a row of its own — after
+    stripping a leading pleading-paper gutter line number it must match the
+    heading pattern with nothing else on the line. That standalone
+    requirement is what makes it safe to scan well past the cover/notice
+    pages (a long Notice of Demurrer can push the TOC to page 7+), without
+    false-matching a body sentence that merely mentions a "table of
+    contents". `max_pages` bounds the scan so we never walk an entire
+    compendium looking for front matter.
+    """
     limit = min(max_pages, len(doc))
     for i in range(limit):
-        text = doc[i].get_text("text")
-        if _TOC_HEADING_RE.search(text):
-            return i
+        for text, _ in _collect_rows(doc[i], drop_gutter_numbers=True):
+            m = _TOC_HEADING_RE.match(text.strip())
+            if m and not text.strip()[m.end():].strip():
+                return i
     return None
 
 
@@ -2881,8 +2924,9 @@ def _link_toc_entries(doc, log: logging.Logger):
         # Group text runs by baseline so a TOC entry's label, dot leaders,
         # and right-aligned page number — which PyMuPDF often returns as
         # three separate "lines" — combine into one logical row before
-        # entry matching. See _collect_rows for the grouping rule.
-        page_lines = _collect_rows(page)
+        # entry matching. Drop gutter line-numbers so they don't prepend to
+        # the entry label or widen the link rect. See _collect_rows.
+        page_lines = _collect_rows(page, drop_gutter_numbers=True)
 
         # Stop the TOC if any line on this page is a terminating heading.
         # A line that parses as a TOC entry (label + leaders + page number)
@@ -2900,15 +2944,37 @@ def _link_toc_entries(doc, log: logging.Logger):
                 break
 
         entries_on_this_page = 0
+        # A TOC entry whose label is too long for one line wraps across
+        # several rows, with the dot leaders and page number only on the
+        # LAST row. We accumulate the leading rows in `pending` and attach
+        # them to the row that finally carries the page number, so the whole
+        # entry becomes one logical entry (clean merged label) and every one
+        # of its rows is made clickable — not just the final line.
+        pending = []           # [(text, bbox)] continuation rows
+        _PENDING_MAX = 5       # guard against runaway accumulation
+        top_band = _STAMP_BAND_PT
+        bot_band = page.rect.height - _STAMP_BAND_PT
         for line_text, bbox in page_lines:
             if _TOC_HEADING_RE.search(line_text):
+                pending = []
                 continue
             m = _TOC_ENTRY_RE.match(line_text)
             if not m:
-                # Not a TOC entry. If it's a terminator heading, stop;
-                # otherwise it's just a blank-ish line and we skip it.
+                # No trailing page number. Either a terminator (stop) or a
+                # continuation line of a wrapped entry. Only accumulate rows
+                # that sit in the page body and carry text — this excludes
+                # the running header/footer title and page-number stamps in
+                # the margin bands, which would otherwise prepend to the
+                # next entry's label.
                 if _TOC_END_RE.search(line_text):
                     break
+                y0, y1 = bbox[1], bbox[3]
+                in_margin = (y1 <= top_band) or (y0 >= bot_band)
+                if (not in_margin and not _PAGE_STAMP_RE.match(line_text)
+                        and any(ch.isalpha() for ch in line_text)):
+                    pending.append((line_text, bbox))
+                    if len(pending) > _PENDING_MAX:
+                        pending.pop(0)
                 continue
             # The line LOOKS like a TOC entry. Count it toward the "is
             # this page still part of the TOC?" signal whether or not we
@@ -2918,6 +2984,11 @@ def _link_toc_entries(doc, log: logging.Logger):
             # shouldn't abort the walk through subsequent TOC pages.
             entries_on_this_page += 1
 
+            # Continuation rows gathered since the previous entry belong to
+            # THIS entry; consume them whether or not the target resolves.
+            group_rows = pending + [(line_text, bbox)]
+            pending = []
+
             page_label = m.group("page").lower()
             target_idx = _resolve_target(printed_map, page_label, page_idx)
             if target_idx is None:
@@ -2926,42 +2997,51 @@ def _link_toc_entries(doc, log: logging.Logger):
             if target_idx == page_idx:
                 continue
 
+            # Merge the wrapped label: continuation text + this row's label.
+            label_parts = [t.strip() for t, _ in group_rows[:-1]]
+            label_parts.append(m.group("label").strip())
+            label = " ".join(p for p in label_parts if p)
+
             # Record this entry for the bookmark builder regardless of
             # whether we end up inserting a new link below — re-runs hit
             # the overlap-check skip path but should still surface the
             # same bookmark set as a first run.
-            label = m.group("label").strip()
             entries.append((label, target_idx))
 
-            rect = fitz.Rect(bbox)
-            # Skip if this rect overlaps an existing link annotation —
-            # primarily a re-run guard, but also catches the unlikely
-            # case of a TOC line that overlaps a citation rect.
-            already = False
-            for el in existing_links:
-                er = el.get("from")
-                if er and rect.intersects(er):
-                    already = True
-                    break
-            if already:
-                continue
-            page.insert_link({
-                "kind": fitz.LINK_GOTO,
-                "from": rect,
-                "page": target_idx,
-                "to": fitz.Point(0, 0),
-            })
-            existing_links.append({"from": rect, "kind": fitz.LINK_GOTO})
+            # Link EVERY row of the entry so the whole (possibly multi-line)
+            # entry is clickable, not just the final page-numbered line.
+            for _, gbbox in group_rows:
+                rect = fitz.Rect(gbbox)
+                # Skip if this rect overlaps an existing link annotation —
+                # primarily a re-run guard, but also catches the unlikely
+                # case of a TOC line that overlaps a citation rect.
+                already = False
+                for el in existing_links:
+                    er = el.get("from")
+                    if er and rect.intersects(er):
+                        already = True
+                        break
+                if already:
+                    continue
+                page.insert_link({
+                    "kind": fitz.LINK_GOTO,
+                    "from": rect,
+                    "page": target_idx,
+                    "to": fitz.Point(0, 0),
+                })
+                existing_links.append({"from": rect, "kind": fitz.LINK_GOTO})
+
             # Underline the trailing page number only, not the whole row —
             # underlining a full TOC line (which is mostly dot leaders)
             # looks like a typesetting error. We locate just the number
-            # via search_for, restricted to this line's bbox.
-            num_quads = page.search_for(m.group("page"), clip=rect, quads=True)
+            # via search_for, restricted to the final row's bbox.
+            final_rect = fitz.Rect(bbox)
+            num_quads = page.search_for(m.group("page"), clip=final_rect, quads=True)
             for q in num_quads:
                 qr = q.rect
                 # Only the right-most occurrence on this line — the leader
                 # number, not a digit that happens to appear in the label.
-                if qr.x1 < rect.x1 - 5:
+                if qr.x1 < final_rect.x1 - 5:
                     continue
                 underline_y = qr.y1 - 0.5
                 page.draw_line(
