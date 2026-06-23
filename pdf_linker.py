@@ -3770,7 +3770,12 @@ def _find_exhibit_cover_pages(doc):
     found: dict = {}
     label_pages: set = set()
     for i, page in enumerate(doc):
-        for line_text, _bbox in _collect_rows(page):
+        # Drop pleading-paper gutter line-numbers: on a pleading-paper
+        # exhibit cover the centered "EXHIBIT C" can share a baseline with a
+        # left-margin line number, which _collect_rows would otherwise fuse
+        # into "14 EXHIBIT C" — breaking _EXHIBIT_COVER_RE's ^EXHIBIT anchor
+        # and leaving that exhibit (and every body reference to it) unlinked.
+        for line_text, _bbox in _collect_rows(page, drop_gutter_numbers=True):
             m = _EXHIBIT_COVER_RE.match(line_text)
             if not m:
                 continue
