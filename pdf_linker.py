@@ -1387,10 +1387,21 @@ def _slip_search_term(case_key: str) -> str:
 
 
 def _disambiguated_lexis_term(case_key: str) -> str:
-    """Lexis search term that includes the first word of the plaintiff name.
-    Prevents wrong-case hits when a nearby case in the same volume spans the
-    target page (e.g. Sheppard v. Maxwell, 384 U.S. 333, spanning page 346,
-    returned instead of Miranda v. Arizona, 384 U.S. 346).
+    """Lexis search term: the FULL case name (both parties) + reporter cite,
+    e.g. "People v. Smith 13 Cal.App.5th 1152".
+
+    Lexis resolves cases through a search query, and the reporter cite
+    ("13 Cal.App.5th 1152") is the unique anchor. Including both party names
+    (rather than just the lead plaintiff word) disambiguates when the lead
+    party is generic — "People v.", "City of …", "In re …" — and tolerates a
+    stray leading token from imperfect name extraction without hurting the
+    match, since the reporter cite still pins the result. (Westlaw's direct
+    findType=Y deep-link is the opposite case and must stay name-free — it
+    uses _case_reporter_cite, not this function.)
+
+    The full name also subsumes the "In re X" / "Estate of X" / "X Cases"
+    forms, so no special-casing is needed: whatever precedes the reporter
+    tail in the key is the case name we search on.
     """
     m = _CASE_TAIL_RE.search(case_key)
     if not m:
@@ -1398,17 +1409,7 @@ def _disambiguated_lexis_term(case_key: str) -> str:
     _year, vol, reporter, page = m.groups()
     reporter_cite = f"{vol} {reporter} {page}"
     name_part = case_key[: m.start()].strip().rstrip(",")
-    nonv = re.match(rf"^({_NONV_PREFIX})\s+(\S+)", name_part, re.IGNORECASE)
-    if nonv:
-        # Preserve the prefix ("In re", "Estate of", etc.) plus the first
-        # word of the subject name so the search disambiguates against
-        # other cases sharing that subject word.
-        return f"{nonv.group(1)} {nonv.group(2)} {reporter_cite}"
-    cases_m = re.match(r"^((?:[A-Z]\S*\s+){1,4}Cases)\b", name_part)
-    if cases_m:
-        return f"{cases_m.group(1)} {reporter_cite}"
-    first_word = name_part.split()[0].rstrip(".,;:") if name_part.split() else ""
-    return f"{first_word} {reporter_cite}" if first_word else reporter_cite
+    return f"{name_part} {reporter_cite}" if name_part else reporter_cite
 
 
 def _build_westlaw_case_url(cite_text: str) -> str:
