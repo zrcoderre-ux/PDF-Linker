@@ -12,9 +12,10 @@ For each *.pdf in the folder (processed from shortest to longest by file size):
      using pytesseract page-by-page to add a text layer.
   1a. Writes a plain-text companion (<stem>.txt) next to each PDF that has a
      real text layer, so a text-only copy can be uploaded instead of page
-     images. Scanned-only PDFs are skipped (decided from the native text,
-     sampling the first few pages plus a random sample of the rest). Disable
-     with --no-text.
+     images. Extracts whenever the document opens with native text (even if
+     scanned exhibits follow); if the head isn't native it falls back to a
+     random sample of the rest. Scanned-only PDFs are skipped. Decided from
+     the native text, before OCR. Disable with --no-text.
   2. For files whose name contains "Declaration", "Decl.", "Separate Statement",
      "Compl.", "Complaint", "FAC", "SAC", "TAC", or "Proof of Service", link
      insertion is skipped — these documents rarely have citation-worthy material
@@ -4942,11 +4943,18 @@ def _set_bookmarks(doc, toc_entries, exhibit_cover_map, paragraph_anchors,
 # any "image space" because their content only exists as images.
 #
 # The text-vs-scanned decision is made from the NATIVE text (before OCR adds a
-# layer) by sampling the first few pages plus a small random sample of the
-# rest: the head catches the document body (usually native text), the random
-# sample guards against a native cover sheet stapled onto an otherwise-scanned
-# document.
-_TEXT_PAGE_MIN_WORDS = 8   # a page with this many words counts as "has text"
+# layer). It extracts whenever the document OPENS with real native text — the
+# common case for an e-filed brief or declaration — regardless of how many
+# scanned exhibit images follow. If the head isn't native (e.g. the file opens
+# on a scanned cover), it falls back to a random sample of the rest, so a text
+# body that starts a few pages in is still caught. A scanned-only PDF matches
+# neither test and is skipped.
+_TEXT_PAGE_MIN_WORDS = 8    # a page with this many words counts as "has text"
+# A head page needs more than this to count as a native document body: enough
+# to clear a native e-filing stamp ("Electronically FILED by ...") that can sit
+# on an otherwise-scanned page (~15-25 words). A genuine opening page — a
+# caption block, or ~28 pleading line-numbers plus prose — clears it easily.
+_HEAD_MIN_WORDS = 40
 
 
 def _sample_page_indices(n_pages: int):
@@ -4964,19 +4972,33 @@ def _sample_page_indices(n_pages: int):
 def _pdf_has_text_layer(doc, log: logging.Logger) -> bool:
     """Decide from the native text (call BEFORE OCR) whether a PDF is
     text-based (worth exporting) or effectively all scanned images (skip).
-    A page counts as text if it yields >= _TEXT_PAGE_MIN_WORDS words; the PDF
-    is text-based if at least half the sampled pages do."""
+
+    Primary test: the document opens with real native text — any of the first
+    few pages carries >= _HEAD_MIN_WORDS words. This extracts an e-filed brief
+    or declaration even when it's followed by many scanned exhibit images.
+
+    Fallback: if the head isn't native (a scanned cover, say), sample the rest
+    and extract when at least half those pages carry text. Scanned-only PDFs
+    pass neither test."""
     n = doc.page_count
     if n == 0:
         return False
+    head_words = max(
+        (len(doc[i].get_text("text").split()) for i in range(min(3, n))),
+        default=0,
+    )
+    if head_words >= _HEAD_MIN_WORDS:
+        log.info(f"  Text-layer check: native document body "
+                 f"(opening page has {head_words} words) - exporting text")
+        return True
     sample = _sample_page_indices(n)
     text_pages = sum(
         1 for i in sample
         if len(doc[i].get_text("text").split()) >= _TEXT_PAGE_MIN_WORDS
     )
     frac = text_pages / len(sample)
-    log.info(f"  Text-layer check: {text_pages}/{len(sample)} sampled page(s) "
-             f"have text ({frac:.0%})")
+    log.info(f"  Text-layer check: head not native (max {head_words} words); "
+             f"{text_pages}/{len(sample)} sampled page(s) have text ({frac:.0%})")
     return frac >= 0.5
 
 
