@@ -10,6 +10,11 @@ Usage:
 For each *.pdf in the folder (processed from shortest to longest by file size):
   1. If the PDF has no text layer, runs Tesseract OCR via OCRmyPDF-style flow
      using pytesseract page-by-page to add a text layer.
+  1a. Writes a plain-text companion (<stem>.txt) next to each PDF that has a
+     real text layer, so a text-only copy can be uploaded instead of page
+     images. Scanned-only PDFs are skipped (decided from the native text,
+     sampling the first few pages plus a random sample of the rest). Disable
+     with --no-text.
   2. For files whose name contains "Declaration", "Decl.", "Separate Statement",
      "Compl.", "Complaint", "FAC", "SAC", "TAC", or "Proof of Service", link
      insertion is skipped — these documents rarely have citation-worthy material
@@ -4928,10 +4933,82 @@ def _set_bookmarks(doc, toc_entries, exhibit_cover_map, paragraph_anchors,
 
 
 # ────────────────────────────────────────────────────────────────────────────
+# Plain-text export (companion .txt for lightweight upload)
+# ────────────────────────────────────────────────────────────────────────────
+# Write a UTF-8 text file next to each PDF that has a real text layer, so a
+# text-only copy can be uploaded (e.g. to Claude) instead of page images.
+# Scanned-only PDFs — no native text on any page — are skipped: a text export
+# of them would be empty (or, if OCR ran, lower-fidelity), and it wouldn't save
+# any "image space" because their content only exists as images.
+#
+# The text-vs-scanned decision is made from the NATIVE text (before OCR adds a
+# layer) by sampling the first few pages plus a small random sample of the
+# rest: the head catches the document body (usually native text), the random
+# sample guards against a native cover sheet stapled onto an otherwise-scanned
+# document.
+_TEXT_PAGE_MIN_WORDS = 8   # a page with this many words counts as "has text"
+
+
+def _sample_page_indices(n_pages: int):
+    """Page indices to inspect for the text-layer decision: the first few
+    pages plus a small random sample of the remainder. Seeded by page count
+    so the decision is reproducible from run to run."""
+    import random
+    head = list(range(min(3, n_pages)))
+    rest = list(range(len(head), n_pages))
+    if rest:
+        head += random.Random(n_pages).sample(rest, min(4, len(rest)))
+    return sorted(set(head))
+
+
+def _pdf_has_text_layer(doc, log: logging.Logger) -> bool:
+    """Decide from the native text (call BEFORE OCR) whether a PDF is
+    text-based (worth exporting) or effectively all scanned images (skip).
+    A page counts as text if it yields >= _TEXT_PAGE_MIN_WORDS words; the PDF
+    is text-based if at least half the sampled pages do."""
+    n = doc.page_count
+    if n == 0:
+        return False
+    sample = _sample_page_indices(n)
+    text_pages = sum(
+        1 for i in sample
+        if len(doc[i].get_text("text").split()) >= _TEXT_PAGE_MIN_WORDS
+    )
+    frac = text_pages / len(sample)
+    log.info(f"  Text-layer check: {text_pages}/{len(sample)} sampled page(s) "
+             f"have text ({frac:.0%})")
+    return frac >= 0.5
+
+
+def _write_text_version(pdf_path: Path, doc, log: logging.Logger) -> bool:
+    """Write a plain-text companion (<stem>.txt) holding each page's text with
+    pdf_linker's own invisible right-margin markers stripped. Overwrites on
+    re-runs. Returns True if written."""
+    txt_path = pdf_path.with_suffix(".txt")
+    parts = []
+    for i, page in enumerate(doc):
+        raw = page.get_text("text")
+        # Drop our invisible citation markers (present when re-processing an
+        # already-linked PDF) so the export is clean prose.
+        clean = _MARKER_DETECT_RE.sub("", raw)
+        # Collapse the runs of blank lines that marker removal and pleading
+        # gutters leave behind.
+        clean = re.sub(r"\n[ \t]*\n(?:[ \t]*\n)+", "\n\n", clean).strip()
+        parts.append(f"====== Page {i + 1} ======\n{clean}")
+    try:
+        txt_path.write_text("\n\n".join(parts) + "\n", encoding="utf-8")
+    except Exception as e:
+        log.warning(f"  Could not write text version (non-fatal): {e}")
+        return False
+    log.info(f"  Wrote text version: {txt_path.name}")
+    return True
+
+
+# ────────────────────────────────────────────────────────────────────────────
 # Main per-PDF processing
 # ────────────────────────────────────────────────────────────────────────────
 def process_pdf(pdf_path: Path, log: logging.Logger,
-                provider: str = "lexis") -> bool:
+                provider: str = "lexis", extract_text: bool = True) -> bool:
     """Process one PDF. Returns True on success."""
     try:
         import fitz
@@ -4964,6 +5041,11 @@ def process_pdf(pdf_path: Path, log: logging.Logger,
     # outer gate just needs to admit any document with at least one
     # textless page. Idempotent across re-runs because re-runs find every
     # page already has text and _ocr_pdf is a no-op.
+    # Decide whether to export a plain-text companion. This uses the NATIVE
+    # text and must run before OCR, which would add a text layer to scanned
+    # pages and make every document look text-based.
+    want_text_export = extract_text and _pdf_has_text_layer(doc, log)
+
     any_textless = any(not page.get_text("text").strip() for page in doc)
     if any_textless:
         textless_count = sum(1 for p in doc if not p.get_text("text").strip())
@@ -4973,6 +5055,15 @@ def process_pdf(pdf_path: Path, log: logging.Logger,
             log.info(f"  {textless_count} page(s) lack text - running OCR "
                      f"on those page(s)")
         _ocr_pdf(doc, log)
+
+    # Export the text version now (after OCR fills any minority scanned pages,
+    # before marker injection pollutes the text). Non-fatal and independent of
+    # the linking passes below. Skipped for scanned-only PDFs.
+    if want_text_export:
+        try:
+            _write_text_version(pdf_path, doc, log)
+        except Exception as e:
+            log.warning(f"  Text export failed (non-fatal): {e}")
 
     # Skip link insertion for declarations and separate statements: they
     # rarely contain citation-worthy material in Zachary's workflow, and
@@ -5241,6 +5332,14 @@ def main():
         help="Which service citations should resolve to (default: lexis). "
              "Selects the search-URL form used for each citation.",
     )
+    parser.add_argument(
+        "--no-text",
+        dest="extract_text",
+        action="store_false",
+        help="Do not write a plain-text (.txt) companion next to each "
+             "text-based PDF. By default a .txt export is written for every "
+             "PDF that has a real text layer (scanned-only PDFs are skipped).",
+    )
     args = parser.parse_args()
 
     folder = Path(args.folder)
@@ -5269,7 +5368,8 @@ def main():
     failed = 0
     for pdf in pdfs:
         try:
-            if process_pdf(pdf, log, provider=args.provider):
+            if process_pdf(pdf, log, provider=args.provider,
+                           extract_text=args.extract_text):
                 success += 1
             else:
                 failed += 1
