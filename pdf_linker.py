@@ -1,7 +1,7 @@
 """
-pdf_linker.py - Add citation hyperlinks to PDFs in a case folder, and inject
-                invisible right-margin citation markers into pleading-paper
-                pages so the Word paste macro can auto-generate citations.
+pdf_linker.py - Add citation hyperlinks to PDFs in a case folder, build
+                navigation bookmarks, and export a plain-text companion for
+                each text-based PDF.
 
 Usage:
     pythonw pdf_linker.py "C:\\path\\to\\case\\folder"
@@ -19,8 +19,8 @@ For each *.pdf in the folder (processed from shortest to longest by file size):
   2. For files whose name contains "Declaration", "Decl.", "Separate Statement",
      "Compl.", "Complaint", "FAC", "SAC", "TAC", or "Proof of Service", link
      insertion is skipped — these documents rarely have citation-worthy material
-     in the working judge's chambers. The right-margin marker injection (step 8)
-     still runs on these files so the paste macro works there too.
+     in the working judge's chambers. Bookmark/structure passes still run on
+     these files.
   3. Extracts case, statute, and rule citations using the same patterns the
      workup search tool uses (extended to recognise CSM, Bluebook, the
      "flat" no-comma practitioner form, and Westlaw-only WL cites).
@@ -37,14 +37,9 @@ For each *.pdf in the folder (processed from shortest to longest by file size):
      a single line, line-fragments are used only when they are distinctive
      enough (no bare "Cal." or "Cal. App. 4th" links across the document).
   7. Replaces the original PDF with the linked version (original is deleted).
-  8. Injects invisible white-on-white text markers in the right margin of
-     each pleading-paper page. Each marker encodes the citation coordinates
-     for that line — e.g. [Britton Decl.|p2:3¶7]. Adobe Reader's drag-select
-     extends across the full row band, so a selection that reaches the right
-     margin captures the marker; the PasteLegalQuotation Word macro then
-     parses the markers and builds a single trailing citation summarizing
-     the range. Markers do not affect visible rendering; the diff between
-     before-and-after rasters at 150 DPI is zero pixels.
+  8. Builds a PDF outline (sidebar bookmarks) from the detected structure —
+     Contents (TOC), Exhibits, Paragraphs, Causes of Action, and combined-
+     filing sub-documents.
 
 The Westlaw and Lexis search prefix tables, statute name variants, and URL
 forms here are kept in sync with the cross-opener extension's content.js
@@ -1619,31 +1614,6 @@ def should_skip_linking(filename: str) -> bool:
     return False
 
 
-def derive_doc_shortname(filename: str) -> str:
-    """Derive a citation-friendly short name from a PDF filename.
-    
-    Examples:
-        Britton_Decl__ISO_MSJ.pdf      -> "Britton Decl."
-        Kelley_Decl__ISO_Mot_.pdf      -> "Kelley Decl."
-        Opposition.pdf                 -> "Opposition"
-        Joint_Separate_Statement.pdf   -> "Joint Separate Statement"
-    
-    Strips "ISO ..." suffix common in declaration filenames, replaces
-    underscores with spaces, normalises whitespace, and adds a trailing
-    period to "Decl"-style abbreviations so the resulting string is
-    suitable for direct use in a Bluebook/CSM citation.
-    """
-    name = filename.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-    stem = name.rsplit(".", 1)[0]
-    stem = re.sub(r"[_ ]ISO[_ ].+$", "", stem, flags=re.IGNORECASE)
-    s = re.sub(r"_+", " ", stem).strip()
-    s = re.sub(r"\s+", " ", s)
-    s = s.strip(" _-")
-    if re.search(r"\bDecl$", s):
-        s += "."
-    return s
-
-
 def _detect_line_anchors(page):
     """Per-page: find pleading-paper line numbers and gather body text on
     each numbered row.
@@ -1814,270 +1784,90 @@ def _annotate_paragraphs(anchors):
 
 
 # ────────────────────────────────────────────────────────────────────────────
-# Right-margin invisible markers (for the PasteLegalQuotation macro)
+# Legacy right-margin marker detection
 # ────────────────────────────────────────────────────────────────────────────
-# For each detected pleading-paper line, we insert a tiny white-on-white text
-# string into the right margin at the same vertical baseline. The markers are
-# invisible to the eye, but when Zachary drag-selects a line of body text,
-# Adobe Reader's selection rectangle naturally extends to the right across
-# the full row band — so the marker gets included in the clipboard text.
-# His PasteLegalQuotation macro then strips the markers and uses them to
-# auto-generate the citation in his preferred "(Doc. at p. X:Y-Z.)" format.
-#
-# Why this works where the previous (v1-v10) inline-marker attempts failed:
-#   - We're adding NEW text in empty whitespace (right margin), not splicing
-#     into existing BT/ET blocks. PyMuPDF's insert_text handles all the
-#     positioning math for us — no Td displacement to compute.
-#   - White text in the margin doesn't anti-alias against any visible pixels,
-#     so there's no grey halo. The right margin is empty whitespace.
-#   - No edit-mode dependency. Markers extract correctly in normal Reader
-#     mode because Reader's drag-select uses a rectangular band that
-#     captures every text element in the row.
-#
-# Trade-off: partial selections that don't reach the right margin won't
-# capture a marker. Per Zachary, that's acceptable — he can do a full-line
-# (or longer) drag-select when he wants the auto-citation, and skip it
-# otherwise. The visible cue is the selection rectangle extending into the
-# margin, which he doesn't mind.
-
-# ── Marker configuration ────────────────────────────────────────────────────
-_MARKER_FONT_SIZE = 4.0
-_MARKER_CHAR_WIDTH_EST = _MARKER_FONT_SIZE * 0.55
-_MARKER_RIGHT_INSET = 2.0
-# Place the marker in the blank gap ABOVE its line, centred in the
-# inter-line whitespace, rather than on the body-text baseline. The old
-# placement (baseline ~6.5pt above y_mid) sat inside the cap-height /
-# ascender zone of the line's own glyphs, so the white marker text punched
-# white notches into the black letters where they overlapped. Pleading
-# paper is double-spaced (~22-23pt line pitch) with ~13pt-tall text bands,
-# leaving a ~9pt clear gap between lines; dropping the 4pt marker into the
-# centre of that gap keeps it clear of every glyph on both the line above
-# and the line below. Vertically it now begins just above the associated
-# sentence, which is also where a drag-select that reaches the sentence's
-# top naturally picks it up.
-#
-# The line pitch is measured per page at runtime (gutter digit spacing) and
-# clamped to a sane range; the marker baseline is then placed half a pitch
-# above y_mid (into the gap) and nudged down by half the font size so the
-# glyph box straddles the gap centre.
-_MARKER_PITCH_FALLBACK = 22.0   # pt, used when a page has too few lines to measure
-_MARKER_PITCH_MIN = 12.0
-_MARKER_PITCH_MAX = 36.0
-# IMPORTANT: selection must be done with Acrobat's column/rectangle select
-# (Alt+drag), not the normal I-beam text-select, because insert_text()
-# appends markers to the PDF content stream after all body text.  For a
-# rectangular selection Acrobat uses visual geometry (correct order); for a
-# normal text-flow selection it uses stream order (wrong order).
-
-
-def _marker_line_pitch(anchors):
-    """Median vertical spacing between consecutive pleading-paper lines on a
-    page, clamped to a sane range. Used to drop each marker into the blank
-    gap above its line instead of on the text baseline."""
-    ys = sorted(a["y_mid"] for a in anchors)
-    diffs = [ys[i + 1] - ys[i] for i in range(len(ys) - 1) if ys[i + 1] > ys[i]]
-    if not diffs:
-        return _MARKER_PITCH_FALLBACK
-    import statistics
-    pitch = statistics.median(diffs)
-    return max(_MARKER_PITCH_MIN, min(_MARKER_PITCH_MAX, pitch))
-
-# Regex matching the exact marker formats produced below — used by
-# _insert_right_margin_markers to detect existing markers on a page and
-# skip re-insertion across reruns. Must match BOTH the full form
-# "[ShortName|p3:7¶4]" and the compact form "[p3:7¶4]"; the paragraph
-# suffix is optional. The character class for the shortname is the same
-# as what derive_doc_shortname can produce: letters, digits, and a few
-# punctuation characters. Anchored on the bracketed "p<digits>:<digits>"
-# core which is distinctive enough that no real body text would match.
+# pdf_linker used to stamp invisible white "[ShortName|p3:7¶4]" markers into
+# the right margin of pleading pages (to feed a Word paste macro). That
+# watermarking has been removed. This pattern is kept only so that
+# re-processing a PDF stamped by an older version still recognises and strips
+# those markers - see _collect_rows (row detection) and _write_text_version
+# (clean text export). It matches the full form "[ShortName|p3:7¶4]" and the
+# compact form "[p3:7¶4]"; the paragraph suffix is optional.
 _MARKER_DETECT_RE = re.compile(
     r"\[(?:[A-Za-z0-9_.&'\- ]+\|)?p\d+:\d+(?:\u00b6\d+)?\]"
 )
 
 
-def _insert_right_margin_markers(page, anchors, shortname, page_num, log=None):
-    """Insert one invisible white right-margin marker per anchor.
+def _detect_paragraph_anchors(doc):
+    """Return [(page_index, paragraph_num), ...] - one entry per page on which
+    at least one *new* numbered paragraph starts, recording the lowest such
+    number. Feeds the bookmark builder's "Paragraphs" branch. Documents
+    without pleading-paper line numbers (most briefs) yield no anchors.
 
-    ``page_num`` is the page label to embed in each marker — resolved by
-    the caller from the printed footer page number where available, else
-    the PDF page index. It is a string so printed labels pass through
-    verbatim. The marker format stays ``[ShortName|p<page>:<line>¶<para>]``
-    so the PasteLegalCitation Word macro and the idempotency detector are
-    unaffected by the change in what the page number *means*.
-
-    Returns the number of markers actually inserted.
-
-    Markers are placed at the right edge of the page.  Use Acrobat's
-    rectangle / column select (Alt+drag) — not the normal I-beam — to
-    capture them together with the body text: rectangle select respects
-    visual geometry and therefore picks up the marker in the correct row
-    order regardless of its position in the PDF content stream.
-
-    Idempotency: if any existing marker (matching _MARKER_DETECT_RE) is
-    already present on the page, the entire pass is skipped for that
-    page. Without this guard, each rerun would stack a fresh set of
-    markers on top of the previous ones, doubling the count per run and
-    inflating the file size. Single-marker detection is enough because
-    markers are inserted as a batch per page — if one is present, all
-    are; if none is present, the page hasn't been processed yet.
+    This used to also inject invisible right-margin citation markers; that
+    watermarking has been removed. Only the paragraph-anchor detection, which
+    drives bookmarks and never modifies the page, remains.
     """
-    # Idempotency check: scan existing text for any marker-shaped string.
-    page_text = page.get_text("text")
-    if _MARKER_DETECT_RE.search(page_text):
-        return 0
-
-    page_width = page.rect.width
-    pitch = _marker_line_pitch(anchors)
-    inserted = 0
-    for a in anchors:
-        line_num = a["line_num"]
-        para = a.get("paragraph_num")
-
-        para_suffix = f"\u00b6{para}" if para is not None else ""
-        full_marker    = f"[{shortname}|p{page_num}:{line_num}{para_suffix}]"
-        compact_marker = f"[p{page_num}:{line_num}{para_suffix}]"
-
-        available_width = 60.0
-        marker_text = (full_marker
-                       if len(full_marker) * _MARKER_CHAR_WIDTH_EST <= available_width
-                       else compact_marker)
-
-        marker_width_est = len(marker_text) * _MARKER_CHAR_WIDTH_EST
-        marker_x = page_width - _MARKER_RIGHT_INSET - marker_width_est
-        if marker_x < page_width - 80:
-            marker_x = page_width - 80
-
-        # Baseline centred in the blank gap ABOVE the line: half a line pitch
-        # up from y_mid lands in the inter-line whitespace, then nudge down by
-        # half the font size so the glyph box straddles the gap centre and
-        # clears the text bands above and below (see marker-config note).
-        marker_y = a["y_mid"] - pitch / 2.0 + _MARKER_FONT_SIZE / 2.0
-
-        try:
-            page.insert_text(
-                (marker_x, marker_y),
-                marker_text,
-                fontname="helv",
-                fontsize=_MARKER_FONT_SIZE,
-                color=(1.0, 1.0, 1.0),
-            )
-            inserted += 1
-        except Exception as e:
-            if log:
-                log.warning(f"  Marker insert failed on p{page_num}:{line_num}: {e}")
-    return inserted
-
-
-def _marker_page_numbers(doc):
-    """Resolve the page number to embed in each pleading page's markers.
-
-    Returns {pdf_page_index: (page_number_str, used_printed_bool)} for
-    every page that carries pleading-paper line numbers.
-
-    Resolution per page:
-      * If the page has a printed footer page number (arabic), use it.
-        A court cites the printed page, so the stamped number is always
-        authoritative. Only arabic labels are accepted: the marker format
-        and the PasteLegalCitation macro expect ``p<digits>``, and roman
-        front-matter labels (i, ii) would break the idempotency
-        detector's ``p\\d+:\\d+`` core.
-      * Otherwise fall back to the page's ORDINAL POSITION within its
-        contiguous run of pleading pages, not the raw PDF page index.
-        Runs are separated by non-pleading pages (declaration/section
-        divider sheets, exhibit covers, signature-only pages), so a gap
-        in pleading pages marks a new sub-document. This is what makes a
-        declaration that omits printed page numbers (common — e.g. an
-        attorney declaration filed without footer pagination) still get
-        per-declaration page numbers 1, 2, 3 … instead of the PDF's
-        global index.
-
-    A printed number RESYNCHRONISES the running counter (``within`` is
-    set to the printed value), so when a declaration prints numbers on
-    most pages but omits one, the omitted page continues the printed
-    sequence rather than drifting. It also corrects for an unnumbered
-    caption/first page that isn't itself a pleading page: the first
-    pleading page starts the count at 1, and the first printed number
-    snaps it to the true value.
-    """
-    result = {}
-    prev_idx = None
-    within = 0
-    for page in doc:
-        if not _detect_line_anchors(page):
-            continue  # caption / divider / exhibit / signature page — a gap
-        # New run (first pleading page, or a gap since the previous one).
-        if prev_idx is None or page.number != prev_idx + 1:
-            within = 1
-        else:
-            within += 1
-        prev_idx = page.number
-
-        label = _footer_page_label(page)
-        if label and label.isdigit():
-            within = int(label)              # resync to the printed page
-            result[page.number] = (label, True)
-        else:
-            result[page.number] = (str(within), False)
-    return result
-
-
-def add_right_margin_markers(pdf_path: Path, doc, log: logging.Logger):
-    """Add invisible right-margin markers to every pleading-paper page in
-    the open doc. Operates on the doc in-memory; caller is responsible
-    for saving.
-
-    Each marker's page number is the *printed footer page number* for
-    that page when one is stamped (so a pinpoint citation pasted via the
-    Word macro reads the page a court cites, e.g. "Decl. p. 3 ¶ 4"). When
-    a page has no printed number, the page's position within its
-    declaration/sub-document is used instead (see _marker_page_numbers),
-    so unnumbered declarations still get 1, 2, 3 … rather than the PDF's
-    global page index. Declaration pages keep their paragraph suffix (¶N).
-
-    Returns (total_markers, paragraph_anchors) where paragraph_anchors is
-    a list of (page_index, paragraph_num) tuples — one per page on which
-    at least one *new* paragraph starts, recording the lowest paragraph
-    number that begins on that page. Used by the bookmark builder to
-    produce the "Paragraphs" branch; documents without pleading-paper
-    line numbers (briefs, often) yield no anchors.
-    """
-    shortname = derive_doc_shortname(pdf_path.name)
-    page_numbers = _marker_page_numbers(doc)
-    total = 0
-    pages_with_markers = 0
-    positional_pages = 0  # inserted pages numbered by position (no printed #)
-    paragraph_anchors = []  # [(page_index, paragraph_num), ...]
+    paragraph_anchors = []
     for page in doc:
         anchors = _detect_line_anchors(page)
         if not anchors:
             continue  # caption / exhibit / signature page
         anchors = _annotate_paragraphs(anchors)
-        # Capture the lowest paragraph number that *starts* on this page,
-        # if any. Continuation pages where every line is mid-paragraph
-        # (no starts_paragraph=True) produce no entry, so a paragraph
-        # spanning three pages adds only one bookmark instead of three.
+        # Lowest paragraph number that *starts* on this page, if any.
+        # Continuation pages (every line mid-paragraph) produce no entry, so a
+        # paragraph spanning three pages adds one bookmark, not three.
         starts = [a.get("paragraph_num") for a in anchors
                   if a.get("starts_paragraph") and a.get("paragraph_num")]
         if starts:
             paragraph_anchors.append((page.number, min(starts)))
+    return paragraph_anchors
 
-        page_num, used_printed = page_numbers.get(
-            page.number, (str(page.number + 1), False))
 
-        n = _insert_right_margin_markers(page, anchors, shortname, page_num, log)
-        total += n
-        if n:
-            pages_with_markers += 1
-            if not used_printed:
-                positional_pages += 1
-    if total:
-        log.info(f"  Inserted {total} invisible markers across "
-                 f"{pages_with_markers} page(s)")
-        if positional_pages:
-            log.info(f"  {positional_pages} marked page(s) had no printed "
-                     f"page number; numbered by position within their "
-                     f"sub-document")
-    return total, paragraph_anchors
+def _strip_legacy_markers(doc, log: logging.Logger) -> int:
+    """Remove invisible right-margin watermark markers left by older versions
+    of pdf_linker, so re-processing a previously-stamped PDF comes out clean.
+
+    Markers are white text in the right margin. We redact just their glyph
+    rects, removing ONLY text (no fill rectangle, and leaving line art and
+    images untouched) so the page's pleading-paper border rule and any content
+    survive intact — the only visible effect is that the faint notches the
+    white markers cut into the border rule disappear. Non-fatal and idempotent:
+    a document that was never stamped (the normal case going forward) has
+    nothing to match and is left untouched.
+    """
+    try:
+        import fitz
+    except ImportError:
+        return 0
+    keep_img = getattr(fitz, "PDF_REDACT_IMAGE_NONE", 0)
+    keep_art = getattr(fitz, "PDF_REDACT_LINE_ART_NONE", 0)
+    removed = 0
+    for page in doc:
+        marks = set(_MARKER_DETECT_RE.findall(page.get_text("text")))
+        if not marks:
+            continue
+        rects = []
+        for mk in marks:
+            rects.extend(page.search_for(mk))
+        if not rects:
+            continue
+        for r in rects:
+            page.add_redact_annot(r, fill=False)
+        try:
+            # Remove marker text only; keep line art (the border rule) and
+            # images. Older PyMuPDF lacks the graphics/text kwargs — fall back
+            # to an images-only call there.
+            try:
+                page.apply_redactions(images=keep_img, graphics=keep_art)
+            except TypeError:
+                page.apply_redactions(images=keep_img)
+            removed += len(rects)
+        except Exception as e:
+            log.warning(f"  Could not strip markers on page {page.number}: {e}")
+    if removed:
+        log.info(f"  Stripped {removed} legacy watermark marker(s)")
+    return removed
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -3989,7 +3779,7 @@ def _link_exhibit_references(doc, log: logging.Logger):
 #   * Contents   <- TOC entries detected by _link_toc_entries
 #   * Exhibits   <- exhibit cover pages from _link_exhibit_references
 #   * Paragraphs <- per-page first-new-paragraph anchors from
-#                   add_right_margin_markers
+#                   _detect_paragraph_anchors
 #
 # The outline is set via doc.set_toc(), which *replaces* any pre-existing
 # outline rather than appending. Two consequences:
@@ -5063,6 +4853,15 @@ def process_pdf(pdf_path: Path, log: logging.Logger,
     # outer gate just needs to admit any document with at least one
     # textless page. Idempotent across re-runs because re-runs find every
     # page already has text and _ocr_pdf is a no-op.
+    # Remove any invisible right-margin watermark markers left by an older
+    # version of this tool, so re-processing a previously-stamped PDF comes out
+    # clean. Runs first so every downstream pass (text export, linking,
+    # bookmarks) sees the cleaned text. Non-fatal.
+    try:
+        _strip_legacy_markers(doc, log)
+    except Exception as e:
+        log.warning(f"  Legacy marker stripping failed (non-fatal): {e}")
+
     # Decide whether to export a plain-text companion. This uses the NATIVE
     # text and must run before OCR, which would add a text layer to scanned
     # pages and make every document look text-based.
@@ -5261,15 +5060,15 @@ def process_pdf(pdf_path: Path, log: logging.Logger,
     except Exception as e:
         log.warning(f"  Exhibit linking failed (non-fatal): {e}")
 
-    # Insert invisible right-margin markers so the PasteLegalQuotation macro
-    # can auto-generate citations on PDF paste. See _insert_right_margin_markers
-    # for the design rationale. Failure here is non-fatal: the linked PDF is
-    # still useful even if marker insertion fails.
+    # Detect paragraph anchors for the bookmark builder's "Paragraphs" branch.
+    # (The tool no longer stamps invisible right-margin markers into the page;
+    # this pass only reads structure and never modifies the PDF.) Failure here
+    # is non-fatal: the linked PDF is still useful without paragraph bookmarks.
     paragraph_anchors: list = []
     try:
-        _, paragraph_anchors = add_right_margin_markers(pdf_path, doc, log)
+        paragraph_anchors = _detect_paragraph_anchors(doc)
     except Exception as e:
-        log.warning(f"  Right-margin marker insertion failed (non-fatal): {e}")
+        log.warning(f"  Paragraph-anchor detection failed (non-fatal): {e}")
 
     # Cause-of-action detection and linking for complaints (and amended
     # complaints — FAC/SAC/TAC). Runs on its own gate, independent of
