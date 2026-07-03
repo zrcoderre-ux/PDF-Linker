@@ -1824,52 +1824,6 @@ def _detect_paragraph_anchors(doc):
     return paragraph_anchors
 
 
-def _strip_legacy_markers(doc, log: logging.Logger) -> int:
-    """Remove invisible right-margin watermark markers left by older versions
-    of pdf_linker, so re-processing a previously-stamped PDF comes out clean.
-
-    Markers are white text in the right margin. We redact just their glyph
-    rects, removing ONLY text (no fill rectangle, and leaving line art and
-    images untouched) so the page's pleading-paper border rule and any content
-    survive intact — the only visible effect is that the faint notches the
-    white markers cut into the border rule disappear. Non-fatal and idempotent:
-    a document that was never stamped (the normal case going forward) has
-    nothing to match and is left untouched.
-    """
-    try:
-        import fitz
-    except ImportError:
-        return 0
-    keep_img = getattr(fitz, "PDF_REDACT_IMAGE_NONE", 0)
-    keep_art = getattr(fitz, "PDF_REDACT_LINE_ART_NONE", 0)
-    removed = 0
-    for page in doc:
-        marks = set(_MARKER_DETECT_RE.findall(page.get_text("text")))
-        if not marks:
-            continue
-        rects = []
-        for mk in marks:
-            rects.extend(page.search_for(mk))
-        if not rects:
-            continue
-        for r in rects:
-            page.add_redact_annot(r, fill=False)
-        try:
-            # Remove marker text only; keep line art (the border rule) and
-            # images. Older PyMuPDF lacks the graphics/text kwargs — fall back
-            # to an images-only call there.
-            try:
-                page.apply_redactions(images=keep_img, graphics=keep_art)
-            except TypeError:
-                page.apply_redactions(images=keep_img)
-            removed += len(rects)
-        except Exception as e:
-            log.warning(f"  Could not strip markers on page {page.number}: {e}")
-    if removed:
-        log.info(f"  Stripped {removed} legacy watermark marker(s)")
-    return removed
-
-
 # ────────────────────────────────────────────────────────────────────────────
 # Safe citation-text search (multi-line aware, no spurious wide matches)
 # ────────────────────────────────────────────────────────────────────────────
@@ -4853,15 +4807,7 @@ def process_pdf(pdf_path: Path, log: logging.Logger,
     # outer gate just needs to admit any document with at least one
     # textless page. Idempotent across re-runs because re-runs find every
     # page already has text and _ocr_pdf is a no-op.
-    # Remove any invisible right-margin watermark markers left by an older
-    # version of this tool, so re-processing a previously-stamped PDF comes out
-    # clean. Runs first so every downstream pass (text export, linking,
-    # bookmarks) sees the cleaned text. Non-fatal.
-    try:
-        _strip_legacy_markers(doc, log)
-    except Exception as e:
-        log.warning(f"  Legacy marker stripping failed (non-fatal): {e}")
-
+    #
     # Decide whether to export a plain-text companion. This uses the NATIVE
     # text and must run before OCR, which would add a text layer to scanned
     # pages and make every document look text-based.
