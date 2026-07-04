@@ -28,7 +28,10 @@ For each *.pdf in the folder (processed from shortest to longest by file size):
      images. Extracts whenever the document opens with native text (even if
      scanned exhibits follow); if the head isn't native it falls back to a
      random sample of the rest. Scanned-only PDFs are skipped. Decided from
-     the native text, before OCR. Disable with --no-text.
+     the native text, before OCR. Disable with --no-text. The .txt ends with
+     an "Authorities cited" appendix linking each citation to a FREE public
+     database (California leginfo / Cornell LII / Google Scholar) instead of
+     the paid Lexis/Westlaw link the PDF uses, for no-login verification.
   2. For files whose name contains "Declaration", "Decl.", "Separate Statement",
      "Compl.", "Complaint", "FAC", "SAC", "TAC", or "Proof of Service", link
      insertion is skipped — these documents rarely have citation-worthy material
@@ -5382,6 +5385,82 @@ def _pdf_has_text_layer(doc, log: logging.Logger) -> bool:
     return frac >= 0.5
 
 
+# ── Public verification links for the .txt export ───────────────────────────
+# The PDF's citation links point at the active provider (Lexis/Westlaw), which
+# needs a paid login. The .txt export instead lists each cited authority with a
+# link to a FREE, publicly-searchable database, so a reader (e.g. Claude) can
+# get a head start on verifying the authority without an account. All URL
+# construction lives in _public_authority_url so the sources are easy to swap.
+#
+# Our California code abbreviations (CCP, CIV, PEN, …) are exactly the lawCode
+# values the official California Legislative Information site uses, so a statute
+# resolves to a direct section deep link.
+_CA_LEGINFO_CODES = set(WL_SEARCH_PREFIX)
+
+
+def _public_authority_url(cite, pseudonymizer=None):
+    """A free, public URL for verifying a citation, or None:
+      * California codes  -> official California Legislative Information (leginfo)
+      * U.S.C.            -> Cornell Law School's Legal Information Institute
+      * cases             -> Google Scholar case-law search
+      * rules             -> Google search
+    Used ONLY in the plain-text export; the PDF keeps its Lexis/Westlaw links.
+
+    A case-search query is pseudonymized (as PLAIN text, before URL-encoding)
+    when a pseudonymizer is given — otherwise the current case's own caption,
+    which shows up as a slip cite, would embed the real party/case values in
+    the query string where percent-encoding hides them from a later scrub.
+    Real cited authorities have different names, so pseudonymization leaves
+    them untouched.
+    """
+    from urllib.parse import quote
+
+    def _pn(s):
+        return pseudonymizer.apply(s) if pseudonymizer is not None else s
+
+    key = cite.get("key", "")
+    kind = cite.get("kind")
+    if kind == "statute":
+        m = re.match(r"^(\d+)\s+U\.S\.C\.\s*§\s*(.+)$", key)
+        if m:
+            return (f"https://www.law.cornell.edu/uscode/text/"
+                    f"{m.group(1)}/{_bare_section(m.group(2))}")
+        m = re.match(r"^([A-Z]+)\s*§\s*(.+)$", key)
+        if m and m.group(1) in _CA_LEGINFO_CODES:
+            return ("https://leginfo.legislature.ca.gov/faces/"
+                    "codes_displaySection.xhtml?lawCode="
+                    f"{m.group(1)}&sectionNum={_bare_section(m.group(2))}.")
+        return None
+    if kind == "case":
+        return "https://scholar.google.com/scholar?q=" + quote(
+            _pn(_disambiguated_lexis_term(key)))
+    if kind == "rule":
+        return "https://www.google.com/search?q=" + quote(_pn(key))
+    return None
+
+
+def _build_authorities_appendix(full_text, pseudonymizer=None):
+    """Return an appendix block listing each UNIQUE cited authority (in order
+    of first appearance) with a public verification URL, or '' if none. When a
+    pseudonymizer is given, the displayed cite text and the search query are
+    pseudonymized as plain text (so the current case's own caption is scrubbed
+    without the percent-encoding boundary issue that would sneak it through)."""
+    def _pn(s):
+        return pseudonymizer.apply(s) if pseudonymizer is not None else s
+    seen = {}
+    for c in find_all_citations(full_text):
+        if c["key"] in seen:
+            continue
+        url = _public_authority_url(c, pseudonymizer)
+        if url:
+            seen[c["key"]] = (_pn(c["key"]), url)
+    if not seen:
+        return ""
+    lines = ["====== Authorities cited (public verification links) ======"]
+    lines += [f"{disp}  ->  {url}" for disp, url in seen.values()]
+    return "\n".join(lines)
+
+
 def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
                         pseudonymizer=None) -> bool:
     """Write a plain-text companion (<stem>.txt) holding each page's text with
@@ -5397,6 +5476,7 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
     """
     txt_path = pdf_path.with_suffix(".txt")
     parts = []
+    orig_pages = []   # pre-pseudonymization page text, for citation detection
     for i, page in enumerate(doc):
         raw = page.get_text("text")
         # Drop our invisible citation markers (present when re-processing an
@@ -5405,10 +5485,20 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         # Collapse the runs of blank lines that marker removal and pleading
         # gutters leave behind.
         clean = re.sub(r"\n[ \t]*\n(?:[ \t]*\n)+", "\n\n", clean).strip()
+        orig_pages.append(clean)
         if pseudonymizer is not None:
             clean = pseudonymizer.apply(clean)
         parts.append(f"====== Page {i + 1} ======\n{clean}")
     body = "\n\n".join(parts) + "\n"
+
+    # Append a list of every cited authority with a free public verification
+    # link (leginfo / Cornell LII / Google Scholar) — the PDF keeps its
+    # Lexis/Westlaw links, but the text copy points somewhere anyone can open.
+    # The builder pseudonymizes cite text/queries as plain text so the current
+    # case's own caption (which surfaces as a slip cite) is scrubbed here too.
+    appendix = _build_authorities_appendix("\n\f\n".join(orig_pages), pseudonymizer)
+    if appendix:
+        body += "\n" + appendix + "\n"
 
     if pseudonymizer is not None:
         survivors = pseudonymizer.surviving_reals(body)
