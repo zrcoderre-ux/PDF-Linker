@@ -13,6 +13,13 @@ For each *.pdf in the folder (processed from shortest to longest by file size):
      text layer looks obviously garbled (broken font encoding, unmapped
      glyphs) are rebuilt the same way: the bad text is removed and a fresh OCR
      layer is laid down over the (correctly-rendering) page.
+  1b. Optionally pseudonymizes the .txt export (only): party/case/attorney
+     names and detected PII are swapped for stable, deterministic fakes, and a
+     real->fake key file is written for the folder. Party/case names come from
+     a spreadsheet key — --key, or by default the most recent .xlsx in the
+     user's Downloads folder (the E-Court order-template export) — plus any
+     --term values. The PDFs are never modified. Off unless --pseudonymize /
+     --key / --term is given.
   1a. Writes a plain-text companion (<stem>.txt) next to each PDF that has a
      real text layer, so a text-only copy can be uploaded instead of page
      images. Extracts whenever the document opens with native text (even if
@@ -4796,6 +4803,440 @@ def _set_bookmarks(doc, toc_entries, exhibit_cover_map, paragraph_anchors,
 
 
 # ────────────────────────────────────────────────────────────────────────────
+# Pseudonymization (applied to the .txt export only, never the PDF)
+# ────────────────────────────────────────────────────────────────────────────
+# Ported from the standalone PDF-Redactor's pseudonymize.py, but retargeted at
+# plain text: every party name, case number, attorney name, and regex-detected
+# identifier (e-mail, phone, SSN, street address) is swapped for a STABLE,
+# realistic fake so the exported text stays readable and coherent while never
+# naming the real parties. "Stable" = deterministic: the same real value always
+# maps to the same fake (seed-per-value), so roles stay consistent across pages
+# and files, and a key spreadsheet lets a downstream step map a draft back to
+# reality. Opt-in (--pseudonymize / --key / --term); the PDF is untouched.
+import hashlib as _pn_hashlib
+import random as _pn_random
+import unicodedata as _pn_unicodedata
+
+_NFKC = lambda s: _pn_unicodedata.normalize("NFKC", s)
+
+
+def _pn_rng(*parts):
+    key = "\x1f".join(str(p) for p in parts).encode("utf-8")
+    return _pn_random.Random(int(_pn_hashlib.sha256(key).hexdigest(), 16))
+
+
+# Neutral name-word pool, shared by given names and surnames so a token maps to
+# one fake regardless of role ("Smith" in "John Smith" and a bare "Smith" both
+# resolve to the same stand-in).
+_PN_NAME_WORDS = [
+    "Ashford", "Bennett", "Calder", "Danforth", "Ellery", "Fenwick", "Garrick",
+    "Halloran", "Ingram", "Jarrett", "Keswick", "Langley", "Marlowe", "Nash",
+    "Orwell", "Prescott", "Quill", "Radley", "Sable", "Thorne", "Underwood",
+    "Vance", "Whitlock", "Yardley", "Ashby", "Brandt", "Corwin", "Delacroix",
+    "Everts", "Fairfax", "Grantham", "Holloway", "Isley", "Jennings", "Kingsley",
+    "Lathrop", "Merrick", "Norwood", "Ackerly", "Bramble", "Colfax", "Denning",
+    "Emmett", "Forsythe", "Gable", "Hendry", "Ivers", "Joplin", "Kessler",
+    "Lorne", "Mabry", "Nolan", "Ondine", "Pruett", "Renwick", "Sterling",
+    "Tolliver", "Ursin", "Verity", "Waverly", "Alden", "Beaumont", "Carrow",
+    "Delane",
+]
+_PN_ENTITY_WORDS = [
+    "Aldrin", "Brightwater", "Cascadia", "Dunmore", "Everline", "Foxglen",
+    "Granite", "Havenwood", "Ironbridge", "Juniper", "Kestrel", "Lumen",
+    "Meridian", "Northgate", "Oakmont", "Pinnacle", "Quarry", "Redwood",
+    "Silverpeak", "Torchlight", "Umbra", "Vantage", "Westmark", "Zephyr",
+    "Ambrose", "Beacon", "Cobalt", "Drayton", "Emberly", "Falcon", "Gladstone",
+    "Harborview", "Ivory", "Jetstream", "Kaldor", "Larkspur", "Monarch",
+    "Nimbus", "Orion", "Pembroke",
+]
+_PN_ENTITY_SUFFIXES = {
+    "llc", "l.l.c.", "inc", "inc.", "incorporated", "corp", "corp.",
+    "corporation", "co", "co.", "company", "lp", "l.p.", "llp", "ltd", "ltd.",
+    "limited", "pc", "p.c.", "plc", "na", "n.a.", "trust", "bank", "assn",
+    "association", "partners", "partnership", "group", "fund", "holdings",
+    "enterprises", "systems", "services", "solutions", "foundation",
+}
+_PN_ENTITY_KEEP = {"the", "of", "and", "for", "a", "an", "&", "de", "la"} | _PN_ENTITY_SUFFIXES
+_PN_COMMON_WORD_SURNAMES = {
+    "green", "brown", "white", "black", "gray", "grey", "young", "long",
+    "short", "small", "rich", "best", "price", "king", "bell", "cook", "wood",
+    "park", "day", "may", "will", "mark", "grace", "hope", "rose", "ray",
+    "dawn", "hall", "moore", "west", "east", "north", "south", "case", "law",
+    "field", "flowers", "banks", "waters", "rivers", "stone", "reed", "fields",
+    "love", "just", "good", "power", "peace", "sharp", "swift", "noble",
+}
+_PN_STREET_NAMES = [
+    "Maple", "Cedar", "Elm", "Birch", "Willow", "Aspen", "Juniper", "Laurel",
+    "Poplar", "Sycamore", "Hawthorn", "Linden", "Chestnut", "Magnolia",
+    "Sequoia", "Cypress", "Alder", "Dogwood", "Hickory", "Rosewood",
+]
+_PN_STREET_TYPES = ["Street", "Avenue", "Drive", "Lane", "Road", "Court", "Way", "Place"]
+_PN_EMAIL_DOMAINS = ["example.com", "mailhaven.net", "postbox.org", "letterbox.co"]
+_PN_SUFFIX_TOKENS = {"jr", "jr.", "sr", "sr.", "ii", "iii", "iv", "v", "esq",
+                     "esq.", "md", "m.d.", "phd", "ph.d."}
+_PN_WORD_RE = re.compile(r"[A-Za-z][A-Za-z'\-]*")
+
+
+def _pn_titlecase_like(fake, original):
+    if original.isupper():
+        return fake.upper()
+    if original.islower():
+        return fake.lower()
+    return fake
+
+
+def _pn_fake_name_token(word):
+    return _pn_titlecase_like(_pn_rng("nametok", word.lower()).choice(_PN_NAME_WORDS), word)
+
+
+def _pn_looks_like_entity(name):
+    low = " " + re.sub(r"[^\w&. ]", " ", name).lower() + " "
+    if any(f" {s} " in low for s in _PN_ENTITY_SUFFIXES):
+        return True
+    return bool(re.search(r"\b(city|county|people|state) of\b", low))
+
+
+def _pn_fake_person(name):
+    """(fake_full_name, [(bare_real, bare_fake, is_surname), ...]) — composed
+    token-by-token so a bare surname resolves to the same fake used here."""
+    words = list(_PN_WORD_RE.finditer(name))
+    mappable = [m for m in words if m.group(0).lower().rstrip(".") not in _PN_SUFFIX_TOKENS]
+    surname_at = None
+    if mappable:
+        if "," in name:
+            comma = name.index(",")
+            before = [m for m in mappable if m.start() < comma]
+            surname_at = (before[0] if before else mappable[0]).start()
+        else:
+            surname_at = mappable[-1].start()
+    parts, bare, cursor = [], [], 0
+    for m in words:
+        w = m.group(0)
+        parts.append(name[cursor:m.start()])
+        if w.lower().rstrip(".") in _PN_SUFFIX_TOKENS:
+            parts.append(w)
+        else:
+            fake = _pn_fake_name_token(w)
+            parts.append(fake)
+            is_surname = (m.start() == surname_at)
+            if len(w) >= 3 and w.lower() not in _PN_COMMON_WORD_SURNAMES and (
+                    is_surname or len(w) >= 4):
+                bare.append((w, fake, is_surname))
+        cursor = m.end()
+    parts.append(name[cursor:])
+    return "".join(parts), bare
+
+
+def _pn_fake_entity(name):
+    def repl(tok):
+        base = tok.strip(".,").lower()
+        if base in _PN_ENTITY_KEEP or not re.search(r"[A-Za-z]", tok):
+            return tok
+        return _pn_titlecase_like(_pn_rng("enttok", base).choice(_PN_ENTITY_WORDS), tok)
+    return " ".join(repl(t) for t in name.split())
+
+
+def _pn_fake_caseno(real):
+    r = _pn_rng("caseno", real)
+    return re.sub(r"\d", lambda m: str(r.randrange(10)), real)
+
+
+def _pn_fake_phone(real):
+    r = _pn_rng("phone", re.sub(r"\D", "", real))
+    return re.sub(r"\d", lambda m: str(r.randrange(10)), real)
+
+
+def _pn_fake_ssn(real):
+    r = _pn_rng("ssn", re.sub(r"\D", "", real))
+    return "{:03d}-{:02d}-{:04d}".format(r.randrange(1000), r.randrange(100),
+                                         r.randrange(10000))
+
+
+def _pn_fake_email(real):
+    r = _pn_rng("email", real.lower())
+    return (f"{r.choice(_PN_NAME_WORDS).lower()}.{r.choice(_PN_NAME_WORDS).lower()}"
+            f"@{r.choice(_PN_EMAIL_DOMAINS)}")
+
+
+def _pn_fake_street(real):
+    r = _pn_rng("street", real.lower())
+    return f"{r.randrange(100, 9999)} {r.choice(_PN_STREET_NAMES)} {r.choice(_PN_STREET_TYPES)}"
+
+
+# Regex PII detectors found in the document body (not the spreadsheet).
+_PN_DETECTORS = {
+    "ssn": (re.compile(r"\b\d{3}-\d{2}-\d{4}\b"), _pn_fake_ssn),
+    "email": (re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b"), _pn_fake_email),
+    "phone": (re.compile(
+        r"(?<!\d)(?:\+?1[\s.\-]?)?(?:\(\d{3}\)|\d{3})[\s.\-]?\d{3}[\s.\-]?\d{4}(?!\d)"),
+        _pn_fake_phone),
+    "address": (re.compile(
+        r"\b\d{1,6}\s+(?:[A-Z][A-Za-z0-9.]*\s+){0,4}"
+        r"(?:Street|St|Avenue|Ave|Boulevard|Blvd|Road|Rd|Lane|Ln|Drive|Dr|"
+        r"Court|Ct|Place|Pl|Way|Circle|Cir|Terrace|Ter|Highway|Hwy|Parkway|"
+        r"Pkwy|Square|Sq|Trail|Trl)\b\.?", re.IGNORECASE), _pn_fake_street),
+}
+_PN_DEFAULT_DETECTORS = ["ssn", "email", "phone", "address"]
+
+
+def _pn_build_pattern(term, *, whole_word):
+    """Literal-match regex body (NFKC-normalized, escaped), with optional
+    word-boundary guards."""
+    body = re.escape(_NFKC(term))
+    if whole_word:
+        body = rf"(?<!\w)(?:{body})(?!\w)"
+    return body
+
+
+class _PnTerm:
+    __slots__ = ("category", "real", "fake", "pattern", "flags", "priority",
+                 "source", "whole_word", "count")
+
+    def __init__(self, category, real, fake, *, whole_word, case_sensitive,
+                 priority, source):
+        self.category = category
+        self.real = real
+        self.fake = fake
+        self.whole_word = whole_word
+        self.pattern = _pn_build_pattern(real, whole_word=whole_word)
+        self.flags = 0 if case_sensitive else re.IGNORECASE
+        self.priority = priority
+        self.source = source
+        self.count = 0
+
+
+# ── Spreadsheet key (the E-Court order-template export) ──────────────────────
+_PN_NAME_HEADERS = {
+    "title plaintiff", "other plaintiffs", "title defendant", "other defendants",
+    "crosscomplainants", "cross-complainants", "crossdefendants",
+    "cross-defendants", "movant",
+}
+_PN_CASENO_HEADERS = {"case number"}
+_PN_SKIP_PARTY_RE = re.compile(
+    r"^(does?\b|roes?\b|all\s|et\s+al\.?$|and$|,+$)", re.IGNORECASE)
+
+
+def _pn_norm_header(h):
+    return h.replace("\xa0", " ").strip().lower() if isinstance(h, str) else ""
+
+
+def _pn_split_cell(value):
+    if value is None:
+        return []
+    out = []
+    for p in re.split(r"[\n;|]+", str(value)):
+        p = re.sub(r"\s+", " ", p.strip().strip('"').strip())
+        if len(p) < 2 or _PN_SKIP_PARTY_RE.match(p) or not re.search(r"[A-Za-z0-9]", p):
+            continue
+        out.append(p)
+    return out
+
+
+def _pn_terms_from_xlsx(path, extra_name_headers, log):
+    """Pull party names, case numbers and attorney names from the workbook.
+    Returns (names, casenos) as ordered, de-duplicated lists."""
+    try:
+        import openpyxl
+    except ImportError:
+        raise RuntimeError("reading a --key spreadsheet needs openpyxl "
+                           "(pip install openpyxl)")
+    wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
+    name_headers = {_pn_norm_header(h)
+                    for h in _PN_NAME_HEADERS | set(extra_name_headers or [])}
+    names, casenos, seen_n, seen_c = [], [], set(), set()
+    for ws in wb.worksheets:
+        rows = ws.iter_rows(values_only=True)
+        try:
+            header = next(rows)
+        except StopIteration:
+            continue
+        cols = {i: _pn_norm_header(h) for i, h in enumerate(header)}
+        for row in rows:
+            for i, cell in enumerate(row):
+                h = cols.get(i, "")
+                if h in name_headers or "attorney" in h:
+                    for v in _pn_split_cell(cell):
+                        if v.lower() not in seen_n:
+                            seen_n.add(v.lower()); names.append(v)
+                elif h in _PN_CASENO_HEADERS or "case number" in h:
+                    for v in _pn_split_cell(cell):
+                        if v.lower() not in seen_c:
+                            seen_c.add(v.lower()); casenos.append(v)
+    wb.close()
+    log.info(f"  Pseudonym key: {len(names)} name(s), {len(casenos)} case number(s)")
+    return names, casenos
+
+
+def _pn_build_terms(names, casenos, extra_terms):
+    """Turn raw strings into _PnTerm objects with stable fake replacements."""
+    terms = []
+    for raw in names:
+        if _pn_looks_like_entity(raw):
+            terms.append(_PnTerm("entity", raw, _pn_fake_entity(raw),
+                                 whole_word=False, case_sensitive=False,
+                                 priority=2, source="spreadsheet"))
+        else:
+            fake_full, bare = _pn_fake_person(raw)
+            terms.append(_PnTerm("person", raw, fake_full, whole_word=False,
+                                 case_sensitive=False, priority=2,
+                                 source="spreadsheet"))
+            for real_tok, fake_tok, _is_surname in bare:
+                terms.append(_PnTerm("person-token", real_tok, fake_tok,
+                                     whole_word=True, case_sensitive=False,
+                                     priority=1, source="spreadsheet"))
+    for raw in casenos:
+        terms.append(_PnTerm("case_number", raw, _pn_fake_caseno(raw),
+                             whole_word=True, case_sensitive=False, priority=2,
+                             source="spreadsheet"))
+    for raw in extra_terms or []:
+        if re.search(r"\d", raw) and not re.search(r"[A-Za-z]{2}", raw):
+            cat, fake = "case_number", _pn_fake_caseno(raw)
+        elif _pn_looks_like_entity(raw):
+            cat, fake = "entity", _pn_fake_entity(raw)
+        else:
+            cat, fake = "person", _pn_fake_person(raw)[0]
+        terms.append(_PnTerm(cat, raw, fake, whole_word=False,
+                             case_sensitive=False, priority=2, source="--term"))
+    # De-duplicate on (real, category); keep the highest-priority instance.
+    dedup = {}
+    for t in terms:
+        k = (t.real.lower(), t.category)
+        if k not in dedup or t.priority > dedup[k].priority:
+            dedup[k] = t
+    return sorted(dedup.values(), key=lambda t: (-t.priority, -len(t.real)))
+
+
+def _pn_find_downloads_key(log):
+    """Locate the key spreadsheet automatically: the most recently modified
+    .xlsx in the user's Downloads folder. That's where the E-Court order-
+    template export lands, so a plain --pseudonymize run picks it up with no
+    path to type. Returns a Path or None (with a logged reason)."""
+    downloads = None
+    for cand in (Path(os.environ.get("USERPROFILE") or Path.home()) / "Downloads",
+                 Path.home() / "Downloads"):
+        if cand.is_dir():
+            downloads = cand
+            break
+    if downloads is None:
+        log.warning("  Pseudonymize: no Downloads folder found; "
+                    "pass --key to name the spreadsheet explicitly")
+        return None
+    # Ignore Excel lock files (~$...) and any key we previously wrote.
+    sheets = [p for p in downloads.glob("*.xlsx")
+              if not p.name.startswith("~$") and p.name != "pseudonym_key.xlsx"]
+    if not sheets:
+        log.warning(f"  Pseudonymize: no .xlsx in {downloads}; "
+                    "pass --key to name the spreadsheet explicitly")
+        return None
+    newest = max(sheets, key=lambda p: p.stat().st_mtime)
+    log.info(f"  Pseudonymize: using most recent Downloads spreadsheet: {newest.name}")
+    return newest
+
+
+class Pseudonymizer:
+    """Applies stable pseudonymization to plain text (the .txt export only).
+
+    Terms (party/case/attorney names from a spreadsheet key and/or --term)
+    plus regex PII detectors are matched against each page's text; the highest-
+    priority, longest non-overlapping matches win, and each is swapped for its
+    deterministic fake. Occurrence counts accumulate across the whole folder so
+    one key file can be written at the end.
+    """
+
+    def __init__(self, terms, detectors):
+        self.terms = terms
+        self.detectors = detectors
+        # (category, real_lower) -> record dict {category, real, fake, source,
+        # count, pattern, flags}
+        self.records = {}
+        for t in terms:
+            self.records[(t.category, t.real.lower())] = {
+                "category": t.category, "real": t.real, "fake": t.fake,
+                "source": t.source, "count": 0, "pattern": t.pattern,
+                "flags": t.flags}
+
+    def apply(self, text):
+        """Return `text` with every match replaced by its stable fake.
+        Single pass over the ORIGINAL offsets so a fake can never be re-matched
+        by a later term."""
+        text = _NFKC(text)
+        cands = []  # (priority, start, end, record)
+        for cat in self.detectors:
+            regex, faker = _PN_DETECTORS[cat]
+            for m in regex.finditer(text):
+                real = m.group(0)
+                rk = (cat, real.lower())
+                rec = self.records.get(rk)
+                if rec is None:
+                    rec = {"category": cat, "real": real, "fake": faker(real),
+                           "source": "regex", "count": 0,
+                           "pattern": re.escape(_NFKC(real)), "flags": 0}
+                    self.records[rk] = rec
+                cands.append((3, m.start(), m.end(), rec))
+        for t in self.terms:
+            for m in re.finditer(t.pattern, text, t.flags):
+                if m.start() != m.end():
+                    cands.append((t.priority, m.start(), m.end(),
+                                  self.records[(t.category, t.real.lower())]))
+        # Biggest / most-specific first; skip anything overlapping a chosen span.
+        cands.sort(key=lambda c: (-c[0], -(c[2] - c[1])))
+        chosen, occ = [], []
+        for _prio, s, e, rec in cands:
+            if any(s < oe and os < e for os, oe in occ):
+                continue
+            occ.append((s, e))
+            chosen.append((s, e, rec))
+        for s, e, rec in sorted(chosen, key=lambda c: -c[0]):  # right-to-left
+            text = text[:s] + rec["fake"] + text[e:]
+            rec["count"] += 1
+        return text
+
+    def surviving_reals(self, text):
+        """Real values that were replaced at least once somewhere but still
+        appear in `text` — a leak the caller should surface."""
+        text = _NFKC(text)
+        out = []
+        for rec in self.records.values():
+            if rec["count"] == 0:
+                continue
+            try:
+                if re.search(rec["pattern"], text, rec["flags"]):
+                    out.append(rec["real"])
+            except re.error:
+                pass
+        return out
+
+    def write_key(self, path, log):
+        """Write the real->fake mapping used everywhere. xlsx if openpyxl is
+        available, else JSON alongside."""
+        rows = sorted((r for r in self.records.values() if r["count"] > 0),
+                      key=lambda r: (r["category"], r["real"].lower()))
+        if not rows:
+            return
+        headers = ["Category", "Real Value", "Replacement", "Source", "Occurrences"]
+        try:
+            import openpyxl
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "Pseudonym Key"
+            ws.append(headers)
+            for r in rows:
+                ws.append([r["category"], r["real"], r["fake"], r["source"], r["count"]])
+            wb.save(path)
+            log.info(f"  Pseudonym key written: {path.name} ({len(rows)} mapping(s))")
+        except ImportError:
+            import json
+            jp = path.with_suffix(".json")
+            jp.write_text(json.dumps(
+                {"mappings": [{"category": r["category"], "real": r["real"],
+                               "replacement": r["fake"], "source": r["source"],
+                               "occurrences": r["count"]} for r in rows]},
+                indent=2), encoding="utf-8")
+            log.info(f"  openpyxl not installed; pseudonym key written as JSON: "
+                     f"{jp.name} ({len(rows)} mapping(s))")
+
+
+# ────────────────────────────────────────────────────────────────────────────
 # Plain-text export (companion .txt for lightweight upload)
 # ────────────────────────────────────────────────────────────────────────────
 # Write a UTF-8 text file next to each PDF that has a real text layer, so a
@@ -4864,10 +5305,19 @@ def _pdf_has_text_layer(doc, log: logging.Logger) -> bool:
     return frac >= 0.5
 
 
-def _write_text_version(pdf_path: Path, doc, log: logging.Logger) -> bool:
+def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
+                        pseudonymizer=None) -> bool:
     """Write a plain-text companion (<stem>.txt) holding each page's text with
     pdf_linker's own invisible right-margin markers stripped. Overwrites on
-    re-runs. Returns True if written."""
+    re-runs. Returns True if written.
+
+    When `pseudonymizer` is given, each page's text is pseudonymized (party
+    names, case numbers, PII → stable fakes) before writing — the PDF itself is
+    never modified. As a confidentiality backstop the finished text is
+    re-scanned; if any real value survived the replacement, the file is NOT
+    written and the leak is logged, so a document that still names a real party
+    is never emitted.
+    """
     txt_path = pdf_path.with_suffix(".txt")
     parts = []
     for i, page in enumerate(doc):
@@ -4878,13 +5328,27 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger) -> bool:
         # Collapse the runs of blank lines that marker removal and pleading
         # gutters leave behind.
         clean = re.sub(r"\n[ \t]*\n(?:[ \t]*\n)+", "\n\n", clean).strip()
+        if pseudonymizer is not None:
+            clean = pseudonymizer.apply(clean)
         parts.append(f"====== Page {i + 1} ======\n{clean}")
+    body = "\n\n".join(parts) + "\n"
+
+    if pseudonymizer is not None:
+        survivors = pseudonymizer.surviving_reals(body)
+        if survivors:
+            shown = ", ".join(sorted(set(survivors))[:8])
+            log.warning(f"  Pseudonymization LEAK on {pdf_path.name}: real "
+                        f"value(s) still present ({shown}); NOT writing "
+                        f"{txt_path.name}. Add them with --term and re-run.")
+            return False
+
     try:
-        txt_path.write_text("\n\n".join(parts) + "\n", encoding="utf-8")
+        txt_path.write_text(body, encoding="utf-8")
     except Exception as e:
         log.warning(f"  Could not write text version (non-fatal): {e}")
         return False
-    log.info(f"  Wrote text version: {txt_path.name}")
+    log.info(f"  Wrote {'pseudonymized ' if pseudonymizer else ''}text "
+             f"version: {txt_path.name}")
     return True
 
 
@@ -4892,7 +5356,8 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger) -> bool:
 # Main per-PDF processing
 # ────────────────────────────────────────────────────────────────────────────
 def process_pdf(pdf_path: Path, log: logging.Logger,
-                provider: str = "lexis", extract_text: bool = True) -> bool:
+                provider: str = "lexis", extract_text: bool = True,
+                pseudonymizer=None) -> bool:
     """Process one PDF. Returns True on success."""
     try:
         import fitz
@@ -4955,7 +5420,7 @@ def process_pdf(pdf_path: Path, log: logging.Logger,
     # the linking passes below. Skipped for scanned-only PDFs.
     if want_text_export:
         try:
-            _write_text_version(pdf_path, doc, log)
+            _write_text_version(pdf_path, doc, log, pseudonymizer)
         except Exception as e:
             log.warning(f"  Text export failed (non-fatal): {e}")
 
@@ -5234,6 +5699,46 @@ def main():
              "text-based PDF. By default a .txt export is written for every "
              "PDF that has a real text layer (scanned-only PDFs are skipped).",
     )
+    # Pseudonymization — applied to the .txt export ONLY, never the PDF.
+    parser.add_argument(
+        "--pseudonymize", action="store_true",
+        help="Pseudonymize the .txt exports: swap party/case/attorney names "
+             "and detected PII (e-mail, phone, SSN, address) for stable fakes. "
+             "The PDFs are never modified. Implied by --key or --term.",
+    )
+    parser.add_argument(
+        "--key", type=Path, default=None, metavar="XLSX",
+        help="Spreadsheet with party/case/attorney columns (the E-Court "
+             "order-template export) whose values are pseudonymized in the "
+             ".txt exports. Implies --pseudonymize. Default: the most recent "
+             ".xlsx in your Downloads folder.",
+    )
+    parser.add_argument(
+        "--term", action="append", metavar="TEXT",
+        help="An extra value to pseudonymize in the .txt exports (repeatable). "
+             "Implies --pseudonymize.",
+    )
+    parser.add_argument(
+        "--name-column", action="append", metavar="HEADER",
+        help="Additional --key header to treat as names (repeatable; "
+             "'attorney*' columns are auto-included).",
+    )
+    parser.add_argument(
+        "--detect", metavar="LIST",
+        help="Comma-separated PII detectors to run while pseudonymizing "
+             f"(default: {','.join(_PN_DEFAULT_DETECTORS)}; "
+             f"available: {','.join(_PN_DETECTORS)}).",
+    )
+    parser.add_argument(
+        "--no-detect", action="store_true",
+        help="Disable regex PII detection (pseudonymize spreadsheet/--term "
+             "values only).",
+    )
+    parser.add_argument(
+        "--key-out", type=Path, default=None, metavar="XLSX",
+        help="Where to write the real->fake key (default: "
+             "<folder>/pseudonym_key.xlsx).",
+    )
     args = parser.parse_args()
 
     folder = Path(args.folder)
@@ -5252,8 +5757,42 @@ def main():
     log.info("=" * 60)
     log.info(f"Run started for folder: {folder} (provider={args.provider})")
 
+    # Build a shared pseudonymizer once (one folder is one case, so its terms
+    # apply to every .txt). Applies to the .txt exports only; the PDFs are
+    # never modified.
+    pseudonymizer = None
+    if args.pseudonymize or args.key or args.term:
+        if args.no_detect:
+            detectors = []
+        elif args.detect:
+            detectors = [d.strip() for d in args.detect.split(",") if d.strip()]
+            bad = [d for d in detectors if d not in _PN_DETECTORS]
+            if bad:
+                print(f"Unknown detector(s): {', '.join(bad)}. "
+                      f"Available: {', '.join(_PN_DETECTORS)}")
+                sys.exit(1)
+        else:
+            detectors = list(_PN_DEFAULT_DETECTORS)
+        # Key spreadsheet: explicit --key, else the most recent .xlsx in
+        # Downloads (where the E-Court export lands).
+        key_path = args.key if args.key else _pn_find_downloads_key(log)
+        names, casenos = [], []
+        if key_path:
+            if not key_path.is_file():
+                print(f"Key spreadsheet not found: {key_path}")
+                sys.exit(1)
+            try:
+                names, casenos = _pn_terms_from_xlsx(key_path, args.name_column, log)
+            except RuntimeError as e:
+                print(str(e))
+                sys.exit(1)
+        terms = _pn_build_terms(names, casenos, args.term)
+        pseudonymizer = Pseudonymizer(terms, detectors)
+        log.info(f"Pseudonymizing .txt exports: {len(terms)} term(s), "
+                 f"detectors={detectors or 'none'}")
+
     # Collect PDFs excluding _linked and _temp files, then sort by file size (smallest first)
-    pdfs = [p for p in folder.glob("*.pdf") 
+    pdfs = [p for p in folder.glob("*.pdf")
             if not p.stem.endswith("_linked") and not p.stem.endswith("_temp")]
     pdfs = sorted(pdfs, key=lambda p: p.stat().st_size)
     log.info(f"Found {len(pdfs)} PDF(s) to process (sorted by size)")
@@ -5263,7 +5802,8 @@ def main():
     for pdf in pdfs:
         try:
             if process_pdf(pdf, log, provider=args.provider,
-                           extract_text=args.extract_text):
+                           extract_text=args.extract_text,
+                           pseudonymizer=pseudonymizer):
                 success += 1
             else:
                 failed += 1
@@ -5271,6 +5811,14 @@ def main():
             log.error(f"Unhandled error processing {pdf.name}: {e}")
             log.error(traceback.format_exc())
             failed += 1
+
+    # One key file for the whole folder maps every real value to its fake.
+    if pseudonymizer is not None:
+        key_out = args.key_out or (folder / "pseudonym_key.xlsx")
+        try:
+            pseudonymizer.write_key(key_out, log)
+        except Exception as e:
+            log.warning(f"Could not write pseudonym key (non-fatal): {e}")
 
     log.info(f"Done: {success} succeeded, {failed} failed")
 
