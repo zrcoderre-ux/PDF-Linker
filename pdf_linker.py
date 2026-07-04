@@ -19,10 +19,12 @@ For each *.pdf in the folder (processed from shortest to longest by file size):
      folder. Party/case names come from a spreadsheet key — --key, or by
      default the most recent Order*.xlsx in the user's Downloads folder (the
      E-Court order-template export) — plus any --term values. The PDFs are
-     never modified. If pseudonymization runs but the spreadsheet key matched
-     nothing (wrong/stale sheet, or none found), the .txt exports are withheld
-     (deleted) and the run warns loudly, so a file naming real parties can't be
-     uploaded by accident.
+     never modified. The .txt FILENAME is pseudonymized too (a party/attorney
+     name in the source PDF's name is scrubbed from the .txt's name, falling
+     back to a neutral name if anything real would survive). If pseudonymization
+     runs but the spreadsheet key matched nothing (wrong/stale sheet, or none
+     found), the .txt exports are withheld (deleted) and the run warns loudly,
+     so a file naming real parties can't be uploaded by accident.
   1a. Writes a plain-text companion (<stem>.txt) next to each PDF that has a
      real text layer, so a text-only copy can be uploaded instead of page
      images. Extracts whenever the document opens with native text (even if
@@ -5234,6 +5236,13 @@ class Pseudonymizer:
         return sum(r["count"] for r in self.records.values()
                    if r["source"] == "spreadsheet" and r["category"] != "person-token")
 
+    def a_case_number_fake(self):
+        """A fake case number (any), for use as a neutral filename prefix."""
+        for r in self.records.values():
+            if r["category"] == "case_number":
+                return re.sub(r"[^A-Za-z0-9]", "", r["fake"])
+        return None
+
     def apply(self, text):
         """Return `text` with every match replaced by its stable fake.
         Single pass over the ORIGINAL offsets so a fake can never be re-matched
@@ -5461,6 +5470,28 @@ def _build_authorities_appendix(full_text, pseudonymizer=None):
     return "\n".join(lines)
 
 
+def _pseudonymized_txt_path(pdf_path: Path, pseudonymizer, log):
+    """Return the .txt output path with the source PDF's stem pseudonymized, so
+    a party/attorney name in the filename doesn't ride along on the shareable
+    text file. Separators (_ / -) are normalized to spaces so name tokens are
+    word-bounded, the stem is run through the same pseudonymizer, then joined
+    back with underscores. If a tracked real value still survives in the
+    resulting name, fall back to a neutral, non-revealing name
+    (<fake-case-no>_<hash> or document_<hash>)."""
+    stem = pdf_path.stem
+    spaced = re.sub(r"[_\-]+", " ", stem).strip()
+    faked = pseudonymizer.apply(spaced)
+    digest = _pn_hashlib.sha256(stem.encode("utf-8")).hexdigest()[:6]
+    if pseudonymizer.surviving_reals(faked):
+        prefix = pseudonymizer.a_case_number_fake() or "document"
+        safe = f"{prefix}_{digest}"
+        log.info(f"  Filename still held a real value after scrub; using "
+                 f"neutral name {safe}.txt")
+    else:
+        safe = re.sub(r"\s+", "_", faked).strip("_") or f"document_{digest}"
+    return pdf_path.with_name(safe + ".txt")
+
+
 def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
                         pseudonymizer=None) -> bool:
     """Write a plain-text companion (<stem>.txt) holding each page's text with
@@ -5508,6 +5539,17 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
                         f"value(s) still present ({shown}); NOT writing "
                         f"{txt_path.name}. Add them with --term and re-run.")
             return False
+        # Pseudonymize the output filename too — the .txt is the artifact that
+        # gets shared, so a party/attorney name must not survive in its name.
+        pseudo_path = _pseudonymized_txt_path(pdf_path, pseudonymizer, log)
+        # Drop a stale real-named .txt from an earlier (non-pseudonymized) run
+        # so it can't linger next to the scrubbed one.
+        if pseudo_path != txt_path and txt_path.exists():
+            try:
+                txt_path.unlink()
+            except OSError:
+                pass
+        txt_path = pseudo_path
 
     try:
         txt_path.write_text(body, encoding="utf-8")
