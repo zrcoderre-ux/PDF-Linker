@@ -5006,10 +5006,16 @@ class _PnTerm:
 
 
 # ── Spreadsheet key (the E-Court order-template export) ──────────────────────
+# Columns match the E-Court "Order Template Input" export exactly (see the
+# lacourt-ecourt-suite order-template module). "Other Names" is the column that
+# module appends specifically for this pseudonym pass — every attorney, law
+# firm, and non-party found on the Parties page, "; "-separated — so it MUST be
+# treated as a name source. (The "Case Number" header ends with a non-breaking
+# space in the real export; _pn_norm_header folds it to a normal space.)
 _PN_NAME_HEADERS = {
     "title plaintiff", "other plaintiffs", "title defendant", "other defendants",
     "crosscomplainants", "cross-complainants", "crossdefendants",
-    "cross-defendants", "movant",
+    "cross-defendants", "movant", "other names",
 }
 _PN_CASENO_HEADERS = {"case number"}
 _PN_SKIP_PARTY_RE = re.compile(
@@ -5128,8 +5134,16 @@ def _pn_find_downloads_key(log):
         log.warning(f"  Pseudonymize: no .xlsx in {downloads}; "
                     "pass --key to name the spreadsheet explicitly")
         return None
-    newest = max(sheets, key=lambda p: p.stat().st_mtime)
-    log.info(f"  Pseudonymize: using most recent Downloads spreadsheet: {newest.name}")
+    # Prefer the E-Court export ("Order_Template_Input*.xlsx" — the same
+    # "Order*.xlsx" name the Word mail-merge macro looks for); fall back to the
+    # newest .xlsx of any name if none is present.
+    order = [p for p in sheets if p.name.lower().startswith("order")]
+    newest = max(order or sheets, key=lambda p: p.stat().st_mtime)
+    if order:
+        log.info(f"  Pseudonymize: using E-Court export: {newest.name}")
+    else:
+        log.info(f"  Pseudonymize: no Order*.xlsx found; using most recent "
+                 f"Downloads spreadsheet: {newest.name}")
     return newest
 
 
