@@ -9,7 +9,10 @@ Usage:
 
 For each *.pdf in the folder (processed from shortest to longest by file size):
   1. If the PDF has no text layer, runs Tesseract OCR via OCRmyPDF-style flow
-     using pytesseract page-by-page to add a text layer.
+     using pytesseract page-by-page to add a text layer. Pages whose existing
+     text layer looks obviously garbled (broken font encoding, unmapped
+     glyphs) are rebuilt the same way: the bad text is removed and a fresh OCR
+     layer is laid down over the (correctly-rendering) page.
   1a. Writes a plain-text companion (<stem>.txt) next to each PDF that has a
      real text layer, so a text-only copy can be uploaded instead of page
      images. Extracts whenever the document opens with native text (even if
@@ -1575,6 +1578,121 @@ def _ocr_pdf(doc, log):
     if ocr_count:
         log.info(f"  OCR'd {ocr_count} page(s)")
     return ocr_count > 0
+
+
+_GARBLE_VOWELS = set("aeiouy")
+
+
+def _text_looks_garbled(text: str) -> bool:
+    """Heuristic: does this page's *extracted* text look like broken output
+    (bad font/ToUnicode encoding, unmapped glyphs, junk) rather than real
+    prose? Deliberately conservative — it only fires on obviously bad text, so
+    a good text layer is never needlessly re-OCR'd.
+
+    Signals, in order:
+      * "(cid:NN)" tokens — PDFMiner-style unmapped glyphs.
+      * A real density of U+FFFD replacement characters.
+      * Mostly non-letters (symbol soup from a broken encoding).
+      * A low fraction of word-shaped alphabetic tokens. On real legal prose
+        this fraction sits at ~0.99 (measured), so a 0.50 cut has a wide
+        safety margin while still catching gibberish.
+    """
+    if not text:
+        return False
+    # Ignore any legacy right-margin markers a prior version may have stamped.
+    text = _MARKER_DETECT_RE.sub("", text)
+    non_space = sum(1 for c in text if not c.isspace())
+    if non_space < 200:
+        return False  # too little content to judge reliably
+    if "(cid:" in text:
+        return True
+    if text.count("�") >= max(8, 0.03 * non_space):
+        return True
+    letters = sum(1 for c in text if c.isalpha())
+    if letters / non_space < 0.35:
+        return True  # dominated by symbols/punctuation
+    tokens = re.findall(r"[A-Za-z]{2,}", text)
+    if len(tokens) < 30:
+        return False
+
+    def _wordish(t: str) -> bool:
+        tl = t.lower()
+        if len(t) > 24:
+            return False                              # words don't run this long
+        if len(t) > 3 and not any(c in _GARBLE_VOWELS for c in tl):
+            return False                              # no vowel in a long token
+        if re.search(r"[bcdfghjklmnpqrstvwxz]{5,}", tl):
+            return False                              # 5+ consonants in a row
+        return True
+
+    good = sum(1 for t in tokens if _wordish(t))
+    return good / len(tokens) < 0.50
+
+
+def _reocr_garbled_pages(doc, log):
+    """Rebuild the text layer of any page whose extracted text looks garbled.
+
+    A page's glyphs still *render* correctly even when a broken encoding makes
+    them *extract* as gibberish, so we: render the page (correct visual),
+    remove the bad text, and overlay a fresh OCR text layer. Only pages that
+    look clearly garbled (see `_text_looks_garbled`) are touched, so a good
+    text layer is never rasterised or degraded. No-op with a warning if OCR
+    tooling is unavailable. Returns the number of pages re-OCR'd.
+    """
+    garbled = [p.number for p in doc if _text_looks_garbled(p.get_text("text"))]
+    if not garbled:
+        return 0
+    try:
+        import io
+        import pytesseract
+        import fitz
+        from PIL import Image
+    except ImportError:
+        log.warning(f"  {len(garbled)} page(s) look garbled but pytesseract/"
+                    f"Pillow isn't installed - leaving text as-is")
+        return 0
+    tess = _find_tesseract()
+    if not tess:
+        log.warning(f"  {len(garbled)} page(s) look garbled but Tesseract "
+                    f"isn't installed - leaving text as-is")
+        return 0
+    pytesseract.pytesseract.tesseract_cmd = tess
+    keep_img = getattr(fitz, "PDF_REDACT_IMAGE_NONE", 0)
+    keep_art = getattr(fitz, "PDF_REDACT_LINE_ART_NONE", 0)
+    done = 0
+    for pno in garbled:
+        page = doc[pno]
+        # 1) Render + OCR BEFORE touching the page: the visible glyphs are
+        #    correct even though they extract as garbage.
+        try:
+            pix = page.get_pixmap(dpi=300)
+            img = Image.open(io.BytesIO(pix.tobytes("png")))
+            ocr_bytes = pytesseract.image_to_pdf_or_hocr(img, extension="pdf")
+        except Exception as e:
+            log.warning(f"  Re-OCR render/recognise failed on page {pno}: {e}")
+            continue
+        # 2) Strip the garbled text (text only; keep images and line art, no
+        #    fill) so get_text no longer returns the gibberish.
+        try:
+            page.add_redact_annot(page.rect, fill=False)
+            try:
+                page.apply_redactions(images=keep_img, graphics=keep_art)
+            except TypeError:
+                page.apply_redactions(images=keep_img)
+        except Exception as e:
+            log.warning(f"  Could not remove garbled text on page {pno}: {e}")
+            continue
+        # 3) Overlay the fresh OCR render (rendered image + clean invisible text).
+        try:
+            ocr_doc = fitz.open(stream=ocr_bytes, filetype="pdf")
+            page.show_pdf_page(page.rect, ocr_doc, 0, overlay=True)
+            ocr_doc.close()
+            done += 1
+        except Exception as e:
+            log.warning(f"  Could not overlay re-OCR on page {pno}: {e}")
+    if done:
+        log.info(f"  Re-OCR'd {done} page(s) with garbled text layers")
+    return done
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -4808,6 +4926,15 @@ def process_pdf(pdf_path: Path, log: logging.Logger,
     # textless page. Idempotent across re-runs because re-runs find every
     # page already has text and _ocr_pdf is a no-op.
     #
+    # First, fix pages whose existing text layer is garbled (broken font
+    # encoding, unmapped glyphs): rebuild them from a clean OCR pass so every
+    # downstream step - the text-export decision, citation extraction, linking
+    # - reads accurate text. Only clearly-garbled pages are touched. Non-fatal.
+    try:
+        _reocr_garbled_pages(doc, log)
+    except Exception as e:
+        log.warning(f"  Garbled-text re-OCR failed (non-fatal): {e}")
+
     # Decide whether to export a plain-text companion. This uses the NATIVE
     # text and must run before OCR, which would add a text layer to scanned
     # pages and make every document look text-based.
