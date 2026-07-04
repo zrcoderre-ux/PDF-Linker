@@ -20,8 +20,9 @@ For each *.pdf in the folder (processed from shortest to longest by file size):
      default the most recent Order*.xlsx in the user's Downloads folder (the
      E-Court order-template export) — plus any --term values. The PDFs are
      never modified. If pseudonymization runs but the spreadsheet key matched
-     nothing (wrong/stale sheet, or none found), the run warns loudly so real
-     names are not exported unnoticed.
+     nothing (wrong/stale sheet, or none found), the .txt exports are withheld
+     (deleted) and the run warns loudly, so a file naming real parties can't be
+     uploaded by accident.
   1a. Writes a plain-text companion (<stem>.txt) next to each PDF that has a
      real text layer, so a text-only copy can be uploaded instead of page
      images. Extracts whenever the document opens with native text (even if
@@ -4938,6 +4939,51 @@ def _pn_fake_entity(name):
     return " ".join(repl(t) for t in name.split())
 
 
+# Suffix set with dots/spaces removed, so "P.C." / "L.L.C." normalize to the
+# same key as "pc" / "llc" when deciding whether a trailing token is a suffix.
+_PN_ENTITY_SUFFIXES_NORM = {re.sub(r"[.\s]", "", s) for s in _PN_ENTITY_SUFFIXES}
+
+
+def _pn_entity_bare(name):
+    """Return (bare_real, bare_fake) for the entity name with its trailing
+    corporate suffix/connector(s) removed — e.g. "Air Tutors LLC" -> "Air
+    Tutors" — so the entity is still pseudonymized when it's written WITHOUT
+    the suffix. Only when the remaining core is a distinctive MULTI-word phrase;
+    a single leftover word (often an ordinary English word like "Redwood" or
+    "Tutors") is skipped to avoid corrupting unrelated prose. Returns None when
+    there's nothing safe to add. The bare fake is computed the same per-word
+    way as the full name, so both forms stay consistent."""
+    toks = name.split()
+    while toks:
+        norm = re.sub(r"[.\s]", "", toks[-1]).lower()
+        base = toks[-1].strip(".,").lower()
+        if (norm in _PN_ENTITY_SUFFIXES_NORM or base in _PN_ENTITY_KEEP
+                or not re.search(r"[A-Za-z]", toks[-1])):
+            toks.pop()
+        else:
+            break
+    bare = re.sub(r"[.,;]+$", "", " ".join(toks)).strip()
+    core = [t for t in toks
+            if re.search(r"[A-Za-z]", t) and t.strip(".,").lower() not in _PN_ENTITY_KEEP]
+    if len(core) < 2 or not bare:
+        return None
+    if bare.lower() == re.sub(r"[.,;]+$", "", name.strip()).lower():
+        return None  # nothing was stripped; the full-name term already covers it
+    return bare, _pn_fake_entity(bare)
+
+
+def _pn_append_entity_terms(terms, raw, source):
+    """Register the full entity term plus, when safe, a suffix-stripped
+    'bare' variant that catches the name written without its corporate
+    suffix."""
+    terms.append(_PnTerm("entity", raw, _pn_fake_entity(raw), whole_word=False,
+                         case_sensitive=False, priority=2, source=source))
+    bare = _pn_entity_bare(raw)
+    if bare:
+        terms.append(_PnTerm("entity-token", bare[0], bare[1], whole_word=True,
+                             case_sensitive=False, priority=1, source=source))
+
+
 def _pn_fake_caseno(real):
     r = _pn_rng("caseno", real)
     return re.sub(r"\d", lambda m: str(r.randrange(10)), real)
@@ -5080,9 +5126,7 @@ def _pn_build_terms(names, casenos, extra_terms):
     terms = []
     for raw in names:
         if _pn_looks_like_entity(raw):
-            terms.append(_PnTerm("entity", raw, _pn_fake_entity(raw),
-                                 whole_word=False, case_sensitive=False,
-                                 priority=2, source="spreadsheet"))
+            _pn_append_entity_terms(terms, raw, "spreadsheet")
         else:
             fake_full, bare = _pn_fake_person(raw)
             terms.append(_PnTerm("person", raw, fake_full, whole_word=False,
@@ -5098,13 +5142,15 @@ def _pn_build_terms(names, casenos, extra_terms):
                              source="spreadsheet"))
     for raw in extra_terms or []:
         if re.search(r"\d", raw) and not re.search(r"[A-Za-z]{2}", raw):
-            cat, fake = "case_number", _pn_fake_caseno(raw)
+            terms.append(_PnTerm("case_number", raw, _pn_fake_caseno(raw),
+                                 whole_word=False, case_sensitive=False,
+                                 priority=2, source="--term"))
         elif _pn_looks_like_entity(raw):
-            cat, fake = "entity", _pn_fake_entity(raw)
+            _pn_append_entity_terms(terms, raw, "--term")
         else:
-            cat, fake = "person", _pn_fake_person(raw)[0]
-        terms.append(_PnTerm(cat, raw, fake, whole_word=False,
-                             case_sensitive=False, priority=2, source="--term"))
+            terms.append(_PnTerm("person", raw, _pn_fake_person(raw)[0],
+                                 whole_word=False, case_sensitive=False,
+                                 priority=2, source="--term"))
     # De-duplicate on (real, category); keep the highest-priority instance.
     dedup = {}
     for t in terms:
@@ -5163,6 +5209,7 @@ class Pseudonymizer:
         self.terms = terms
         self.detectors = detectors
         self.texts_applied = 0   # how many text bodies were run through apply()
+        self.written = []        # .txt paths written with pseudonymization applied
         # (category, real_lower) -> record dict {category, real, fake, source,
         # count, pattern, flags}
         self.records = {}
@@ -5377,6 +5424,9 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
     except Exception as e:
         log.warning(f"  Could not write text version (non-fatal): {e}")
         return False
+    if pseudonymizer is not None:
+        # Track it so the folder-level no-match check can withhold it later.
+        pseudonymizer.written.append(txt_path)
     log.info(f"  Wrote {'pseudonymized ' if pseudonymizer else ''}text "
              f"version: {txt_path.name}")
     return True
@@ -5861,24 +5911,31 @@ def main():
         except Exception as e:
             log.warning(f"Could not write pseudonym key (non-fatal): {e}")
 
-        # Safety flag: if pseudonymization actually ran on some .txt but the
-        # spreadsheet key matched NOTHING, the exports may still name real
-        # parties — the key is probably the wrong/stale sheet, or none was
-        # found. Warn loudly (console + log) so it isn't missed.
-        if pseudonymizer.texts_applied:
+        # Fail-safe: if pseudonymization ran on some .txt but the spreadsheet
+        # key produced NO primary matches (full party names / entities / case
+        # numbers), those exports would still name real parties — the key is
+        # the wrong/stale sheet, or none was found. WITHHOLD them: delete the
+        # .txt files written this run and warn loudly (console + log), so a
+        # real-name export can't be uploaded by accident.
+        if pseudonymizer.texts_applied and pseudonymizer.spreadsheet_hits() == 0:
             if not pseudonymizer.has_spreadsheet_terms():
-                where = (f" ({key_path.name} had no party/case values)"
-                         if key_path else " (no Order*.xlsx found in Downloads)")
-                _warn("!! Pseudonymize WARNING: no redaction spreadsheet values "
-                      f"were loaded{where}. Real party names were NOT replaced in "
-                      "the .txt exports (only detected PII was). Generate the "
-                      "E-Court Order Template Input, or pass --key.")
-            elif pseudonymizer.spreadsheet_hits() == 0:
-                _warn("!! Pseudonymize WARNING: none of the spreadsheet key "
-                      f"values{f' from {key_path.name}' if key_path else ''} "
-                      "matched any document. The .txt exports may still name "
-                      "real parties — check that it is the correct E-Court "
-                      "export for this case.")
+                reason = (f"the key {key_path.name} held no party/case values"
+                          if key_path else "no Order*.xlsx was found in Downloads")
+            else:
+                reason = (f"none of the key values"
+                          f"{f' from {key_path.name}' if key_path else ''} "
+                          "matched any document (wrong/stale sheet?)")
+            removed = 0
+            for p in pseudonymizer.written:
+                try:
+                    p.unlink()
+                    removed += 1
+                except OSError:
+                    pass
+            _warn(f"!! Pseudonymize: WITHHELD {removed} .txt export(s) because "
+                  f"{reason}. They would have named real parties. Fix the key "
+                  "(correct E-Court Order*.xlsx or --key) and re-run; no "
+                  "unredacted .txt was left behind.")
 
     log.info(f"Done: {success} succeeded, {failed} failed")
 
