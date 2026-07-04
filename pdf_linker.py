@@ -13,13 +13,15 @@ For each *.pdf in the folder (processed from shortest to longest by file size):
      text layer looks obviously garbled (broken font encoding, unmapped
      glyphs) are rebuilt the same way: the bad text is removed and a fresh OCR
      layer is laid down over the (correctly-rendering) page.
-  1b. Optionally pseudonymizes the .txt export (only): party/case/attorney
-     names and detected PII are swapped for stable, deterministic fakes, and a
-     real->fake key file is written for the folder. Party/case names come from
-     a spreadsheet key — --key, or by default the most recent .xlsx in the
-     user's Downloads folder (the E-Court order-template export) — plus any
-     --term values. The PDFs are never modified. Off unless --pseudonymize /
-     --key / --term is given.
+  1b. Pseudonymizes the .txt export (only) — ON by default (--no-pseudonymize
+     to disable): party/case/attorney names and detected PII are swapped for
+     stable, deterministic fakes, and a real->fake key file is written for the
+     folder. Party/case names come from a spreadsheet key — --key, or by
+     default the most recent Order*.xlsx in the user's Downloads folder (the
+     E-Court order-template export) — plus any --term values. The PDFs are
+     never modified. If pseudonymization runs but the spreadsheet key matched
+     nothing (wrong/stale sheet, or none found), the run warns loudly so real
+     names are not exported unnoticed.
   1a. Writes a plain-text companion (<stem>.txt) next to each PDF that has a
      real text layer, so a text-only copy can be uploaded instead of page
      images. Extracts whenever the document opens with native text (even if
@@ -5160,6 +5162,7 @@ class Pseudonymizer:
     def __init__(self, terms, detectors):
         self.terms = terms
         self.detectors = detectors
+        self.texts_applied = 0   # how many text bodies were run through apply()
         # (category, real_lower) -> record dict {category, real, fake, source,
         # count, pattern, flags}
         self.records = {}
@@ -5169,10 +5172,23 @@ class Pseudonymizer:
                 "source": t.source, "count": 0, "pattern": t.pattern,
                 "flags": t.flags}
 
+    def has_spreadsheet_terms(self):
+        return any(t.source == "spreadsheet" for t in self.terms)
+
+    def spreadsheet_hits(self):
+        """Replacements made from PRIMARY spreadsheet-key values — full party
+        names, entities, case numbers — excluding bare surname/given-name
+        tokens. Zero means the key didn't correspond to the documents: a bare
+        token can match unrelated prose incidentally, so counting only primary
+        values keeps that from masking a wrong/stale sheet."""
+        return sum(r["count"] for r in self.records.values()
+                   if r["source"] == "spreadsheet" and r["category"] != "person-token")
+
     def apply(self, text):
         """Return `text` with every match replaced by its stable fake.
         Single pass over the ORIGINAL offsets so a fake can never be re-matched
         by a later term."""
+        self.texts_applied += 1
         text = _NFKC(text)
         cands = []  # (priority, start, end, record)
         for cat in self.detectors:
@@ -5713,24 +5729,27 @@ def main():
              "text-based PDF. By default a .txt export is written for every "
              "PDF that has a real text layer (scanned-only PDFs are skipped).",
     )
-    # Pseudonymization — applied to the .txt export ONLY, never the PDF.
+    # Pseudonymization — ON by default, applied to the .txt export ONLY, never
+    # the PDF.
     parser.add_argument(
-        "--pseudonymize", action="store_true",
-        help="Pseudonymize the .txt exports: swap party/case/attorney names "
-             "and detected PII (e-mail, phone, SSN, address) for stable fakes. "
-             "The PDFs are never modified. Implied by --key or --term.",
+        "--no-pseudonymize",
+        dest="pseudonymize",
+        action="store_false",
+        help="Disable pseudonymization of the .txt exports. By default the "
+             ".txt exports swap party/case/attorney names (from the E-Court "
+             "key spreadsheet) and detected PII (e-mail, phone, SSN, address) "
+             "for stable fakes; the PDFs are never modified.",
     )
     parser.add_argument(
         "--key", type=Path, default=None, metavar="XLSX",
         help="Spreadsheet with party/case/attorney columns (the E-Court "
              "order-template export) whose values are pseudonymized in the "
-             ".txt exports. Implies --pseudonymize. Default: the most recent "
-             ".xlsx in your Downloads folder.",
+             ".txt exports. Default: the most recent Order*.xlsx in your "
+             "Downloads folder.",
     )
     parser.add_argument(
         "--term", action="append", metavar="TEXT",
-        help="An extra value to pseudonymize in the .txt exports (repeatable). "
-             "Implies --pseudonymize.",
+        help="An extra value to pseudonymize in the .txt exports (repeatable).",
     )
     parser.add_argument(
         "--name-column", action="append", metavar="HEADER",
@@ -5771,11 +5790,17 @@ def main():
     log.info("=" * 60)
     log.info(f"Run started for folder: {folder} (provider={args.provider})")
 
+    def _warn(msg):
+        # Surface a folder-level warning both to the log and the console.
+        log.warning(msg)
+        print(msg, file=sys.stderr)
+
     # Build a shared pseudonymizer once (one folder is one case, so its terms
-    # apply to every .txt). Applies to the .txt exports only; the PDFs are
-    # never modified.
+    # apply to every .txt). ON by default; applies to the .txt exports only,
+    # the PDFs are never modified.
     pseudonymizer = None
-    if args.pseudonymize or args.key or args.term:
+    key_path = None
+    if args.pseudonymize:
         if args.no_detect:
             detectors = []
         elif args.detect:
@@ -5787,7 +5812,7 @@ def main():
                 sys.exit(1)
         else:
             detectors = list(_PN_DEFAULT_DETECTORS)
-        # Key spreadsheet: explicit --key, else the most recent .xlsx in
+        # Key spreadsheet: explicit --key, else the most recent Order*.xlsx in
         # Downloads (where the E-Court export lands).
         key_path = args.key if args.key else _pn_find_downloads_key(log)
         names, casenos = [], []
@@ -5798,8 +5823,10 @@ def main():
             try:
                 names, casenos = _pn_terms_from_xlsx(key_path, args.name_column, log)
             except RuntimeError as e:
-                print(str(e))
-                sys.exit(1)
+                # e.g. openpyxl missing. Don't abort the whole run (linking and
+                # PII-only pseudonymization still work) — warn and continue.
+                _warn(f"Pseudonymize: could not read key {key_path.name}: {e}. "
+                      f"Party names will NOT be pseudonymized in the .txt exports.")
         terms = _pn_build_terms(names, casenos, args.term)
         pseudonymizer = Pseudonymizer(terms, detectors)
         log.info(f"Pseudonymizing .txt exports: {len(terms)} term(s), "
@@ -5833,6 +5860,25 @@ def main():
             pseudonymizer.write_key(key_out, log)
         except Exception as e:
             log.warning(f"Could not write pseudonym key (non-fatal): {e}")
+
+        # Safety flag: if pseudonymization actually ran on some .txt but the
+        # spreadsheet key matched NOTHING, the exports may still name real
+        # parties — the key is probably the wrong/stale sheet, or none was
+        # found. Warn loudly (console + log) so it isn't missed.
+        if pseudonymizer.texts_applied:
+            if not pseudonymizer.has_spreadsheet_terms():
+                where = (f" ({key_path.name} had no party/case values)"
+                         if key_path else " (no Order*.xlsx found in Downloads)")
+                _warn("!! Pseudonymize WARNING: no redaction spreadsheet values "
+                      f"were loaded{where}. Real party names were NOT replaced in "
+                      "the .txt exports (only detected PII was). Generate the "
+                      "E-Court Order Template Input, or pass --key.")
+            elif pseudonymizer.spreadsheet_hits() == 0:
+                _warn("!! Pseudonymize WARNING: none of the spreadsheet key "
+                      f"values{f' from {key_path.name}' if key_path else ''} "
+                      "matched any document. The .txt exports may still name "
+                      "real parties — check that it is the correct E-Court "
+                      "export for this case.")
 
     log.info(f"Done: {success} succeeded, {failed} failed")
 
