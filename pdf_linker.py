@@ -27,7 +27,9 @@ For each *.pdf in the folder (processed from shortest to longest by file size):
      so a file naming real parties can't be uploaded by accident.
   1a. Writes a plain-text companion (<stem>.txt) next to each PDF that has a
      real text layer, so a text-only copy can be uploaded instead of page
-     images. Extracts whenever the document opens with native text (even if
+     images. On pleading-paper pages each line is prefixed with its printed
+     line number (and the page header carries the printed page number), so a
+     pinpoint "p.X:Y" cite lands on the same text as in the PDF. Extracts whenever the document opens with native text (even if
      scanned exhibits follow); if the head isn't native it falls back to a
      random sample of the rest. Scanned-only PDFs are skipped. Decided from
      the native text, before OCR. Disable with --no-text. The .txt ends with
@@ -1751,6 +1753,28 @@ def should_skip_linking(filename: str) -> bool:
     return False
 
 
+def _join_spans_spaced(spans):
+    """Concatenate a row's spans (already x-sorted) into one string, inserting
+    a single space at a span boundary when there's a real horizontal gap and
+    neither side already has whitespace. PyMuPDF sometimes splits a line into
+    spans at a style change and drops the space between them (e.g. "1." + "I
+    am" -> "1.I am"); this restores it without gluing within-word pieces like
+    the superscript "th" in "4th"."""
+    out = ""
+    prev_x1 = None
+    for s in spans:
+        t = s.get("text", "")
+        if not t:
+            continue
+        x0, _y0, x1, y1 = s["bbox"]
+        if (out and prev_x1 is not None and not out[-1].isspace()
+                and not t[:1].isspace() and (x0 - prev_x1) > 0.2 * (y1 - s["bbox"][1])):
+            out += " "
+        out += t
+        prev_x1 = x1
+    return out
+
+
 def _detect_line_anchors(page):
     """Per-page: find pleading-paper line numbers and gather body text on
     each numbered row.
@@ -1843,7 +1867,7 @@ def _detect_line_anchors(page):
         if not spans_at_y:
             continue
         spans_at_y.sort(key=lambda s: s["bbox"][0])
-        body_text = "".join(s["text"] for s in spans_at_y).strip()
+        body_text = _join_spans_spaced(spans_at_y).strip()
         if not body_text:
             continue
         results.append({
@@ -5474,6 +5498,19 @@ def _build_authorities_appendix(full_text, pseudonymizer=None):
     return "\n".join(lines)
 
 
+def _page_lined_text(page):
+    """For a pleading-paper page, return its body text with each line prefixed
+    by its printed line number (1-28), so the .txt mirrors the PDF's line
+    numbering and a pinpoint "p.X:Y" cite lands on the right text. Returns None
+    for pages without a recognisable line-number column (exhibits, covers,
+    signature pages), which the caller renders as plain text."""
+    anchors = _detect_line_anchors(page)
+    if not anchors:
+        return None
+    rows = sorted(anchors, key=lambda a: a["line_num"])
+    return "\n".join(f"{a['line_num']:>2}  {a['body_text']}".rstrip() for a in rows)
+
+
 def _pseudonymized_txt_path(pdf_path: Path, pseudonymizer, log):
     """Return the .txt output path with the source PDF's stem pseudonymized, so
     a party/attorney name in the filename doesn't ride along on the shareable
@@ -5518,12 +5555,26 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         # already-linked PDF) so the export is clean prose.
         clean = _MARKER_DETECT_RE.sub("", raw)
         # Collapse the runs of blank lines that marker removal and pleading
-        # gutters leave behind.
+        # gutters leave behind. This flowing text drives citation detection.
         clean = re.sub(r"\n[ \t]*\n(?:[ \t]*\n)+", "\n\n", clean).strip()
         orig_pages.append(clean)
+
+        # Displayed text: on pleading-paper pages, prefix each line with its
+        # printed line number so a reader can cite "p.X:Y" against the .txt the
+        # same way as the PDF; other pages fall back to the flowing text.
+        display = _page_lined_text(page)
+        if display is None:
+            display = clean
         if pseudonymizer is not None:
-            clean = pseudonymizer.apply(clean)
-        parts.append(f"====== Page {i + 1} ======\n{clean}")
+            display = pseudonymizer.apply(display)
+
+        # Header carries the printed (footer) page number when present, so the
+        # page half of a pinpoint cite is unambiguous too.
+        label = _footer_page_label(page)
+        header = (f"====== Page {i + 1}"
+                  + (f" (printed p. {label})" if label else "")
+                  + " ======")
+        parts.append(f"{header}\n{display}")
     body = "\n\n".join(parts) + "\n"
 
     # Append a list of every cited authority with a free public verification
