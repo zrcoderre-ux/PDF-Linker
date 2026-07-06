@@ -1421,13 +1421,17 @@ def _disambiguated_lexis_term(case_key: str) -> str:
     The full name also subsumes the "In re X" / "Estate of X" / "X Cases"
     forms, so no special-casing is needed: whatever precedes the reporter
     tail in the key is the case name we search on.
+
+    Kept byte-for-byte in step with pdf-viewer's disambiguatedLexisTerm
+    (viewer/code-tables.js), which the cross-opener tooling also mirrors.
     """
     m = _CASE_TAIL_RE.search(case_key)
     if not m:
         return case_key
     _year, vol, reporter, page = m.groups()
     reporter_cite = f"{vol} {reporter} {page}"
-    name_part = case_key[: m.start()].strip().rstrip(",")
+    # Trim a trailing comma OR semicolon left on the name by the tail split.
+    name_part = case_key[: m.start()].strip().rstrip(",;").strip()
     return f"{name_part} {reporter_cite}" if name_part else reporter_cite
 
 
