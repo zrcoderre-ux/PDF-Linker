@@ -14,8 +14,9 @@ For each *.pdf in the folder (processed from shortest to longest by file size):
      glyphs) are rebuilt the same way: the bad text is removed and a fresh OCR
      layer is laid down over the (correctly-rendering) page.
   1b. Pseudonymizes the .txt export (only) — ON by default (--no-pseudonymize
-     to disable): party/case/attorney names and detected PII are swapped for
-     stable, deterministic fakes, and a real->fake key file is written for the
+     to disable): party/case/attorney names, a declaration's own declarant
+     name ("DECLARATION OF X" / "I, X, declare", even when not in the key),
+     and detected PII are swapped for stable, deterministic fakes, and a real->fake key file is written for the
      folder. Party/case names come from a spreadsheet key — --key, or by
      default the most recent Order*.xlsx in the user's Downloads folder (the
      E-Court order-template export) — plus any --term values. The PDFs are
@@ -5228,6 +5229,59 @@ def _pn_find_downloads_key(log):
     return newest
 
 
+# ── Declarant names ("DECLARATION OF X" / "I, X, declare") ───────────────────
+# A declaration's own title and signature name the declarant, who is often NOT
+# in the spreadsheet key (a client, a witness, an attorney the E-Court export
+# didn't capture). These patterns pull that name out so it can be scrubbed like
+# any other party name. A stop-list rejects the many "DECLARATION OF <process>"
+# phrases (service, mailing, due diligence, custodian of records, counsel, …)
+# that aren't personal names.
+_PN_DECL_STOPWORDS = {
+    "service", "mailing", "posting", "publication", "due", "diligence",
+    "non-service", "custodian", "records", "record", "merits", "probable",
+    "readiness", "completion", "compliance", "good", "non-monetary", "monetary",
+    "status", "counsel", "moving", "responding", "demurring", "party", "parties",
+    "no", "non", "related", "non-receipt", "receipt", "prejudice", "support",
+    "defendant", "defendants", "plaintiff", "plaintiffs", "movant", "the",
+    "undersigned", "reasonable", "attempted", "electronic", "personal",
+}
+_PN_DECL_NAME_WORD = r"[A-Z][A-Za-z.'’-]*"
+_PN_DECL_NAME = (
+    rf"{_PN_DECL_NAME_WORD}(?:\s+{_PN_DECL_NAME_WORD}){{0,3}}"
+    r"(?:,\s*(?i:esq|jr|sr|ii|iii|iv|m\.?d|ph\.?d|c\.?p\.?a|r\.?n|d\.?d\.?s)\.?)?"
+)
+_PN_DECL_TITLE_RE = re.compile(
+    r"(?i:(?:supplemental|amended|further|second|third|fourth|reply|corrected|"
+    r"joint)\s+)?(?i:declaration\s+of)\s+(" + _PN_DECL_NAME + r")")
+_PN_DECL_SELF_RE = re.compile(
+    r"\bI,\s+(" + _PN_DECL_NAME + r")\s*,\s*(?i:declare|hereby|do\s+hereby|"
+    r"state|being\s+duly\s+sworn)")
+
+
+def _pn_is_personlike_declarant(name):
+    core = re.sub(r",.*$", "", name).strip()
+    words = core.split()
+    if not words or words[0].lower().strip(".") in _PN_DECL_STOPWORDS:
+        return False
+    # Two-plus name words, or a single surname with a professional suffix.
+    return len(words) >= 2 or bool(
+        re.search(r",\s*(?i:esq|jr|sr|m\.?d|ph\.?d|c\.?p\.?a)", name))
+
+
+def _pn_declarant_names(text):
+    """Raw declarant names found in `text` via the title/self-ID patterns,
+    de-duplicated and filtered to person-like values."""
+    names, seen = [], set()
+    for rx in (_PN_DECL_TITLE_RE, _PN_DECL_SELF_RE):
+        for m in rx.finditer(text):
+            # Collapse any line wrap in the captured name to single spaces.
+            nm = re.sub(r"\s+", " ", m.group(1)).strip().rstrip(".").strip()
+            if _pn_is_personlike_declarant(nm) and nm.lower() not in seen:
+                seen.add(nm.lower())
+                names.append(nm)
+    return names
+
+
 class Pseudonymizer:
     """Applies stable pseudonymization to plain text (the .txt export only).
 
@@ -5270,6 +5324,35 @@ class Pseudonymizer:
             if r["category"] == "case_number":
                 return re.sub(r"[^A-Za-z0-9]", "", r["fake"])
         return None
+
+    def register_declarant_names(self, text):
+        """Detect declarant names in `text` ("DECLARATION OF X", "I, X,
+        declare") and add them as person terms (full name + bare tokens) so a
+        declaration's own title and signature are scrubbed even when the
+        declarant isn't in the spreadsheet key. Idempotent; call before apply()."""
+        added = False
+        for raw in _pn_declarant_names(text):
+            fake_full, bare = _pn_fake_person(raw)
+            new_terms = [_PnTerm("person", raw, fake_full, whole_word=False,
+                                 case_sensitive=False, priority=2,
+                                 source="declarant")]
+            new_terms += [_PnTerm("person-token", rt, ft, whole_word=True,
+                                  case_sensitive=False, priority=1,
+                                  source="declarant") for rt, ft, _s in bare]
+            for t in new_terms:
+                k = (t.category, t.real.lower())
+                if k in self.records:
+                    continue
+                self.terms.append(t)
+                self.records[k] = {
+                    "category": t.category, "real": t.real, "fake": t.fake,
+                    "source": t.source, "count": 0, "pattern": t.pattern,
+                    "flags": t.flags}
+                added = True
+        if added:
+            # Keep terms ordered biggest/most-specific first for apply()'s
+            # overlap resolution.
+            self.terms.sort(key=lambda t: (-t.priority, -len(t.real)))
 
     def apply(self, text):
         """Return `text` with every match replaced by its stable fake.
@@ -5547,8 +5630,8 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
     is never emitted.
     """
     txt_path = pdf_path.with_suffix(".txt")
-    parts = []
     orig_pages = []   # pre-pseudonymization page text, for citation detection
+    page_blocks = []  # (header, display_text) before pseudonymization
     for i, page in enumerate(doc):
         raw = page.get_text("text")
         # Drop our invisible citation markers (present when re-processing an
@@ -5565,8 +5648,6 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         display = _page_lined_text(page)
         if display is None:
             display = clean
-        if pseudonymizer is not None:
-            display = pseudonymizer.apply(display)
 
         # Header carries the printed (footer) page number when present, so the
         # page half of a pinpoint cite is unambiguous too.
@@ -5574,6 +5655,17 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         header = (f"====== Page {i + 1}"
                   + (f" (printed p. {label})" if label else "")
                   + " ======")
+        page_blocks.append((header, display))
+
+    # Register this document's declarant(s) so their name is scrubbed even when
+    # absent from the spreadsheet key — must happen BEFORE any apply() below.
+    if pseudonymizer is not None:
+        pseudonymizer.register_declarant_names("\n\f\n".join(orig_pages))
+
+    parts = []
+    for header, display in page_blocks:
+        if pseudonymizer is not None:
+            display = pseudonymizer.apply(display)
         parts.append(f"{header}\n{display}")
     body = "\n\n".join(parts) + "\n"
 
