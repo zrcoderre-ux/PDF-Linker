@@ -22,10 +22,9 @@ For each *.pdf in the folder (processed from shortest to longest by file size):
      E-Court order-template export) — plus any --term values. The PDFs are
      never modified. The .txt FILENAME is pseudonymized too (a party/attorney
      name in the source PDF's name is scrubbed from the .txt's name, falling
-     back to a neutral name if anything real would survive). If pseudonymization
-     runs but the spreadsheet key matched nothing (wrong/stale sheet, or none
-     found), the .txt exports are withheld (deleted) and the run warns loudly,
-     so a file naming real parties can't be uploaded by accident.
+     back to a neutral name if anything real would survive). A surviving real
+     value (a per-file leak, or a spreadsheet key that matched nothing) is
+     reported in the log for review — the .txt is still written, not withheld.
   1a. Writes a plain-text companion (<stem>.txt) next to each PDF that has a
      real text layer, so a text-only copy can be uploaded instead of page
      images. On pleading-paper pages each line is prefixed with its printed
@@ -5624,10 +5623,9 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
 
     When `pseudonymizer` is given, each page's text is pseudonymized (party
     names, case numbers, PII → stable fakes) before writing — the PDF itself is
-    never modified. As a confidentiality backstop the finished text is
-    re-scanned; if any real value survived the replacement, the file is NOT
-    written and the leak is logged, so a document that still names a real party
-    is never emitted.
+    never modified. The finished text is re-scanned and any real value that
+    survived the replacement is LOGGED as a leak for review; the file is still
+    written (it is not withheld).
     """
     txt_path = pdf_path.with_suffix(".txt")
     orig_pages = []   # pre-pseudonymization page text, for citation detection
@@ -5679,13 +5677,14 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         body += "\n" + appendix + "\n"
 
     if pseudonymizer is not None:
+        # Report (but do NOT withhold) any real value that survived the scrub —
+        # the .txt is still written; the log flags it for review.
         survivors = pseudonymizer.surviving_reals(body)
         if survivors:
             shown = ", ".join(sorted(set(survivors))[:8])
             log.warning(f"  Pseudonymization LEAK on {pdf_path.name}: real "
-                        f"value(s) still present ({shown}); NOT writing "
-                        f"{txt_path.name}. Add them with --term and re-run.")
-            return False
+                        f"value(s) still present in the .txt ({shown}). Review "
+                        f"before sharing; add them with --term and re-run.")
         # Pseudonymize the output filename too — the .txt is the artifact that
         # gets shared, so a party/attorney name must not survive in its name.
         pseudo_path = _pseudonymized_txt_path(pdf_path, pseudonymizer, log)
@@ -5704,7 +5703,7 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         log.warning(f"  Could not write text version (non-fatal): {e}")
         return False
     if pseudonymizer is not None:
-        # Track it so the folder-level no-match check can withhold it later.
+        # Track it so the folder-level no-match check can report a count.
         pseudonymizer.written.append(txt_path)
     log.info(f"  Wrote {'pseudonymized ' if pseudonymizer else ''}text "
              f"version: {txt_path.name}")
@@ -6190,12 +6189,12 @@ def main():
         except Exception as e:
             log.warning(f"Could not write pseudonym key (non-fatal): {e}")
 
-        # Fail-safe: if pseudonymization ran on some .txt but the spreadsheet
-        # key produced NO primary matches (full party names / entities / case
-        # numbers), those exports would still name real parties — the key is
-        # the wrong/stale sheet, or none was found. WITHHOLD them: delete the
-        # .txt files written this run and warn loudly (console + log), so a
-        # real-name export can't be uploaded by accident.
+        # Report (do NOT delete): if pseudonymization ran on some .txt but the
+        # spreadsheet key produced NO primary matches (full party names /
+        # entities / case numbers), those exports may still name real parties —
+        # the key is the wrong/stale sheet, or none was found. The .txt files
+        # are left in place; warn loudly (console + log) so they're reviewed
+        # before sharing.
         if pseudonymizer.texts_applied and pseudonymizer.spreadsheet_hits() == 0:
             if not pseudonymizer.has_spreadsheet_terms():
                 reason = (f"the key {key_path.name} held no party/case values"
@@ -6204,17 +6203,10 @@ def main():
                 reason = (f"none of the key values"
                           f"{f' from {key_path.name}' if key_path else ''} "
                           "matched any document (wrong/stale sheet?)")
-            removed = 0
-            for p in pseudonymizer.written:
-                try:
-                    p.unlink()
-                    removed += 1
-                except OSError:
-                    pass
-            _warn(f"!! Pseudonymize: WITHHELD {removed} .txt export(s) because "
-                  f"{reason}. They would have named real parties. Fix the key "
-                  "(correct E-Court Order*.xlsx or --key) and re-run; no "
-                  "unredacted .txt was left behind.")
+            _warn(f"!! Pseudonymize: {len(pseudonymizer.written)} .txt export(s) "
+                  f"may name real parties because {reason}. Review before "
+                  "sharing; fix the key (correct E-Court Order*.xlsx or --key) "
+                  "and re-run.")
 
     log.info(f"Done: {success} succeeded, {failed} failed")
 
