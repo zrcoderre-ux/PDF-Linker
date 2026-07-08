@@ -5051,11 +5051,17 @@ _PN_DETECTORS = {
     "phone": (re.compile(
         r"(?<!\d)(?:\+?1[\s.\-]?)?(?:\(\d{3}\)|\d{3})[\s.\-]?\d{3}[\s.\-]?\d{4}(?!\d)"),
         _pn_fake_phone),
+    # Street address. Deliberately conservative for legal text: the street
+    # number then 1-4 CAPITALISED name words (no IGNORECASE, so "the court" /
+    # "of this" don't qualify) then a street-type suffix. The suffix list omits
+    # Court/Ct, Place/Pl, Way, Terrace/Ter, Square/Sq — those are ubiquitous in
+    # briefs ("Superior Court", "by way", "in place of") and caused constant
+    # false positives; only unambiguous suffixes remain. The suffix itself is
+    # matched case-insensitively (?i:) so "STREET"/"Street"/"St." all count.
     "address": (re.compile(
         r"\b\d{1,6}\s+(?:[A-Z][A-Za-z0-9.]*\s+){0,4}"
-        r"(?:Street|St|Avenue|Ave|Boulevard|Blvd|Road|Rd|Lane|Ln|Drive|Dr|"
-        r"Court|Ct|Place|Pl|Way|Circle|Cir|Terrace|Ter|Highway|Hwy|Parkway|"
-        r"Pkwy|Square|Sq|Trail|Trl)\b\.?", re.IGNORECASE), _pn_fake_street),
+        r"(?i:Street|St|Avenue|Ave|Boulevard|Blvd|Road|Rd|Lane|Ln|Drive|Dr|"
+        r"Circle|Cir|Highway|Hwy|Parkway|Pkwy|Trail|Trl)\b\.?"), _pn_fake_street),
 }
 _PN_DEFAULT_DETECTORS = ["ssn", "email", "phone", "address"]
 
@@ -5580,17 +5586,21 @@ def _build_authorities_appendix(full_text, pseudonymizer=None):
     return "\n".join(lines)
 
 
-def _page_lined_text(page):
-    """For a pleading-paper page, return its body text with each line prefixed
-    by its printed line number (1-28), so the .txt mirrors the PDF's line
-    numbering and a pinpoint "p.X:Y" cite lands on the right text. Returns None
+def _page_lined_rows(page):
+    """For a pleading-paper page, return [(line_num, body_text), ...] sorted by
+    line number, so the .txt can mirror the PDF's line numbering. Returns None
     for pages without a recognisable line-number column (exhibits, covers,
-    signature pages), which the caller renders as plain text."""
+    signature pages), which the caller renders as plain text.
+
+    Returning the rows (rather than a joined string) lets the caller
+    pseudonymize each line's BODY on its own — so the line-number prefix is
+    never seen by a detector (e.g. the address regex would otherwise read the
+    printed line number as a street number)."""
     anchors = _detect_line_anchors(page)
     if not anchors:
         return None
-    rows = sorted(anchors, key=lambda a: a["line_num"])
-    return "\n".join(f"{a['line_num']:>2}  {a['body_text']}".rstrip() for a in rows)
+    return [(a["line_num"], a["body_text"])
+            for a in sorted(anchors, key=lambda a: a["line_num"])]
 
 
 def _pseudonymized_txt_path(pdf_path: Path, pseudonymizer, log):
@@ -5629,7 +5639,8 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
     """
     txt_path = pdf_path.with_suffix(".txt")
     orig_pages = []   # pre-pseudonymization page text, for citation detection
-    page_blocks = []  # (header, display_text) before pseudonymization
+    page_blocks = []  # (header, rows_or_text) before pseudonymization; rows is
+                      # a list of (line_num, body) for pleading pages, else a str
     for i, page in enumerate(doc):
         raw = page.get_text("text")
         # Drop our invisible citation markers (present when re-processing an
@@ -5640,20 +5651,18 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         clean = re.sub(r"\n[ \t]*\n(?:[ \t]*\n)+", "\n\n", clean).strip()
         orig_pages.append(clean)
 
-        # Displayed text: on pleading-paper pages, prefix each line with its
-        # printed line number so a reader can cite "p.X:Y" against the .txt the
-        # same way as the PDF; other pages fall back to the flowing text.
-        display = _page_lined_text(page)
-        if display is None:
-            display = clean
-
+        # Displayed text: on pleading-paper pages, keep per-line rows so we can
+        # number each line (a "p.X:Y" cite lands on the right text) AND scrub
+        # each line's body without its number prefix; other pages fall back to
+        # flowing text.
+        rows = _page_lined_rows(page)
         # Header carries the printed (footer) page number when present, so the
         # page half of a pinpoint cite is unambiguous too.
         label = _footer_page_label(page)
         header = (f"====== Page {i + 1}"
                   + (f" (printed p. {label})" if label else "")
                   + " ======")
-        page_blocks.append((header, display))
+        page_blocks.append((header, rows if rows is not None else clean))
 
     # Register this document's declarant(s) so their name is scrubbed even when
     # absent from the spreadsheet key — must happen BEFORE any apply() below.
@@ -5661,9 +5670,16 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         pseudonymizer.register_declarant_names("\n\f\n".join(orig_pages))
 
     parts = []
-    for header, display in page_blocks:
-        if pseudonymizer is not None:
-            display = pseudonymizer.apply(display)
+    for header, content in page_blocks:
+        if isinstance(content, list):   # pleading page: (line_num, body) rows
+            lines = []
+            for num, body in content:
+                if pseudonymizer is not None:
+                    body = pseudonymizer.apply(body)
+                lines.append(f"{num:>2}  {body}".rstrip())
+            display = "\n".join(lines)
+        else:                           # flowing text
+            display = pseudonymizer.apply(content) if pseudonymizer is not None else content
         parts.append(f"{header}\n{display}")
     body = "\n\n".join(parts) + "\n"
 
