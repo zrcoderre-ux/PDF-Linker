@@ -30,9 +30,11 @@ For each *.pdf in the folder (processed from shortest to longest by file size):
      back to a neutral name if anything real would survive). A surviving real
      value (a per-file leak, or a spreadsheet key that matched nothing) is
      reported in the log for review — the .txt is still written, not withheld.
-  1a. Writes a plain-text companion (<stem>.txt) next to each PDF that has a
-     real text layer, so a text-only copy can be uploaded instead of page
-     images. On pleading-paper pages each line is prefixed with its printed
+  1a. Writes a plain-text companion (.txt) for each PDF that has a real text
+     layer into a "Text Files" subfolder of the case folder (name overridable
+     via text_subfolder in pdf_linker.config), so a text-only copy can be
+     uploaded instead of page images. On pleading-paper pages each line is
+     prefixed with its printed
      line number (and the page header carries the printed page number), so a
      pinpoint "p.X:Y" cite lands on the same text as in the PDF. Extracts whenever the document opens with native text (even if
      scanned exhibits follow); if the head isn't native it falls back to a
@@ -5608,8 +5610,9 @@ def _page_lined_rows(page):
             for a in sorted(anchors, key=lambda a: a["line_num"])]
 
 
-def _pseudonymized_txt_path(pdf_path: Path, pseudonymizer, log):
-    """Return the .txt output path with the source PDF's stem pseudonymized, so
+def _pseudonymized_txt_path(out_dir: Path, pdf_path: Path, pseudonymizer, log):
+    """Return the .txt output path (inside `out_dir`) with the source PDF's stem
+    pseudonymized, so
     a party/attorney name in the filename doesn't ride along on the shareable
     text file. Separators (_ / -) are normalized to spaces so name tokens are
     word-bounded, the stem is run through the same pseudonymizer, then joined
@@ -5627,14 +5630,15 @@ def _pseudonymized_txt_path(pdf_path: Path, pseudonymizer, log):
                  f"neutral name {safe}.txt")
     else:
         safe = re.sub(r"\s+", "_", faked).strip("_") or f"document_{digest}"
-    return pdf_path.with_name(safe + ".txt")
+    return out_dir / (safe + ".txt")
 
 
 def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
-                        pseudonymizer=None) -> bool:
-    """Write a plain-text companion (<stem>.txt) holding each page's text with
-    pdf_linker's own invisible right-margin markers stripped. Overwrites on
-    re-runs. Returns True if written.
+                        pseudonymizer=None, text_subdir="Text Files") -> bool:
+    """Write a plain-text companion for the PDF into a `text_subdir` subfolder
+    of the case folder (created if needed), with pdf_linker's own invisible
+    right-margin markers stripped. Overwrites on re-runs. Returns True if
+    written.
 
     When `pseudonymizer` is given, each page's text is pseudonymized (party
     names, case numbers, PII → stable fakes) before writing — the PDF itself is
@@ -5642,7 +5646,8 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
     survived the replacement is LOGGED as a leak for review; the file is still
     written (it is not withheld).
     """
-    txt_path = pdf_path.with_suffix(".txt")
+    out_dir = pdf_path.parent / text_subdir
+    txt_path = out_dir / (pdf_path.stem + ".txt")
     orig_pages = []   # pre-pseudonymization page text, for citation detection
     page_blocks = []  # (header, rows_or_text) before pseudonymization; rows is
                       # a list of (line_num, body) for pleading pages, else a str
@@ -5708,15 +5713,24 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
                         f"before sharing; add them with --term and re-run.")
         # Pseudonymize the output filename too — the .txt is the artifact that
         # gets shared, so a party/attorney name must not survive in its name.
-        pseudo_path = _pseudonymized_txt_path(pdf_path, pseudonymizer, log)
-        # Drop a stale real-named .txt from an earlier (non-pseudonymized) run
-        # so it can't linger next to the scrubbed one.
-        if pseudo_path != txt_path and txt_path.exists():
+        txt_path = _pseudonymized_txt_path(out_dir, pdf_path, pseudonymizer, log)
+
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        log.warning(f"  Could not create text subfolder {out_dir}: {e}")
+        return False
+
+    # Remove any earlier .txt for this PDF that isn't the file we're about to
+    # write: the old case-root location (pre-subfolder / non-pseudonymized runs)
+    # and the default-named one in the subfolder — so a stale (possibly
+    # real-named) copy can't linger beside the current output.
+    for stale in {pdf_path.with_suffix(".txt"), out_dir / (pdf_path.stem + ".txt")}:
+        if stale != txt_path and stale.exists():
             try:
-                txt_path.unlink()
+                stale.unlink()
             except OSError:
                 pass
-        txt_path = pseudo_path
 
     try:
         txt_path.write_text(body, encoding="utf-8")
@@ -5727,7 +5741,7 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         # Track it so the folder-level no-match check can report a count.
         pseudonymizer.written.append(txt_path)
     log.info(f"  Wrote {'pseudonymized ' if pseudonymizer else ''}text "
-             f"version: {txt_path.name}")
+             f"version: {text_subdir}/{txt_path.name}")
     return True
 
 
@@ -5736,7 +5750,7 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
 # ────────────────────────────────────────────────────────────────────────────
 def process_pdf(pdf_path: Path, log: logging.Logger,
                 provider: str = "lexis", extract_text: bool = True,
-                pseudonymizer=None) -> bool:
+                pseudonymizer=None, text_subdir="Text Files") -> bool:
     """Process one PDF. Returns True on success."""
     try:
         import fitz
@@ -5799,7 +5813,7 @@ def process_pdf(pdf_path: Path, log: logging.Logger,
     # the linking passes below. Skipped for scanned-only PDFs.
     if want_text_export:
         try:
-            _write_text_version(pdf_path, doc, log, pseudonymizer)
+            _write_text_version(pdf_path, doc, log, pseudonymizer, text_subdir)
         except Exception as e:
             log.warning(f"  Text export failed (non-fatal): {e}")
 
@@ -6069,6 +6083,10 @@ _CONFIG_TEMPLATE = (
     "# swapped for stable fakes using the newest Order*.xlsx in Downloads; the\n"
     "# PDFs themselves are never modified.\n"
     "pseudonymize = on\n"
+    "\n"
+    "# Subfolder (inside each case folder) that the .txt exports are written to.\n"
+    "# Default: Text Files.\n"
+    "text_subfolder = Text Files\n"
 )
 
 
@@ -6224,6 +6242,9 @@ def main():
         log.info(f"Pseudonymization {'ON' if args.pseudonymize else 'OFF'} "
                  f"(from command line)")
 
+    # Subfolder (within each case folder) that the .txt exports are written to.
+    text_subdir = cfg.get("text_subfolder", "").strip() or "Text Files"
+
     def _warn(msg):
         # Surface a folder-level warning both to the log and the console.
         log.warning(msg)
@@ -6278,7 +6299,8 @@ def main():
         try:
             if process_pdf(pdf, log, provider=args.provider,
                            extract_text=args.extract_text,
-                           pseudonymizer=pseudonymizer):
+                           pseudonymizer=pseudonymizer,
+                           text_subdir=text_subdir):
                 success += 1
             else:
                 failed += 1
