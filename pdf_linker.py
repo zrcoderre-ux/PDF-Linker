@@ -7,6 +7,11 @@ Usage:
     pythonw pdf_linker.py "C:\\path\\to\\case\\folder"
     pythonw pdf_linker.py "C:\\path\\to\\case\\folder" --provider westlaw
 
+Pseudonymization can be turned on/off without editing the code: set
+`pseudonymize = on` (or `off`) in the `pdf_linker.config` file next to this
+script (auto-created on first run). A --pseudonymize / --no-pseudonymize flag
+overrides the config for that run.
+
 For each *.pdf in the folder (processed from shortest to longest by file size):
   1. If the PDF has no text layer, runs Tesseract OCR via OCRmyPDF-style flow
      using pytesseract page-by-page to add a text layer. Pages whose existing
@@ -6046,6 +6051,71 @@ def process_pdf(pdf_path: Path, log: logging.Logger,
 
 
 # ────────────────────────────────────────────────────────────────────────────
+# Config file (edit settings without touching the code)
+# ────────────────────────────────────────────────────────────────────────────
+# A plain "key = value" file named pdf_linker.config, kept next to this script.
+# It lets settings (currently: pseudonymize on/off) be changed without editing
+# the code or the command that launches the tool. A command-line flag always
+# wins over the config file.
+_CONFIG_TRUE = {"1", "true", "yes", "on", "y", "t"}
+_CONFIG_FALSE = {"0", "false", "no", "off", "n", "f"}
+_CONFIG_TEMPLATE = (
+    "# pdf_linker settings. Edit the values below to change behaviour without\n"
+    "# touching the code. Lines starting with # are comments. A command-line\n"
+    "# flag (e.g. --no-pseudonymize) overrides the matching setting here.\n"
+    "\n"
+    "# Pseudonymize the .txt exports? on/off (default: on). When on, party /\n"
+    "# attorney names, case numbers, and detected PII in the .txt exports are\n"
+    "# swapped for stable fakes using the newest Order*.xlsx in Downloads; the\n"
+    "# PDFs themselves are never modified.\n"
+    "pseudonymize = on\n"
+)
+
+
+def _config_path():
+    try:
+        return Path(__file__).with_name("pdf_linker.config")
+    except NameError:
+        return Path("pdf_linker.config")
+
+
+def _read_config(log=None):
+    """Return {key: value} from pdf_linker.config next to the script. If the
+    file doesn't exist, best-effort write a commented template so it's easy to
+    find and edit, and return {}."""
+    path = _config_path()
+    if not path.is_file():
+        try:
+            path.write_text(_CONFIG_TEMPLATE, encoding="utf-8")
+            if log:
+                log.info(f"Wrote default config file: {path}")
+        except OSError:
+            pass
+        return {}
+    cfg = {}
+    try:
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            cfg[k.strip().lower()] = v.strip()
+    except OSError as e:
+        if log:
+            log.warning(f"Could not read config file {path}: {e}")
+    return cfg
+
+
+def _config_bool(cfg, key, default):
+    v = cfg.get(key, "").strip().lower()
+    if v in _CONFIG_TRUE:
+        return True
+    if v in _CONFIG_FALSE:
+        return False
+    return default
+
+
+# ────────────────────────────────────────────────────────────────────────────
 # Entry point
 # ────────────────────────────────────────────────────────────────────────────
 def main():
@@ -6075,14 +6145,22 @@ def main():
     )
     # Pseudonymization — ON by default, applied to the .txt export ONLY, never
     # the PDF.
-    parser.add_argument(
-        "--no-pseudonymize",
-        dest="pseudonymize",
-        action="store_false",
-        help="Disable pseudonymization of the .txt exports. By default the "
-             ".txt exports swap party/case/attorney names (from the E-Court "
-             "key spreadsheet) and detected PII (e-mail, phone, SSN, address) "
-             "for stable fakes; the PDFs are never modified.",
+    # Pseudonymization on/off. Neither flag given -> fall back to the config
+    # file (pdf_linker.config next to this script), else default ON. Either
+    # flag overrides the config for this run.
+    _ps = parser.add_mutually_exclusive_group()
+    _ps.add_argument(
+        "--pseudonymize", dest="pseudonymize", action="store_true", default=None,
+        help="Force pseudonymization of the .txt exports ON for this run "
+             "(overrides the config file).",
+    )
+    _ps.add_argument(
+        "--no-pseudonymize", dest="pseudonymize", action="store_false",
+        default=None,
+        help="Force pseudonymization of the .txt exports OFF for this run "
+             "(overrides the config file). By default the .txt exports swap "
+             "party/case/attorney names (from the E-Court key spreadsheet) and "
+             "detected PII for stable fakes; the PDFs are never modified.",
     )
     parser.add_argument(
         "--key", type=Path, default=None, metavar="XLSX",
@@ -6133,6 +6211,18 @@ def main():
     log = logging.getLogger("pdf_linker")
     log.info("=" * 60)
     log.info(f"Run started for folder: {folder} (provider={args.provider})")
+
+    # Resolve pseudonymization on/off: an explicit --pseudonymize /
+    # --no-pseudonymize flag wins; otherwise the pdf_linker.config file next to
+    # the script; otherwise default ON.
+    cfg = _read_config(log)
+    if args.pseudonymize is None:
+        args.pseudonymize = _config_bool(cfg, "pseudonymize", True)
+        log.info(f"Pseudonymization {'ON' if args.pseudonymize else 'OFF'} "
+                 f"(from {_config_path().name})")
+    else:
+        log.info(f"Pseudonymization {'ON' if args.pseudonymize else 'OFF'} "
+                 f"(from command line)")
 
     def _warn(msg):
         # Surface a folder-level warning both to the log and the console.
