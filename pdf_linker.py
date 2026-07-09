@@ -4939,6 +4939,60 @@ def _pn_looks_like_entity(name):
     return bool(re.search(r"\b(city|county|people|state) of\b", low))
 
 
+# ── Party-role labels (never pseudonymized) ─────────────────────────────────
+# "Plaintiff", "Defendant", "Cross-Complainant", etc. are procedural roles, not
+# identities: they occur on nearly every line of a pleading and are public, so
+# replacing them would corrupt the text while protecting nothing. A spreadsheet
+# name cell (especially the E-Court "Other Names" column) or a --term is
+# sometimes JUST a role word; such a value must never become a pseudonym term,
+# and no bare name-token equal to a role word may be registered either.
+_PN_PARTY_ROLE_WORDS = frozenset({
+    "plaintiff", "plaintiffs", "defendant", "defendants",
+    "petitioner", "petitioners", "respondent", "respondents",
+    "complainant", "complainants",
+    "cross-complainant", "cross-complainants",
+    "crosscomplainant", "crosscomplainants",
+    "cross-defendant", "cross-defendants",
+    "crossdefendant", "crossdefendants",
+    "cross-claimant", "cross-claimants",
+    "counter-claimant", "counter-claimants",
+    "counterclaimant", "counterclaimants",
+    "counter-defendant", "counter-defendants",
+    "counterdefendant", "counterdefendants",
+    "claimant", "claimants", "movant", "movants",
+    "appellant", "appellants", "appellee", "appellees",
+    "intervenor", "intervenors", "intervener", "interveners",
+    "creditor", "creditors", "debtor", "debtors",
+    "garnishee", "garnishees", "party", "parties",
+    "third party", "third-party", "real party in interest",
+    "aggrieved employee", "aggrieved employees",
+})
+# Separators that join role words into a compound role phrase
+# ("Plaintiff and Cross-Complainant", "Plaintiffs/Cross-Defendants").
+_PN_ROLE_SPLIT_RE = re.compile(r"\s*(?:,|/|;|&|\band\b)\s*", re.IGNORECASE)
+
+
+def _pn_is_party_role(value):
+    """True when `value` is nothing but one or more common party-role labels
+    (e.g. "Plaintiff", "Defendants", "Plaintiff and Cross-Complainant"). Such a
+    value names a role rather than a person or entity, so it is dropped before
+    it can ever become a pseudonym term."""
+    if not value:
+        return False
+    norm = re.sub(r"\s+", " ", str(value)).strip().strip('.,:;"’\'').lower()
+    if not norm:
+        return False
+    if norm in _PN_PARTY_ROLE_WORDS:
+        return True
+    parts = [p for p in _PN_ROLE_SPLIT_RE.split(norm) if p]
+    return len(parts) > 1 and all(p in _PN_PARTY_ROLE_WORDS for p in parts)
+
+
+def _pn_is_role_token(token):
+    """True when a single bare name-token is itself a party-role word."""
+    return token.strip('.,:;"’\'').lower() in _PN_PARTY_ROLE_WORDS
+
+
 def _pn_fake_person(name):
     """(fake_full_name, [(bare_real, bare_fake, is_surname), ...]) — composed
     token-by-token so a bare surname resolves to the same fake used here."""
@@ -5019,7 +5073,7 @@ def _pn_append_entity_terms(terms, raw, source):
     terms.append(_PnTerm("entity", raw, _pn_fake_entity(raw), whole_word=False,
                          case_sensitive=False, priority=2, source=source))
     bare = _pn_entity_bare(raw)
-    if bare:
+    if bare and not _pn_is_party_role(bare[0]):
         terms.append(_PnTerm("entity-token", bare[0], bare[1], whole_word=True,
                              case_sensitive=False, priority=1, source=source))
 
@@ -5128,6 +5182,8 @@ def _pn_split_cell(value):
         p = re.sub(r"\s+", " ", p.strip().strip('"').strip())
         if len(p) < 2 or _PN_SKIP_PARTY_RE.match(p) or not re.search(r"[A-Za-z0-9]", p):
             continue
+        if _pn_is_party_role(p):  # a bare role label ("Plaintiff") is not a name
+            continue
         out.append(p)
     return out
 
@@ -5171,6 +5227,8 @@ def _pn_build_terms(names, casenos, extra_terms):
     """Turn raw strings into _PnTerm objects with stable fake replacements."""
     terms = []
     for raw in names:
+        if _pn_is_party_role(raw):  # a bare role label is never a name
+            continue
         if _pn_looks_like_entity(raw):
             _pn_append_entity_terms(terms, raw, "spreadsheet")
         else:
@@ -5179,6 +5237,8 @@ def _pn_build_terms(names, casenos, extra_terms):
                                  case_sensitive=False, priority=2,
                                  source="spreadsheet"))
             for real_tok, fake_tok, _is_surname in bare:
+                if _pn_is_role_token(real_tok):
+                    continue
                 terms.append(_PnTerm("person-token", real_tok, fake_tok,
                                      whole_word=True, case_sensitive=False,
                                      priority=1, source="spreadsheet"))
@@ -5191,6 +5251,8 @@ def _pn_build_terms(names, casenos, extra_terms):
             terms.append(_PnTerm("case_number", raw, _pn_fake_caseno(raw),
                                  whole_word=False, case_sensitive=False,
                                  priority=2, source="--term"))
+        elif _pn_is_party_role(raw):  # never pseudonymize a bare role label
+            continue
         elif _pn_looks_like_entity(raw):
             _pn_append_entity_terms(terms, raw, "--term")
         else:
@@ -5344,13 +5406,16 @@ class Pseudonymizer:
         declarant isn't in the spreadsheet key. Idempotent; call before apply()."""
         added = False
         for raw in _pn_declarant_names(text):
+            if _pn_is_party_role(raw):
+                continue
             fake_full, bare = _pn_fake_person(raw)
             new_terms = [_PnTerm("person", raw, fake_full, whole_word=False,
                                  case_sensitive=False, priority=2,
                                  source="declarant")]
             new_terms += [_PnTerm("person-token", rt, ft, whole_word=True,
                                   case_sensitive=False, priority=1,
-                                  source="declarant") for rt, ft, _s in bare]
+                                  source="declarant")
+                          for rt, ft, _s in bare if not _pn_is_role_token(rt)]
             for t in new_terms:
                 k = (t.category, t.real.lower())
                 if k in self.records:
