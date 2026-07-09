@@ -4986,10 +4986,16 @@ _PN_COMMON_WORD_SURNAMES = {
     "field", "flowers", "banks", "waters", "rivers", "stone", "reed", "fields",
     "love", "just", "good", "power", "peace", "sharp", "swift", "noble",
 }
+# Fake street-name pool. Kept deliberately arboreal-but-uncommon; a name that
+# turns up as a REAL street corrupts the record (an earlier build minted "Maple",
+# which WAS the plaintiff's street). The registry rejects a fake that collides
+# with another real, but cannot know a name is real prose, so the pool avoids
+# the common ones.
 _PN_STREET_NAMES = [
-    "Maple", "Cedar", "Elm", "Birch", "Willow", "Aspen", "Juniper", "Laurel",
-    "Poplar", "Sycamore", "Hawthorn", "Linden", "Chestnut", "Magnolia",
+    "Cedar", "Birch", "Willow", "Aspen", "Juniper", "Laurel",
+    "Poplar", "Hawthorn", "Linden", "Chestnut",
     "Sequoia", "Cypress", "Alder", "Dogwood", "Hickory", "Rosewood",
+    "Foxglove", "Larkspur", "Tamarack", "Sorrel",
 ]
 _PN_STREET_TYPES = ["Street", "Avenue", "Drive", "Lane", "Road", "Court", "Way", "Place"]
 _PN_EMAIL_DOMAINS = ["example.com", "mailhaven.net", "postbox.org", "letterbox.co"]
@@ -5095,6 +5101,23 @@ class _PnFakeRegistry:
         for attempt in range(10000):
             r = _pn_rng(seed_tag, real, attempt)
             cand = re.sub(r"\d", lambda m: str(r.randrange(10)), real)
+            if cand.lower() not in self._used:
+                return self._take(key, cand)
+        return self._take(key, cand)  # give up after 10k tries; keep it stable
+
+    def unique(self, real, seed_tag, make):
+        """A fake produced by `make(rng)`, retried with a fresh seed until it is
+        one no other real value has been given. `real` should be the CANONICAL
+        form of the value (e.g. an address folded to one spelling) so its
+        spelling variants all resolve to the same fake. Guarantees injectivity —
+        two different reals never collide onto one fake — which the address key
+        needs so one parcel is not written under two fakes."""
+        key = (seed_tag, real.lower())
+        if key in self._memo:
+            return self._memo[key]
+        cand = None
+        for attempt in range(10000):
+            cand = make(_pn_rng(seed_tag, real.lower(), attempt))
             if cand.lower() not in self._used:
                 return self._take(key, cand)
         return self._take(key, cand)  # give up after 10k tries; keep it stable
@@ -5230,6 +5253,47 @@ def _pn_is_name_token(word):
     base = word.strip('.,:;"’\'').lower().removesuffix("'s")
     return (base not in _PN_NON_NAME_WORDS and base not in _PN_PARTY_ROLE_WORDS
             and base not in _PN_COMMON_WORD_SURNAMES)
+
+
+_PN_VOWEL_CONS = "bcdfghjklmnpqrstvwxz"
+
+
+def _pn_name_variants(word):
+    """Near-spelling variants of a surname/given name, so the key's "Roxane"
+    still scrubs the exhibit's "Roxanne". Covers a doubled/collapsed internal
+    consonant, a y<->ie ending, and an e<->ee ending. Each variant is registered
+    at LOW priority pointing at the SAME fake, so the exact spelling always wins
+    and only a genuine near-miss falls through to a variant. Kept conservative
+    on purpose — an over-eager variant rewrites an unrelated word silently."""
+    core = _pn_word_affixes(word)[1]
+    if len(core) < 4 or not core[0].isupper():
+        return set()
+    low = core.lower()
+    out = set()
+    # collapse a doubled consonant ("Purscelley" has none; "Bennett"->"Benet")
+    for i in range(1, len(core)):
+        if core[i].lower() == core[i - 1].lower() and core[i].lower() in _PN_VOWEL_CONS:
+            out.add(core[:i] + core[i + 1:])
+    # double a single internal consonant ("Roxane"->"Roxanne")
+    for i in range(1, len(core) - 1):
+        c = core[i].lower()
+        if (c in _PN_VOWEL_CONS and core[i].lower() != core[i - 1].lower()
+                and core[i].lower() != core[i + 1].lower()):
+            out.add(core[:i + 1] + core[i] + core[i + 1:])
+    # y <-> ie
+    if low.endswith("ie"):
+        out.add(core[:-2] + "y")
+    elif low.endswith("y"):
+        out.add(core[:-1] + "ie")
+    # e <-> ee
+    if low.endswith("ee"):
+        out.add(core[:-1])
+    elif low.endswith("e") and not low.endswith("ee"):
+        out.add(core + "e")
+    # Only variants that are themselves plausible name tokens, and never the
+    # word itself.
+    return {v for v in out
+            if v.lower() != low and len(v) >= 4 and _pn_is_name_token(v)}
 
 
 def _pn_fake_person(name, registry):
@@ -5405,7 +5469,10 @@ def _pn_split_aka(raw):
 
 
 def _pn_append_person_terms(terms, raw, source, registry):
-    """Register a person's full name plus its safe bare tokens."""
+    """Register a person's full name plus its safe bare tokens, and — at low
+    priority, sharing each token's fake — its near-spelling variants, so a
+    surname the key spells one way is still scrubbed where a document spells it
+    another ("Roxane" vs "Roxanne")."""
     fake_full, bare = _pn_fake_person(raw, registry)
     terms.append(_PnTerm("person", raw, fake_full, whole_word=False,
                          case_sensitive=False, priority=2, source=source))
@@ -5413,6 +5480,10 @@ def _pn_append_person_terms(terms, raw, source, registry):
         terms.append(_PnTerm("person-token", real_tok, fake_tok,
                              whole_word=True, case_sensitive=False,
                              priority=1, source=source))
+        for var in _pn_name_variants(real_tok):
+            terms.append(_PnTerm("person-token", var, fake_tok,
+                                 whole_word=True, case_sensitive=False,
+                                 priority=0, source=source))
     return _pn_person_token_map(raw, registry)
 
 
@@ -5496,9 +5567,119 @@ def _pn_fake_email(real):
             f"@{r.choice(_PN_EMAIL_DOMAINS)}")
 
 
+# ── Address handling ────────────────────────────────────────────────────────
+# Street-type suffixes the detector recognises, in every spelling seen in the
+# corpus. Court/Way/Place/Terrace/Square are back (an earlier build dropped them
+# for "Superior Court" / "by way of" false positives, yet _pn_fake_street EMITS
+# Court/Way/Place — so the tool produced addresses it could not re-recognise,
+# breaking idempotency). They are safe here because the whole pattern is
+# anchored on a leading street NUMBER on the same row: "\d+ ... Court" never
+# matches "Superior Court".
+_PN_ADDR_SUFFIX = (
+    r"(?i:Street|St|Avenue|Ave|Boulevard|Blvd|Road|Rd|Lane|Ln|Drive|Dr|"
+    r"Circle|Cir|Highway|Hwy|Parkway|Pkwy|Trail|Trl|Court|Ct|Place|Pl|Way|"
+    r"Terrace|Ter|Square|Sq)")
+# A number component: a single number, or a hyphenated RANGE captured as ONE
+# span ("414–416"), so the leading half is never left stranded next to a fake.
+_PN_ADDR_NUM = r"\d{1,6}(?:[ \t]*[-–—][ \t]*\d{1,6})?"
+# A name word: a capitalised word (no IGNORECASE, so "the court" can't qualify),
+# an ordinal ("5th", "101st"), or a directional ("N", "S.", "NW").
+_PN_ADDR_WORD = r"(?:[NSEW]{1,3}\.?|\d{1,3}(?:st|nd|rd|th)|[A-Z][A-Za-z0-9.'&-]*)"
+# Optional trailing suite and City, ST ZIP, so the locality is scrubbed too.
+_PN_ADDR_SUITE = r"(?:[ \t]*,?[ \t]*(?i:Suite|Ste|Unit|Apt|Bldg|#)[ \t]*[\w-]+)?"
+_PN_ADDR_CITYZIP = (
+    r"(?:[ \t]*,?[ \t]*(?:[A-Z][A-Za-z]+[ \t]*,?[ \t]*){1,3}[A-Za-z]{2}\.?[ \t]+"
+    r"\d{5}(?:-\d{4})?)?")
+_PN_ADDR_RE = re.compile(
+    rf"\b{_PN_ADDR_NUM}[ \t]+(?:{_PN_ADDR_WORD}[ \t]+){{1,4}}{_PN_ADDR_SUFFIX}"
+    rf"\b\.?{_PN_ADDR_SUITE}{_PN_ADDR_CITYZIP}")
+
+_PN_ADDR_ABBR = {
+    "st": "Street", "ave": "Avenue", "av": "Avenue", "blvd": "Boulevard",
+    "rd": "Road", "dr": "Drive", "ln": "Lane", "hwy": "Highway",
+    "pkwy": "Parkway", "cir": "Circle", "ct": "Court", "pl": "Place",
+    "ter": "Terrace", "sq": "Square", "trl": "Trail",
+}
+_PN_ADDR_DIRS = {"n": "N", "s": "S", "e": "E", "w": "W", "ne": "NE",
+                 "nw": "NW", "se": "SE", "sw": "SW"}
+
+
+def _pn_addr_canon(real):
+    """Fold an address to one canonical spelling so `21225 Pacific Coast Hwy`,
+    `21225 Pacific Coast Highway`, and `21225 PACIFIC COAST HWY` seed ONE fake —
+    the audited run gave one office three fakes. Expands the suffix and
+    directional abbreviations, lower-cases, and collapses punctuation/space."""
+    toks = re.split(r"[ \t]+", real.strip())
+    out = []
+    for t in toks:
+        base = t.strip(".,").lower()
+        if base in _PN_ADDR_ABBR:
+            out.append(_PN_ADDR_ABBR[base].lower())
+        elif base in _PN_ADDR_DIRS:
+            out.append(_PN_ADDR_DIRS[base].lower())
+        else:
+            out.append(base)
+    return re.sub(r"[^a-z0-9 ]", "", " ".join(out)).strip()
+
+
+def _pn_addr_street_key(real):
+    """(normalized-street-name, [numbers]) for adjacency checking. `414–416 S
+    Maple Ave` -> ("s maple", [414, 416])."""
+    nums = [int(n) for n in re.findall(r"\d{1,6}", real)]
+    canon = _pn_addr_canon(real)
+    # strip the leading number(s) and any trailing suite/city/zip noise; keep the
+    # directional+name+suffix core as the street identity.
+    core = re.sub(r"^\s*[\d ]+", "", canon).strip()
+    core = re.sub(r"\s+\d.*$", "", core).strip()  # drop a trailing zip/suite run
+    return core, nums
+
+
 def _pn_fake_street(real):
-    r = _pn_rng("street", real.lower())
+    """Module-level fallback (no registry): a stable but NOT guaranteed-unique
+    fake. The Pseudonymizer routes through `_fake_street` for injectivity."""
+    r = _pn_rng("street", _pn_addr_canon(real))
     return f"{r.randrange(100, 9999)} {r.choice(_PN_STREET_NAMES)} {r.choice(_PN_STREET_TYPES)}"
+
+
+# ── URL / bare-domain handling ──────────────────────────────────────────────
+# Citation hosts the authorities appendix emits on purpose — never rewrite them,
+# or the public verification links break.
+_PN_URL_WHITELIST = (
+    "leginfo.legislature.ca.gov", "law.cornell.edu", "scholar.google.com",
+    "courts.ca.gov", "google.com", "casetext.com", "justia.com",
+)
+
+
+def _pn_url_host(real):
+    """The bare host of a URL match: scheme, leading www., and any path removed,
+    lower-cased. `https://www.Firm.com/bio` -> `firm.com`."""
+    m = re.match(r"(?:https?://)?(?:www\.)?([^/\s]+)", real.strip(), re.IGNORECASE)
+    host = (m.group(1) if m else real).lower()
+    return host.rstrip("/").rstrip(".")
+
+
+def _pn_url_whitelisted(real):
+    host = _pn_url_host(real)
+    return any(host == w or host.endswith("." + w) for w in _PN_URL_WHITELIST)
+
+
+def _pn_fake_domain(domain):
+    """A stable fake host for a real domain, drawn from the neutral e-mail-domain
+    pool. `_fake_email` and the URL detector both go through here keyed on the
+    registrable host, so `paula@themillenniallawyer.com` and
+    `www.TheMillennialLawyer.com` land on the SAME fake domain."""
+    host = domain.lower()
+    if host.startswith("www."):
+        host = host[4:]
+    return _pn_rng("emaildom", host).choice(_PN_EMAIL_DOMAINS)
+
+
+def _pn_fake_url(real):
+    """Module-level fallback URL faker (no registry)."""
+    m = re.match(r"(?P<scheme>https?://)?(?P<www>www\.)?(?P<host>[^/\s]+)",
+                 real.strip(), re.IGNORECASE)
+    host = m.group("host") if m else real
+    return f"{m.group('scheme') or ''}{m.group('www') or ''}{_pn_fake_domain(host)}"
 
 
 # Regex PII detectors found in the document body (not the spreadsheet).
@@ -5508,22 +5689,95 @@ _PN_DETECTORS = {
     "phone": (re.compile(
         r"(?<!\d)(?:\+?1[\s.\-]?)?(?:\(\d{3}\)|\d{3})[\s.\-]?\d{3}[\s.\-]?\d{4}(?!\d)"),
         _pn_fake_phone),
-    # Street address. Deliberately conservative for legal text: the street
-    # number then 1-4 CAPITALISED name words (no IGNORECASE, so "the court" /
-    # "of this" don't qualify) then a street-type suffix. The suffix list omits
-    # Court/Ct, Place/Pl, Way, Terrace/Ter, Square/Sq — those are ubiquitous in
-    # briefs ("Superior Court", "by way", "in place of") and caused constant
-    # false positives; only unambiguous suffixes remain. The suffix itself is
-    # matched case-insensitively (?i:) so "STREET"/"Street"/"St." all count.
-    # At least ONE name word is required, or a bare "1 ST" reads as an address;
-    # and the separators are spaces/tabs, never a newline, or a zip code at the
-    # end of one line joins the word "Street" three lines below it.
-    "address": (re.compile(
-        r"\b\d{1,6}[ \t]+(?:[A-Z][A-Za-z0-9.]*[ \t]+){1,4}"
-        r"(?i:Street|St|Avenue|Ave|Boulevard|Blvd|Road|Rd|Lane|Ln|Drive|Dr|"
-        r"Circle|Cir|Highway|Hwy|Parkway|Pkwy|Trail|Trl)\b\.?"), _pn_fake_street),
+    # Street address — anchored on a leading street number on the same row, then
+    # 1-4 name words (capitalised, or an ordinal/directional), then a street-type
+    # suffix; extended through an optional suite and City, ST ZIP. Separators are
+    # spaces/tabs, never a newline (a zip at a line end must not weld to the word
+    # "Street" three lines below). See _PN_ADDR_RE for the components.
+    "address": (_PN_ADDR_RE, _pn_fake_street),
+    # Bare URL or domain OUTSIDE an @-address (an @-address is the email
+    # detector's job and wins overlap resolution). Citation hosts are filtered
+    # out in _detector_cands so the authorities appendix survives.
+    "url": (re.compile(
+        r"(?:https?://|www\.)[^\s<>()\"']*[^\s<>()\"'.,;:!?]"
+        r"|(?<!@)(?<![\w.])[A-Za-z0-9][\w-]*(?:\.[\w-]+)*"
+        r"\.(?:com|net|org|law|gov|edu|us|biz|info)\b(?:/[^\s<>()\"'.,;:!?]*)?"),
+        _pn_fake_url),
 }
-_PN_DEFAULT_DETECTORS = ["ssn", "email", "phone", "address"]
+_PN_DEFAULT_DETECTORS = ["ssn", "email", "phone", "address", "url"]
+
+
+# ── Open-world REVIEW scan ──────────────────────────────────────────────────
+# `surviving_reals` only re-checks values the tool already tracks, so it cannot
+# see a real identifier that was never a term. These shape detectors flag
+# identifiers that must never ride along in a shareable export even when there
+# is no key entry for them — a contractor licence or a bar number each resolves
+# to a real name in a public lookup. They are REVIEW findings, NOT auto-replaced:
+# a statute URL is legitimate and only a human can tell the difference.
+_PN_REVIEW_RES = {
+    "license number": re.compile(r"(?i)\blicen[cs]e\s*#?\s*:?\s*(\d{6,})"),
+    "bar number": re.compile(
+        r"(?i)\b(?:state\s+)?bar\s*(?:no\.?|number|#)?\s*:?\s*(\d{5,6})\b"),
+    "reservation id": re.compile(
+        r"(?i)\bres(?:ervation)?\.?\s*i\.?\s*d\.?\s*:?\s*(\d{8,})"),
+    "file number": re.compile(r"(?i)\b(?:my\s+)?file\s+no\.?\s*:?\s*([\w\-]{3,})"),
+    "url/domain": _PN_DETECTORS["url"][0],
+}
+
+
+def _pn_review_findings(text):
+    """[(class, sample), ...] — identifier shapes in `text` that a human must
+    review before the export is shared. De-duplicated; whitelisted citation
+    hosts and the tool's own neutral fake domains are not reported."""
+    text = _NFKC(text)
+    out, seen = [], set()
+    for cls, rx in _PN_REVIEW_RES.items():
+        for m in rx.finditer(text):
+            sample = re.sub(r"\s+", " ", m.group(0)).strip()
+            if cls == "url/domain":
+                if _pn_url_whitelisted(sample):
+                    continue
+                if _pn_url_host(sample) in _PN_EMAIL_DOMAINS:
+                    continue  # our own fake domain, not a leak
+            key = (cls, sample.lower())
+            if key not in seen:
+                seen.add(key)
+                out.append((cls, sample))
+    return out
+
+
+def _pn_alnum_core(real):
+    """`real` reduced to lower-case alphanumerics after its trailing corporate
+    suffix/connector tokens are dropped, so `Schilleci & Tortorici, P.C.` and the
+    spliced `SCHILLECITORTORICI...` share the key `schillecitortorici`."""
+    toks = real.split()
+    while toks and _pn_is_entity_keep(_pn_word_base(toks[-1])):
+        toks.pop()
+    return re.sub(r"[^a-z0-9]", "", " ".join(toks).lower())
+
+
+def _pn_address_adjacency(records):
+    """[warning, ...] for any two `address` records on the same street whose
+    numbers are adjacent or overlapping. This is the failure that changed the
+    record: `414 S. Maple` and `416 S. Maple` were faked to two unrelated
+    streets, severing an ADU from the residence it sits behind."""
+    by_street = {}
+    for r in records:
+        if r["category"] != "address":
+            continue
+        street, nums = _pn_addr_street_key(r["real"])
+        if street and nums:
+            by_street.setdefault(street, []).append((min(nums), max(nums), r["real"]))
+    warns = []
+    for entries in by_street.values():
+        entries.sort()
+        for i in range(len(entries)):
+            lo1, hi1, a = entries[i]
+            for lo2, hi2, b in entries[i + 1:]:
+                if lo2 <= hi1 + 2 and lo1 <= hi2 + 2:  # within 2, or overlapping
+                    warns.append(f"'{a}' and '{b}' are adjacent/overlapping on "
+                                 f"one street but were faked separately")
+    return warns
 
 
 def _pn_build_pattern(term, *, whole_word):
@@ -5833,6 +6087,11 @@ _PN_DECL_TRAIL_STOP = frozenset({
     "as", "in", "re", "regarding", "concerning", "for", "on", "of", "to",
     "and", "with", "support", "opposition", "response", "reply", "compliance",
     "successor", "interest", "pursuant", "filed", "submitted",
+    # Caption field labels: a declarant name that wrapped a line must not run on
+    # into "License #:" / "State Bar No." / "Reservation ID:" on the next line.
+    "license", "licence", "bar", "state", "sbn", "no", "reservation", "res",
+    "id", "case", "dept", "department", "telephone", "tel", "fax", "facsimile",
+    "email", "e-mail", "attorney", "attorneys",
 })
 
 
@@ -5860,6 +6119,64 @@ def _pn_declarant_names(text):
                 seen.add(nm.lower())
                 names.append(nm)
     return names
+
+
+# ── Label-anchored names (exhibits, contracts, signature blocks) ─────────────
+# Pleading paper yields names through DECLARATION OF / I, X, declare / Law
+# Offices of. EXHIBITS — letterheads, contracts, proofs of service — carry real
+# names with none of those anchors, so every one of them used to survive. These
+# labels state that a name follows, which is a reliable, low-risk anchor.
+_PN_LABEL_NAME = r"[A-Z][A-Za-z.'’-]+(?:[ \t]+[A-Z][A-Za-z0-9.'’-]+){0,3}"
+_PN_LABEL_RES = (
+    re.compile(r"(?i:property\s+owner)s?[ \t]*:?[ \t]*"
+               r"(?P<n>" + _PN_LABEL_NAME + r"(?:[ \t]+(?:and|&)[ \t]+"
+               + _PN_LABEL_NAME + r")?)"),
+    re.compile(r"(?i:contractor|owner|client|tenant|landlord|buyer|seller)s?"
+               r"[ \t]*:[ \t]*(?P<n>" + _PN_LABEL_NAME + r")"),
+    re.compile(r"/s/[ \t]*(?P<n>" + _PN_LABEL_NAME + r")"),
+    re.compile(r"(?i:attn|attention)[ \t]*:?[ \t]*(?P<n>" + _PN_LABEL_NAME + r")"),
+    re.compile(r"(?i:dear)[ \t]+(?i:mr|ms|mrs|dr|messrs)\.?[ \t]+"
+               r"(?P<n>" + _PN_LABEL_NAME + r")"),
+)
+
+
+def _pn_label_names(text):
+    """Personal names read out of exhibit/contract/signature labels
+    ("Property owner:", "/s/", "Attn:", "Dear Mr. X", "Contractor:"). A single
+    "Roxanne and Thomas Purscelley" yields both, sharing the trailing surname."""
+    out, seen = [], set()
+    for rx in _PN_LABEL_RES:
+        for m in rx.finditer(text):
+            raw = re.sub(r"\s+", " ", m.group("n")).strip()
+            pieces = [p.strip() for p in re.split(r"\s+(?:and|&)\s+", raw) if p.strip()]
+            # "Roxanne and Thomas Purscelley" -> give the bare first name the
+            # shared surname so it registers as a person, not a lone first name.
+            if pieces and len(pieces[-1].split()) >= 2:
+                surname = pieces[-1].split()[-1]
+                pieces = [p if len(p.split()) >= 2 else f"{p} {surname}"
+                          for p in pieces]
+            for piece in pieces:
+                piece = _pn_trim_declarant(piece).strip()
+                words = piece.split()
+                if len(words) < 2 or _pn_is_party_role(piece):
+                    continue
+                if any(_pn_word_base(w) in _PN_NON_NAME_WORDS or _pn_is_role_token(w)
+                       for w in words):
+                    continue
+                if not all(w[:1].isupper() for w in words if w[:1].isalpha()):
+                    continue
+                if piece.lower() not in seen:
+                    seen.add(piece.lower())
+                    out.append(piece)
+    return out
+
+
+# A display name in front of an e-mail address: "Tommy Purscelley
+# <tpurscelley@x.com>". The address is scrubbed by the e-mail detector, but the
+# name beside it used to survive, re-identifying the party the address hid.
+_PN_EMAIL_DISPLAY_RE = re.compile(
+    r"(?P<name>[A-Z][A-Za-z.'’-]+(?:[ \t]+[A-Z][A-Za-z.'’-]+){0,3})[ \t]*"
+    r"<[ \t]*[^<>@\s]+@[^<>\s]+[ \t]*>")
 
 
 def _pn_reflow(original, fake):
@@ -6025,6 +6342,10 @@ class Pseudonymizer:
         self.registry = registry if registry is not None else _PnFakeRegistry()
         self.texts_applied = 0   # how many text bodies were run through apply()
         self.written = []        # .txt paths written with pseudonymization applied
+        self.leaked = set()      # real_lower values that survived in some export
+        self.review = []         # (class, sample) open-world findings across files
+        self._own_fakes = set()  # detector fakes we minted, so a re-scrub of
+                                 # already-fake text never re-fakes them
         # (category, real_lower) -> record dict {category, real, fake, source,
         # count, pattern, flags}
         self.records = {}
@@ -6117,6 +6438,16 @@ class Pseudonymizer:
             _pn_append_name_terms(new, raw, "document", self.registry)
             self._add_terms(new)
 
+    def register_label_names(self, text):
+        """Register names read out of exhibit/contract/signature labels
+        ("Property owner:", "/s/", "Attn:", "Dear Mr. X", "Contractor:") — the
+        one place real names appear off the spreadsheet AND off the pleading
+        anchors. Idempotent; call before apply()."""
+        for raw in _pn_label_names(text):
+            new = []
+            _pn_append_name_terms(new, raw, "document", self.registry)
+            self._add_terms(new)
+
     def register_dba_names(self, text):
         """Read "<entity> dba <name>" / "<name>, a dba of <entity>" out of `text`
         and register BOTH sides as terms. The spreadsheet's Title Defendant is
@@ -6151,14 +6482,22 @@ class Pseudonymizer:
         rk = (cat, real.lower())
         rec = self.records.get(rk)
         if rec is None:
-            # E-mails reuse a party's name-token fake when the local part
-            # contains that name (zcoderre@… -> z<fake-of-Coderre>@…), so
-            # the address stays tied to the same pseudonymous person.
-            fake = self._fake_email(real) if cat == "email" else faker(real)
+            # E-mails, addresses and URLs are faked through the registry so the
+            # map stays injective (one parcel/domain -> one fake) and an e-mail
+            # reuses a party's name-token fake (zcoderre@… -> z<fake-Coderre>@…).
+            if cat == "email":
+                fake = self._fake_email(real)
+            elif cat == "address":
+                fake = self._fake_street(real)
+            elif cat == "url":
+                fake = self._fake_url(real)
+            else:
+                fake = faker(real)
             rec = {"category": cat, "real": real, "fake": fake,
                    "source": "regex", "count": 0,
                    "pattern": re.escape(_NFKC(real)), "flags": 0}
             self.records[rk] = rec
+            self._own_fakes.add(fake.lower())
         return rec
 
     def _detector_cands(self, text, offset=0):
@@ -6166,9 +6505,34 @@ class Pseudonymizer:
         for cat in self.detectors:
             regex, faker = _PN_DETECTORS[cat]
             for m in regex.finditer(text):
-                rec = self._detector_record(cat, m.group(0), faker)
+                match = m.group(0)
+                # Never rewrite a whitelisted citation URL — the authorities
+                # appendix emits those deliberately — nor a fake we ourselves
+                # minted (so re-scrubbing already-fake text is a fixed point).
+                if cat == "url" and _pn_url_whitelisted(match):
+                    continue
+                if match.lower().rstrip(" .,;:") in self._own_fakes:
+                    continue
+                rec = self._detector_record(cat, match, faker)
                 out.append((3, m.start() + offset, m.end() + offset, rec))
         return out
+
+    def _fake_street(self, real):
+        """Injective address fake: canonicalise first so spelling variants of
+        one parcel share a fake, then draw a unique street from the registry."""
+        canon = _pn_addr_canon(real)
+        def make(rng):
+            return (f"{rng.randrange(100, 9999)} {rng.choice(_PN_STREET_NAMES)} "
+                    f"{rng.choice(_PN_STREET_TYPES)}")
+        return self.registry.unique(canon, "street", make)
+
+    def _fake_url(self, real):
+        """Fake a URL, mapping its host to the SAME fake domain `_fake_email`
+        assigns that domain, so the firm site and the firm e-mail agree."""
+        m = re.match(r"(?P<scheme>https?://)?(?P<www>www\.)?(?P<host>[^/\s]+)",
+                     real.strip(), re.IGNORECASE)
+        host = m.group("host") if m else real
+        return f"{m.group('scheme') or ''}{m.group('www') or ''}{_pn_fake_domain(host)}"
 
     def _term_cands(self, text):
         out = []
@@ -6177,6 +6541,38 @@ class Pseudonymizer:
                 if m.start() != m.end():
                     out.append((t.priority, m.start(), m.end(),
                                 self.records[(t.category, t.real.lower())]))
+        return out
+
+    def _display_name_cands(self, text, offset=0):
+        """Candidates for the NAME in a "Name <addr@domain>" display pair. The
+        address is scrubbed by the e-mail detector; this scrubs the name beside
+        it too, reusing the party's fake when the name is known and minting a
+        stable person fake otherwise."""
+        out = []
+        for m in _PN_EMAIL_DISPLAY_RE.finditer(text):
+            name, start = m.group("name"), m.start("name")
+            # Trim a leading non-name lead-in the greedy capture dragged in
+            # ("Contact Tommy Purscelley <…>" -> "Tommy Purscelley"), so prose is
+            # not rewritten along with the name.
+            lead = re.match(r"(?:(?:Contact|Email|From|To|Cc|By|See|Call|Re|And|"
+                            r"With)\b[ \t]+)+", name)
+            if lead:
+                start += lead.end()
+                name = name[lead.end():]
+            words = name.split()
+            # Skip a pure role/label or a name with no plausible name word (so a
+            # mailer like "Notifications <no-reply@…>" is left alone).
+            if _pn_is_party_role(name) or not any(_pn_is_name_token(w) for w in words):
+                continue
+            rk = ("display-name", name.lower())
+            rec = self.records.get(rk)
+            if rec is None:
+                rec = {"category": "display-name", "real": name,
+                       "fake": _pn_fake_person(name, self.registry)[0],
+                       "source": "regex", "count": 0,
+                       "pattern": re.escape(_NFKC(name)), "flags": 0}
+                self.records[rk] = rec
+            out.append((2, start + offset, m.end("name") + offset, rec))
         return out
 
     def _substitute(self, text, cands, reflow=False, count=True):
@@ -6196,7 +6592,7 @@ class Pseudonymizer:
             # sentence. An e-mail fake is left alone — its casing is meaningless
             # and upper-casing a domain looks wrong.
             fake = rec["fake"]
-            if rec["category"] != "email":
+            if rec["category"] not in ("email", "url"):
                 fake = _pn_case_like(text[s:e], fake)
             if reflow:
                 fake = _pn_reflow(text[s:e], fake)
@@ -6214,8 +6610,9 @@ class Pseudonymizer:
         if count:
             self.texts_applied += 1
         text = _NFKC(text)
-        return self._substitute(text, self._detector_cands(text) + self._term_cands(text),
-                                count=count)
+        cands = (self._detector_cands(text) + self._term_cands(text)
+                 + self._display_name_cands(text))
+        return self._substitute(text, cands, count=count)
 
     def apply_lines(self, bodies):
         """Pseudonymize a pleading page's line BODIES as one text, returning one
@@ -6232,7 +6629,8 @@ class Pseudonymizer:
         self.texts_applied += 1
         bodies = [_NFKC(b) for b in bodies]
         joined = "\n".join(bodies)
-        cands, off = self._term_cands(joined), 0
+        cands = self._term_cands(joined) + self._display_name_cands(joined)
+        off = 0
         for b in bodies:
             cands += self._detector_cands(b, off)
             off += len(b) + 1
@@ -6267,9 +6665,12 @@ class Pseudonymizer:
                 return by_real[mm.group(0).lower()].lower()
             local = pat.sub(repl, local)
         if not matched:
-            return _pn_fake_email(real)
-        fake_domain = _pn_rng("emaildom", domain.lower()).choice(_PN_EMAIL_DOMAINS)
-        return f"{local}@{fake_domain}"
+            # No known name in the local part: randomise it, but still neutralise
+            # the DOMAIN through _pn_fake_domain so the firm site (URL detector)
+            # and the firm e-mail resolve to the same fake host.
+            r = _pn_rng("email", real.lower())
+            local = f"{r.choice(_PN_NAME_WORDS).lower()}.{r.choice(_PN_NAME_WORDS).lower()}"
+        return f"{local}@{_pn_fake_domain(domain)}"
 
     def surviving_reals(self, text):
         """Real values that still appear in `text` — a leak the caller should
@@ -6287,14 +6688,55 @@ class Pseudonymizer:
                 pass
         return out
 
+    def surviving_reals_reduced(self, text):
+        """Tracked reals found in the ALPHANUMERIC-ONLY reduction of `text`.
+
+        On a column-spliced caption the whole-word patterns match nothing —
+        `Schilleci & Tortorici` extracts as `SCHILLECITORTORICILAW` with no
+        boundaries — yet the reduction `schillecitortoricilaw` still CONTAINS
+        `schillecitortorici`. Only reasonably long cores are checked so a short
+        name can't match inside an unrelated word."""
+        red = re.sub(r"[^a-z0-9]", "", _NFKC(text).lower())
+        out = []
+        for rec in self.records.values():
+            core = _pn_alnum_core(rec["real"])
+            if len(core) >= 8 and core in red:
+                out.append(rec["real"])
+        return out
+
+    def note_leaks(self, reals):
+        """Record that `reals` survived in some export, for the key's Status."""
+        for r in reals:
+            self.leaked.add(r.lower())
+
+    def review_scan(self, text):
+        """Run the open-world identifier-shape scan, accumulate the findings for
+        the folder-level report, and return them."""
+        found = _pn_review_findings(text)
+        seen = {(c, s.lower()) for c, s in self.review}
+        for c, s in found:
+            if (c, s.lower()) not in seen:
+                seen.add((c, s.lower()))
+                self.review.append((c, s))
+        return found
+
+    def _status(self, rec):
+        if rec["real"].lower() in self.leaked:
+            return "leaked"
+        return "replaced" if rec["count"] > 0 else "no match"
+
     def write_key(self, path, log):
-        """Write the real->fake mapping used everywhere. xlsx if openpyxl is
+        """Write the real->fake mapping used everywhere. Every record is written
+        — including a term that matched nothing — with a Status column, so a
+        reviewer can tell "this value wasn't in the documents" (no match) from
+        "we tracked it and it still leaked" (leaked). xlsx if openpyxl is
         available, else JSON alongside."""
-        rows = sorted((r for r in self.records.values() if r["count"] > 0),
+        rows = sorted(self.records.values(),
                       key=lambda r: (r["category"], r["real"].lower()))
         if not rows:
             return
-        headers = ["Category", "Real Value", "Replacement", "Source", "Occurrences"]
+        headers = ["Category", "Real Value", "Replacement", "Status", "Source",
+                   "Occurrences"]
         try:
             import openpyxl
             wb = openpyxl.Workbook()
@@ -6302,7 +6744,8 @@ class Pseudonymizer:
             ws.title = "Pseudonym Key"
             ws.append(headers)
             for r in rows:
-                ws.append([r["category"], r["real"], r["fake"], r["source"], r["count"]])
+                ws.append([r["category"], r["real"], r["fake"], self._status(r),
+                           r["source"], r["count"]])
             wb.save(path)
             log.info(f"  Pseudonym key written: {path.name} ({len(rows)} mapping(s))")
         except ImportError:
@@ -6310,8 +6753,9 @@ class Pseudonymizer:
             jp = path.with_suffix(".json")
             jp.write_text(json.dumps(
                 {"mappings": [{"category": r["category"], "real": r["real"],
-                               "replacement": r["fake"], "source": r["source"],
-                               "occurrences": r["count"]} for r in rows]},
+                               "replacement": r["fake"], "status": self._status(r),
+                               "source": r["source"], "occurrences": r["count"]}
+                              for r in rows]},
                 indent=2), encoding="utf-8")
             log.info(f"  openpyxl not installed; pseudonym key written as JSON: "
                      f"{jp.name} ({len(rows)} mapping(s))")
@@ -6552,6 +6996,36 @@ def _page_lined_rows(page):
 
 
 _COLUMN_BAND_TOL = 30.0   # pt; segment left edges this close share a page column
+                          # (tuned on one caption layout; override in the config
+                          # via `column_band_tol` when a layout splices)
+
+
+# A caption whose two columns interleaved WITHIN a row segment produces
+# tell-tale garbage: long spaceless tokens, a lower->upper transition inside a
+# token ("SCHILLECIJoplin"), or an @ glued to an upper-case run. When a page
+# looks like this, term matching is unreliable and the page must not be
+# certified clean on the whole-word patterns alone.
+_PN_SPLICE_LONG_TOKEN = 25
+_PN_SPLICE_CASEFLIP_RE = re.compile(r"[a-z][A-Z]")
+_PN_SPLICE_ATRUN_RE = re.compile(r"[A-Z]{8,}@|@[A-Z]{8,}")
+
+
+def _page_looks_spliced(rows):
+    """True when a page's extracted rows show column-splice corruption."""
+    if not rows:
+        return False
+    text = " ".join(t for _num, segs in rows for _x, t in segs)
+    if _PN_SPLICE_ATRUN_RE.search(text):
+        return True
+    for tok in text.split():
+        if len(tok) > _PN_SPLICE_LONG_TOKEN and "-" not in tok:
+            return True
+        # A lower->upper flip inside a token that isn't ordinary CamelCase
+        # (needs an upper run of >=3, e.g. "...JOPLIN", not "McKay").
+        for m in _PN_SPLICE_CASEFLIP_RE.finditer(tok):
+            if re.match(r"[A-Z]{3,}", tok[m.start() + 1:]):
+                return True
+    return False
 
 
 def _page_column_bands(rows):
@@ -6695,6 +7169,7 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         pseudonymizer.register_declarant_names(detect_full)
         pseudonymizer.register_dba_names(detect_full)
         pseudonymizer.register_firm_names(detect_full)
+        pseudonymizer.register_label_names(detect_full)
         pseudonymizer.register_short_names(detect_full)
 
     parts = []
@@ -6729,14 +7204,39 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         # column-ordered rendering as well as the display text: a name that the
         # page wrapped mid-name is only contiguous down its own column, so the
         # display text alone would report a page like that as clean.
+        scrubbed_detect = pseudonymizer.apply(detect_full, count=False)
         survivors = set(pseudonymizer.surviving_reals(body))
-        survivors |= set(pseudonymizer.surviving_reals(
-            pseudonymizer.apply(detect_full, count=False)))
+        survivors |= set(pseudonymizer.surviving_reals(scrubbed_detect))
+
+        # Column-splice check: if a page's extraction is corrupted, the whole-
+        # word patterns match nothing, so also scan the alphanumeric reduction of
+        # what was WRITTEN — `SCHILLECITORTORICILAW` survives the scrub and still
+        # contains `schillecitortorici`. Scan the scrubbed output, not the source
+        # (the source contains every real name by definition).
+        spliced = [i + 1 for i, (_h, c) in enumerate(page_blocks)
+                   if isinstance(c, list) and _page_looks_spliced(c)]
+        if spliced:
+            survivors |= set(pseudonymizer.surviving_reals_reduced(body))
+            survivors |= set(pseudonymizer.surviving_reals_reduced(scrubbed_detect))
+            log.warning(f"  Pseudonymization REVIEW on {pdf_path.name}: caption "
+                        f"on page(s) {spliced} appears column-spliced; term "
+                        f"matching is unreliable there — verify by hand.")
+
         if survivors:
+            pseudonymizer.note_leaks(survivors)
             shown = ", ".join(sorted(survivors)[:8])
             log.warning(f"  Pseudonymization LEAK on {pdf_path.name}: real "
                         f"value(s) still present in the .txt ({shown}). Review "
                         f"before sharing; add them with --term and re-run.")
+
+        # Open-world REVIEW scan: identifier shapes (licence/bar/reservation/file
+        # numbers, bare URLs) that must never ride along even without a key entry.
+        review = pseudonymizer.review_scan(body)
+        if review:
+            shown = "; ".join(f"{c}: {s}" for c, s in review[:8])
+            log.warning(f"  Pseudonymization REVIEW on {pdf_path.name}: "
+                        f"identifier(s) to check before sharing ({shown}).")
+
         # Pseudonymize the output filename too — the .txt is the artifact that
         # gets shared, so a party/attorney name must not survive in its name.
         txt_path = _pseudonymized_txt_path(out_dir, pdf_path, pseudonymizer, log)
@@ -6798,6 +7298,7 @@ def _pn_prescan_folder(pdfs, pseudonymizer, log):
         pseudonymizer.register_declarant_names(text)
         pseudonymizer.register_dba_names(text)
         pseudonymizer.register_firm_names(text)
+        pseudonymizer.register_label_names(text)
         pseudonymizer.register_short_names(text)
     added = len(pseudonymizer.terms) - before
     if added:
@@ -7151,6 +7652,11 @@ _CONFIG_TEMPLATE = (
     "# Subfolder (inside each case folder) that the .txt exports are written to.\n"
     "# Default: Text Files.\n"
     "text_subfolder = Text Files\n"
+    "\n"
+    "# How close (in points) two caption-column left edges may be and still be\n"
+    "# treated as ONE page column. Default: 30. Raise it if a two-column caption\n"
+    "# splices its columns together in the .txt (a REVIEW warning names the page).\n"
+    "column_band_tol = 30\n"
 )
 
 
@@ -7320,6 +7826,14 @@ def main():
     # Subfolder (within each case folder) that the .txt exports are written to.
     text_subdir = cfg.get("text_subfolder", "").strip() or "Text Files"
 
+    # Column-band tolerance for splitting two-column caption pages (points).
+    global _COLUMN_BAND_TOL
+    try:
+        _COLUMN_BAND_TOL = float(cfg.get("column_band_tol", "").strip()
+                                 or _COLUMN_BAND_TOL)
+    except ValueError:
+        pass
+
     def _warn(msg):
         # Surface a folder-level warning both to the log and the console.
         log.warning(msg)
@@ -7394,6 +7908,17 @@ def main():
 
     # One key file for the whole folder maps every real value to its fake.
     if pseudonymizer is not None:
+        # Two addresses on one street with adjacent numbers were faked to two
+        # unrelated streets — the failure that moved an ADU off its parcel.
+        for w in _pn_address_adjacency(pseudonymizer.records.values()):
+            _warn(f"Pseudonymize REVIEW: {w}. Re-run with the range as one "
+                  f"--term, or verify the fake addresses by hand.")
+        if pseudonymizer.review:
+            shown = "; ".join(f"{c}: {s}" for c, s in pseudonymizer.review[:12])
+            _warn(f"Pseudonymize REVIEW: identifier shape(s) present in the "
+                  f".txt exports that no key can catch — verify before sharing "
+                  f"({shown}).")
+
         key_out = args.key_out or (folder / "pseudonym_key.xlsx")
         try:
             pseudonymizer.write_key(key_out, log)
