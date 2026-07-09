@@ -4928,8 +4928,70 @@ def _pn_titlecase_like(fake, original):
     return fake
 
 
-def _pn_fake_name_token(word):
-    return _pn_titlecase_like(_pn_rng("nametok", word.lower()).choice(_PN_NAME_WORDS), word)
+class _PnFakeRegistry:
+    """Hands out fakes so the real->fake map stays a bijection for one case.
+
+    Two guarantees, both required for the pseudonym key to round-trip:
+      * stable  — the same real value always gets the same fake (across pages,
+        files, and full-name vs. bare-token forms);
+      * unique  — two DIFFERENT real values never get the same fake.
+
+    The fake-name pool is small, so without this the per-token hash would
+    occasionally map two unrelated people to one fake (e.g. a party's surname
+    and an attorney's middle name both becoming "Forsythe"), which made the
+    fake ambiguous and broke mapping the .txt back to the real names."""
+
+    def __init__(self):
+        self._memo = {}     # (seed_tag, real_lower) -> fake
+        self._used = set()  # every fake handed out, lower-cased (global)
+
+    def _take(self, key, fake):
+        self._memo[key] = fake
+        self._used.add(fake.lower())
+        return fake
+
+    def tokens_for(self, seed_tag):
+        """{real_lower: fake} for every value assigned under `seed_tag` — used to
+        reuse a person's name-token fake elsewhere (e.g. inside an e-mail)."""
+        return {real: fake for (tag, real), fake in self._memo.items()
+                if tag == seed_tag}
+
+    def token(self, real, words, seed_tag):
+        """A single canonical-case stand-in word for `real`, never reused for a
+        different real value. Draws from `words` in a per-value deterministic
+        order, skipping any already taken; if the whole pool is exhausted a
+        numeric suffix keeps it unique."""
+        key = (seed_tag, real.lower())
+        if key in self._memo:
+            return self._memo[key]
+        rng = _pn_rng(seed_tag, real.lower())
+        order = list(words)
+        rng.shuffle(order)
+        for cand in order:
+            if cand.lower() not in self._used:
+                return self._take(key, cand)
+        base, n = order[0], 2
+        while f"{base}{n}".lower() in self._used:
+            n += 1
+        return self._take(key, f"{base}{n}")
+
+    def digits(self, real, seed_tag):
+        """A digit-for-digit fake of `real` (e.g. a case number), unique per
+        case. Re-seeds on the rare collision so two real numbers never share
+        one fake."""
+        key = (seed_tag, real.lower())
+        if key in self._memo:
+            return self._memo[key]
+        for attempt in range(10000):
+            r = _pn_rng(seed_tag, real, attempt)
+            cand = re.sub(r"\d", lambda m: str(r.randrange(10)), real)
+            if cand.lower() not in self._used:
+                return self._take(key, cand)
+        return self._take(key, cand)  # give up after 10k tries; keep it stable
+
+
+def _pn_fake_name_token(word, registry):
+    return _pn_titlecase_like(registry.token(word, _PN_NAME_WORDS, "nametok"), word)
 
 
 def _pn_looks_like_entity(name):
@@ -4993,7 +5055,7 @@ def _pn_is_role_token(token):
     return token.strip('.,:;"’\'').lower() in _PN_PARTY_ROLE_WORDS
 
 
-def _pn_fake_person(name):
+def _pn_fake_person(name, registry):
     """(fake_full_name, [(bare_real, bare_fake, is_surname), ...]) — composed
     token-by-token so a bare surname resolves to the same fake used here."""
     words = list(_PN_WORD_RE.finditer(name))
@@ -5013,7 +5075,7 @@ def _pn_fake_person(name):
         if w.lower().rstrip(".") in _PN_SUFFIX_TOKENS:
             parts.append(w)
         else:
-            fake = _pn_fake_name_token(w)
+            fake = _pn_fake_name_token(w, registry)
             parts.append(fake)
             is_surname = (m.start() == surname_at)
             if len(w) >= 3 and w.lower() not in _PN_COMMON_WORD_SURNAMES and (
@@ -5024,12 +5086,12 @@ def _pn_fake_person(name):
     return "".join(parts), bare
 
 
-def _pn_fake_entity(name):
+def _pn_fake_entity(name, registry):
     def repl(tok):
         base = tok.strip(".,").lower()
         if base in _PN_ENTITY_KEEP or not re.search(r"[A-Za-z]", tok):
             return tok
-        return _pn_titlecase_like(_pn_rng("enttok", base).choice(_PN_ENTITY_WORDS), tok)
+        return _pn_titlecase_like(registry.token(base, _PN_ENTITY_WORDS, "enttok"), tok)
     return " ".join(repl(t) for t in name.split())
 
 
@@ -5038,7 +5100,7 @@ def _pn_fake_entity(name):
 _PN_ENTITY_SUFFIXES_NORM = {re.sub(r"[.\s]", "", s) for s in _PN_ENTITY_SUFFIXES}
 
 
-def _pn_entity_bare(name):
+def _pn_entity_bare(name, registry):
     """Return (bare_real, bare_fake) for the entity name with its trailing
     corporate suffix/connector(s) removed — e.g. "Air Tutors LLC" -> "Air
     Tutors" — so the entity is still pseudonymized when it's written WITHOUT
@@ -5063,24 +5125,24 @@ def _pn_entity_bare(name):
         return None
     if bare.lower() == re.sub(r"[.,;]+$", "", name.strip()).lower():
         return None  # nothing was stripped; the full-name term already covers it
-    return bare, _pn_fake_entity(bare)
+    return bare, _pn_fake_entity(bare, registry)
 
 
-def _pn_append_entity_terms(terms, raw, source):
+def _pn_append_entity_terms(terms, raw, source, registry):
     """Register the full entity term plus, when safe, a suffix-stripped
     'bare' variant that catches the name written without its corporate
     suffix."""
-    terms.append(_PnTerm("entity", raw, _pn_fake_entity(raw), whole_word=False,
-                         case_sensitive=False, priority=2, source=source))
-    bare = _pn_entity_bare(raw)
+    terms.append(_PnTerm("entity", raw, _pn_fake_entity(raw, registry),
+                         whole_word=False, case_sensitive=False, priority=2,
+                         source=source))
+    bare = _pn_entity_bare(raw, registry)
     if bare and not _pn_is_party_role(bare[0]):
         terms.append(_PnTerm("entity-token", bare[0], bare[1], whole_word=True,
                              case_sensitive=False, priority=1, source=source))
 
 
-def _pn_fake_caseno(real):
-    r = _pn_rng("caseno", real)
-    return re.sub(r"\d", lambda m: str(r.randrange(10)), real)
+def _pn_fake_caseno(real, registry):
+    return registry.digits(real, "caseno")
 
 
 def _pn_fake_phone(real):
@@ -5223,16 +5285,21 @@ def _pn_terms_from_xlsx(path, extra_name_headers, log):
     return names, casenos
 
 
-def _pn_build_terms(names, casenos, extra_terms):
-    """Turn raw strings into _PnTerm objects with stable fake replacements."""
+def _pn_build_terms(names, casenos, extra_terms, registry=None):
+    """Turn raw strings into _PnTerm objects with stable fake replacements.
+    A shared `registry` keeps every fake unique across the whole case; pass the
+    SAME registry to the Pseudonymizer so declarant names added later can't
+    reuse a fake already assigned here."""
+    if registry is None:
+        registry = _PnFakeRegistry()
     terms = []
     for raw in names:
         if _pn_is_party_role(raw):  # a bare role label is never a name
             continue
         if _pn_looks_like_entity(raw):
-            _pn_append_entity_terms(terms, raw, "spreadsheet")
+            _pn_append_entity_terms(terms, raw, "spreadsheet", registry)
         else:
-            fake_full, bare = _pn_fake_person(raw)
+            fake_full, bare = _pn_fake_person(raw, registry)
             terms.append(_PnTerm("person", raw, fake_full, whole_word=False,
                                  case_sensitive=False, priority=2,
                                  source="spreadsheet"))
@@ -5243,20 +5310,20 @@ def _pn_build_terms(names, casenos, extra_terms):
                                      whole_word=True, case_sensitive=False,
                                      priority=1, source="spreadsheet"))
     for raw in casenos:
-        terms.append(_PnTerm("case_number", raw, _pn_fake_caseno(raw),
+        terms.append(_PnTerm("case_number", raw, _pn_fake_caseno(raw, registry),
                              whole_word=True, case_sensitive=False, priority=2,
                              source="spreadsheet"))
     for raw in extra_terms or []:
         if re.search(r"\d", raw) and not re.search(r"[A-Za-z]{2}", raw):
-            terms.append(_PnTerm("case_number", raw, _pn_fake_caseno(raw),
+            terms.append(_PnTerm("case_number", raw, _pn_fake_caseno(raw, registry),
                                  whole_word=False, case_sensitive=False,
                                  priority=2, source="--term"))
         elif _pn_is_party_role(raw):  # never pseudonymize a bare role label
             continue
         elif _pn_looks_like_entity(raw):
-            _pn_append_entity_terms(terms, raw, "--term")
+            _pn_append_entity_terms(terms, raw, "--term", registry)
         else:
-            terms.append(_PnTerm("person", raw, _pn_fake_person(raw)[0],
+            terms.append(_PnTerm("person", raw, _pn_fake_person(raw, registry)[0],
                                  whole_word=False, case_sensitive=False,
                                  priority=2, source="--term"))
     # De-duplicate on (real, category); keep the highest-priority instance.
@@ -5366,9 +5433,12 @@ class Pseudonymizer:
     one key file can be written at the end.
     """
 
-    def __init__(self, terms, detectors):
+    def __init__(self, terms, detectors, registry=None):
         self.terms = terms
         self.detectors = detectors
+        # Shared with _pn_build_terms so declarant fakes minted later stay unique
+        # against the terms already assigned (no two reals share one fake).
+        self.registry = registry if registry is not None else _PnFakeRegistry()
         self.texts_applied = 0   # how many text bodies were run through apply()
         self.written = []        # .txt paths written with pseudonymization applied
         # (category, real_lower) -> record dict {category, real, fake, source,
@@ -5408,7 +5478,7 @@ class Pseudonymizer:
         for raw in _pn_declarant_names(text):
             if _pn_is_party_role(raw):
                 continue
-            fake_full, bare = _pn_fake_person(raw)
+            fake_full, bare = _pn_fake_person(raw, self.registry)
             new_terms = [_PnTerm("person", raw, fake_full, whole_word=False,
                                  case_sensitive=False, priority=2,
                                  source="declarant")]
@@ -5445,7 +5515,12 @@ class Pseudonymizer:
                 rk = (cat, real.lower())
                 rec = self.records.get(rk)
                 if rec is None:
-                    rec = {"category": cat, "real": real, "fake": faker(real),
+                    # E-mails reuse a party's name-token fake when the local part
+                    # contains that name (zcoderre@… -> z<fake-of-Coderre>@…), so
+                    # the address stays tied to the same pseudonymous person.
+                    fake = (self._fake_email(real) if cat == "email"
+                            else faker(real))
+                    rec = {"category": cat, "real": real, "fake": fake,
                            "source": "regex", "count": 0,
                            "pattern": re.escape(_NFKC(real)), "flags": 0}
                     self.records[rk] = rec
@@ -5467,6 +5542,36 @@ class Pseudonymizer:
             text = text[:s] + rec["fake"] + text[e:]
             rec["count"] += 1
         return text
+
+    def _fake_email(self, real):
+        """Fake an e-mail address, reusing the fakes already assigned to any
+        party name-tokens that appear in its local part. So if "Coderre" ->
+        "Forsythe" and the address is zcoderre@gmail.com, the fake local part
+        keeps the same stand-in: zforsythe@…. The domain is always neutralised.
+        Falls back to a fully random address when no known name is present."""
+        local, sep, domain = real.partition("@")
+        if not sep:
+            return _pn_fake_email(real)
+        tokens = self.registry.tokens_for("nametok")
+        # Only distinctive tokens (>=4 chars) so short/common fragments don't
+        # rewrite unrelated letters; longest-first for greedy, non-overlapping
+        # substitution.
+        items = sorted(((r, f) for r, f in tokens.items() if len(r) >= 4),
+                       key=lambda rf: -len(rf[0]))
+        matched = False
+        if items:
+            by_real = {r: f for r, f in items}
+            pat = re.compile("|".join(re.escape(r) for r, _ in items),
+                             re.IGNORECASE)
+            def repl(mm):
+                nonlocal matched
+                matched = True
+                return by_real[mm.group(0).lower()].lower()
+            local = pat.sub(repl, local)
+        if not matched:
+            return _pn_fake_email(real)
+        fake_domain = _pn_rng("emaildom", domain.lower()).choice(_PN_EMAIL_DOMAINS)
+        return f"{local}@{fake_domain}"
 
     def surviving_reals(self, text):
         """Real values that were replaced at least once somewhere but still
@@ -6347,8 +6452,9 @@ def main():
                 # PII-only pseudonymization still work) — warn and continue.
                 _warn(f"Pseudonymize: could not read key {key_path.name}: {e}. "
                       f"Party names will NOT be pseudonymized in the .txt exports.")
-        terms = _pn_build_terms(names, casenos, args.term)
-        pseudonymizer = Pseudonymizer(terms, detectors)
+        registry = _PnFakeRegistry()
+        terms = _pn_build_terms(names, casenos, args.term, registry)
+        pseudonymizer = Pseudonymizer(terms, detectors, registry)
         log.info(f"Pseudonymizing .txt exports: {len(terms)} term(s), "
                  f"detectors={detectors or 'none'}")
 
