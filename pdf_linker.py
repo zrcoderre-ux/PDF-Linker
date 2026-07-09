@@ -1782,18 +1782,80 @@ def _join_spans_spaced(spans):
     return out
 
 
+# A physical row of text is identified by its BASELINE, not by its bbox
+# mid-point. Glyph boxes of different point sizes on one row have different
+# mid-points but share a baseline, so bucketing by a rounded mid-point splits
+# one row into two buckets — and the old code emitted at most one bucket per
+# gutter line, silently discarding the other. That is how caption text went
+# missing from the .txt.
+_ROW_BASELINE_TOL = 3.0     # pt; spans this close share a row
+_GUTTER_MATCH_TOL = 24.0    # pt; how far a row may sit from its line number
+_COLUMN_GAP_MIN = 20.0      # pt; a horizontal gap this wide separates columns
+
+
+def _span_baseline(sp):
+    """Baseline y of a span. PyMuPDF gives `origin`; fall back to the bbox
+    mid-point for span dicts that lack it."""
+    origin = sp.get("origin")
+    if origin:
+        return origin[1]
+    return (sp["bbox"][1] + sp["bbox"][3]) / 2
+
+
+def _cluster_rows(spans, tol=_ROW_BASELINE_TOL):
+    """Group spans into physical rows by baseline. Returns [{y, spans}] sorted
+    top to bottom, with every input span in exactly one row (nothing dropped)."""
+    rows = []
+    for sp in sorted(spans, key=_span_baseline):
+        y = _span_baseline(sp)
+        if rows and abs(y - rows[-1]["y"]) <= tol:
+            rows[-1]["spans"].append(sp)
+        else:
+            rows.append({"y": y, "spans": [sp]})
+    return rows
+
+
+def _split_row_columns(spans, gap_min=_COLUMN_GAP_MIN):
+    """Split one row's spans into column segments at wide horizontal gaps.
+
+    A pleading caption is two columns — party names left, document title right —
+    and both sit on the same printed line. Joining them left-to-right into one
+    string welds the two into a phrase that exists nowhere on the page
+    ("DREAM TEAM REAL ESTATE" + "BAY EQUITY LENDING, INC."), which no party-name
+    term can match. Returns [(x0, text), ...] in left-to-right order."""
+    segments, current, prev_x1 = [], [], None
+    for sp in sorted(spans, key=lambda s: s["bbox"][0]):
+        x0, x1 = sp["bbox"][0], sp["bbox"][2]
+        if current and prev_x1 is not None and (x0 - prev_x1) > gap_min:
+            segments.append(current)
+            current = []
+        current.append(sp)
+        prev_x1 = max(prev_x1 or x1, x1)
+    if current:
+        segments.append(current)
+    out = []
+    for seg in segments:
+        text = _join_spans_spaced(seg).strip()
+        if text:
+            out.append((seg[0]["bbox"][0], text))
+    return out
+
+
 def _detect_line_anchors(page):
     """Per-page: find pleading-paper line numbers and gather body text on
     each numbered row.
-    
-    Returns list of {line_num, body_text} for each row that has both a
+
+    Returns list of {line_num, body_text, segments} for each row that has both a
     line number in the gutter and body text in the same horizontal band.
+    `segments` is [(x0, text), ...] — the row split at column gutters, so a
+    caller can pseudonymize each column as its own text stream. `body_text` is
+    the segments joined left-to-right, i.e. the page as it reads on paper.
     Returns [] if the page lacks a recognisable pleading-paper line-number
     column (e.g. exhibits, signature pages, cover sheets without lines).
     """
     from collections import Counter, defaultdict
     blocks = page.get_text("dict")["blocks"]
-    
+
     # Step 1: find spans whose text is a small integer (1-30) on the left
     # third of the page. These are line-number candidates.
     line_spans = []
@@ -1807,12 +1869,12 @@ def _detect_line_anchors(page):
                         and sp["bbox"][0] < page.rect.width / 3):
                     line_spans.append({
                         "num": int(t),
-                        "y_mid": (sp["bbox"][1] + sp["bbox"][3]) / 2,
+                        "y_mid": _span_baseline(sp),
                         "x0": sp["bbox"][0],
                     })
     if not line_spans:
         return []
-    
+
     # Step 2: cluster by x to find the dominant line-number column.
     x_buckets = Counter(round(s["x0"] / 5) * 5 for s in line_spans)
     dominant_x = x_buckets.most_common(1)[0][0]
@@ -1821,66 +1883,47 @@ def _detect_line_anchors(page):
         # Fewer than 5 line numbers: probably a caption page or similar
         # - not a real pleading-paper page.
         return []
-    
-    # Step 3: collect body-text spans (anything to the right of the
-    # line-number column with a gap), bucketed by rounded y-midpoint.
+
+    # Step 3: collect body-text spans (anything to the right of the line-number
+    # column with a gap) and cluster them into physical rows by baseline.
     body_x_min = dominant_x + 20
-    body_spans_by_y = defaultdict(list)
-    for b in blocks:
-        if "lines" not in b:
-            continue
-        for ln in b["lines"]:
-            for sp in ln["spans"]:
-                if not sp["text"].strip():
-                    continue
-                if sp["bbox"][0] < body_x_min:
-                    continue
-                y_mid = (sp["bbox"][1] + sp["bbox"][3]) / 2
-                body_spans_by_y[round(y_mid)].append(sp)
-    
-    # Step 4: for each gutter line number, find the body-text row whose
-    # rounded y_mid is CLOSEST, then assign each body row to at most one
-    # gutter line (smallest distance wins; ties go to the lower line number).
-    # A fixed ±8pt window was too tight: on some pleading-paper PDFs the gutter
-    # digit bbox y_mid and body text bbox y_mid differ by up to ~12pt on the
-    # same physical row (different cap-height / descender geometry), causing
-    # every case-section line to miss. A larger window catches two adjacent rows
-    # simultaneously, so we use nearest-neighbour with a 24pt ceiling instead.
-    candidate_map = {}  # gutter line_num -> (best_y_key, best_diff)
-    for lnd in sorted(line_col, key=lambda l: l["num"]):
-        best_y_key = None
-        best_diff = float("inf")
-        for y_key in body_spans_by_y:
-            diff = abs(y_key - lnd["y_mid"])
+    body_spans = [sp
+                  for b in blocks if "lines" in b
+                  for ln in b["lines"]
+                  for sp in ln["spans"]
+                  if sp["text"].strip() and sp["bbox"][0] >= body_x_min]
+    rows = _cluster_rows(body_spans)
+    if not rows:
+        return []
+
+    # Step 4: assign EVERY row to its nearest gutter line number. A row further
+    # than the tolerance from any line number is page furniture (running header,
+    # footer, exhibit stamp) and is skipped; every other row is kept. Two rows
+    # may share one line number (half-line-spaced caption text) — they are
+    # concatenated rather than one of them being thrown away, which is what the
+    # old one-row-per-line-number rule did.
+    rows_by_num = defaultdict(list)
+    for row in rows:
+        best, best_diff = None, float("inf")
+        for lnd in line_col:
+            diff = abs(row["y"] - lnd["y_mid"])
             if diff < best_diff:
-                best_diff = diff
-                best_y_key = y_key
-        if best_y_key is not None and best_diff <= 24:
-            candidate_map[lnd["num"]] = (best_y_key, best_diff)
-
-    # Resolve conflicts: each body y_key -> single gutter line (smallest diff).
-    claimed: dict = {}  # body y_key -> (gutter_num, diff)
-    for g_num, (y_key, diff) in sorted(candidate_map.items()):
-        if y_key not in claimed or diff < claimed[y_key][1]:
-            claimed[y_key] = (g_num, diff)
-
-    lnd_by_num = {lnd["num"]: lnd for lnd in line_col}
+                best, best_diff = lnd, diff
+        if best is not None and best_diff <= _GUTTER_MATCH_TOL:
+            rows_by_num[best["num"]].append(row)
 
     results = []
-    for y_key, (g_num, _) in sorted(claimed.items(),
-                                    key=lambda kv: lnd_by_num[kv[1][0]]["num"]):
-        lnd = lnd_by_num[g_num]
-        spans_at_y = body_spans_by_y[y_key]
-        if not spans_at_y:
-            continue
-        spans_at_y.sort(key=lambda s: s["bbox"][0])
-        body_text = _join_spans_spaced(spans_at_y).strip()
-        if not body_text:
+    for num in sorted(rows_by_num):
+        spans = [sp for row in sorted(rows_by_num[num], key=lambda r: r["y"])
+                 for sp in row["spans"]]
+        segments = _split_row_columns(spans)
+        if not segments:
             continue
         results.append({
-            "line_num": lnd["num"],
-            "body_text": body_text,
-            "y_mid": lnd["y_mid"],
+            "line_num": num,
+            "body_text": " ".join(t for _x, t in segments),
+            "segments": segments,
+            "y_mid": min(r["y"] for r in rows_by_num[num]),
         })
     return results
 
@@ -4900,6 +4943,41 @@ _PN_ENTITY_SUFFIXES = {
     "enterprises", "systems", "services", "solutions", "foundation",
 }
 _PN_ENTITY_KEEP = {"the", "of", "and", "for", "a", "an", "&", "de", "la"} | _PN_ENTITY_SUFFIXES
+# Suffix set with dots/spaces removed, so "P.C." / "L.L.C." normalize to the
+# same key as "pc" / "llc" when deciding whether a token is a corporate suffix.
+_PN_ENTITY_SUFFIXES_NORM = {re.sub(r"[.\s]", "", s) for s in _PN_ENTITY_SUFFIXES}
+
+# ── "dba" (fictitious business name) markers ────────────────────────────────
+# A caption cell routinely names one party twice: the legal entity and the
+# fictitious name it trades under ("SMITH AUTO GROUP, INC. dba TOYOTA OF
+# DOWNTOWN"). The brief then calls the party by ONE of those names, almost never
+# by the joined string, so the joined string must be split and each side
+# registered as its own term. The marker itself is public boilerplate: it is
+# kept verbatim, never faked. (To recognize "aka"/"fka" the same way, add them
+# to _PN_DBA_ALTS and _PN_DBA_NORM.)
+_PN_DBA_ALTS = (r"doing\s+business\s+as", r"d[ \t]*/[ \t]*b[ \t]*/[ \t]*a\.?",
+                r"d\.[ \t]*b\.[ \t]*a\.?", r"dba\.?")
+# "aka"/"fka" mark another name for the SAME kind of thing: a person's alias is a
+# person, whereas a dba is always a business. They are split like a dba but the
+# tail inherits the head's person/entity classification.
+_PN_AKA_ALTS = (r"a[ \t]*/[ \t]*k[ \t]*/[ \t]*a\.?", r"a\.[ \t]*k\.[ \t]*a\.?",
+                r"aka\.?", r"f[ \t]*/[ \t]*k[ \t]*/[ \t]*a\.?",
+                r"f\.[ \t]*k\.[ \t]*a\.?", r"fka\.?",
+                r"also\s+known\s+as", r"formerly\s+known\s+as",
+                r"erroneously\s+(?:sued|named)\s+(?:herein\s+)?as",
+                r"sued\s+herein\s+as", r"improperly\s+(?:sued|named)\s+as")
+_PN_DBA_NORM = {"dba", "doingbusinessas"}
+# Letter guards keep the punctuated forms from straddling unrelated text: the
+# sentence "...IS INITIALED. \nB. ADDITIONAL MEDIATION TERMS" otherwise reads as
+# "d. b. a" spanning the end of one word and a subsection heading. The dotted
+# and slashed forms may not cross a line break either (only "doing business as"
+# may wrap).
+_PN_DBA_MARK = r"(?<![A-Za-z])(?i:" + "|".join(_PN_DBA_ALTS) + r")(?![A-Za-z])"
+_PN_AKA_MARK = r"(?<![A-Za-z])(?i:" + "|".join(_PN_AKA_ALTS) + r")(?![A-Za-z])"
+_PN_DBA_SPLIT_RE = re.compile(
+    r"(?:^|(?<=[\s,;(]))\(?" + _PN_DBA_MARK + r"\)?(?=$|[\s,;)])")
+_PN_AKA_SPLIT_RE = re.compile(
+    r"(?:^|(?<=[\s,;(]))\(?" + _PN_AKA_MARK + r"\)?(?=$|[\s,;)])")
 _PN_COMMON_WORD_SURNAMES = {
     "green", "brown", "white", "black", "gray", "grey", "young", "long",
     "short", "small", "rich", "best", "price", "king", "bell", "cook", "wood",
@@ -4926,6 +5004,38 @@ def _pn_titlecase_like(fake, original):
     if original.islower():
         return fake.lower()
     return fake
+
+
+def _pn_case_word_like(fake, original):
+    """`fake` re-cased to match how `original` was written.
+
+    Unlike `_pn_titlecase_like`, this also handles a MIXED-case original against
+    a fake that was minted in a single case. A fake is stored in whatever casing
+    the spreadsheet cell used, so an ALL-CAPS "Title Defendant" yields an
+    all-caps fake, which then reads as a shout inside ordinary prose. When the
+    original is neither all-upper nor all-lower, an all-one-case fake is folded
+    to Title Case per letter-run — which leaves "Inc." and "L.L.C." intact."""
+    if original.isupper() and any(c.isalpha() for c in original):
+        return fake.upper()
+    if original.islower():
+        return fake.lower()
+    if fake.isupper() or fake.islower():
+        # Fold each letter-run to Title Case. A possessive is part of its word
+        # ("BENNETT'S" -> "Bennett's", not "Bennett'S"), while the dot-separated
+        # runs of "L.L.C." stay separate letters.
+        return re.sub(r"[A-Za-z]+(?:['’][A-Za-z]+)*",
+                      lambda m: m.group(0).capitalize(), fake)
+    return fake
+
+
+def _pn_case_like(original, fake):
+    """`fake` re-cased word by word against `original`. Name fakes are composed
+    token-for-token with the real name, so the counts line up; when they don't
+    (a phone number, an address), the whole string is cased as one."""
+    otoks, ftoks = original.split(), fake.split()
+    if len(otoks) == len(ftoks):
+        return " ".join(_pn_case_word_like(f, o) for o, f in zip(otoks, ftoks))
+    return _pn_case_word_like(fake, original)
 
 
 class _PnFakeRegistry:
@@ -4994,9 +5104,24 @@ def _pn_fake_name_token(word, registry):
     return _pn_titlecase_like(registry.token(word, _PN_NAME_WORDS, "nametok"), word)
 
 
+# Words that mark a business even with no corporate suffix attached. Without
+# these, "South Bay Equity" and "Mortgage 2000" take the PERSON path, and the
+# bare token "Equity" is registered and rewritten wherever the word appears.
+_PN_ENTITY_HINT_WORDS = {
+    "equity", "mortgage", "lending", "loans", "realty", "capital", "financial",
+    "finance", "properties", "property", "brokerage", "escrow", "title",
+    "insurance", "ventures", "management", "consultants", "consulting",
+    "motors", "automotive", "industries", "technologies", "laboratories",
+    "medical", "hospital", "university", "church", "credit", "investments",
+    "development", "construction", "builders", "realtors", "escrows",
+}
+
+
 def _pn_looks_like_entity(name):
     low = " " + re.sub(r"[^\w&. ]", " ", name).lower() + " "
     if any(f" {s} " in low for s in _PN_ENTITY_SUFFIXES):
+        return True
+    if any(f" {w} " in low for w in _PN_ENTITY_HINT_WORDS):
         return True
     return bool(re.search(r"\b(city|county|people|state) of\b", low))
 
@@ -5055,11 +5180,69 @@ def _pn_is_role_token(token):
     return token.strip('.,:;"’\'').lower() in _PN_PARTY_ROLE_WORDS
 
 
+# ── Capacity phrases and other words that are never a person's name ──────────
+# An E-Court name cell routinely carries the capacity a party sues in:
+# "Kristopher Edwards as successor in interest to Erika Edwards". Faked whole,
+# that cell registers "successor" and "interest" as bare name-tokens, and every
+# later "successor in interest" in the briefs is silently rewritten. The cell is
+# split at the capacity phrase instead, so both real names are registered and
+# the connective tissue is left alone. The word list is a second, independent
+# guard: no bare token drawn from any of these words ever becomes a term.
+_PN_NON_NAME_WORDS = frozenset({
+    "successor", "successors", "interest", "trustee", "trustees", "executor",
+    "executrix", "administrator", "administratrix", "guardian", "conservator",
+    "representative", "individually", "individual", "capacity", "behalf",
+    "deceased", "decedent", "minor", "estate", "heir", "heirs", "beneficiary",
+    "regarding", "concerning", "compliance", "support", "opposition",
+    "response", "reply", "declaration", "motion", "notice", "exhibit",
+    "county", "state", "city", "court", "doe", "does", "roe", "roes",
+})
+_PN_CAPACITY_RE = re.compile(
+    r"[\s,;]*\b(?:"
+    r"(?:as\s+)?(?:an?\s+)?(?:the\s+)?successors?[-\s]in[-\s]interest"
+    r"|as\s+(?:an?\s+|the\s+)?(?:successor|trustee|executor|executrix|"
+    r"administrator|administratrix|guardian(?:\s+ad\s+litem)?|conservator|"
+    r"personal\s+representative|individual)"
+    r"|individually(?:\s+and\s+as)?"
+    r"|an?\s+individual"
+    r"|on\s+behalf\s+of"
+    r"|in\s+(?:his|her|its|their)\s+capacity"
+    r"|as\s+trustee\s+of"
+    r")\b(?:\s+(?:of|to|for))?[\s,;]*", re.IGNORECASE)
+
+
+def _pn_split_capacities(raw):
+    """['Kristopher Edwards', 'Erika Edwards'] for a name cell that states the
+    capacity a party sues in; a single-element list otherwise. Each piece is a
+    name in its own right and is registered separately."""
+    parts = [re.sub(r"\s+", " ", p).strip().strip(",;()\"' ")
+             for p in _PN_CAPACITY_RE.split(raw)]
+    return [p for p in parts if p and re.search(r"[A-Za-z]", p)] or [raw]
+
+
+def _pn_is_name_token(word):
+    """Whether a bare token of a person's name may become a term on its own.
+    It must be capitalised where it was written (so the lower-case "interest"
+    of a capacity phrase can never qualify), must not be a role label, and must
+    not be one of the procedural words above."""
+    if not word or not word[0].isupper():
+        return False
+    base = word.strip('.,:;"’\'').lower().removesuffix("'s")
+    return (base not in _PN_NON_NAME_WORDS and base not in _PN_PARTY_ROLE_WORDS
+            and base not in _PN_COMMON_WORD_SURNAMES)
+
+
 def _pn_fake_person(name, registry):
     """(fake_full_name, [(bare_real, bare_fake, is_surname), ...]) — composed
-    token-by-token so a bare surname resolves to the same fake used here."""
+    token-by-token so a bare surname resolves to the same fake used here. A
+    single-letter initial is kept verbatim: faking "J." to a whole surname makes
+    "J. Brett Griffin" render as "TOLLIVER. Forsythe Ivers" in one place and
+    "J. Forsythe Ivers" in another, since the bare tokens leave the initial
+    alone."""
     words = list(_PN_WORD_RE.finditer(name))
-    mappable = [m for m in words if m.group(0).lower().rstrip(".") not in _PN_SUFFIX_TOKENS]
+    def _keep(w):
+        return len(w) == 1 or w.lower().rstrip(".") in _PN_SUFFIX_TOKENS
+    mappable = [m for m in words if not _keep(m.group(0))]
     surname_at = None
     if mappable:
         if "," in name:
@@ -5072,35 +5255,95 @@ def _pn_fake_person(name, registry):
     for m in words:
         w = m.group(0)
         parts.append(name[cursor:m.start()])
-        if w.lower().rstrip(".") in _PN_SUFFIX_TOKENS:
+        if _keep(w):
             parts.append(w)
         else:
             fake = _pn_fake_name_token(w, registry)
             parts.append(fake)
             is_surname = (m.start() == surname_at)
-            if len(w) >= 3 and w.lower() not in _PN_COMMON_WORD_SURNAMES and (
-                    is_surname or len(w) >= 4):
+            if (len(w) >= 3 and _pn_is_name_token(w)
+                    and (is_surname or len(w) >= 4)):
                 bare.append((w, fake, is_surname))
         cursor = m.end()
     parts.append(name[cursor:])
     return "".join(parts), bare
 
 
-def _pn_fake_entity(name, registry):
-    def repl(tok):
-        base = tok.strip(".,").lower()
-        if base in _PN_ENTITY_KEEP or not re.search(r"[A-Za-z]", tok):
-            return tok
-        return _pn_titlecase_like(registry.token(base, _PN_ENTITY_WORDS, "enttok"), tok)
-    return " ".join(repl(t) for t in name.split())
+def _pn_word_affixes(tok):
+    """(prefix, core, suffix) — strips surrounding punctuation and a trailing
+    possessive so the core word is what gets faked: "(Smith's," -> ("(",
+    "Smith", "'s,"). Keeps "L.L.C." intact as a core (inner dots are kept)."""
+    i, j = 0, len(tok)
+    while i < j and not tok[i].isalnum():
+        i += 1
+    while j > i and not tok[j - 1].isalnum():
+        j -= 1
+    pre, core, post = tok[:i], tok[i:j], tok[j:]
+    if len(core) > 2 and core[-2] in "'\u2019" and core[-1] in "sS":
+        core, post = core[:-2], core[-2:] + post
+    return pre, core, post
 
 
-# Suffix set with dots/spaces removed, so "P.C." / "L.L.C." normalize to the
-# same key as "pc" / "llc" when deciding whether a trailing token is a suffix.
-_PN_ENTITY_SUFFIXES_NORM = {re.sub(r"[.\s]", "", s) for s in _PN_ENTITY_SUFFIXES}
+def _pn_word_base(word):
+    """Canonical lookup key for a name word: lower-cased, outer punctuation and
+    any possessive removed. "SMITH'S" and "Smith" share the key "smith"."""
+    return _pn_word_affixes(word)[1].lower()
 
 
-def _pn_entity_bare(name, registry):
+def _pn_is_entity_keep(base):
+    """True for a word that survives entity faking verbatim: a connector, a
+    corporate suffix in ANY punctuation style ("llc" / "L.L.C." / "l.l.c"), or a
+    "dba" marker. The suffix set is matched on its punctuation-stripped form —
+    a plain `strip(".,")` leaves "l.l.c", which is not in the literal set, so
+    "L.L.C." used to be replaced by a fake word."""
+    if base in _PN_ENTITY_KEEP:
+        return True
+    if re.sub(r"[.\s]", "", base) in _PN_ENTITY_SUFFIXES_NORM:
+        return True
+    return re.sub(r"[./\s]", "", base) in _PN_DBA_NORM
+
+
+def _pn_fake_entity_parts(name, registry, prefer=None):
+    """(fake_name, {word_base: canonical_fake}) — the entity faked word by word.
+
+    `prefer` maps a word base to the fake already minted for that same word in
+    this party's legal name (possibly from the person pool). A preferred fake
+    always wins, including over an entity-pool binding some UNRELATED party's
+    name made for the same word — otherwise "John Smith dba Smith's Auto Body"
+    would render its dba with the fake belonging to a different Smith."""
+    out, mapping = [], {}
+    prefer = prefer or {}
+    for tok in name.split():
+        pre, core, post = _pn_word_affixes(tok)
+        base = core.lower()
+        if not core or _pn_is_entity_keep(base) or not re.search(r"[A-Za-z]", core):
+            out.append(tok)
+            continue
+        fake = prefer.get(base) or registry.token(base, _PN_ENTITY_WORDS, "enttok")
+        mapping[base] = fake
+        out.append(pre + _pn_titlecase_like(fake, core) + post)
+    return " ".join(out), mapping
+
+
+def _pn_fake_entity(name, registry, prefer=None):
+    return _pn_fake_entity_parts(name, registry, prefer)[0]
+
+
+def _pn_person_token_map(name, registry):
+    """{word_base: canonical_fake} for every mappable word of a person name,
+    using the same per-word fakes `_pn_fake_person` assigns."""
+    out = {}
+    for m in _PN_WORD_RE.finditer(name):
+        w = m.group(0)
+        if w.lower().rstrip(".") in _PN_SUFFIX_TOKENS:
+            continue
+        base = _pn_word_base(w)
+        if base:
+            out[base] = registry.token(w, _PN_NAME_WORDS, "nametok")
+    return out
+
+
+def _pn_entity_bare(name, registry, prefer=None):
     """Return (bare_real, bare_fake) for the entity name with its trailing
     corporate suffix/connector(s) removed — e.g. "Air Tutors LLC" -> "Air
     Tutors" — so the entity is still pseudonymized when it's written WITHOUT
@@ -5111,34 +5354,125 @@ def _pn_entity_bare(name, registry):
     way as the full name, so both forms stay consistent."""
     toks = name.split()
     while toks:
-        norm = re.sub(r"[.\s]", "", toks[-1]).lower()
-        base = toks[-1].strip(".,").lower()
-        if (norm in _PN_ENTITY_SUFFIXES_NORM or base in _PN_ENTITY_KEEP
-                or not re.search(r"[A-Za-z]", toks[-1])):
+        base = _pn_word_base(toks[-1])
+        if _pn_is_entity_keep(base) or not re.search(r"[A-Za-z0-9]", toks[-1]):
             toks.pop()
         else:
             break
     bare = re.sub(r"[.,;]+$", "", " ".join(toks)).strip()
+    # A digit token is as distinctive as a name word ("Mortgage 2000"), so it
+    # counts toward the two-word minimum and is never popped as a suffix.
     core = [t for t in toks
-            if re.search(r"[A-Za-z]", t) and t.strip(".,").lower() not in _PN_ENTITY_KEEP]
+            if re.search(r"[A-Za-z0-9]", t) and not _pn_is_entity_keep(_pn_word_base(t))]
     if len(core) < 2 or not bare:
         return None
     if bare.lower() == re.sub(r"[.,;]+$", "", name.strip()).lower():
         return None  # nothing was stripped; the full-name term already covers it
-    return bare, _pn_fake_entity(bare, registry)
+    return bare, _pn_fake_entity(bare, registry, prefer)
 
 
-def _pn_append_entity_terms(terms, raw, source, registry):
+def _pn_append_entity_terms(terms, raw, source, registry, prefer=None):
     """Register the full entity term plus, when safe, a suffix-stripped
     'bare' variant that catches the name written without its corporate
-    suffix."""
-    terms.append(_PnTerm("entity", raw, _pn_fake_entity(raw, registry),
+    suffix. Returns the {word_base: fake} map so a dba sharing words with this
+    name can reuse the same fakes."""
+    fake, mapping = _pn_fake_entity_parts(raw, registry, prefer)
+    terms.append(_PnTerm("entity", raw, fake,
                          whole_word=False, case_sensitive=False, priority=2,
                          source=source))
-    bare = _pn_entity_bare(raw, registry)
+    bare = _pn_entity_bare(raw, registry, prefer)
     if bare and not _pn_is_party_role(bare[0]):
         terms.append(_PnTerm("entity-token", bare[0], bare[1], whole_word=True,
                              case_sensitive=False, priority=1, source=source))
+    return mapping
+
+
+def _pn_split_dba(raw):
+    """['SMITH AUTO GROUP, INC.', 'TOYOTA OF DOWNTOWN'] for a name written with
+    a dba marker; a single-element list otherwise. The first element is the
+    legal name, the rest are fictitious business names."""
+    parts = [re.sub(r"\s+", " ", p).strip().strip(",;()\"' ")
+             for p in _PN_DBA_SPLIT_RE.split(raw)]
+    return [p for p in parts if p]
+
+
+def _pn_split_aka(raw):
+    """['Tanooa Sparks', 'Tanooa Sherrell Sparks'] for a name written with an
+    aka/fka marker. Every element is the same kind of thing as the first."""
+    parts = [re.sub(r"\s+", " ", p).strip().strip(",;()\"' ")
+             for p in _PN_AKA_SPLIT_RE.split(raw)]
+    return [p for p in parts if p]
+
+
+def _pn_append_person_terms(terms, raw, source, registry):
+    """Register a person's full name plus its safe bare tokens."""
+    fake_full, bare = _pn_fake_person(raw, registry)
+    terms.append(_PnTerm("person", raw, fake_full, whole_word=False,
+                         case_sensitive=False, priority=2, source=source))
+    for real_tok, fake_tok, _is_surname in bare:
+        terms.append(_PnTerm("person-token", real_tok, fake_tok,
+                             whole_word=True, case_sensitive=False,
+                             priority=1, source=source))
+    return _pn_person_token_map(raw, registry)
+
+
+def _pn_append_shortname_term(terms, raw, source, registry):
+    """Register the court's own short form for a party ("(Dream Team)") as a
+    whole-phrase term and nothing more.
+
+    No bare tokens are expanded from it. A short form is chosen to be brief, not
+    distinctive — run through the person path, "Dream Team" would register
+    "Team" and rewrite the word wherever it appeared. The fake is composed from
+    the entity word pool, so it reuses the fakes already minted for the full
+    name and the two forms stay recognisably the same party."""
+    if _pn_is_party_role(raw) or len(raw.split()) < 2:
+        return
+    terms.append(_PnTerm("short-name", raw, _pn_fake_entity(raw, registry),
+                         whole_word=True, case_sensitive=False, priority=1,
+                         source=source))
+
+
+def _pn_append_name_terms(terms, raw, source, registry):
+    """Register every term implied by one raw name cell.
+
+    Three things can be packed into that cell, and each is unpacked here:
+
+      * a CAPACITY phrase, which names a second real party and a run of ordinary
+        words ("Kristopher Edwards as successor in interest to Erika Edwards");
+      * an ALIAS (aka/fka), which is another name for the same kind of thing;
+      * a DBA, which is always a business name whatever the head is.
+
+    A dba is registered as its OWN entity term, because a brief refers to the
+    party by the legal name or by the fictitious name, hardly ever by the joined
+    caption string. When two names share words, the shared words keep one fake
+    apiece: the first name is faked and its word map is preferred for the rest,
+    so "Culver City Toyota, Inc. dba Toyota of Culver City" yields fakes that
+    share the same three words in the same order."""
+    for chunk in _pn_split_capacities(raw):
+        if _pn_is_party_role(chunk):  # a bare role label is never a name
+            continue
+        aliases = _pn_split_aka(chunk)
+        prefer, head_is_entity = {}, None
+        for alias in aliases:
+            parts = _pn_split_dba(alias)
+            head, dbas = parts[0], parts[1:]
+            if _pn_is_party_role(head) or not re.search(r"[A-Za-z]", head):
+                continue
+            if head_is_entity is None:
+                head_is_entity = _pn_looks_like_entity(head)
+            if head_is_entity:
+                prefer.update(_pn_append_entity_terms(terms, head, source,
+                                                      registry, prefer))
+            else:
+                prefer.update(_pn_append_person_terms(terms, head, source,
+                                                      registry))
+            # A fictitious business name is a business name whatever its head
+            # is, so it always takes the entity path (never the person pool).
+            for dba in dbas:
+                if _pn_is_party_role(dba):
+                    continue
+                prefer.update(_pn_append_entity_terms(terms, dba, source,
+                                                      registry, prefer))
 
 
 def _pn_fake_caseno(real, registry):
@@ -5181,8 +5515,11 @@ _PN_DETECTORS = {
     # briefs ("Superior Court", "by way", "in place of") and caused constant
     # false positives; only unambiguous suffixes remain. The suffix itself is
     # matched case-insensitively (?i:) so "STREET"/"Street"/"St." all count.
+    # At least ONE name word is required, or a bare "1 ST" reads as an address;
+    # and the separators are spaces/tabs, never a newline, or a zip code at the
+    # end of one line joins the word "Street" three lines below it.
     "address": (re.compile(
-        r"\b\d{1,6}\s+(?:[A-Z][A-Za-z0-9.]*\s+){0,4}"
+        r"\b\d{1,6}[ \t]+(?:[A-Z][A-Za-z0-9.]*[ \t]+){1,4}"
         r"(?i:Street|St|Avenue|Ave|Boulevard|Blvd|Road|Rd|Lane|Ln|Drive|Dr|"
         r"Circle|Cir|Highway|Hwy|Parkway|Pkwy|Trail|Trl)\b\.?"), _pn_fake_street),
 }
@@ -5191,8 +5528,10 @@ _PN_DEFAULT_DETECTORS = ["ssn", "email", "phone", "address"]
 
 def _pn_build_pattern(term, *, whole_word):
     """Literal-match regex body (NFKC-normalized, escaped), with optional
-    word-boundary guards."""
-    body = re.escape(_NFKC(term))
+    word-boundary guards. Runs of whitespace in the term match ANY whitespace
+    run in the text, so a party name broken across a line wrap ("Toyota of\\n
+    Downtown") or double-spaced after a period is still caught."""
+    body = r"\s+".join(re.escape(p) for p in _NFKC(term).split())
     if whole_word:
         body = rf"(?<!\w)(?:{body})(?!\w)"
     return body
@@ -5236,18 +5575,110 @@ def _pn_norm_header(h):
     return h.replace("\xa0", " ").strip().lower() if isinstance(h, str) else ""
 
 
+# ── Parsing one name cell ───────────────────────────────────────────────────
+# "Other Names" is "; "-separated and parses cleanly. "Other Defendants" is not:
+# it is the caption's party list copied out as prose —
+#   (Dream Team), Glenwood Group, Mortgage 2000, Inc. (Mortgage 2000), South Bay
+#   Equity, Lisa Grayson, Andrew Dinsky, WILLIAM KNOX, doing business as GLENWOOD
+#   GROUP, NERSES BRONSOZIAN, erroneously sued as NICK BRONSOZIAN, and Denise
+#   Padilla, as Trustee of the Sunshine Trust (collectively "Defendants")
+# Splitting only on newline/semicolon/pipe turns that into ONE term, which
+# matches nothing, so every defendant but the first-named one goes unscrubbed.
+# Splitting naively on every comma is just as wrong: it severs "Mortgage 2000"
+# from "Inc.", strands "doing business as GLENWOOD GROUP", and turns "as Trustee
+# of the Sunshine Trust" into a party. So the comma is a boundary EXCEPT before
+# a corporate suffix, a dba/aka marker, or a capacity phrase.
+_PN_CELL_COLLECTIVE_RE = re.compile(
+    r"\(\s*(?:collectively|together|jointly|hereinafter|referred\s+to)[^)]*\)",
+    re.IGNORECASE)
+_PN_CELL_PAREN_RE = re.compile(r"\(([^)]*)\)")
+_PN_CELL_AND_RE = re.compile(r"(\s+(?:and|&)\s+)")
+_PN_CELL_LEAD_AND_RE = re.compile(r"^\s*(?:and|&)\s+", re.IGNORECASE)
+
+
+def _pn_ends_with_suffix(s):
+    toks = s.split()
+    return bool(toks) and re.sub(r"[.\s]", "", _pn_word_base(toks[-1])) in _PN_ENTITY_SUFFIXES_NORM
+
+
+def _pn_cell_continues(piece):
+    """True when a comma-separated piece is really the tail of the piece before
+    it: a corporate suffix ("Inc."), a dba/aka marker, or a capacity phrase."""
+    if not piece:
+        return False
+    first = _pn_word_base(piece.split()[0])
+    if re.sub(r"[.\s]", "", first) in _PN_ENTITY_SUFFIXES_NORM:
+        return True
+    return bool(_PN_DBA_SPLIT_RE.match(piece) or _PN_AKA_SPLIT_RE.match(piece)
+                or _PN_CAPACITY_RE.match(piece))
+
+
+def _pn_split_cell_commas(text):
+    pieces = []
+    for raw in text.split(","):
+        p = raw.strip()
+        if not p:
+            continue
+        if pieces and _pn_cell_continues(p):
+            pieces[-1] = pieces[-1] + ", " + p
+        else:
+            pieces.append(p)
+    return pieces
+
+
+def _pn_split_cell_and(piece):
+    """Split "Mortgage 2000, Inc. and South Bay Equity" into two names, but keep
+    "Smith & Jones LLP" whole: only a left side that ENDS in a corporate suffix
+    can be a complete name on its own. The original separator is preserved so a
+    rejoined value still matches the document text."""
+    parts = _PN_CELL_AND_RE.split(piece)
+    if len(parts) < 3:
+        return [piece]
+    out = [parts[0]]
+    for sep, nxt in zip(parts[1::2], parts[2::2]):
+        if _pn_ends_with_suffix(out[-1]):
+            out.append(nxt)
+        else:
+            out[-1] += sep + nxt
+    return out
+
+
 def _pn_split_cell(value):
+    """[(name, is_short_form), ...] for one spreadsheet cell.
+
+    A parenthetical is the court's own short form for the party just named
+    ("Mortgage 2000, Inc. (Mortgage 2000)"). It is returned separately and
+    flagged, because it must become a whole-phrase term and must NOT be expanded
+    into bare word tokens — "Dream Team" as a person would register "Team"."""
     if value is None:
         return []
     out = []
-    for p in re.split(r"[\n;|]+", str(value)):
-        p = re.sub(r"\s+", " ", p.strip().strip('"').strip())
+    for chunk in re.split(r"[\n;|]+", str(value)):
+        chunk = _PN_CELL_COLLECTIVE_RE.sub(" , ", chunk)
+        shorts = []
+
+        def _grab(m):
+            inner = m.group(1).strip().strip('"“”\' ')
+            if len(inner.split()) >= 2 and not _pn_is_party_role(inner):
+                shorts.append(inner)
+            return " , "   # the parenthetical also ends the name before it
+
+        chunk = _PN_CELL_PAREN_RE.sub(_grab, chunk)
+        out.extend((s, True) for s in shorts)
+        for piece in _pn_split_cell_commas(chunk):
+            piece = _PN_CELL_LEAD_AND_RE.sub("", piece)
+            for name in _pn_split_cell_and(piece):
+                out.append((name, False))
+
+    clean = []
+    for name, is_short in out:
+        p = re.sub(r"\s+", " ", name.strip().strip('"').strip())
         if len(p) < 2 or _PN_SKIP_PARTY_RE.match(p) or not re.search(r"[A-Za-z0-9]", p):
             continue
         if _pn_is_party_role(p):  # a bare role label ("Plaintiff") is not a name
             continue
-        out.append(p)
-    return out
+        clean.append((p, is_short))
+    return clean
 
 
 def _pn_terms_from_xlsx(path, extra_name_headers, log):
@@ -5273,11 +5704,11 @@ def _pn_terms_from_xlsx(path, extra_name_headers, log):
             for i, cell in enumerate(row):
                 h = cols.get(i, "")
                 if h in name_headers or "attorney" in h:
-                    for v in _pn_split_cell(cell):
+                    for v, is_short in _pn_split_cell(cell):
                         if v.lower() not in seen_n:
-                            seen_n.add(v.lower()); names.append(v)
+                            seen_n.add(v.lower()); names.append((v, is_short))
                 elif h in _PN_CASENO_HEADERS or "case number" in h:
-                    for v in _pn_split_cell(cell):
+                    for v, _s in _pn_split_cell(cell):
                         if v.lower() not in seen_c:
                             seen_c.add(v.lower()); casenos.append(v)
     wb.close()
@@ -5294,21 +5725,11 @@ def _pn_build_terms(names, casenos, extra_terms, registry=None):
         registry = _PnFakeRegistry()
     terms = []
     for raw in names:
-        if _pn_is_party_role(raw):  # a bare role label is never a name
-            continue
-        if _pn_looks_like_entity(raw):
-            _pn_append_entity_terms(terms, raw, "spreadsheet", registry)
+        raw, is_short = raw if isinstance(raw, tuple) else (raw, False)
+        if is_short:
+            _pn_append_shortname_term(terms, raw, "spreadsheet", registry)
         else:
-            fake_full, bare = _pn_fake_person(raw, registry)
-            terms.append(_PnTerm("person", raw, fake_full, whole_word=False,
-                                 case_sensitive=False, priority=2,
-                                 source="spreadsheet"))
-            for real_tok, fake_tok, _is_surname in bare:
-                if _pn_is_role_token(real_tok):
-                    continue
-                terms.append(_PnTerm("person-token", real_tok, fake_tok,
-                                     whole_word=True, case_sensitive=False,
-                                     priority=1, source="spreadsheet"))
+            _pn_append_name_terms(terms, raw, "spreadsheet", registry)
     for raw in casenos:
         terms.append(_PnTerm("case_number", raw, _pn_fake_caseno(raw, registry),
                              whole_word=True, case_sensitive=False, priority=2,
@@ -5318,14 +5739,8 @@ def _pn_build_terms(names, casenos, extra_terms, registry=None):
             terms.append(_PnTerm("case_number", raw, _pn_fake_caseno(raw, registry),
                                  whole_word=False, case_sensitive=False,
                                  priority=2, source="--term"))
-        elif _pn_is_party_role(raw):  # never pseudonymize a bare role label
-            continue
-        elif _pn_looks_like_entity(raw):
-            _pn_append_entity_terms(terms, raw, "--term", registry)
         else:
-            terms.append(_PnTerm("person", raw, _pn_fake_person(raw, registry)[0],
-                                 whole_word=False, case_sensitive=False,
-                                 priority=2, source="--term"))
+            _pn_append_name_terms(terms, raw, "--term", registry)
     # De-duplicate on (real, category); keep the highest-priority instance.
     dedup = {}
     for t in terms:
@@ -5409,6 +5824,29 @@ def _pn_is_personlike_declarant(name):
         re.search(r",\s*(?i:esq|jr|sr|m\.?d|ph\.?d|c\.?p\.?a)", name))
 
 
+# Words that end a declarant's name and begin the description of what the
+# declaration is about. Without this, "DECLARATION OF TANOOA SPARKS REGARDING
+# COMPLIANCE" registers the person "TANOOA SPARKS REGARDING COMPLIANCE" and the
+# bare tokens "REGARDING" and "COMPLIANCE" — which then replace those two words
+# wherever they appear in the brief.
+_PN_DECL_TRAIL_STOP = frozenset({
+    "as", "in", "re", "regarding", "concerning", "for", "on", "of", "to",
+    "and", "with", "support", "opposition", "response", "reply", "compliance",
+    "successor", "interest", "pursuant", "filed", "submitted",
+})
+
+
+def _pn_trim_declarant(name):
+    """Cut a captured declarant name at the first word that starts describing
+    the declaration rather than naming the declarant."""
+    out = []
+    for w in name.split():
+        if w.strip('.,:;').lower() in _PN_DECL_TRAIL_STOP:
+            break
+        out.append(w)
+    return " ".join(out).strip().rstrip(",")
+
+
 def _pn_declarant_names(text):
     """Raw declarant names found in `text` via the title/self-ID patterns,
     de-duplicated and filtered to person-like values."""
@@ -5417,13 +5855,159 @@ def _pn_declarant_names(text):
         for m in rx.finditer(text):
             # Collapse any line wrap in the captured name to single spaces.
             nm = re.sub(r"\s+", " ", m.group(1)).strip().rstrip(".").strip()
+            nm = _pn_trim_declarant(nm)
             if _pn_is_personlike_declarant(nm) and nm.lower() not in seen:
                 seen.add(nm.lower())
                 names.append(nm)
     return names
 
 
+def _pn_reflow(original, fake):
+    """`fake`, laid back into the line structure `original` occupied.
+
+    A party name is routinely broken across a line ("DREAM TEAM REAL ESTATE\\n
+    CONSULTANTS, INC."). Matching across the break is only safe if the
+    replacement puts the break back, or the .txt loses a numbered line and every
+    pinpoint cite after it shifts. Entity and person fakes are built word by
+    word, so they carry the same token count as the real name and the ORIGINAL
+    whitespace runs can simply be re-used between the fake's words. When the
+    counts differ (a phone number, an e-mail), the newlines are appended after
+    the fake instead — the line count survives even though the wrap moves."""
+    if "\n" not in original:
+        return fake
+    seps = re.findall(r"\s+", original)
+    otoks, ftoks = original.split(), fake.split()
+    if ftoks and len(otoks) == len(ftoks) == len(seps) + 1:
+        return "".join(t + s for t, s in zip(ftoks, seps)) + ftoks[-1]
+    return fake + "\n" * original.count("\n")
+
+
+# ── "dba" pairs found in the document text ──────────────────────────────────
+# The E-Court export's "Title Defendant" is frequently just the legal name
+# ("Dream Team Real Estate Consultants Inc."), while the pleadings call the
+# party by its fictitious name ("Equity Union") on nearly every page. Neither
+# the spreadsheet nor a declarant scan yields that name, so it is read straight
+# off the text, in either word order:
+#     <legal name> dba <fictitious name>
+#     <fictitious name>, a dba of <legal name>
+# Both sides are then registered as terms, which also picks up a legal name the
+# export missed entirely ("Mortgage 2000, Inc.").
+_PN_DBA_CONNECT = r"of|the|and|de|la|&"
+_PN_DBA_WORD = r"[A-Z0-9][\w&.'’-]*"
+# The LEGAL name may wrap: a long caption name is routinely split across lines.
+_PN_DBA_PHRASE = (rf"{_PN_DBA_WORD}"
+                  rf"(?:[\s,]+(?:{_PN_DBA_CONNECT}|{_PN_DBA_WORD})){{0,6}}")
+# The FICTITIOUS name may not. Two-column pages extract with the opposing
+# signature block interleaved between the lines of the caption, so a phrase that
+# jumps a line break after "dba" swallows an attorney's name and address
+# ("William Knox, dba\nPeter Pruett, Esq. Glenwood Group 633 ...").
+_PN_DBA_PHRASE_1L = (rf"{_PN_DBA_WORD}"
+                     rf"(?:[ \t,]+(?:{_PN_DBA_CONNECT}|{_PN_DBA_WORD})){{0,5}}")
+_PN_DBA_TEXT_RE = re.compile(
+    rf"(?P<head>{_PN_DBA_PHRASE})[\s,]*\(?{_PN_DBA_MARK}\)?[ \t,]*"
+    rf"(?P<tail>{_PN_DBA_PHRASE_1L})")
+_PN_DBA_OF_RE = re.compile(
+    rf"(?P<tail>{_PN_DBA_PHRASE_1L})\s*,\s*an?\s+{_PN_DBA_MARK}\s+of[ \t]+"
+    rf"(?P<head>{_PN_DBA_PHRASE_1L})")
+# A phrase that is only these words names nothing.
+_PN_DBA_PHRASE_STOP = {"the", "a", "an", "this", "that", "its", "his", "her",
+                       "their", "and", "or", "of", "is", "was", "court", "no"}
+# Never inside a business name; their presence means the phrase ran off the end
+# of the name and into a signature block.
+_PN_DBA_PHRASE_REJECT = re.compile(
+    r"(?<![A-Za-z])(?i:esq|jr|sr|ph\.?d|m\.?d|attorneys?|telephone|facsimile)"
+    r"(?![A-Za-z])")
+# A 3+ digit number that is FOLLOWED by more words is a street number, not part
+# of the name ("Glenwood Group 633 W. Fifth St."). A trailing one is part of it
+# ("Mortgage 2000"), as is one before a corporate suffix ("Mortgage 2000, Inc.").
+_PN_DBA_ADDRESS_RE = re.compile(r"[\s,]+\d{3,}\s+\S")
+
+
+def _pn_trim_address(s):
+    m = _PN_DBA_ADDRESS_RE.search(s)
+    if not m:
+        return s
+    rest = s[m.start():].split()
+    if len(rest) > 1 and _pn_is_entity_keep(_pn_word_base(rest[1])):
+        return s
+    return s[:m.start()]
+
+
+def _pn_clean_phrase(s):
+    """Collapse wrapped whitespace and shave what a greedy phrase match drags
+    along: punctuation, dangling connector words, and the leading role label a
+    pleading puts in front of every party ("Defendants Dream Team Real Estate
+    Consultants Inc.")."""
+    s = re.sub(r"\s+", " ", s).strip().strip(" ,;:.\"'()")
+    while True:
+        m = re.match(r"(\S+)\s+(?=\S)", s)
+        if not m or not _pn_is_role_token(m.group(1)):
+            break
+        s = s[m.end():]
+    while True:
+        m = re.search(rf"[\s,]+(?:{_PN_DBA_CONNECT})$", s, re.IGNORECASE)
+        if not m:
+            return s.strip(" ,;")
+        s = s[:m.start()]
+
+
+def _pn_dba_pairs(text):
+    """[(legal_name, fictitious_name), ...] read off `text`, de-duplicated."""
+    pairs, seen = [], set()
+    for rx in (_PN_DBA_TEXT_RE, _PN_DBA_OF_RE):
+        for m in rx.finditer(text):
+            head = _pn_trim_address(_pn_clean_phrase(m.group("head")))
+            tail = _pn_trim_address(_pn_clean_phrase(m.group("tail")))
+            # Both sides must be at least two words. A one-word name read out of
+            # prose ("dba Equity") would become a substring term that fires
+            # inside every longer name and every ordinary use of the word; a
+            # single-word dba has to be supplied with --term instead.
+            if len(head.split()) < 2 or len(tail.split()) < 2:
+                continue
+            if head.lower() in _PN_DBA_PHRASE_STOP or tail.lower() in _PN_DBA_PHRASE_STOP:
+                continue
+            if _PN_DBA_PHRASE_REJECT.search(head) or _PN_DBA_PHRASE_REJECT.search(tail):
+                continue
+            if _pn_is_party_role(head) or _pn_is_party_role(tail):
+                continue
+            key = (head.lower(), tail.lower())
+            if key not in seen:
+                seen.add(key)
+                pairs.append((head, tail))
+    return pairs
+
+
+# ── Law firm names ("LAW OFFICES OF <name>") ────────────────────────────────
+# The E-Court export's attorney columns routinely omit the firm, so the firm's
+# name — which contains a real person's name — survives on every signature block
+# and proof of service. The label is a reliable anchor; the name after it is
+# captured up to the first comma, so a trailing "P.C." / "LLP" is left off and
+# the name takes the person path (registering the bare surname too).
+_PN_FIRM_RE = re.compile(
+    r"(?i:law\s+(?:offices?|firm|group)\s+of)[ \t]+"
+    r"(?P<name>[A-Z][\w.'’-]*(?:[ \t]+[A-Z][\w.'’-]*){1,3})")
+_PN_FIRM_REJECT = frozenset({"the", "los", "california", "record", "counsel"})
+
+
+def _pn_firm_names(text):
+    """Personal/entity names read out of "Law Offices of X" labels."""
+    out, seen = [], set()
+    for m in _PN_FIRM_RE.finditer(text):
+        name = _pn_clean_phrase(m.group("name"))
+        words = name.split()
+        if len(words) < 2:
+            continue
+        if any(_pn_word_base(w) in _PN_FIRM_REJECT or _pn_is_role_token(w)
+               or _pn_word_base(w) in _PN_NON_NAME_WORDS for w in words):
+            continue
+        if name.lower() not in seen:
+            seen.add(name.lower())
+            out.append(name)
+    return out
+
+
 class Pseudonymizer:
+
     """Applies stable pseudonymization to plain text (the .txt export only).
 
     Terms (party/case/attorney names from a spreadsheet key and/or --term)
@@ -5469,12 +6053,87 @@ class Pseudonymizer:
                 return re.sub(r"[^A-Za-z0-9]", "", r["fake"])
         return None
 
+    def _add_terms(self, new_terms):
+        """Add freshly minted terms, skipping any real value already tracked.
+        Returns True when anything was added."""
+        added = False
+        for t in new_terms:
+            k = (t.category, t.real.lower())
+            if k in self.records:
+                continue
+            self.terms.append(t)
+            self.records[k] = {
+                "category": t.category, "real": t.real, "fake": t.fake,
+                "source": t.source, "count": 0, "pattern": t.pattern,
+                "flags": t.flags}
+            added = True
+        if added:
+            # Keep terms ordered biggest/most-specific first for apply()'s
+            # overlap resolution.
+            self.terms.sort(key=lambda t: (-t.priority, -len(t.real)))
+        return added
+
+    def register_short_names(self, text):
+        """Register a parenthetical short form the document itself defines:
+        `Defendant Glenwood Group ("Glenwood")`.
+
+        The short form must immediately follow a name already known, and every
+        one of its words must appear in that name — so `("Glenwood")` qualifies
+        and `(collectively "Broker Defendants")` does not. That keeps this from
+        becoming a licence to register arbitrary capitalised words. The fake is
+        composed from the parent's own word fakes, so the two forms stay
+        recognisably the same party. Idempotent; call before apply()."""
+        paren = (r"[\s,;]*\(\s*[\"“'’]?\s*(?P<s>[A-Z][\w'’.-]*"
+                 r"(?:\s+[A-Z0-9][\w'’.-]*){0,2})\s*[\"”'’]?\s*\)")
+        for t in list(self.terms):
+            if t.category not in ("entity", "person"):
+                continue
+            parent_words = {_pn_word_base(w) for w in t.real.split()}
+            try:
+                rx = re.compile(t.pattern + paren, t.flags)
+            except re.error:
+                continue
+            for m in rx.finditer(text):
+                short = re.sub(r"\s+", " ", m.group("s")).strip(" .,")
+                words = short.split()
+                if not words or _pn_is_party_role(short):
+                    continue
+                if any(_pn_word_base(w) not in parent_words for w in words):
+                    continue
+                fake = (_pn_fake_entity(short, self.registry)
+                        if t.category == "entity"
+                        else _pn_fake_person(short, self.registry)[0])
+                self._add_terms([_PnTerm("short-name", short, fake,
+                                         whole_word=True, case_sensitive=False,
+                                         priority=1, source="document")])
+
+    def register_firm_names(self, text):
+        """Register the name inside a "Law Offices of X" label. The attorney
+        columns of the E-Court export frequently omit the firm, leaving a real
+        name on every signature block and proof of service. Idempotent; call
+        before apply()."""
+        for raw in _pn_firm_names(text):
+            new = []
+            _pn_append_name_terms(new, raw, "document", self.registry)
+            self._add_terms(new)
+
+    def register_dba_names(self, text):
+        """Read "<entity> dba <name>" / "<name>, a dba of <entity>" out of `text`
+        and register BOTH sides as terms. The spreadsheet's Title Defendant is
+        often just the legal name, so without this the fictitious name the
+        pleadings actually use is never scrubbed. Shared words keep one fake
+        apiece (see `_pn_append_name_terms`). Idempotent; call before apply()."""
+        for head, tail in _pn_dba_pairs(text):
+            new = []
+            _pn_append_name_terms(new, f"{head} dba {tail}", "document",
+                                  self.registry)
+            self._add_terms(new)
+
     def register_declarant_names(self, text):
         """Detect declarant names in `text` ("DECLARATION OF X", "I, X,
         declare") and add them as person terms (full name + bare tokens) so a
         declaration's own title and signature are scrubbed even when the
         declarant isn't in the spreadsheet key. Idempotent; call before apply()."""
-        added = False
         for raw in _pn_declarant_names(text):
             if _pn_is_party_role(raw):
                 continue
@@ -5486,50 +6145,41 @@ class Pseudonymizer:
                                   case_sensitive=False, priority=1,
                                   source="declarant")
                           for rt, ft, _s in bare if not _pn_is_role_token(rt)]
-            for t in new_terms:
-                k = (t.category, t.real.lower())
-                if k in self.records:
-                    continue
-                self.terms.append(t)
-                self.records[k] = {
-                    "category": t.category, "real": t.real, "fake": t.fake,
-                    "source": t.source, "count": 0, "pattern": t.pattern,
-                    "flags": t.flags}
-                added = True
-        if added:
-            # Keep terms ordered biggest/most-specific first for apply()'s
-            # overlap resolution.
-            self.terms.sort(key=lambda t: (-t.priority, -len(t.real)))
+            self._add_terms(new_terms)
 
-    def apply(self, text):
-        """Return `text` with every match replaced by its stable fake.
-        Single pass over the ORIGINAL offsets so a fake can never be re-matched
-        by a later term."""
-        self.texts_applied += 1
-        text = _NFKC(text)
-        cands = []  # (priority, start, end, record)
+    def _detector_record(self, cat, real, faker):
+        rk = (cat, real.lower())
+        rec = self.records.get(rk)
+        if rec is None:
+            # E-mails reuse a party's name-token fake when the local part
+            # contains that name (zcoderre@… -> z<fake-of-Coderre>@…), so
+            # the address stays tied to the same pseudonymous person.
+            fake = self._fake_email(real) if cat == "email" else faker(real)
+            rec = {"category": cat, "real": real, "fake": fake,
+                   "source": "regex", "count": 0,
+                   "pattern": re.escape(_NFKC(real)), "flags": 0}
+            self.records[rk] = rec
+        return rec
+
+    def _detector_cands(self, text, offset=0):
+        out = []
         for cat in self.detectors:
             regex, faker = _PN_DETECTORS[cat]
             for m in regex.finditer(text):
-                real = m.group(0)
-                rk = (cat, real.lower())
-                rec = self.records.get(rk)
-                if rec is None:
-                    # E-mails reuse a party's name-token fake when the local part
-                    # contains that name (zcoderre@… -> z<fake-of-Coderre>@…), so
-                    # the address stays tied to the same pseudonymous person.
-                    fake = (self._fake_email(real) if cat == "email"
-                            else faker(real))
-                    rec = {"category": cat, "real": real, "fake": fake,
-                           "source": "regex", "count": 0,
-                           "pattern": re.escape(_NFKC(real)), "flags": 0}
-                    self.records[rk] = rec
-                cands.append((3, m.start(), m.end(), rec))
+                rec = self._detector_record(cat, m.group(0), faker)
+                out.append((3, m.start() + offset, m.end() + offset, rec))
+        return out
+
+    def _term_cands(self, text):
+        out = []
         for t in self.terms:
             for m in re.finditer(t.pattern, text, t.flags):
                 if m.start() != m.end():
-                    cands.append((t.priority, m.start(), m.end(),
-                                  self.records[(t.category, t.real.lower())]))
+                    out.append((t.priority, m.start(), m.end(),
+                                self.records[(t.category, t.real.lower())]))
+        return out
+
+    def _substitute(self, text, cands, reflow=False, count=True):
         # Biggest / most-specific first; skip anything overlapping a chosen span.
         cands.sort(key=lambda c: (-c[0], -(c[2] - c[1])))
         chosen, occ = [], []
@@ -5539,9 +6189,57 @@ class Pseudonymizer:
             occ.append((s, e))
             chosen.append((s, e, rec))
         for s, e, rec in sorted(chosen, key=lambda c: -c[0]):  # right-to-left
-            text = text[:s] + rec["fake"] + text[e:]
-            rec["count"] += 1
+            # Match the casing of the text being replaced: a caption written in
+            # ALL CAPS gets an ALL-CAPS fake, prose gets the canonical form. The
+            # stored fake carries whatever casing the spreadsheet cell had, so
+            # without this an all-caps "Title Defendant" shouts in every
+            # sentence. An e-mail fake is left alone — its casing is meaningless
+            # and upper-casing a domain looks wrong.
+            fake = rec["fake"]
+            if rec["category"] != "email":
+                fake = _pn_case_like(text[s:e], fake)
+            if reflow:
+                fake = _pn_reflow(text[s:e], fake)
+            text = text[:s] + fake + text[e:]
+            if count:
+                rec["count"] += 1
         return text
+
+    def apply(self, text, count=True):
+        """Return `text` with every match replaced by its stable fake.
+        Single pass over the ORIGINAL offsets so a fake can never be re-matched
+        by a later term. `count=False` runs the substitution without recording
+        occurrences — used for the leak re-scan, which must not inflate the
+        numbers written into the key spreadsheet."""
+        if count:
+            self.texts_applied += 1
+        text = _NFKC(text)
+        return self._substitute(text, self._detector_cands(text) + self._term_cands(text),
+                                count=count)
+
+    def apply_lines(self, bodies):
+        """Pseudonymize a pleading page's line BODIES as one text, returning one
+        body per input line.
+
+        Matching line by line cannot see a party name that the printed page
+        broke across two numbered lines — which is how a long caption name
+        ("DREAM TEAM REAL ESTATE / CONSULTANTS, INC.") almost always appears, so
+        that name silently survived. Terms are matched against the joined text;
+        the PII detectors still run per line, so a printed line number can never
+        be read as the leading digits of a street address. `_pn_reflow` puts the
+        line breaks back, so the line count — and every pinpoint cite keyed to
+        it — is unchanged."""
+        self.texts_applied += 1
+        bodies = [_NFKC(b) for b in bodies]
+        joined = "\n".join(bodies)
+        cands, off = self._term_cands(joined), 0
+        for b in bodies:
+            cands += self._detector_cands(b, off)
+            off += len(b) + 1
+        out = self._substitute(joined, cands, reflow=True).split("\n")
+        # _pn_reflow preserves every newline, so this holds; fall back rather
+        # than ever hand back the wrong number of lines.
+        return out if len(out) == len(bodies) else [self.apply(b) for b in bodies]
 
     def _fake_email(self, real):
         """Fake an e-mail address, reusing the fakes already assigned to any
@@ -5574,13 +6272,14 @@ class Pseudonymizer:
         return f"{local}@{fake_domain}"
 
     def surviving_reals(self, text):
-        """Real values that were replaced at least once somewhere but still
-        appear in `text` — a leak the caller should surface."""
+        """Real values that still appear in `text` — a leak the caller should
+        surface. Every tracked value is checked, including one that was replaced
+        ZERO times: a term whose only occurrences were line-wrapped used to
+        match nothing, so it had no replacement count, so the old count>0 guard
+        skipped it and the leak was reported as clean."""
         text = _NFKC(text)
         out = []
         for rec in self.records.values():
-            if rec["count"] == 0:
-                continue
             try:
                 if re.search(rec["pattern"], text, rec["flags"]):
                     out.append(rec["real"])
@@ -5616,6 +6315,76 @@ class Pseudonymizer:
                 indent=2), encoding="utf-8")
             log.info(f"  openpyxl not installed; pseudonym key written as JSON: "
                      f"{jp.name} ({len(rows)} mapping(s))")
+
+
+# ── Partial (prefix) entity terms ───────────────────────────────────────────
+# A column-splice or a bad wrap can leave only the FRONT of an entity name in
+# the text ("DREAM TEAM REAL ESTATE" with the opposing caption welded on where
+# "CONSULTANTS, INC." belongs). A prefix term catches that. It is dangerous by
+# nature: the front of a caption name is where the generic words live, and a
+# careless rule rewrites "real estate broker" or "Los Angeles County" all over
+# the document. Three guards keep it honest.
+_PN_PREFIX_MIN_WORDS = 3        # never a bigram: "Real Estate" is not a name
+_PN_PREFIX_MIN_CORE = 4         # only names with room to spare
+
+
+def _pn_core_indices(name):
+    """Indices of the distinctive (non-connector, non-suffix) words of `name`."""
+    toks = name.split()
+    return [i for i, t in enumerate(toks)
+            if re.search(r"[A-Za-z0-9]", t) and not _pn_is_entity_keep(_pn_word_base(t))]
+
+
+def _pn_prefix_is_safe(prefix, next_word, corpus):
+    """True when every occurrence of `prefix` in `corpus` is either part of the
+    full name (the name's next word follows) or written in ALL CAPS (a caption
+    fragment). A single lowercase or title-case occurrence standing on its own
+    means the prefix is ordinary English and must not become a term.
+
+    This is the guard that separates "Dream Team Real" (every loose occurrence
+    is the defendant, in a caption) from "Los Angeles County" (which turns up in
+    prose) — empirically, per case, with no word list to maintain."""
+    pat = _pn_build_pattern(prefix, whole_word=True)
+    nxt = re.compile(r"\s+" + re.escape(next_word) + r"(?!\w)", re.IGNORECASE)
+    loose = 0
+    for m in re.finditer(pat, corpus, re.IGNORECASE):
+        if nxt.match(corpus, m.end()):
+            continue            # just the full name; the full term already wins
+        if not m.group(0).isupper():
+            return False        # ordinary prose — reject the prefix outright
+        loose += 1
+    return loose > 0            # a prefix that never stands alone adds nothing
+
+
+def _pn_register_prefix_terms(pseudonymizer, corpus, log):
+    """Register the SHORTEST safe prefix of each long entity name. Shortest,
+    because a shorter prefix catches more truncations; safe, because
+    `_pn_prefix_is_safe` has to clear it against the whole corpus first."""
+    added = []
+    for t in list(pseudonymizer.terms):
+        if t.category != "entity":
+            continue
+        toks = t.real.split()
+        core = _pn_core_indices(t.real)
+        if len(core) < _PN_PREFIX_MIN_CORE:
+            continue
+        for k in range(_PN_PREFIX_MIN_WORDS, len(core)):
+            prefix = re.sub(r"[.,;]+$", "", " ".join(toks[:core[k - 1] + 1])).strip()
+            next_word = _pn_word_affixes(toks[core[k]])[1]
+            if not prefix or not next_word:
+                continue
+            if not _pn_prefix_is_safe(prefix, next_word, corpus):
+                continue
+            new = _PnTerm("entity-prefix", prefix,
+                          _pn_fake_entity(prefix, pseudonymizer.registry),
+                          whole_word=True, case_sensitive=False, priority=0,
+                          source="prefix")
+            if pseudonymizer._add_terms([new]):
+                added.append(prefix)
+            break               # shortest safe prefix only
+    if added:
+        log.info(f"  Pseudonymize: partial-name matching added "
+                 f"{len(added)} prefix term(s): {', '.join(added)}")
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -5764,20 +6533,90 @@ def _build_authorities_appendix(full_text, pseudonymizer=None):
 
 
 def _page_lined_rows(page):
-    """For a pleading-paper page, return [(line_num, body_text), ...] sorted by
-    line number, so the .txt can mirror the PDF's line numbering. Returns None
-    for pages without a recognisable line-number column (exhibits, covers,
-    signature pages), which the caller renders as plain text.
+    """For a pleading-paper page, return [(line_num, segments), ...] sorted by
+    line number, so the .txt can mirror the PDF's line numbering. `segments` is
+    [(x0, text), ...] — the row split at column gutters. Returns None for pages
+    without a recognisable line-number column (exhibits, covers, signature
+    pages), which the caller renders as plain text.
 
     Returning the rows (rather than a joined string) lets the caller
     pseudonymize each line's BODY on its own — so the line-number prefix is
     never seen by a detector (e.g. the address regex would otherwise read the
-    printed line number as a street number)."""
+    printed line number as a street number). Returning the SEGMENTS lets it go
+    one better and pseudonymize each column on its own."""
     anchors = _detect_line_anchors(page)
     if not anchors:
         return None
-    return [(a["line_num"], a["body_text"])
+    return [(a["line_num"], a["segments"])
             for a in sorted(anchors, key=lambda a: a["line_num"])]
+
+
+_COLUMN_BAND_TOL = 30.0   # pt; segment left edges this close share a page column
+
+
+def _page_column_bands(rows):
+    """Assign each row segment to a page-level column band, keyed on its left
+    edge. Returns [band_index_per_segment_per_row], bands ordered left to
+    right."""
+    xs = sorted({round(x) for _num, segs in rows for x, _t in segs})
+    bands = []
+    for x in xs:
+        if bands and x - bands[-1][-1] <= _COLUMN_BAND_TOL:
+            bands[-1].append(x)
+        else:
+            bands.append([x])
+    edges = [b[0] for b in bands]
+
+    def band_of(x):
+        for i in range(len(edges) - 1, -1, -1):
+            if x >= edges[i] - _COLUMN_BAND_TOL:
+                return i
+        return 0
+    return [[band_of(x) for x, _t in segs] for _num, segs in rows]
+
+
+def _page_column_streams(rows):
+    """[(band, [(row_i, seg_i), ...]), ...] — each page column, top to bottom."""
+    from collections import defaultdict
+    bands = _page_column_bands(rows)
+    streams = defaultdict(list)
+    for i, (_num, segs) in enumerate(rows):
+        for j in range(len(segs)):
+            streams[bands[i][j]].append((i, j))
+    return sorted(streams.items())
+
+
+def _pn_apply_page_rows(pseudonymizer, rows):
+    """Pseudonymize a pleading page column by column and return one display
+    string per row.
+
+    A party name that the printed page wrapped mid-name is only contiguous
+    within its own column; read straight across the page it is interrupted by
+    whatever the other column holds on that line. Running each column as its own
+    line stream restores the contiguity `apply_lines` needs, then the row is
+    re-assembled left to right exactly as it reads on paper."""
+    faked = {}
+    for _band, items in _page_column_streams(rows):
+        bodies = [rows[i][1][j][1] for i, j in items]
+        for (i, j), text in zip(items, pseudonymizer.apply_lines(bodies)):
+            faked[(i, j)] = text
+    return [" ".join(faked[(i, j)] for j in range(len(segs))).strip()
+            for i, (_num, segs) in enumerate(rows)]
+
+
+def _page_detect_text(page):
+    """Column-ordered plain text for a page, for NAME DETECTION and leak
+    checking only. On a two-column caption the on-paper reading order splices
+    the columns together; reading each column top to bottom instead makes a
+    wrapped party name contiguous, which is what the dba scanner, the declarant
+    scanner, and `surviving_reals` need to see."""
+    rows = _page_lined_rows(page)
+    if not rows:
+        return _MARKER_DETECT_RE.sub("", page.get_text("text"))
+    out = []
+    for _band, items in _page_column_streams(rows):
+        out.append("\n".join(rows[i][1][j][1] for i, j in items))
+    return "\n".join(out)
 
 
 def _pseudonymized_txt_path(out_dir: Path, pdf_path: Path, pseudonymizer, log):
@@ -5819,8 +6658,9 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
     out_dir = pdf_path.parent / text_subdir
     txt_path = out_dir / (pdf_path.stem + ".txt")
     orig_pages = []   # pre-pseudonymization page text, for citation detection
+    detect_pages = []  # column-ordered page text, for name detection / leak check
     page_blocks = []  # (header, rows_or_text) before pseudonymization; rows is
-                      # a list of (line_num, body) for pleading pages, else a str
+                      # a list of (line_num, segments) for pleading pages, else a str
     for i, page in enumerate(doc):
         raw = page.get_text("text")
         # Drop our invisible citation markers (present when re-processing an
@@ -5836,6 +6676,7 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         # each line's body without its number prefix; other pages fall back to
         # flowing text.
         rows = _page_lined_rows(page)
+        detect_pages.append(_page_detect_text(page))
         # Header carries the printed (footer) page number when present, so the
         # page half of a pinpoint cite is unambiguous too.
         label = _footer_page_label(page)
@@ -5844,20 +6685,30 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
                   + " ======")
         page_blocks.append((header, rows if rows is not None else clean))
 
-    # Register this document's declarant(s) so their name is scrubbed even when
-    # absent from the spreadsheet key — must happen BEFORE any apply() below.
+    # Register this document's declarant(s) and any "dba" pair written into the
+    # text, so those names are scrubbed even when absent from the spreadsheet
+    # key — must happen BEFORE any apply() below. Read from the COLUMN-ORDERED
+    # rendering: on a two-column caption the on-paper reading order interleaves
+    # the two, and a name spliced with the opposing column matches nothing.
+    detect_full = "\n\f\n".join(detect_pages)
     if pseudonymizer is not None:
-        pseudonymizer.register_declarant_names("\n\f\n".join(orig_pages))
+        pseudonymizer.register_declarant_names(detect_full)
+        pseudonymizer.register_dba_names(detect_full)
+        pseudonymizer.register_firm_names(detect_full)
+        pseudonymizer.register_short_names(detect_full)
 
     parts = []
     for header, content in page_blocks:
-        if isinstance(content, list):   # pleading page: (line_num, body) rows
-            lines = []
-            for num, body in content:
-                if pseudonymizer is not None:
-                    body = pseudonymizer.apply(body)
-                lines.append(f"{num:>2}  {body}".rstrip())
-            display = "\n".join(lines)
+        if isinstance(content, list):   # pleading page: (line_num, segments)
+            nums = [num for num, _ in content]
+            if pseudonymizer is not None:
+                # Column by column, so a name the page wrapped mid-name stays
+                # contiguous; rows are re-assembled left to right afterwards.
+                bodies = _pn_apply_page_rows(pseudonymizer, content)
+            else:
+                bodies = [" ".join(t for _x, t in segs) for _num, segs in content]
+            display = "\n".join(f"{num:>2}  {body}".rstrip()
+                                for num, body in zip(nums, bodies))
         else:                           # flowing text
             display = pseudonymizer.apply(content) if pseudonymizer is not None else content
         parts.append(f"{header}\n{display}")
@@ -5874,10 +6725,15 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
 
     if pseudonymizer is not None:
         # Report (but do NOT withhold) any real value that survived the scrub —
-        # the .txt is still written; the log flags it for review.
-        survivors = pseudonymizer.surviving_reals(body)
+        # the .txt is still written; the log flags it for review. Check the
+        # column-ordered rendering as well as the display text: a name that the
+        # page wrapped mid-name is only contiguous down its own column, so the
+        # display text alone would report a page like that as clean.
+        survivors = set(pseudonymizer.surviving_reals(body))
+        survivors |= set(pseudonymizer.surviving_reals(
+            pseudonymizer.apply(detect_full, count=False)))
         if survivors:
-            shown = ", ".join(sorted(set(survivors))[:8])
+            shown = ", ".join(sorted(survivors)[:8])
             log.warning(f"  Pseudonymization LEAK on {pdf_path.name}: real "
                         f"value(s) still present in the .txt ({shown}). Review "
                         f"before sharing; add them with --term and re-run.")
@@ -5918,6 +6774,38 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
 # ────────────────────────────────────────────────────────────────────────────
 # Main per-PDF processing
 # ────────────────────────────────────────────────────────────────────────────
+def _pn_prescan_folder(pdfs, pseudonymizer, log):
+    """Register declarant and "dba" names from EVERY PDF before any .txt is
+    written.
+
+    Both kinds of name are read out of document text, so a name learned from one
+    filing is only available to filings processed after it. The folder is walked
+    smallest-file-first, and the complaint — the one pleading that spells out
+    "South Bay Equity, a dba of Mortgage 2000, Inc." — is usually the largest
+    file, so every earlier .txt leaked the names it would have taught. One cheap
+    text-only pass up front removes that ordering dependency."""
+    import fitz
+    before = len(pseudonymizer.terms)
+    corpus = []
+    for pdf in pdfs:
+        try:
+            with fitz.open(pdf) as doc:
+                text = "\n\f\n".join(_page_detect_text(page) for page in doc)
+        except Exception as e:  # a corrupt file must not abort the whole run
+            log.warning(f"  Pseudonymize: could not pre-scan {pdf.name}: {e}")
+            continue
+        corpus.append(text)
+        pseudonymizer.register_declarant_names(text)
+        pseudonymizer.register_dba_names(text)
+        pseudonymizer.register_firm_names(text)
+        pseudonymizer.register_short_names(text)
+    added = len(pseudonymizer.terms) - before
+    if added:
+        log.info(f"  Pseudonymize: pre-scan of {len(pdfs)} file(s) added "
+                 f"{added} term(s) from declaration titles and dba names")
+    return "\n\f\n".join(corpus)
+
+
 def process_pdf(pdf_path: Path, log: logging.Logger,
                 provider: str = "lexis", extract_text: bool = True,
                 pseudonymizer=None, text_subdir="Text Files") -> bool:
@@ -6254,6 +7142,12 @@ _CONFIG_TEMPLATE = (
     "# PDFs themselves are never modified.\n"
     "pseudonymize = on\n"
     "\n"
+    "# Match a TRUNCATED party name (the front of it) when a two-column page\n"
+    "# splices the caption? on/off (default: off). A prefix term is only\n"
+    "# registered when it never appears in ordinary prose in this case, but a\n"
+    "# false replacement is silent, so review the key before trusting it.\n"
+    "partial_names = off\n"
+    "\n"
     "# Subfolder (inside each case folder) that the .txt exports are written to.\n"
     "# Default: Text Files.\n"
     "text_subfolder = Text Files\n"
@@ -6349,6 +7243,17 @@ def main():
              "(overrides the config file). By default the .txt exports swap "
              "party/case/attorney names (from the E-Court key spreadsheet) and "
              "detected PII for stable fakes; the PDFs are never modified.",
+    )
+    _pnp = parser.add_mutually_exclusive_group()
+    _pnp.add_argument(
+        "--partial-names", dest="partial_names", action="store_true", default=None,
+        help="Also match a party name that appears truncated (e.g. a caption "
+             "spliced by a two-column page). A prefix is registered only if it "
+             "never occurs in ordinary prose in this case. Off by default.",
+    )
+    _pnp.add_argument(
+        "--no-partial-names", dest="partial_names", action="store_false",
+        default=None, help="Force partial (prefix) name matching OFF for this run.",
     )
     parser.add_argument(
         "--key", type=Path, default=None, metavar="XLSX",
@@ -6463,6 +7368,13 @@ def main():
             if not p.stem.endswith("_linked") and not p.stem.endswith("_temp")]
     pdfs = sorted(pdfs, key=lambda p: p.stat().st_size)
     log.info(f"Found {len(pdfs)} PDF(s) to process (sorted by size)")
+
+    if pseudonymizer is not None and pdfs:
+        corpus = _pn_prescan_folder(pdfs, pseudonymizer, log)
+        partial = (args.partial_names if args.partial_names is not None
+                   else _config_bool(cfg, "partial_names", False))
+        if partial:
+            _pn_register_prefix_terms(pseudonymizer, corpus, log)
 
     success = 0
     failed = 0
