@@ -4997,7 +4997,9 @@ _PN_STREET_NAMES = [
     "Sequoia", "Cypress", "Alder", "Dogwood", "Hickory", "Rosewood",
     "Foxglove", "Larkspur", "Tamarack", "Sorrel",
 ]
-_PN_STREET_TYPES = ["Street", "Avenue", "Drive", "Lane", "Road", "Court", "Way", "Place"]
+# NB: there is no fake street-TYPE pool. A road type (Street/Road/Court/Way…) is
+# generic, not identifying, so the real one is always kept — see
+# `_pn_addr_suffix_of`. Only the number and the street NAME are faked.
 _PN_EMAIL_DOMAINS = ["example.com", "mailhaven.net", "postbox.org", "letterbox.co"]
 _PN_SUFFIX_TOKENS = {"jr", "jr.", "sr", "sr.", "ii", "iii", "iv", "v", "esq",
                      "esq.", "md", "m.d.", "phd", "ph.d."}
@@ -5634,11 +5636,29 @@ def _pn_addr_street_key(real):
     return core, nums
 
 
+# Capture the street-type suffix as it was actually written (with any trailing
+# period), so the fake can reuse it. The suffix is a generic road TYPE, not an
+# identifier — turning a real "Road" into a fake "Court" changes the record for
+# nothing — so only the number and name words are faked; Street/Road/Court/Way…
+# are always left as they stand.
+_PN_ADDR_SUFFIX_OF_RE = re.compile(
+    rf"{_PN_ADDR_NUM}[ \t]+(?:{_PN_ADDR_WORD}[ \t]+){{1,4}}({_PN_ADDR_SUFFIX}\b\.?)")
+
+
+def _pn_addr_suffix_of(real):
+    """The street-type suffix of `real`, verbatim ("Ave.", "Court", "Highway"),
+    or "Street" if none is found."""
+    m = _PN_ADDR_SUFFIX_OF_RE.search(real)
+    return m.group(1) if m else "Street"
+
+
 def _pn_fake_street(real):
     """Module-level fallback (no registry): a stable but NOT guaranteed-unique
-    fake. The Pseudonymizer routes through `_fake_street` for injectivity."""
+    fake. The Pseudonymizer routes through `_fake_street` for injectivity. The
+    real street-type suffix is kept."""
     r = _pn_rng("street", _pn_addr_canon(real))
-    return f"{r.randrange(100, 9999)} {r.choice(_PN_STREET_NAMES)} {r.choice(_PN_STREET_TYPES)}"
+    return (f"{r.randrange(100, 9999)} {r.choice(_PN_STREET_NAMES)} "
+            f"{_pn_addr_suffix_of(real)}")
 
 
 # ── URL / bare-domain handling ──────────────────────────────────────────────
@@ -6497,7 +6517,10 @@ class Pseudonymizer:
                    "source": "regex", "count": 0,
                    "pattern": re.escape(_NFKC(real)), "flags": 0}
             self.records[rk] = rec
-            self._own_fakes.add(fake.lower())
+            # Store trimmed of trailing punctuation so a re-detected match that
+            # picks up a following period (a fake suffix like "Ave." meeting a
+            # sentence stop) still resolves to the same own-fake.
+            self._own_fakes.add(fake.lower().rstrip(" .,;:"))
         return rec
 
     def _detector_cands(self, text, offset=0):
@@ -6519,11 +6542,14 @@ class Pseudonymizer:
 
     def _fake_street(self, real):
         """Injective address fake: canonicalise first so spelling variants of
-        one parcel share a fake, then draw a unique street from the registry."""
+        one parcel share a fake, then draw a unique street from the registry.
+        The real street-type suffix (Street/Road/Court/Way…) is kept — it is a
+        generic type, not an identifier — so only the number and name change."""
         canon = _pn_addr_canon(real)
+        suffix = _pn_addr_suffix_of(real)
         def make(rng):
             return (f"{rng.randrange(100, 9999)} {rng.choice(_PN_STREET_NAMES)} "
-                    f"{rng.choice(_PN_STREET_TYPES)}")
+                    f"{suffix}")
         return self.registry.unique(canon, "street", make)
 
     def _fake_url(self, real):
@@ -6596,7 +6622,12 @@ class Pseudonymizer:
                 fake = _pn_case_like(text[s:e], fake)
             if reflow:
                 fake = _pn_reflow(text[s:e], fake)
-            text = text[:s] + fake + text[e:]
+            tail = text[e:]
+            # A fake ending in a period ("Ave.", "Inc.") meeting a following
+            # sentence period would double it ("Ave.. Email"); drop the extra.
+            if fake.endswith(".") and tail[:1] == ".":
+                tail = tail[1:]
+            text = text[:s] + fake + tail
             if count:
                 rec["count"] += 1
         return text

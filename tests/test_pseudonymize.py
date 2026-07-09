@@ -128,6 +128,21 @@ class TestAddressDetector:
     def test_maple_not_in_fake_pool(self):
         assert "Maple" not in pl._PN_STREET_NAMES
 
+    def test_keeps_real_street_suffix(self):
+        pz, _ = _pz(detectors=["address"])
+        for real, suffix in [("742 Cedar Court", "Court"),
+                             ("21225 Pacific Coast Highway", "Highway"),
+                             ("414-416 S. Maple Ave.", "Ave."),
+                             ("100 Elm Road", "Road"), ("55 Sunset Way", "Way")]:
+            fake = pz._fake_street(real)
+            assert fake.rstrip().endswith(suffix), (real, fake)
+            assert fake != real  # number/name still changed
+
+    def test_suffix_of_helper(self):
+        assert pl._pn_addr_suffix_of("742 Cedar Court") == "Court"
+        assert pl._pn_addr_suffix_of("414-416 S. Maple Ave.") == "Ave."
+        assert pl._pn_addr_suffix_of("21225 Pacific Coast Hwy") == "Hwy"
+
     def test_adjacency_review(self):
         pz, _ = _pz(detectors=["address"])
         for a in ("414 S Maple Ave", "416 S Maple Ave"):
