@@ -513,6 +513,39 @@ class TestLocalities:
         assert re.search(r",\s*CA\s+\d{5}", out)
 
 
+class TestProtectedLocality:
+    """'Los Angeles' is never anonymized on its own — only as part of a party."""
+
+    def test_bare_mention_kept(self):
+        pz, _reg = _pz()
+        body = "Plaintiff resides in Los Angeles, California."
+        pz.register_localities(body)
+        assert "Los Angeles" in pz.apply(body)
+
+    def test_not_registered_as_a_city_term(self):
+        pz, _reg = _pz()
+        pz.register_localities("5 Oak St. Los Angeles, CA 90012")
+        assert ("city", "los angeles") not in pz.records
+
+    def test_kept_as_city_in_an_address_but_zip_faked(self):
+        pz, _reg = _pz(detectors=["address"])
+        out = pz.apply("mailed to 5 Oak St. Los Angeles, CA 90012 today")
+        assert "Los Angeles" in out          # city name kept
+        assert "90012" not in out            # ZIP still faked
+        assert "5 Oak St" not in out         # street still faked
+
+    def test_case_insensitive(self):
+        assert pl._pn_is_protected_locality("LOS ANGELES")
+        assert pl._pn_is_protected_locality("los  angeles")
+
+    def test_scrubbed_when_part_of_a_party_name(self):
+        pz, _reg = _pz(names=[("Los Angeles Widgets, Inc.", False)], detectors=[])
+        out = pz.apply("Defendant Los Angeles Widgets, Inc. appeared. "
+                       "Venue is Los Angeles.")
+        assert "Los Angeles Widgets" not in out   # party name scrubbed
+        assert out.rstrip().endswith("Los Angeles.")  # bare venue kept
+
+
 # ── Task 17 — a firm named by its P.C./LLP suffix is an entity ─────────────
 class TestFirmSuffix:
     def test_professional_corporation_is_found(self):
