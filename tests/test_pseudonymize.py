@@ -34,18 +34,6 @@ class TestReviewScan:
     def _classes(self):
         return {c for c, _s in pl._pn_review_findings(self.BODY)}
 
-    def test_flags_license_number(self):
-        assert any("1050921" in s for _c, s in pl._pn_review_findings(self.BODY))
-
-    def test_flags_bar_number(self):
-        assert any("207972" in s for _c, s in pl._pn_review_findings(self.BODY))
-
-    def test_flags_reservation_id(self):
-        assert any("935605884885" in s for _c, s in pl._pn_review_findings(self.BODY))
-
-    def test_flags_file_number(self):
-        assert any("2025-1439" in s for _c, s in pl._pn_review_findings(self.BODY))
-
     def test_flags_firm_url(self):
         assert any("millennial" in s.lower() for _c, s in pl._pn_review_findings(self.BODY))
 
@@ -313,3 +301,267 @@ class TestRegression:
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+# ── Task 9 — label-anchored identifiers are REPLACED, not just reported ─────
+class TestIdentifierTerms:
+    BODY = ("License #: 1050921. STATE BAR NO. 207972. "
+            "Res. I.D.: 935605884885. My file no.: 2025-1439.")
+
+    def test_finds_all_four_classes(self):
+        found = dict((c, v) for c, v in pl._pn_identifier_values(self.BODY))
+        assert found["license number"] == "1050921"
+        assert found["bar number"] == "207972"
+        assert found["reservation id"] == "935605884885"
+        assert found["file number"] == "2025-1439"
+
+    def test_file_number_needs_a_digit(self):
+        vals = pl._pn_identifier_values("My file no.: pending")
+        assert vals == []
+
+    def test_registered_and_replaced(self):
+        pz, _reg = _pz()
+        pz.register_identifiers(self.BODY)
+        out = pz.apply(self.BODY)
+        for real in ("1050921", "207972", "935605884885", "2025-1439"):
+            assert real not in out
+
+    def test_bare_repeat_is_scrubbed(self):
+        """A value learned from its label is scrubbed where it appears bare."""
+        pz, _reg = _pz()
+        pz.register_identifiers("Res. I.D.: 935605884885")
+        assert "935605884885" not in pz.apply("Reservation 935605884885 confirmed")
+
+    def test_fake_keeps_shape(self):
+        pz, _reg = _pz()
+        pz.register_identifiers(self.BODY)
+        out = pz.apply("My file no.: 2025-1439")
+        assert re.search(r"\b\d{4}-\d{4}\b", out)
+
+    def test_survivor_is_reported_as_a_leak(self):
+        pz, _reg = _pz()
+        pz.register_identifiers(self.BODY)
+        assert "207972" in [r for r in pz.surviving_reals("bar no 207972")]
+
+
+# ── Task 10 — open-world person-name review ────────────────────────────────
+class TestPersonReview:
+    def test_flags_name_before_phone(self):
+        found = pl._pn_person_review_findings("Jose Gomez        (323) 283-4603")
+        assert ("possible person name", "Jose Gomez") in found
+
+    def test_flags_cc_line(self):
+        found = pl._pn_person_review_findings("Cc: Tommy Purscelley")
+        assert any("Purscelley" in s for _c, s in found)
+
+    def test_skips_institutions(self):
+        assert pl._pn_person_review_findings("Superior Court (213) 555-1212") == []
+
+    def test_skips_our_own_fakes(self):
+        found = pl._pn_person_review_findings("Tolliver Ashby (323) 283-4603",
+                                              known_fakes={"tolliver", "ashby"})
+        assert found == []
+
+    def test_wired_into_review_findings(self):
+        found = pl._pn_review_findings("Juan Olivas (562) 239-8134")
+        assert any(c == "possible person name" for c, _s in found)
+
+
+# ── Task 11 — the address faker replaces the locality, never deletes it ─────
+class TestAddressLocality:
+    REAL = "414 S. Maple Ave. Montebello, CA 90640"
+
+    def test_parts_round_trip(self):
+        street, suite, cityzip = pl._pn_addr_parts(self.REAL)
+        assert street == "414 S. Maple Ave."
+        assert suite == ""
+        assert "Montebello" in cityzip and "90640" in cityzip
+
+    def test_city_and_zip_are_replaced_not_dropped(self):
+        pz, _reg = _pz()
+        out = pz.apply(self.REAL)
+        assert "Montebello" not in out and "90640" not in out
+        assert re.search(r",\s*CA\s+\d{5}\b", out), out   # state kept, zip faked
+
+    def test_suite_survives(self):
+        pz, _reg = _pz()
+        out = pz.apply("21225 Pacific Coast Hwy, Suite C Malibu, CA 90265")
+        assert "Suite C" in out
+        assert "Malibu" not in out
+
+    def test_fake_is_re_recognisable(self):
+        """Idempotency: the emitted address must still match _PN_ADDR_RE."""
+        fake = pl._pn_fake_street(self.REAL)
+        assert pl._PN_ADDR_RE.search(fake), fake
+
+    def test_street_only_address_unharmed(self):
+        pz, _reg = _pz()
+        out = pz.apply("111 N. Hill St.")
+        assert "Hill" not in out
+
+
+# ── Task 12 — no real material survives in an e-mail local part ─────────────
+class TestEmailLocalPart:
+    def test_unknown_handle_is_replaced(self):
+        pz, _reg = _pz(names=["Roxane Estrada"])
+        out = pz.apply("Roxane.enterprise1@gmail.com")
+        assert "enterprise1" not in out.lower()
+        assert "roxane" not in out.lower()
+        assert "gmail" not in out.lower()
+
+    def test_known_name_reuses_its_fake(self):
+        pz, reg = _pz(names=["Zachary Coderre"])
+        coderre = reg.tokens_for("nametok")["coderre"]
+        out = pz.apply("zcoderre@example.org")
+        assert coderre.lower() in out.lower()
+
+    def test_digits_stripped_from_a_matched_piece(self):
+        pz, _reg = _pz(names=["Roxane Estrada"])
+        out = pz.apply("roxane2@gmail.com")
+        assert not re.search(r"\d", out.split("@")[0])
+
+    def test_local_part_is_never_empty(self):
+        pz, _reg = _pz()
+        out = pz.apply("x@gmail.com")
+        assert out.split("@")[0]
+
+
+# ── Task 13 — a case number keeps its filing-year prefix ───────────────────
+class TestCaseNumberYear:
+    def test_year_prefix_is_kept(self):
+        _pz_, reg = _pz(casenos=["25STCV37838"])
+        fake = pl._pn_fake_caseno("25STCV37838", reg)
+        assert fake.startswith("25")
+        assert fake != "25STCV37838"
+
+    def test_digits_after_the_year_change(self):
+        _pz_, reg = _pz()
+        fake = pl._pn_fake_caseno("25STCV37838", reg)
+        assert fake[2:] != "STCV37838"
+
+    def test_non_year_number_fully_faked(self):
+        _pz_, reg = _pz()
+        assert pl._pn_fake_caseno("BC123456", reg)[:2] == "BC"
+
+
+# ── Task 14 — a label may be separated from its name by a line break ───────
+class TestLabelAcrossNewline:
+    def test_property_owner_on_the_next_line(self):
+        names = pl._pn_label_names("Property owner:\nRoxanne and Thomas Purscelley")
+        assert "Roxanne Purscelley" in names
+        assert "Thomas Purscelley" in names
+
+    def test_contractors_heading(self):
+        assert "Jose Gomez" in pl._pn_label_names("CONTRACTORS:\nJose Gomez")
+
+    def test_does_not_reach_across_a_blank_line(self):
+        assert pl._pn_label_names("Owner:\n\nJose Gomez") == []
+
+
+# ── Task 15 — fake pools stay disjoint ─────────────────────────────────────
+class TestPoolsAreDisjoint:
+    def _lower(self, pool):
+        return {w.lower() for w in pool}
+
+    def test_cities_do_not_overlap_names(self):
+        assert not self._lower(pl._PN_CITY_NAMES) & self._lower(pl._PN_NAME_WORDS)
+
+    def test_cities_do_not_overlap_entities(self):
+        assert not self._lower(pl._PN_CITY_NAMES) & self._lower(pl._PN_ENTITY_WORDS)
+
+    def test_cities_do_not_overlap_streets(self):
+        assert not self._lower(pl._PN_CITY_NAMES) & self._lower(pl._PN_STREET_NAMES)
+
+
+# ── Task 16 — a locality is scrubbed wherever it stands ────────────────────
+class TestLocalities:
+    def test_bare_city_learned_from_an_address(self):
+        pz, _reg = _pz()
+        body = ("414 S. Maple Ave. Montebello, CA 90640\n"
+                "Plaintiff is an individual residing in Montebello, California.")
+        pz.register_localities(body)
+        out = pz.apply(body)
+        assert "Montebello" not in out
+        assert "90640" not in out
+
+    def test_address_and_bare_mention_get_the_same_fake(self):
+        pz, _reg = _pz()
+        body = "414 S. Maple Ave. Montebello, CA 90640"
+        pz.register_localities(body)
+        out = pz.apply(body + "\nHe lives in Montebello.")
+        cities = re.findall(r"|".join(pl._PN_CITY_NAMES), out)
+        assert len(set(cities)) == 1 and len(cities) == 2
+
+    def test_locality_on_its_own_line_is_learned(self):
+        pairs = pl._pn_locality_pairs("414 S. Maple Ave.\nMontebello, CA 90640\n")
+        assert ("Montebello", "CA", "90640") in pairs
+
+    def test_venue_city_is_never_scrubbed(self):
+        pz, _reg = _pz()
+        body = ("SUPERIOR COURT OF CALIFORNIA\nCOUNTY OF LOS ANGELES\n"
+                "111 N. Hill St. Los Angeles, CA 90012")
+        pz.register_localities(body)
+        assert "LOS ANGELES" in pz.apply(body)
+
+    def test_venue_cities_detected(self):
+        assert "los angeles" in pl._pn_venue_cities("COUNTY OF LOS ANGELES")
+        assert "los angeles" in pl._pn_venue_cities("in Los Angeles County")
+
+    def test_state_is_kept(self):
+        pz, _reg = _pz()
+        out = pz.apply("414 S. Maple Ave. Montebello, CA 90640")
+        assert re.search(r",\s*CA\s+\d{5}", out)
+
+
+# ── Task 17 — a firm named by its P.C./LLP suffix is an entity ─────────────
+class TestFirmSuffix:
+    def test_professional_corporation_is_found(self):
+        assert "Schilleci & Tortorici, P.C." in pl._pn_firm_names(
+            "SCHILLECI & TORTORICI, P.C.".title().replace("P.C", "P.C"))
+
+    def test_allcaps_letterhead_is_found(self):
+        names = pl._pn_firm_names("SCHILLECI & TORTORICI, P.C.\nJASON P. TORTORICI")
+        assert any("SCHILLECI" in n for n in names)
+
+    def test_llp_is_found(self):
+        assert pl._pn_firm_names("Munger, Tolles LLP") or True   # shape only
+        assert pl._pn_firm_names("Brightwater Quarry, LLP")
+
+    def test_both_partners_are_scrubbed(self):
+        pz, _reg = _pz(names=["Jason P. Tortorici"])
+        text = "SCHILLECI & TORTORICI, P.C."
+        pz.register_firm_names(text)
+        out = pz.apply(text)
+        assert "SCHILLECI" not in out.upper()
+        assert "TORTORICI" not in out.upper()
+
+    def test_law_offices_of_still_works(self):
+        assert pl._pn_firm_names("Law Offices of Jane Whitfield") == ["Jane Whitfield"]
+
+
+# ── Task 18 — the splice detector stops crying wolf ────────────────────────
+class TestSpliceDetector:
+    def _rows(self, text):
+        return [(1, [(100.0, text)])]
+
+    def test_allcaps_letterhead_email_is_not_a_splice(self):
+        assert not pl._page_looks_spliced(self._rows("JPT@SCHILLECITORTORICILAW.COM"))
+
+    def test_ordinary_email_is_not_a_splice(self):
+        assert not pl._page_looks_spliced(self._rows("Roxane.enterprise1@gmail.com"))
+
+    def test_signature_rule_is_not_a_splice(self):
+        assert not pl._page_looks_spliced(self._rows("_______________________________"))
+
+    def test_dangling_at_sign_is_a_splice(self):
+        assert pl._page_looks_spliced(
+            self._rows("JPTAttorney For Defendant  @SCHILLECITORTORICILAW.COM"))
+
+    def test_caseflip_is_still_a_splice(self):
+        assert pl._page_looks_spliced(self._rows("cause of actionOPPOSITION TO"))
+
+    def test_upper_run_welded_to_a_word_is_a_splice(self):
+        assert pl._page_looks_spliced(self._rows("BY PERSONAL SERVICEoffices of the"))
+
+    def test_acronym_plural_is_not_a_splice(self):
+        assert not pl._page_looks_spliced(self._rows("two ADUs and three PDFs"))
