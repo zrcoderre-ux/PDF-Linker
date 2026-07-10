@@ -176,7 +176,20 @@ _REPORTERS_RAW = [
     "So.3d", "So. 3d", "So.2d", "So. 2d",
 ]
 REPORTERS_SORTED = sorted(_REPORTERS_RAW, key=len, reverse=True)
-REPORTER_PATTERN = "|".join(re.escape(r) for r in REPORTERS_SORTED)
+
+
+def _flex_ws_reporter(reporter: str) -> str:
+    # Escape the reporter, then let any internal whitespace match one-or-more
+    # whitespace chars (spaces, tabs, or a normalized line-wrap). PyMuPDF emits
+    # a trailing space before a wrapped line ("Cal. App. \n4th"), and
+    # _normalize_for_detection turns the newline into a second space, yielding
+    # a DOUBLE space inside the reporter ("Cal. App.  4th"). A literal-single-
+    # space pattern silently misses those cites (e.g. a reporter split as
+    # "134 Cal. App." / "4th 365"). \s+ absorbs the extra whitespace.
+    return re.sub(r"\\?\s+", r"\\s+", re.escape(reporter))
+
+
+REPORTER_PATTERN = "|".join(_flex_ws_reporter(r) for r in REPORTERS_SORTED)
 
 # California Style Manual compact reporter abbreviations → canonical compact
 # form (matching the rest of pdf_linker's keys). Keyed by the whitespace-
