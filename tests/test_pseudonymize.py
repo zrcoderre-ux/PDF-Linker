@@ -377,17 +377,21 @@ class TestAddressLocality:
         assert suite == ""
         assert "Montebello" in cityzip and "90640" in cityzip
 
-    def test_city_and_zip_are_replaced_not_dropped(self):
+    def test_city_state_zip_are_kept(self):
+        # Policy: only the house number and street name are faked; the whole
+        # City/State/ZIP tail is kept verbatim.
         pz, _reg = _pz()
         out = pz.apply(self.REAL)
-        assert "Montebello" not in out and "90640" not in out
-        assert re.search(r",\s*CA\s+\d{5}\b", out), out   # state kept, zip faked
+        assert "Montebello" in out and "90640" in out
+        assert re.search(r",\s*CA\s+90640\b", out), out
+        assert "Maple" not in out            # street name still changed
 
     def test_suite_survives(self):
         pz, _reg = _pz()
         out = pz.apply("21225 Pacific Coast Hwy, Suite C Malibu, CA 90265")
         assert "Suite C" in out
-        assert "Malibu" not in out
+        assert "Malibu" in out and "90265" in out   # locality kept
+        assert "Pacific Coast" not in out            # street name changed
 
     def test_fake_is_re_recognisable(self):
         """Idempotency: the emitted address must still match _PN_ADDR_RE."""
@@ -407,7 +411,9 @@ class TestEmailLocalPart:
         out = pz.apply("Roxane.enterprise1@gmail.com")
         assert "enterprise1" not in out.lower()
         assert "roxane" not in out.lower()
-        assert "gmail" not in out.lower()
+        # Public providers (gmail/yahoo/…) identify no one and now pass through
+        # unchanged; the local part is what must never survive.
+        assert "@gmail.com" in out.lower()
 
     def test_known_name_reuses_its_fake(self):
         pz, reg = _pz(names=["Zachary Coderre"])
@@ -475,22 +481,23 @@ class TestPoolsAreDisjoint:
 
 # ── Task 16 — a locality is scrubbed wherever it stands ────────────────────
 class TestLocalities:
-    def test_bare_city_learned_from_an_address(self):
+    def test_bare_city_and_zip_are_kept(self):
+        # Policy: localities are kept verbatim; only the street changes.
         pz, _reg = _pz()
         body = ("414 S. Maple Ave. Montebello, CA 90640\n"
                 "Plaintiff is an individual residing in Montebello, California.")
         pz.register_localities(body)
         out = pz.apply(body)
-        assert "Montebello" not in out
-        assert "90640" not in out
+        assert out.count("Montebello") == 2
+        assert "90640" in out
+        assert "Maple" not in out
 
-    def test_address_and_bare_mention_get_the_same_fake(self):
+    def test_bare_mention_is_kept_unchanged(self):
         pz, _reg = _pz()
         body = "414 S. Maple Ave. Montebello, CA 90640"
         pz.register_localities(body)
         out = pz.apply(body + "\nHe lives in Montebello.")
-        cities = re.findall(r"|".join(pl._PN_CITY_NAMES), out)
-        assert len(set(cities)) == 1 and len(cities) == 2
+        assert out.count("Montebello") == 2   # both real, both kept
 
     def test_locality_on_its_own_line_is_learned(self):
         pairs = pl._pn_locality_pairs("414 S. Maple Ave.\nMontebello, CA 90640\n")
@@ -527,17 +534,22 @@ class TestProtectedLocality:
         assert pl._pn_is_protected_locality("Orange County")
         assert pl._pn_is_protected_locality("LOS ANGELES COUNTY")
 
-    def test_non_county_city_still_scrubbed(self):
+    def test_non_county_city_is_kept(self):
+        # It is not a protected *county*, but under the keep-locality policy a
+        # plain city is kept anyway; only the street changes.
         assert not pl._pn_is_protected_locality("Montebello")
         pz, _reg = _pz()
         body = "5 Oak St. Montebello, CA 90640"
         pz.register_localities(body)
-        assert "Montebello" not in pz.apply(body)
+        out = pz.apply(body)
+        assert "Montebello" in out and "90640" in out
+        assert "Oak" not in out
 
-    def test_county_kept_as_address_city_zip_faked(self):
+    def test_county_city_and_zip_kept(self):
         pz, _reg = _pz(detectors=["address"])
         out = pz.apply("mailed to 5 Oak St. San Bernardino, CA 92401 today")
-        assert "San Bernardino" in out and "92401" not in out
+        assert "San Bernardino" in out and "92401" in out
+        assert "Oak" not in out
 
     # 'Los Angeles' (also a county) — the original protected locality.
 
@@ -552,11 +564,10 @@ class TestProtectedLocality:
         pz.register_localities("5 Oak St. Los Angeles, CA 90012")
         assert ("city", "los angeles") not in pz.records
 
-    def test_kept_as_city_in_an_address_but_zip_faked(self):
+    def test_kept_as_city_and_zip_in_an_address(self):
         pz, _reg = _pz(detectors=["address"])
         out = pz.apply("mailed to 5 Oak St. Los Angeles, CA 90012 today")
-        assert "Los Angeles" in out          # city name kept
-        assert "90012" not in out            # ZIP still faked
+        assert "Los Angeles" in out and "90012" in out   # locality kept
         assert "5 Oak St" not in out         # street still faked
 
     def test_case_insensitive(self):
@@ -623,3 +634,19 @@ class TestSpliceDetector:
 
     def test_acronym_plural_is_not_a_splice(self):
         assert not pl._page_looks_spliced(self._rows("two ADUs and three PDFs"))
+
+
+class TestRosterProtectedLocality:
+    """A roster/label line whose 'name' is a protected locality must not be
+    harvested as a person (it would scrub the county out of the venue)."""
+
+    def test_county_in_roster_line_not_harvested(self):
+        txt = "CONTRACTORS:\nLos Angeles (213) 555-1212\nJuan Olivas (562) 341-9911"
+        names = pl._pn_label_names(txt)
+        assert "Los Angeles" not in names
+        assert "Juan Olivas" in names          # a real roster name still harvested
+
+    def test_county_venue_survives_after_roster_registration(self):
+        pz, _ = _pz(detectors=[])
+        pz.register_label_names("Reach us at Los Angeles (213) 555-1212 today.")
+        assert "Los Angeles" in pz.apply("Venue is the County of Los Angeles.")

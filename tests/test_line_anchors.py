@@ -167,10 +167,12 @@ class TestPrescanOrderIndependence:
         doc.save(str(path))
         doc.close()
 
-    def test_locality_learned_folder_wide(self, tmp_path):
+    def test_localities_kept_verbatim_folder_wide(self, tmp_path):
         import logging
-        # File that states only the BARE city sorts first (smaller); the file
-        # with the full address that teaches it sorts second.
+        # Under the current policy the locality (city/state/ZIP) is kept
+        # verbatim — only the house number and street name inside an address
+        # are faked — so register_localities registers nothing and a bare city
+        # or ZIP is left as written no matter which file taught the address.
         self._text_pdf(tmp_path / "a_bare.pdf",
                        ["Plaintiff resides in Montebello, California."])
         self._text_pdf(tmp_path / "b_addr.pdf",
@@ -180,10 +182,9 @@ class TestPrescanOrderIndependence:
                               list(pl._PN_DEFAULT_DETECTORS), reg)
         pdfs = sorted((tmp_path).glob("*.pdf"))
         pl._pn_prescan_folder(pdfs, pz, logging.getLogger("t"))
-        # After the pre-scan the city is a term, so the bare mention scrubs even
-        # though its own file names no address.
-        assert ("city", "montebello") in pz.records
-        assert "Montebello" not in pz.apply("resides in Montebello, California.")
+        assert not any(r["category"] in ("city", "zip") for r in pz.records.values())
+        out = pz.apply("resides in Montebello, California.")
+        assert "Montebello" in out and "California" in out
 
     def test_identifier_learned_folder_wide(self, tmp_path):
         import logging
