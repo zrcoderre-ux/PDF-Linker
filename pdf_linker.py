@@ -7584,50 +7584,21 @@ def _page_detect_text(page):
     return "\n".join(out)
 
 
-# A short filing whose caption titles it "Notice of X" IS just the notice — the
-# brief it gives notice of is filed separately. Name the .txt for what it is.
-_PN_NOTICE_TITLE_RE = re.compile(r"\bnotice\s+of\s+(.{1,80})", re.IGNORECASE | re.DOTALL)
-# Words that don't name the notice — a connector or a following party/subject —
-# so "NOTICE OF OPPOSITION to Defendant…" yields "Notice of Opposition".
-_PN_NOTICE_STOP_WORDS = frozenset({
-    "and", "or", "to", "of", "for", "the", "a", "an", "in", "on", "re",
-    "from", "with", "by", "that", "its", "his", "her", "their", "as",
-})
-_PN_NOTICE_MAX_PAGES = 4   # "less than 4 pages"
+def _pseudonymized_txt_path(out_dir: Path, pdf_path: Path, pseudonymizer, log):
+    """Return the .txt output path (inside `out_dir`) with the source PDF's stem
+    pseudonymized, so
+    a party/attorney name in the filename doesn't ride along on the shareable
+    text file. Separators (_ / -) are normalized to spaces so name tokens are
+    word-bounded, the stem is run through the same pseudonymizer, then joined
+    back with underscores. If a tracked real value still survives in the
+    resulting name, fall back to a neutral, non-revealing name
+    (<fake-case-no> <hash> or document <hash>).
 
-
-def _pn_notice_title(caption_text):
-    """If `caption_text` titles the document a "Notice of X", return the short
-    name "Notice of X" (X = the 1-3 words that name the notice), else None."""
-    m = _PN_NOTICE_TITLE_RE.search(caption_text or "")
-    if not m:
-        return None
-    words = []
-    for raw in m.group(1).split():
-        core = raw.strip(".,;:'’\"()").strip()
-        if not core or not core[0].isalpha():
-            break
-        if core.lower() in _PN_NOTICE_STOP_WORDS:
-            break
-        words.append(core)
-        if len(words) >= 3:
-            break
-    if not words:
-        return None
-    return "Notice of " + " ".join(w.capitalize() for w in words)
-
-
-def _pseudonymized_txt_path(out_dir: Path, pdf_path: Path, pseudonymizer, log,
-                            override_stem=None):
-    """Return the .txt output path (inside `out_dir`) with the file's base name
-    pseudonymized, so a party/attorney name in the name doesn't ride along on the
-    shareable text file. The base is the source PDF's stem (separators normalized
-    to spaces) unless `override_stem` is given — e.g. a "Notice of X" title read
-    from the caption. It is run through the same pseudonymizer; if a tracked real
-    value still survives, fall back to a neutral name (<fake-case-no> <hash> or
-    document <hash>). Words are separated by SPACES."""
+    Words are separated by SPACES. The scrubbed stem used to be rejoined with
+    underscores, which contradicts the document-naming convention every other
+    artifact in this workflow follows."""
     stem = pdf_path.stem
-    spaced = override_stem or re.sub(r"[_\-]+", " ", stem).strip()
+    spaced = re.sub(r"[_\-]+", " ", stem).strip()
     faked = pseudonymizer.apply(spaced)
     digest = _pn_hashlib.sha256(stem.encode("utf-8")).hexdigest()[:6]
     if pseudonymizer.surviving_reals(faked):
@@ -7682,14 +7653,6 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
                   + (f" (printed p. {label})" if label else "")
                   + " ======")
         page_blocks.append((header, rows if rows is not None else clean))
-
-    # A short filing whose caption titles it "Notice of X" is just the notice;
-    # name the .txt for what it is rather than for the source PDF's stem.
-    notice_name = None
-    if doc.page_count < _PN_NOTICE_MAX_PAGES and orig_pages:
-        notice_name = _pn_notice_title(orig_pages[0])
-        if notice_name and pseudonymizer is None:
-            txt_path = out_dir / (notice_name + ".txt")
 
     # Register this document's declarant(s) and any "dba" pair written into the
     # text, so those names are scrubbed even when absent from the spreadsheet
@@ -7772,10 +7735,8 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
                         f"identifier(s) to check before sharing ({shown}).")
 
         # Pseudonymize the output filename too — the .txt is the artifact that
-        # gets shared, so a party/attorney name must not survive in its name. A
-        # "Notice of X" caption on a short filing names it for the notice.
-        txt_path = _pseudonymized_txt_path(out_dir, pdf_path, pseudonymizer, log,
-                                           override_stem=notice_name)
+        # gets shared, so a party/attorney name must not survive in its name.
+        txt_path = _pseudonymized_txt_path(out_dir, pdf_path, pseudonymizer, log)
 
     try:
         out_dir.mkdir(parents=True, exist_ok=True)
