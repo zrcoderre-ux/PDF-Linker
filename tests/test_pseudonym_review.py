@@ -151,6 +151,10 @@ def test_reversal_key_has_no_zero_occurrence_rows(tmp_path):
     zero = [r for r in ws.iter_rows(min_row=2, values_only=True)
             if r[occ_i] in (0, None)]
     assert not zero, f"{len(zero)} zero-occurrence row(s) in the reversal key"
+    # The full report is a separate "pseudonym audit.xlsx" (trailing "key"
+    # dropped), kept out of anything that circulates with the document.
+    assert (tmp_path / "pseudonym audit.xlsx").exists()
+    assert not (tmp_path / "pseudonym_key audit.xlsx").exists()
 
 
 # P1  Every name in a phone-roster block must be harvested, not just the first.
