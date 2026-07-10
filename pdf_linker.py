@@ -79,6 +79,7 @@ Logs to <folder>/pdf_linker.log.
 import logging
 import os
 import re
+import statistics
 import sys
 import traceback
 from pathlib import Path
@@ -1789,8 +1790,24 @@ def _join_spans_spaced(spans):
 # gutter line, silently discarding the other. That is how caption text went
 # missing from the .txt.
 _ROW_BASELINE_TOL = 3.0     # pt; spans this close share a row
-_GUTTER_MATCH_TOL = 24.0    # pt; how far a row may sit from its line number
+_GUTTER_MATCH_TOL = 24.0    # pt; hard ceiling on how far a row may sit from its
+                            # line number (the effective tolerance is half the
+                            # page's own median lead — see _detect_line_anchors)
 _COLUMN_GAP_MIN = 20.0      # pt; a horizontal gap this wide separates columns
+_FOOTER_MASK_PT = 50.0      # pt; bottom band holding running footers, printed
+                            # page numbers and Bates stamps. Rows whose baseline
+                            # falls below it are page furniture and are never
+                            # adopted onto a numbered line.
+
+# A caption's vertical brace column (")" repeated down the page) is typography,
+# not content: it carries no text and its rows sit at their own baselines, so it
+# only ever reorders the segments around it. Dropped from the numbered-line
+# export.
+_CAPTION_DIVIDER_RE = re.compile(r"^[)(|\]\[]+$")
+# The same brace, but close enough to the right-hand column that no gutter
+# separates them (") Case No.: 25STCV37838"). Only a CLOSING brace is stripped,
+# and only with whitespace after it — "(FAC, p. 8:17-18.)" must survive intact.
+_CAPTION_DIVIDER_LEAD_RE = re.compile(r"^[)\]|]+\s+")
 
 
 def _span_baseline(sp):
@@ -1845,13 +1862,22 @@ def _detect_line_anchors(page):
     """Per-page: find pleading-paper line numbers and gather body text on
     each numbered row.
 
-    Returns list of {line_num, body_text, segments} for each row that has both a
-    line number in the gutter and body text in the same horizontal band.
+    Returns list of {line_num, body_text, segments, y_mid} for each row that has
+    both a line number in the gutter and body text in the same horizontal band.
     `segments` is [(x0, text), ...] — the row split at column gutters, so a
     caller can pseudonymize each column as its own text stream. `body_text` is
     the segments joined left-to-right, i.e. the page as it reads on paper.
     Returns [] if the page lacks a recognisable pleading-paper line-number
     column (e.g. exhibits, signature pages, cover sheets without lines).
+
+    One gutter number routinely owns MORE THAN ONE physical row: a caption's
+    right column is set at ~11 pt while the gutter runs at 24 pt. Those rows are
+    merged column band by column band, each band's rows joined top to bottom.
+    Flattening every row's spans into one pool and re-sorting that pool by x —
+    what this function used to do — interleaved row 2 into row 1 and produced
+    "SCHILLECIJASON P. TORTORICI& TORTORICI,, STATE BARP.C. NO. 207972". A name
+    spliced like that matches no pseudonymizer term, so the extraction bug was
+    also a disclosure bug.
     """
     from collections import Counter, defaultdict
     blocks = page.get_text("dict")["blocks"]
@@ -1884,24 +1910,33 @@ def _detect_line_anchors(page):
         # - not a real pleading-paper page.
         return []
 
-    # Step 3: collect body-text spans (anything to the right of the line-number
-    # column with a gap) and cluster them into physical rows by baseline.
+    # Step 2a: the page's own line lead. A body row belongs to a line number
+    # only if it sits within HALF a lead of it; anything further is furniture.
+    # A flat 24 pt tolerance was a whole lead, so the running footer and the
+    # printed page number (7-18 pt below line 28) were adopted onto line 28:
+    #   "28  (FAC, p. 8:17-18.) 1"
+    #   "28  ...a flood on OPPOSITION TO DEFENDANT'S MOTION TO STRIKE..."
+    ys = sorted(s["y_mid"] for s in line_col)
+    leads = [b - a for a, b in zip(ys, ys[1:]) if b - a > 1]
+    tol = min(_GUTTER_MATCH_TOL,
+              (statistics.median(leads) if leads else _GUTTER_MATCH_TOL) * 0.5)
+
+    # Step 3: collect body-text spans (right of the line-number column, above
+    # the footer band) and cluster them into physical rows by baseline.
     body_x_min = dominant_x + 20
+    footer_top = page.rect.height - _FOOTER_MASK_PT
     body_spans = [sp
                   for b in blocks if "lines" in b
                   for ln in b["lines"]
                   for sp in ln["spans"]
-                  if sp["text"].strip() and sp["bbox"][0] >= body_x_min]
+                  if sp["text"].strip()
+                  and sp["bbox"][0] >= body_x_min
+                  and _span_baseline(sp) <= footer_top]
     rows = _cluster_rows(body_spans)
     if not rows:
         return []
 
-    # Step 4: assign EVERY row to its nearest gutter line number. A row further
-    # than the tolerance from any line number is page furniture (running header,
-    # footer, exhibit stamp) and is skipped; every other row is kept. Two rows
-    # may share one line number (half-line-spaced caption text) — they are
-    # concatenated rather than one of them being thrown away, which is what the
-    # old one-row-per-line-number rule did.
+    # Step 4: assign every row to its nearest gutter line number.
     rows_by_num = defaultdict(list)
     for row in rows:
         best, best_diff = None, float("inf")
@@ -1909,14 +1944,44 @@ def _detect_line_anchors(page):
             diff = abs(row["y"] - lnd["y_mid"])
             if diff < best_diff:
                 best, best_diff = lnd, diff
-        if best is not None and best_diff <= _GUTTER_MATCH_TOL:
+        if best is not None and best_diff <= tol:
             rows_by_num[best["num"]].append(row)
 
+    # Step 5: page-level column bands, seeded from every row's own column split.
+    # A band start is a segment x0 further than _COLUMN_GAP_MIN from any other.
+    band_starts = []
+    for num in rows_by_num:
+        for row in rows_by_num[num]:
+            for x, _t in _split_row_columns(row["spans"]):
+                if not any(abs(x - bx) <= _COLUMN_GAP_MIN for bx in band_starts):
+                    band_starts.append(x)
+    band_starts.sort()
+
+    def _band_of(x):
+        idx = 0
+        for k, bx in enumerate(band_starts):
+            if x >= bx - 1.0:
+                idx = k
+        return idx
+
+    # Step 6: merge the rows WITHIN each band, top to bottom; emit the bands
+    # left to right. Spans from different rows are never sorted against each
+    # other by x, so reading order survives.
     results = []
     for num in sorted(rows_by_num):
-        spans = [sp for row in sorted(rows_by_num[num], key=lambda r: r["y"])
-                 for sp in row["spans"]]
-        segments = _split_row_columns(spans)
+        buckets = defaultdict(list)          # band -> [(y, x0, text)]
+        for row in sorted(rows_by_num[num], key=lambda r: r["y"]):
+            for x, text in _split_row_columns(row["spans"]):
+                if _CAPTION_DIVIDER_RE.match(text):
+                    continue
+                text = _CAPTION_DIVIDER_LEAD_RE.sub("", text)
+                if not text:
+                    continue
+                buckets[_band_of(x)].append((row["y"], x, text))
+        segments = []
+        for band in sorted(buckets):
+            items = sorted(buckets[band])
+            segments.append((items[0][1], " ".join(t for _y, _x, t in items)))
         if not segments:
             continue
         results.append({
@@ -4997,6 +5062,18 @@ _PN_STREET_NAMES = [
     "Sequoia", "Cypress", "Alder", "Dogwood", "Hickory", "Rosewood",
     "Foxglove", "Larkspur", "Tamarack", "Sorrel",
 ]
+# Fake localities. The STATE is kept (venue is jurisdictionally meaningful and a
+# two-letter code identifies nobody); the city name and the ZIP are faked, and a
+# fake city must look like a real one to `_PN_ADDR_RE` or re-scrubbing an already
+# scrubbed export would stop being a fixed point.
+# Kept disjoint from _PN_NAME_WORDS, _PN_ENTITY_WORDS and _PN_STREET_NAMES (see
+# TestPoolsAreDisjoint): a fake surname that is also a fake city reads as a
+# collision to anyone auditing the key, even though the map stays a bijection.
+_PN_CITY_NAMES = [
+    "Fairview", "Brookfield", "Rosedale", "Elmwood", "Kingsbury",
+    "Northvale", "Westbrook", "Clearwater", "Havenport", "Stonebridge",
+    "Marlow", "Redhill", "Glenmore", "Oakhurst", "Bridgeton",
+]
 # NB: there is no fake street-TYPE pool. A road type (Street/Road/Court/Way…) is
 # generic, not identifying, so the real one is always kept — see
 # `_pn_addr_suffix_of`. Only the number and the street NAME are faked.
@@ -5093,16 +5170,20 @@ class _PnFakeRegistry:
             n += 1
         return self._take(key, f"{base}{n}")
 
-    def digits(self, real, seed_tag):
+    def digits(self, real, seed_tag, keep_prefix=0):
         """A digit-for-digit fake of `real` (e.g. a case number), unique per
         case. Re-seeds on the rare collision so two real numbers never share
-        one fake."""
+        one fake. The first `keep_prefix` characters are copied verbatim — a
+        case number's two-digit filing year is not an identifier, and randomising
+        it produced numbers that are facially impossible for the filing date
+        printed beside them ("25STCV37838" -> "48STCV51378")."""
         key = (seed_tag, real.lower())
         if key in self._memo:
             return self._memo[key]
+        head, tail = real[:keep_prefix], real[keep_prefix:]
         for attempt in range(10000):
             r = _pn_rng(seed_tag, real, attempt)
-            cand = re.sub(r"\d", lambda m: str(r.randrange(10)), real)
+            cand = head + re.sub(r"\d", lambda m: str(r.randrange(10)), tail)
             if cand.lower() not in self._used:
                 return self._take(key, cand)
         return self._take(key, cand)  # give up after 10k tries; keep it stable
@@ -5548,8 +5629,16 @@ def _pn_append_name_terms(terms, raw, source, registry):
                                                       registry, prefer))
 
 
+# A California case number opens with the two-digit filing year ("25STCV37838").
+# That year is printed beside the number in every caption ("Complaint Filed: Dec
+# 29, 2025"), so randomising it does not hide anything — it only makes the fake
+# internally inconsistent. Keep it; fake the rest.
+_PN_CASENO_YEAR_RE = re.compile(r"^\d{2}(?=[A-Za-z])")
+
+
 def _pn_fake_caseno(real, registry):
-    return registry.digits(real, "caseno")
+    keep = 2 if _PN_CASENO_YEAR_RE.match(real) else 0
+    return registry.digits(real, "caseno", keep_prefix=keep)
 
 
 def _pn_fake_phone(real):
@@ -5652,13 +5741,110 @@ def _pn_addr_suffix_of(real):
     return m.group(1) if m else "Street"
 
 
+# `_PN_ADDR_RE` deliberately consumes an optional suite and City, ST ZIP so the
+# locality is scrubbed too — but the fakers used to emit only "<num> <name>
+# <suffix>", so the tail was DELETED rather than replaced:
+#     "414 S. Maple Ave. Montebello, CA 90640"  ->  "1533 Cypress Ave."
+# The export lost the fact that there was a city at all, while "residing in
+# Montebello, California" three lines below survived untouched. These parse the
+# match back into its parts so each is replaced in kind.
+_PN_ADDR_PARSE_RE = re.compile(
+    rf"^(?P<street>{_PN_ADDR_NUM}[ \t]+(?:{_PN_ADDR_WORD}[ \t]+){{1,4}}"
+    rf"{_PN_ADDR_SUFFIX}\b\.?)"
+    rf"(?P<suite>{_PN_ADDR_SUITE})(?P<cityzip>{_PN_ADDR_CITYZIP})$")
+_PN_CITYZIP_PARSE_RE = re.compile(
+    r"^(?P<lead>[ \t]*,?[ \t]*)(?P<city>.+?)[ \t]*,?[ \t]*"
+    r"(?P<state>[A-Za-z]{2}\.?)[ \t]+(?P<zip>\d{5}(?:-\d{4})?)$")
+
+
+def _pn_addr_parts(real):
+    """(street, suite, cityzip) for an address matched by `_PN_ADDR_RE`.
+    Missing parts come back as empty strings."""
+    m = _PN_ADDR_PARSE_RE.match(real.strip())
+    if not m:
+        return real.strip(), "", ""
+    return m.group("street"), m.group("suite") or "", m.group("cityzip") or ""
+
+
+def _pn_fake_cityzip(cityzip, city_word, zip_digits):
+    """Rebuild a "…, City, ST 90640" tail with a fake city and ZIP, keeping the
+    separators and the STATE exactly as written. Returns "" for an empty tail."""
+    if not cityzip:
+        return ""
+    m = _PN_CITYZIP_PARSE_RE.match(cityzip)
+    if not m:
+        return cityzip
+    return (f"{m.group('lead')}{city_word}, {m.group('state')} {zip_digits}")
+
+
+# A "City, ST 90640" standing on its own line. A pleading's service list prints
+# the street and the locality on separate lines, and `_PN_ADDR_RE` may not cross
+# a newline (a ZIP at a line end must not weld to a "Street" three lines below),
+# so the locality half is invisible to the address detector. `register_localities`
+# uses this to learn it anyway.
+_PN_CITYSTZIP_LINE_RE = re.compile(
+    r"(?m)^[ \t]*(?P<city>[A-Z][A-Za-z.'’-]+(?:[ \t]+[A-Z][A-Za-z.'’-]+){0,2})"
+    r"[ \t]*,[ \t]*(?P<state>[A-Z]{2})\.?[ \t]+(?P<zip>\d{5}(?:-\d{4})?)[ \t]*$")
+
+# A city that names the venue is not an identifier — it is the court. Scrubbing
+# "Los Angeles" out of "COUNTY OF LOS ANGELES" would make the ruling nonsense.
+# Only the LABEL is case-insensitive: an `(?i)` covering the name too would let
+# `[A-Z]` match a lower-case word, and "in Los Angeles County" captured as
+# "in Los Angeles".
+_PN_VENUE_NAME = r"[A-Z][A-Za-z.'’-]+(?:[ \t]+[A-Z][A-Za-z.'’-]+){0,2}"
+_PN_VENUE_CITY_RES = (
+    re.compile(r"(?i:count(?:y|ies)\s+of)\s+(?P<c>" + _PN_VENUE_NAME + r")"),
+    re.compile(r"\b(?P<c>" + _PN_VENUE_NAME + r")\s+(?i:county)\b"),
+    re.compile(r"(?i:(?:superior\s+)?court\s+of\s+(?:the\s+)?(?:state\s+of\s+)?)"
+               r"(?P<c>" + _PN_VENUE_NAME + r")"),
+)
+
+
+def _pn_venue_cities(text):
+    """Lower-cased city/county names that `text` uses to name the venue."""
+    out = set()
+    for rx in _PN_VENUE_CITY_RES:
+        for m in rx.finditer(_NFKC(text)):
+            out.add(re.sub(r"\s+", " ", m.group("c")).strip().lower())
+    return out
+
+
+def _pn_locality_pairs(text):
+    """[(city, state, zip), ...] every locality `text` states, whether it sits at
+    the tail of a full street address or alone on its own line."""
+    text = _NFKC(text)
+    out, seen = [], set()
+
+    def add(city, state, zipd):
+        city = city.strip(" ,")
+        key = (city.lower(), zipd)
+        if city and key not in seen:
+            seen.add(key)
+            out.append((city, state, zipd))
+
+    for m in _PN_ADDR_RE.finditer(text):
+        _s, _su, cityzip = _pn_addr_parts(m.group(0))
+        cm = _PN_CITYZIP_PARSE_RE.match(cityzip) if cityzip else None
+        if cm:
+            add(cm.group("city"), cm.group("state"), cm.group("zip"))
+    for m in _PN_CITYSTZIP_LINE_RE.finditer(text):
+        add(m.group("city"), m.group("state"), m.group("zip"))
+    return out
+
+
 def _pn_fake_street(real):
     """Module-level fallback (no registry): a stable but NOT guaranteed-unique
     fake. The Pseudonymizer routes through `_fake_street` for injectivity. The
-    real street-type suffix is kept."""
+    real street-type suffix and the state are kept; number, street name, city and
+    ZIP are faked, and the suite designator rides along unchanged (it identifies
+    nothing once the street is fake)."""
+    street, suite, cityzip = _pn_addr_parts(real)
     r = _pn_rng("street", _pn_addr_canon(real))
-    return (f"{r.randrange(100, 9999)} {r.choice(_PN_STREET_NAMES)} "
-            f"{_pn_addr_suffix_of(real)}")
+    fake_street = (f"{r.randrange(100, 9999)} {r.choice(_PN_STREET_NAMES)} "
+                   f"{_pn_addr_suffix_of(real)}")
+    fake_city = r.choice(_PN_CITY_NAMES)
+    fake_zip = "".join(str(r.randrange(10)) for _ in range(5))
+    return fake_street + suite + _pn_fake_cityzip(cityzip, fake_city, fake_zip)
 
 
 # ── URL / bare-domain handling ──────────────────────────────────────────────
@@ -5727,25 +5913,105 @@ _PN_DETECTORS = {
 _PN_DEFAULT_DETECTORS = ["ssn", "email", "phone", "address", "url"]
 
 
-# ── Open-world REVIEW scan ──────────────────────────────────────────────────
-# `surviving_reals` only re-checks values the tool already tracks, so it cannot
-# see a real identifier that was never a term. These shape detectors flag
-# identifiers that must never ride along in a shareable export even when there
-# is no key entry for them — a contractor licence or a bar number each resolves
-# to a real name in a public lookup. They are REVIEW findings, NOT auto-replaced:
-# a statute URL is legitimate and only a human can tell the difference.
-_PN_REVIEW_RES = {
-    "license number": re.compile(r"(?i)\blicen[cs]e\s*#?\s*:?\s*(\d{6,})"),
+# ── Label-anchored identifiers (auto-faked) ─────────────────────────────────
+# A bar number, a contractor licence, a court-reservation ID and an attorney file
+# number each resolve to a real name in a single public lookup, so none of them
+# may ride along in a shareable export. Each is anchored on its own printed label
+# (there is no free-floating "\d{6}" rule), which keeps the false-positive rate
+# at zero on the corpus, so they are REPLACED rather than merely reported.
+#
+# The captured group is the identifier; the label is left as written. Once found,
+# the value is registered as a whole-word term, so bare repeats elsewhere in the
+# document (a caption's "Res. I.D." echoed on an exhibit) are scrubbed too — and
+# `surviving_reals` can then report it if one gets through.
+_PN_ID_RES = {
+    "license number": re.compile(
+        r"(?i)\blicen[cs]e\s*(?:no\.?|number|#)?\s*:?\s*(\d{6,})"),
     "bar number": re.compile(
         r"(?i)\b(?:state\s+)?bar\s*(?:no\.?|number|#)?\s*:?\s*(\d{5,6})\b"),
     "reservation id": re.compile(
         r"(?i)\bres(?:ervation)?\.?\s*i\.?\s*d\.?\s*:?\s*(\d{8,})"),
-    "file number": re.compile(r"(?i)\b(?:my\s+)?file\s+no\.?\s*:?\s*([\w\-]{3,})"),
-    "url/domain": _PN_DETECTORS["url"][0],
+    "file number": re.compile(
+        r"(?i)\b(?:my\s+)?file\s+no\.?\s*:?\s*([\w\-]{3,})"),
 }
 
 
-def _pn_review_findings(text):
+def _pn_identifier_values(text):
+    """[(class, value), ...] — label-anchored identifiers found in `text`.
+    A "file no." value must contain a digit, so a stray word cannot qualify."""
+    text = _NFKC(text)
+    out, seen = [], set()
+    for cls, rx in _PN_ID_RES.items():
+        for m in rx.finditer(text):
+            val = m.group(1).strip()
+            if not re.search(r"\d", val):
+                continue
+            if val.lower() in seen:
+                continue
+            seen.add(val.lower())
+            out.append((cls, val))
+    return out
+
+
+# ── Open-world REVIEW scan ──────────────────────────────────────────────────
+# `surviving_reals` only re-checks values the tool already tracks, so it cannot
+# see a real identifier that was never a term. These shape detectors flag what
+# must be looked at before an export is shared. They are REVIEW findings, NOT
+# auto-replaced: a statute URL is legitimate and only a human can tell the
+# difference.
+_PN_REVIEW_RES = {
+    "url/domain": _PN_DETECTORS["url"][0],
+}
+
+# A person name that no key, declarant anchor or label anchor caught. Two shapes
+# carry nearly all of them in this corpus:
+#   * a capitalised bigram/trigram immediately before a phone number
+#     ("Jose Gomez   (323) 283-4603" under a "CONTRACTORS:" heading);
+#   * a capitalised bigram/trigram after a signature or courtesy anchor.
+# Reported, never replaced: only a human can tell "Superior Court" from a name.
+_PN_REVIEW_NAME = r"[A-Z][A-Za-z.'’-]+(?:[ \t]+[A-Z][A-Za-z.'’-]+){1,2}"
+_PN_REVIEW_PERSON_RES = (
+    # A contractor list extracts as "Jose Gomez\n(323) 283-4603" — the name and
+    # the number it belongs to land on separate lines, so the gap must admit one
+    # newline or the shape is never seen.
+    re.compile(r"(?P<n>" + _PN_REVIEW_NAME + r")[ \t]*\n?[ \t]*"
+               r"(?=\(?\d{3}\)?[\s.\-]\d{3}[\s.\-]\d{4})"),
+    re.compile(r"(?i:by|signed|executed\s+by|prepared\s+by)[ \t]*:[ \t]*"
+               r"(?P<n>" + _PN_REVIEW_NAME + r")"),
+    re.compile(r"(?i:c\.?c\.?|cc)[ \t]*:[ \t]*(?P<n>" + _PN_REVIEW_NAME + r")"),
+)
+# Words that make a capitalised bigram an institution, not a person.
+_PN_REVIEW_NAME_STOP = frozenset({
+    "court", "courthouse", "county", "state", "superior", "department",
+    "dept", "office", "law", "firm", "inc", "llc", "llp", "company", "corp",
+    "corporation", "avenue", "street", "boulevard", "road", "drive", "suite",
+    "california", "angeles", "america", "united", "district", "division",
+    "clerk", "judge", "honorable", "hon", "plaintiff", "defendant", "attorney",
+})
+
+
+def _pn_person_review_findings(text, known_fakes=()):
+    """[("possible person name", sample), ...] — capitalised names the scrubber
+    never saw. `known_fakes` holds the lower-cased words this run minted, so the
+    stand-ins it just wrote in are not reported back as findings."""
+    known = {w.lower() for w in known_fakes}
+    out, seen = [], set()
+    for rx in _PN_REVIEW_PERSON_RES:
+        for m in rx.finditer(text):
+            name = re.sub(r"\s+", " ", m.group("n")).strip()
+            words = [w.strip(".,").lower() for w in name.split()]
+            if any(w in _PN_REVIEW_NAME_STOP for w in words):
+                continue
+            if all(w in known for w in words):
+                continue      # a fake we minted, not a survivor
+            if name.lower() in seen:
+                continue
+            seen.add(name.lower())
+            out.append(("possible person name", name))
+    return out
+
+
+def _pn_review_findings(text, known_fakes=()):
     """[(class, sample), ...] — identifier shapes in `text` that a human must
     review before the export is shared. De-duplicated; whitelisted citation
     hosts and the tool's own neutral fake domains are not reported."""
@@ -5763,6 +6029,7 @@ def _pn_review_findings(text):
             if key not in seen:
                 seen.add(key)
                 out.append((cls, sample))
+    out += _pn_person_review_findings(text, known_fakes)
     return out
 
 
@@ -6147,14 +6414,22 @@ def _pn_declarant_names(text):
 # names with none of those anchors, so every one of them used to survive. These
 # labels state that a name follows, which is a reliable, low-risk anchor.
 _PN_LABEL_NAME = r"[A-Z][A-Za-z.'’-]+(?:[ \t]+[A-Z][A-Za-z0-9.'’-]+){0,3}"
+# The gap between a label and its value. A contract's two-column layout extracts
+# as "Property owner:\nRoxanne and Thomas Purscelley", so a horizontal-only gap
+# matched nothing and the exhibit's owner names were never registered. At most
+# ONE newline, or the label would reach across a blank line into unrelated prose.
+_PN_LABEL_GAP = r"[ \t]*\n?[ \t]*"
 _PN_LABEL_RES = (
-    re.compile(r"(?i:property\s+owner)s?[ \t]*:?[ \t]*"
+    re.compile(r"(?i:property\s+owners?)[ \t]*:?" + _PN_LABEL_GAP +
                r"(?P<n>" + _PN_LABEL_NAME + r"(?:[ \t]+(?:and|&)[ \t]+"
                + _PN_LABEL_NAME + r")?)"),
-    re.compile(r"(?i:contractor|owner|client|tenant|landlord|buyer|seller)s?"
-               r"[ \t]*:[ \t]*(?P<n>" + _PN_LABEL_NAME + r")"),
+    # NB: the plural `s` lives INSIDE the case-insensitive group. Left outside it
+    # matched "Contractors:" but not the "CONTRACTORS:" an exhibit actually prints.
+    re.compile(r"(?i:(?:contractor|owner|client|tenant|landlord|buyer|seller)s?)"
+               r"[ \t]*:" + _PN_LABEL_GAP + r"(?P<n>" + _PN_LABEL_NAME + r")"),
     re.compile(r"/s/[ \t]*(?P<n>" + _PN_LABEL_NAME + r")"),
-    re.compile(r"(?i:attn|attention)[ \t]*:?[ \t]*(?P<n>" + _PN_LABEL_NAME + r")"),
+    re.compile(r"(?i:attn|attention)[ \t]*:?" + _PN_LABEL_GAP +
+               r"(?P<n>" + _PN_LABEL_NAME + r")"),
     re.compile(r"(?i:dear)[ \t]+(?i:mr|ms|mrs|dr|messrs)\.?[ \t]+"
                r"(?P<n>" + _PN_LABEL_NAME + r")"),
 )
@@ -6323,16 +6598,41 @@ def _pn_dba_pairs(text):
 _PN_FIRM_RE = re.compile(
     r"(?i:law\s+(?:offices?|firm|group)\s+of)[ \t]+"
     r"(?P<name>[A-Z][\w.'’-]*(?:[ \t]+[A-Z][\w.'’-]*){1,3})")
+# A firm named by its professional-corporation suffix rather than by a "Law
+# Offices of" label: "Schilleci & Tortorici, P.C.". Only the partner whose name
+# also appeared as an attorney of record was ever scrubbed, so the letterhead
+# came out half-real — "SCHILLECI & HALLORAN, P.C." — which fingerprints the firm
+# more precisely than leaving it alone would have. The suffix is captured with
+# the name so `_pn_looks_like_entity` routes it down the entity path.
+_PN_FIRM_WORD = r"[A-Z][\w.'’-]*"
+_PN_FIRM_SUFFIX_RE = re.compile(
+    r"\b(?P<name>" + _PN_FIRM_WORD +
+    r"(?:[ \t]+(?:&|and)?[ \t]*" + _PN_FIRM_WORD + r"){0,3}"
+    r"[ \t]*,[ \t]*(?i:A[ \t]*P[ \t]*L[ \t]*C|P\.?\s?C\.?|L\.?L\.?P\.?|"
+    r"L\.?L\.?C\.?|P\.?L\.?L\.?C\.?))(?![\w])")
 _PN_FIRM_REJECT = frozenset({"the", "los", "california", "record", "counsel"})
 
 
 def _pn_firm_names(text):
-    """Personal/entity names read out of "Law Offices of X" labels."""
+    """Entity names read out of "Law Offices of X" labels and out of a trailing
+    professional-corporation suffix ("Schilleci & Tortorici, P.C.")."""
     out, seen = [], set()
     for m in _PN_FIRM_RE.finditer(text):
         name = _pn_clean_phrase(m.group("name"))
         words = name.split()
         if len(words) < 2:
+            continue
+        if any(_pn_word_base(w) in _PN_FIRM_REJECT or _pn_is_role_token(w)
+               or _pn_word_base(w) in _PN_NON_NAME_WORDS for w in words):
+            continue
+        if name.lower() not in seen:
+            seen.add(name.lower())
+            out.append(name)
+    for m in _PN_FIRM_SUFFIX_RE.finditer(text):
+        name = re.sub(r"\s+", " ", m.group("name")).strip()
+        head = name.split(",")[0]
+        words = [w for w in head.split() if w not in ("&", "and")]
+        if not words:
             continue
         if any(_pn_word_base(w) in _PN_FIRM_REJECT or _pn_is_role_token(w)
                or _pn_word_base(w) in _PN_NON_NAME_WORDS for w in words):
@@ -6480,6 +6780,51 @@ class Pseudonymizer:
                                   self.registry)
             self._add_terms(new)
 
+    def register_localities(self, text):
+        """Register every city and ZIP `text` states, so the fake locality the
+        address detector writes is not contradicted by the real one standing
+        alone a few lines below ("…residing in Montebello, California").
+
+        A city that names the VENUE is skipped — "COUNTY OF LOS ANGELES" is the
+        court, not the party. The fake comes from the same registry slots
+        `_fake_street` draws on, so the address and the bare mention agree.
+        Idempotent; call before apply()."""
+        venue = _pn_venue_cities(text)
+        new = []
+        for city, _state, zipd in _pn_locality_pairs(text):
+            if city.lower() in venue:
+                continue
+            if ("city", city.lower()) not in self.records:
+                new.append(_PnTerm("city", city, self._fake_city(city),
+                                   whole_word=True, case_sensitive=False,
+                                   priority=1, source="document"))
+            if ("zip", zipd) not in self.records:
+                new.append(_PnTerm("zip", zipd, self._fake_zip(zipd),
+                                   whole_word=True, case_sensitive=False,
+                                   priority=1, source="document"))
+        self._add_terms(new)
+
+    def register_identifiers(self, text):
+        """Detect label-anchored identifiers in `text` (bar number, contractor
+        licence, court reservation ID, attorney file number) and register each
+        as a whole-word term with a digit-for-digit fake.
+
+        Each of these resolves to a real name in one public lookup, so they are
+        replaced, not merely reported. Registering the VALUE (rather than
+        rewriting only the labelled occurrence) also scrubs the bare repeats —
+        a caption's "Res. I.D." echoed on an exhibit stamp — and lets
+        `surviving_reals` report one that gets through. Idempotent; call before
+        apply()."""
+        new = []
+        for cls, val in _pn_identifier_values(text):
+            cat = cls.replace(" ", "_")
+            if (cat, val.lower()) in self.records:
+                continue
+            new.append(_PnTerm(cat, val, self.registry.digits(val, cat),
+                               whole_word=True, case_sensitive=False,
+                               priority=2, source="document"))
+        self._add_terms(new)
+
     def register_declarant_names(self, text):
         """Detect declarant names in `text` ("DECLARATION OF X", "I, X,
         declare") and add them as person terms (full name + bare tokens) so a
@@ -6543,14 +6888,42 @@ class Pseudonymizer:
     def _fake_street(self, real):
         """Injective address fake: canonicalise first so spelling variants of
         one parcel share a fake, then draw a unique street from the registry.
-        The real street-type suffix (Street/Road/Court/Way…) is kept — it is a
-        generic type, not an identifier — so only the number and name change."""
+        The real street-type suffix (Street/Road/Court/Way…) and the STATE are
+        kept — both are generic, not identifiers. The number, the street name,
+        the CITY and the ZIP are all faked; the suite designator is kept.
+
+        The city and ZIP are faked, never dropped. `_PN_ADDR_RE` consumes them,
+        so emitting only the street silently deleted them from the export. Both
+        go through the registry, so `register_localities` can hand the SAME fake
+        to a bare "Montebello" standing on its own three lines below."""
         canon = _pn_addr_canon(real)
         suffix = _pn_addr_suffix_of(real)
+        _street, suite, cityzip = _pn_addr_parts(real)
+
         def make(rng):
-            return (f"{rng.randrange(100, 9999)} {rng.choice(_PN_STREET_NAMES)} "
-                    f"{suffix}")
-        return self.registry.unique(canon, "street", make)
+            return (f"{rng.randrange(100, 9999)} "
+                    f"{rng.choice(_PN_STREET_NAMES)} {suffix}")
+        fake_street = self.registry.unique(canon, "street", make)
+        return fake_street + suite + self._fake_cityzip(cityzip)
+
+    def _fake_city(self, city):
+        return _pn_case_like(city, self.registry.token(city.lower(),
+                                                       _PN_CITY_NAMES, "city"))
+
+    def _fake_zip(self, zip_digits):
+        return self.registry.digits(zip_digits, "zip")
+
+    def _fake_cityzip(self, cityzip):
+        """Rebuild a "…, City, ST 90640" tail: fake city, real state, fake ZIP.
+        Separators are preserved verbatim."""
+        if not cityzip:
+            return ""
+        m = _PN_CITYZIP_PARSE_RE.match(cityzip)
+        if not m:
+            return cityzip
+        city = m.group("city").strip(" ,")
+        return _pn_fake_cityzip(cityzip, self._fake_city(city),
+                                self._fake_zip(m.group("zip")))
 
     def _fake_url(self, real):
         """Fake a URL, mapping its host to the SAME fake domain `_fake_email`
@@ -6675,7 +7048,14 @@ class Pseudonymizer:
         party name-tokens that appear in its local part. So if "Coderre" ->
         "Forsythe" and the address is zcoderre@gmail.com, the fake local part
         keeps the same stand-in: zforsythe@…. The domain is always neutralised.
-        Falls back to a fully random address when no known name is present."""
+
+        EVERY dot-separated piece of the local part is rewritten, not only the
+        pieces that hold a known name. Substituting the name alone left the rest
+        of the handle standing — `roxane.enterprise1@gmail.com` came out as
+        `tolliver.enterprise1@letterbox.co`, and `enterprise1` is a real,
+        searchable handle. A piece with no known name in it is swapped for a
+        stable word drawn from the registry (unique, so it can never collide
+        with a party's fake)."""
         local, sep, domain = real.partition("@")
         if not sep:
             return _pn_fake_email(real)
@@ -6685,22 +7065,37 @@ class Pseudonymizer:
         # substitution.
         items = sorted(((r, f) for r, f in tokens.items() if len(r) >= 4),
                        key=lambda rf: -len(rf[0]))
-        matched = False
-        if items:
-            by_real = {r: f for r, f in items}
-            pat = re.compile("|".join(re.escape(r) for r, _ in items),
-                             re.IGNORECASE)
-            def repl(mm):
-                nonlocal matched
-                matched = True
-                return by_real[mm.group(0).lower()].lower()
-            local = pat.sub(repl, local)
-        if not matched:
-            # No known name in the local part: randomise it, but still neutralise
-            # the DOMAIN through _pn_fake_domain so the firm site (URL detector)
-            # and the firm e-mail resolve to the same fake host.
-            r = _pn_rng("email", real.lower())
-            local = f"{r.choice(_PN_NAME_WORDS).lower()}.{r.choice(_PN_NAME_WORDS).lower()}"
+        by_real = {r: f for r, f in items}
+        pat = (re.compile("|".join(re.escape(r) for r, _ in items), re.IGNORECASE)
+               if items else None)
+
+        # Split on the separators the local part is allowed to use, keeping them.
+        pieces = re.split(r"([._%+\-])", local)
+        out = []
+        for i, piece in enumerate(pieces):
+            if i % 2 or not piece:      # a separator, or an empty run
+                out.append(piece)
+                continue
+            hit = False
+            if pat is not None:
+                def repl(mm):
+                    nonlocal hit
+                    hit = True
+                    return by_real[mm.group(0).lower()].lower()
+                piece = pat.sub(repl, piece)
+            if hit:
+                # A known name carried the piece. Strip any residual digits
+                # ("roxane2" -> "tolliver"): a numeric suffix is part of the
+                # real handle, not of the name.
+                piece = re.sub(r"\d+", "", piece)
+            else:
+                # No known name: replace the whole piece with a stable, unique
+                # stand-in word rather than letting the real handle through.
+                piece = self.registry.token(piece.lower(), _PN_NAME_WORDS,
+                                            "emaillocal").lower()
+            out.append(piece)
+        local = "".join(out).strip("._%+-") or _pn_rng(
+            "email", real.lower()).choice(_PN_NAME_WORDS).lower()
         return f"{local}@{_pn_fake_domain(domain)}"
 
     def surviving_reals(self, text):
@@ -6740,10 +7135,19 @@ class Pseudonymizer:
         for r in reals:
             self.leaked.add(r.lower())
 
+    def known_fake_words(self):
+        """Every word this run has minted as a stand-in, lower-cased. Lets the
+        open-world review scan tell a fake it just wrote from a real survivor."""
+        words = set()
+        for rec in self.records.values():
+            words.update(w.strip(".,").lower()
+                         for w in str(rec["fake"]).split() if w)
+        return words
+
     def review_scan(self, text):
         """Run the open-world identifier-shape scan, accumulate the findings for
         the folder-level report, and return them."""
-        found = _pn_review_findings(text)
+        found = _pn_review_findings(text, self.known_fake_words())
         seen = {(c, s.lower()) for c, s in self.review}
         for c, s in found:
             if (c, s.lower()) not in seen:
@@ -7038,7 +7442,19 @@ _COLUMN_BAND_TOL = 30.0   # pt; segment left edges this close share a page colum
 # certified clean on the whole-word patterns alone.
 _PN_SPLICE_LONG_TOKEN = 25
 _PN_SPLICE_CASEFLIP_RE = re.compile(r"[a-z][A-Z]")
-_PN_SPLICE_ATRUN_RE = re.compile(r"[A-Z]{8,}@|@[A-Z]{8,}")
+# The mirror flip: an upper-case RUN welded to a lower-case word ("SERVICEoffices",
+# "TRANSMISSION1010"). Two lower-case letters are required so an ordinary
+# acronym plural ("ADUs", "PDFs") is not mistaken for a splice.
+_PN_SPLICE_UPPERRUN_RE = re.compile(r"[A-Z]{3,}[a-z]{2,}")
+# A DANGLING "@" — one at the start of a token, i.e. preceded by whitespace or by
+# nothing. A real address never begins with it; a spliced caption does, because
+# the local part was carried off into the other column ("JPTAttorney For
+# Defendant AZUL CONCRETO, INC.  @SCHILLECITORTORICILAW.COM"). The old rule fired
+# on `[A-Z]{8,}@`, which is what a perfectly ordinary all-caps letterhead address
+# looks like — every Motion page was reported as corrupt.
+_PN_SPLICE_ATRUN_RE = re.compile(r"(?:^|\s)@[A-Za-z]")
+# Punctuation used as a rule/leader line: "______", "------", "......".
+_PN_SPLICE_RULE_RE = re.compile(r"^(.)\1{4,}$")
 
 
 def _page_looks_spliced(rows):
@@ -7049,7 +7465,14 @@ def _page_looks_spliced(rows):
     if _PN_SPLICE_ATRUN_RE.search(text):
         return True
     for tok in text.split():
-        if len(tok) > _PN_SPLICE_LONG_TOKEN and "-" not in tok:
+        if _PN_SPLICE_RULE_RE.match(tok):
+            continue                      # a signature rule, not a long word
+        # A long token is only suspicious when it is a long WORD. E-mails, URLs
+        # and hyphenated compounds are legitimately long.
+        if (len(tok) > _PN_SPLICE_LONG_TOKEN
+                and not re.search(r"[-@._/]", tok)):
+            return True
+        if _PN_SPLICE_UPPERRUN_RE.search(tok):
             return True
         # A lower->upper flip inside a token that isn't ordinary CamelCase
         # (needs an upper run of >=3, e.g. "...JOPLIN", not "McKay").
@@ -7132,18 +7555,22 @@ def _pseudonymized_txt_path(out_dir: Path, pdf_path: Path, pseudonymizer, log):
     word-bounded, the stem is run through the same pseudonymizer, then joined
     back with underscores. If a tracked real value still survives in the
     resulting name, fall back to a neutral, non-revealing name
-    (<fake-case-no>_<hash> or document_<hash>)."""
+    (<fake-case-no> <hash> or document <hash>).
+
+    Words are separated by SPACES. The scrubbed stem used to be rejoined with
+    underscores, which contradicts the document-naming convention every other
+    artifact in this workflow follows."""
     stem = pdf_path.stem
     spaced = re.sub(r"[_\-]+", " ", stem).strip()
     faked = pseudonymizer.apply(spaced)
     digest = _pn_hashlib.sha256(stem.encode("utf-8")).hexdigest()[:6]
     if pseudonymizer.surviving_reals(faked):
         prefix = pseudonymizer.a_case_number_fake() or "document"
-        safe = f"{prefix}_{digest}"
+        safe = f"{prefix} {digest}"
         log.info(f"  Filename still held a real value after scrub; using "
                  f"neutral name {safe}.txt")
     else:
-        safe = re.sub(r"\s+", "_", faked).strip("_") or f"document_{digest}"
+        safe = re.sub(r"\s+", " ", faked).strip() or f"document {digest}"
     return out_dir / (safe + ".txt")
 
 
@@ -7202,6 +7629,8 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         pseudonymizer.register_firm_names(detect_full)
         pseudonymizer.register_label_names(detect_full)
         pseudonymizer.register_short_names(detect_full)
+        pseudonymizer.register_identifiers(detect_full)
+        pseudonymizer.register_localities(detect_full)
 
     parts = []
     for header, content in page_blocks:
@@ -7290,7 +7719,10 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
                 pass
 
     try:
-        txt_path.write_text(body, encoding="utf-8")
+        # newline="\n" explicitly: the default translates to the platform's
+        # line ending, so every .txt written on Windows shipped with CRLF and
+        # diffed against a Linux-produced copy line for line.
+        txt_path.write_text(body, encoding="utf-8", newline="\n")
     except Exception as e:
         log.warning(f"  Could not write text version (non-fatal): {e}")
         return False
