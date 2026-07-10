@@ -7316,10 +7316,12 @@ class Pseudonymizer:
             written, so it is a clean bijection: `ReAnonymize` can never replace
             a Real Value that was never a party, and Word's Find (which cannot
             match a literal newline) never meets a dead line-wrapped row.
-          * `<stem> audit<suffix>` — the full QA report: every tracked term with
+          * `<base> audit<suffix>` — the full QA report: every tracked term with
             a Status column ("replaced" / "no match" / "leaked"), so a reviewer
             can still see what was tracked but absent. Keep this OUT of anything
-            that circulates with the document.
+            that circulates with the document. `<base>` is the key stem with a
+            trailing "key" dropped, so the default `pseudonym_key.xlsx` yields
+            `pseudonym audit.xlsx`.
 
         xlsx if openpyxl is available, else JSON alongside.
         """
@@ -7327,6 +7329,10 @@ class Pseudonymizer:
                          key=lambda r: (r["category"], r["real"].lower()))
         if not allrows:
             return
+        # Audit filename: drop a trailing "key" from the key's stem so the
+        # default "pseudonym_key" becomes "pseudonym audit", not "pseudonym_key
+        # audit".
+        audit_base = re.sub(r"[ _-]?key$", "", path.stem, flags=re.IGNORECASE) or path.stem
 
         def _reversible(r):
             return (r["count"] > 0
@@ -7349,7 +7355,7 @@ class Pseudonymizer:
                                   for r in rows]}, indent=2), encoding="utf-8")
             kp = path.with_suffix(".json")
             dump(keyrows, kp)
-            ap = path.with_name(f"{path.stem} audit.json")
+            ap = path.with_name(f"{audit_base} audit.json")
             dump(allrows, ap)
             log.info(f"  openpyxl not installed; reversal key written as JSON: "
                      f"{kp.name} ({len(keyrows)} mapping(s)); audit {ap.name}")
@@ -7366,7 +7372,7 @@ class Pseudonymizer:
             wb.save(p)
 
         sheet(keyrows, path, "Pseudonym Key")
-        ap = path.with_name(f"{path.stem} audit{path.suffix}")
+        ap = path.with_name(f"{audit_base} audit{path.suffix}")
         sheet(allrows, ap, "Audit")
         for cluster in self.alias_candidates():
             log.warning("  possible alias (same given name, different surname) "
