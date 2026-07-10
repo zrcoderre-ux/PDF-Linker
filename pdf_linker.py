@@ -5149,8 +5149,21 @@ class _PnFakeRegistry:
     and an attorney's middle name both becoming "Forsythe"), which made the
     fake ambiguous and broke mapping the .txt back to the real names."""
 
+    # A word must map to ONE fake regardless of whether the person path or the
+    # entity path asks for it, or the same party splits into two identities
+    # (the delivered set called the defendant both "Beacon Torchlight, Inc."
+    # and "Nolan Isley, Inc."). These two token seed-tags therefore share a
+    # single memo slot; whichever path binds the word first wins, and the other
+    # reuses it — so a bare "Azul Concreto" met on the person path renders with
+    # the same words as the entity "Azul Concreto, Inc."
+    _NAME_ENTITY_TAGS = frozenset({"nametok", "enttok"})
+
+    @classmethod
+    def _memo_tag(cls, seed_tag):
+        return "name_or_entity" if seed_tag in cls._NAME_ENTITY_TAGS else seed_tag
+
     def __init__(self):
-        self._memo = {}     # (seed_tag, real_lower) -> fake
+        self._memo = {}     # (memo_tag, real_lower) -> fake
         self._used = set()  # every fake handed out, lower-cased (global)
 
     def _take(self, key, fake):
@@ -5160,16 +5173,19 @@ class _PnFakeRegistry:
 
     def tokens_for(self, seed_tag):
         """{real_lower: fake} for every value assigned under `seed_tag` — used to
-        reuse a person's name-token fake elsewhere (e.g. inside an e-mail)."""
+        reuse a person's name-token fake elsewhere (e.g. inside an e-mail).
+        Person and entity tokens share a slot, so either resolves the other."""
+        want = self._memo_tag(seed_tag)
         return {real: fake for (tag, real), fake in self._memo.items()
-                if tag == seed_tag}
+                if tag == want}
 
     def token(self, real, words, seed_tag):
         """A single canonical-case stand-in word for `real`, never reused for a
         different real value. Draws from `words` in a per-value deterministic
         order, skipping any already taken; if the whole pool is exhausted a
-        numeric suffix keeps it unique."""
-        key = (seed_tag, real.lower())
+        numeric suffix keeps it unique. Person and entity token pools share one
+        memo slot per word (see `_NAME_ENTITY_TAGS`)."""
+        key = (self._memo_tag(seed_tag), real.lower())
         if key in self._memo:
             return self._memo[key]
         rng = _pn_rng(seed_tag, real.lower())
@@ -5727,14 +5743,21 @@ def _pn_addr_canon(real):
 
 
 def _pn_addr_street_key(real):
-    """(normalized-street-name, [numbers]) for adjacency checking. `414–416 S
-    Maple Ave` -> ("s maple", [414, 416])."""
-    nums = [int(n) for n in re.findall(r"\d{1,6}", real)]
-    canon = _pn_addr_canon(real)
-    # strip the leading number(s) and any trailing suite/city/zip noise; keep the
-    # directional+name+suffix core as the street identity.
-    core = re.sub(r"^\s*[\d ]+", "", canon).strip()
-    core = re.sub(r"\s+\d.*$", "", core).strip()  # drop a trailing zip/suite run
+    """(street-identity, [house-numbers]) — the directional + name + suffix
+    core, with the house number(s) AND any City/ST/ZIP tail removed, so every
+    spelling of one parcel folds to a single key. Keying the fake on THIS
+    (not on the whole address string) is what makes `414 S. Maple Ave.`,
+    `414 S. Maple Ave. Montebello, CA 90640`, and `414-416 S. Maple Ave.` share
+    one faked street instead of the four the audited run produced.
+    `414–416 S Maple Ave, Montebello, CA 90640` -> ("s maple avenue", [414, 416]).
+    """
+    street, _suite, _cz = _pn_addr_parts(real)
+    if not street:
+        street = real
+    nums = [int(n) for n in re.findall(r"\d{1,6}", street)]
+    # canon of the STREET part only (no locality), then drop the leading
+    # number(s) / range so only the directional+name+suffix identity remains.
+    core = re.sub(r"^[\d\- \u2013\u2014]+", "", _pn_addr_canon(street)).strip()
     return core, nums
 
 
@@ -5877,17 +5900,16 @@ def _pn_locality_pairs(text):
 
 def _pn_fake_street(real):
     """Module-level fallback (no registry): a stable but NOT guaranteed-unique
-    fake. The Pseudonymizer routes through `_fake_street` for injectivity. The
-    real street-type suffix and the state are kept; number, street name, city and
-    ZIP are faked, and the suite designator rides along unchanged (it identifies
-    nothing once the street is fake)."""
-    street, suite, cityzip = _pn_addr_parts(real)
-    r = _pn_rng("street", _pn_addr_canon(real))
+    fake. The Pseudonymizer routes through `_fake_street` for injectivity. Only
+    the house number and street NAME are faked; the real street-type suffix, the
+    unit/suite, and the whole City/State/ZIP tail are kept verbatim. Keyed on the
+    street identity so spelling variants of one parcel share a fake."""
+    _street, suite, cityzip = _pn_addr_parts(real)
+    core, _nums = _pn_addr_street_key(real)
+    r = _pn_rng("street", core)
     fake_street = (f"{r.randrange(100, 9999)} {r.choice(_PN_STREET_NAMES)} "
                    f"{_pn_addr_suffix_of(real)}")
-    fake_city = r.choice(_PN_CITY_NAMES)
-    fake_zip = "".join(str(r.randrange(10)) for _ in range(5))
-    return fake_street + suite + _pn_fake_cityzip(cityzip, fake_city, fake_zip)
+    return fake_street + suite + cityzip
 
 
 # ── URL / bare-domain handling ──────────────────────────────────────────────
@@ -5912,15 +5934,39 @@ def _pn_url_whitelisted(real):
     return any(host == w or host.endswith("." + w) for w in _PN_URL_WHITELIST)
 
 
-def _pn_fake_domain(domain):
-    """A stable fake host for a real domain, drawn from the neutral e-mail-domain
-    pool. `_fake_email` and the URL detector both go through here keyed on the
+# Consumer mail providers shared by millions: the host identifies no one, and
+# faking it both protects nothing and, once two distinct real hosts collapse
+# onto one fake, misleads a reader into thinking opposing parties shared an
+# inbox. These pass through unchanged; every other host is faked injectively.
+_PN_PUBLIC_EMAIL_DOMAINS = frozenset({
+    "gmail.com", "googlemail.com", "yahoo.com", "ymail.com", "yahoo.co.uk",
+    "outlook.com", "hotmail.com", "hotmail.co.uk", "live.com", "msn.com",
+    "icloud.com", "me.com", "mac.com", "aol.com", "proton.me", "protonmail.com",
+    "gmx.com", "gmx.net", "mail.com", "zoho.com", "yandex.com",
+})
+
+# Default registry for bare `_pn_fake_domain` calls (module fallbacks / tests).
+# The Pseudonymizer passes its own per-case registry so domain fakes reset
+# between documents; either way the map stays injective (one real host -> one
+# fake, distinct hosts never collide).
+_PN_DOMAIN_REGISTRY = _PnFakeRegistry()
+
+
+def _pn_fake_domain(domain, registry=None):
+    """A stable, injective fake host for a real domain. Common public providers
+    (gmail, yahoo, outlook, …) pass through unchanged — they carry no identity.
+    Every other distinct real host gets its OWN fake from the neutral pool, so
+    two parties never collapse onto one domain (the earlier `_pn_rng(...).choice`
+    put gmail, yahoo and the firm domain all on `letterbox.co`). Keyed on the
     registrable host, so `paula@themillenniallawyer.com` and
-    `www.TheMillennialLawyer.com` land on the SAME fake domain."""
+    `www.TheMillennialLawyer.com` land on the SAME fake."""
     host = domain.lower()
     if host.startswith("www."):
         host = host[4:]
-    return _pn_rng("emaildom", host).choice(_PN_EMAIL_DOMAINS)
+    if host in _PN_PUBLIC_EMAIL_DOMAINS:
+        return host
+    reg = registry if registry is not None else _PN_DOMAIN_REGISTRY
+    return reg.token(host, _PN_EMAIL_DOMAINS, "emaildom")
 
 
 def _pn_fake_url(real):
@@ -6478,12 +6524,24 @@ _PN_LABEL_RES = (
 )
 
 
+# A "Name  (312) 555-1212" contact line: a capitalized personal name followed
+# ON THE SAME LINE by a phone number. Contract letterheads and service lists
+# print a roster this way ("CONTRACTORS:\nJose Gomez (323)…\nJuan Olivas (562)…"),
+# and the label rule above caught only the FIRST entry, so `Juan Olivas` and
+# `Viviana Gomez` leaked. The trailing phone number makes this a low-false-
+# positive anchor — prose and address lines don't carry one.
+_PN_ROSTER_LINE_RE = re.compile(
+    r"(?m)^[ \t]*(?P<n>[A-Z][A-Za-z.'’-]+(?:[ \t]+[A-Z][A-Za-z0-9.'’-]+){1,2})"
+    r"[ \t]+\(?\d{3}\)?[ \t.\-]?[ \t]*\d{3}[ \t.\-]\d{4}\b")
+
+
 def _pn_label_names(text):
     """Personal names read out of exhibit/contract/signature labels
-    ("Property owner:", "/s/", "Attn:", "Dear Mr. X", "Contractor:"). A single
-    "Roxanne and Thomas Purscelley" yields both, sharing the trailing surname."""
+    ("Property owner:", "/s/", "Attn:", "Dear Mr. X", "Contractor:") and out of
+    roster lines that pair a name with a phone number. A single "Roxanne and
+    Thomas Purscelley" yields both, sharing the trailing surname."""
     out, seen = [], set()
-    for rx in _PN_LABEL_RES:
+    for rx in (*_PN_LABEL_RES, _PN_ROSTER_LINE_RE):
         for m in rx.finditer(text):
             raw = re.sub(r"\s+", " ", m.group("n")).strip()
             pieces = [p.strip() for p in re.split(r"\s+(?:and|&)\s+", raw) if p.strip()]
@@ -6497,6 +6555,11 @@ def _pn_label_names(text):
                 piece = _pn_trim_declarant(piece).strip()
                 words = piece.split()
                 if len(words) < 2 or _pn_is_party_role(piece):
+                    continue
+                # Never harvest a protected locality as a person — a roster line
+                # "Los Angeles (213) 555-1212" must not turn the county into a
+                # fake name and scrub it out of "County of Los Angeles".
+                if _pn_is_protected_locality(piece):
                     continue
                 if any(_pn_word_base(w) in _PN_NON_NAME_WORDS or _pn_is_role_token(w)
                        for w in words):
@@ -6824,31 +6887,12 @@ class Pseudonymizer:
             self._add_terms(new)
 
     def register_localities(self, text):
-        """Register every city and ZIP `text` states, so the fake locality the
-        address detector writes is not contradicted by the real one standing
-        alone a few lines below ("…residing in Montebello, California").
-
-        A city that names the VENUE is skipped — "COUNTY OF LOS ANGELES" is the
-        court, not the party. The fake comes from the same registry slots
-        `_fake_street` draws on, so the address and the bare mention agree.
-        Idempotent; call before apply()."""
-        venue = _pn_venue_cities(text)
-        new = []
-        for city, _state, zipd in _pn_locality_pairs(text):
-            if city.lower() in venue:
-                continue        # the venue names the court, not a party
-            # A protected locality (e.g. "Los Angeles") is never scrubbed on its
-            # own; its ZIP still is (a ZIP is a far finer identifier).
-            if (not _pn_is_protected_locality(city)
-                    and ("city", city.lower()) not in self.records):
-                new.append(_PnTerm("city", city, self._fake_city(city),
-                                   whole_word=True, case_sensitive=False,
-                                   priority=1, source="document"))
-            if ("zip", zipd) not in self.records:
-                new.append(_PnTerm("zip", zipd, self._fake_zip(zipd),
-                                   whole_word=True, case_sensitive=False,
-                                   priority=1, source="document"))
-        self._add_terms(new)
+        """No-op under the current policy. City, state, and ZIP are kept
+        verbatim — only the house number and street name inside an address are
+        faked — so no standalone locality term is registered and a bare
+        "Montebello" or "90640" three lines below an address is left as written.
+        Retained for call-site stability (the pipeline still calls it)."""
+        return
 
     def register_identifiers(self, text):
         """Detect label-anchored identifiers in `text` (bar number, contractor
@@ -6932,25 +6976,24 @@ class Pseudonymizer:
         return out
 
     def _fake_street(self, real):
-        """Injective address fake: canonicalise first so spelling variants of
-        one parcel share a fake, then draw a unique street from the registry.
-        The real street-type suffix (Street/Road/Court/Way…) and the STATE are
-        kept — both are generic, not identifiers. The number, the street name,
-        the CITY and the ZIP are all faked; the suite designator is kept.
+        """Injective address fake keyed on the STREET IDENTITY (number-stripped
+        street name), so every spelling of one parcel — with or without the
+        city tail, "Ave." vs "Avenue", "414" vs "414-416" — shares one fake.
 
-        The city and ZIP are faked, never dropped. `_PN_ADDR_RE` consumes them,
-        so emitting only the street silently deleted them from the export. Both
-        go through the registry, so `register_localities` can hand the SAME fake
-        to a bare "Montebello" standing on its own three lines below."""
-        canon = _pn_addr_canon(real)
+        Only the house NUMBER and street NAME are replaced. The street-type
+        suffix, the unit/suite, and the ENTIRE City/State/ZIP tail are kept
+        verbatim: the locality identifies no one and is kept by house standard,
+        and keeping it verbatim removes the tail-rebuild that had corrupted a
+        spelled-out state ("California" -> "ia")."""
         suffix = _pn_addr_suffix_of(real)
         _street, suite, cityzip = _pn_addr_parts(real)
+        core, _nums = _pn_addr_street_key(real)
 
         def make(rng):
             return (f"{rng.randrange(100, 9999)} "
                     f"{rng.choice(_PN_STREET_NAMES)} {suffix}")
-        fake_street = self.registry.unique(canon, "street", make)
-        return fake_street + suite + self._fake_cityzip(cityzip)
+        fake_street = self.registry.unique(core, "street", make)
+        return fake_street + suite + cityzip
 
     def _fake_city(self, city):
         # A protected locality ("Los Angeles") is kept even inside an address
@@ -6981,7 +7024,7 @@ class Pseudonymizer:
         m = re.match(r"(?P<scheme>https?://)?(?P<www>www\.)?(?P<host>[^/\s]+)",
                      real.strip(), re.IGNORECASE)
         host = m.group("host") if m else real
-        return f"{m.group('scheme') or ''}{m.group('www') or ''}{_pn_fake_domain(host)}"
+        return f"{m.group('scheme') or ''}{m.group('www') or ''}{_pn_fake_domain(host, self.registry)}"
 
     def _term_cands(self, text):
         out = []
@@ -7146,7 +7189,7 @@ class Pseudonymizer:
             out.append(piece)
         local = "".join(out).strip("._%+-") or _pn_rng(
             "email", real.lower()).choice(_PN_NAME_WORDS).lower()
-        return f"{local}@{_pn_fake_domain(domain)}"
+        return f"{local}@{_pn_fake_domain(domain, self.registry)}"
 
     def surviving_reals(self, text):
         """Real values that still appear in `text` — a leak the caller should
@@ -7210,40 +7253,95 @@ class Pseudonymizer:
             return "leaked"
         return "replaced" if rec["count"] > 0 else "no match"
 
+    def alias_candidates(self):
+        """Groups of registered PERSON names that share a given name but differ
+        in surname — e.g. "Roxane Estrada" / "Roxane Guzman", the same party
+        written two ways, which were faked with UNRELATED surnames. The tool
+        does not merge these automatically: linking by shared given name is
+        inference, and inference is how a pseudonymizer conflates two different
+        people. It surfaces them instead, so a reviewer can add an explicit
+        alias term (`--term`) that binds both to one fake. Returns
+        [[real, real, ...], ...], each inner list a possible-alias cluster."""
+        groups = {}
+        for (cat, _rl), rec in self.records.items():
+            if cat != "person":
+                continue
+            core = [t for t in rec["real"].split()
+                    if len(t.strip(".")) > 1 and re.search(r"[A-Za-z]", t)
+                    and t.lower().rstrip(".") not in _PN_SUFFIX_TOKENS]
+            if len(core) < 2:
+                continue
+            given, surname = core[0].lower().rstrip("."), core[-1].lower().rstrip(".")
+            groups.setdefault(given, {}).setdefault(surname, rec["real"])
+        return [sorted(d.values()) for d in groups.values() if len(d) > 1]
+
     def write_key(self, path, log):
-        """Write the real->fake mapping used everywhere. Every record is written
-        — including a term that matched nothing — with a Status column, so a
-        reviewer can tell "this value wasn't in the documents" (no match) from
-        "we tracked it and it still leaked" (leaked). xlsx if openpyxl is
-        available, else JSON alongside."""
-        rows = sorted(self.records.values(),
-                      key=lambda r: (r["category"], r["real"].lower()))
-        if not rows:
+        """Write TWO files, resolving the conflict between the key's two jobs.
+
+          * `path` — the REVERSAL key the Word macro consumes. Only rows that
+            actually matched (Occurrences > 0) and contain no newline are
+            written, so it is a clean bijection: `ReAnonymize` can never replace
+            a Real Value that was never a party, and Word's Find (which cannot
+            match a literal newline) never meets a dead line-wrapped row.
+          * `<stem> audit<suffix>` — the full QA report: every tracked term with
+            a Status column ("replaced" / "no match" / "leaked"), so a reviewer
+            can still see what was tracked but absent. Keep this OUT of anything
+            that circulates with the document.
+
+        xlsx if openpyxl is available, else JSON alongside.
+        """
+        allrows = sorted(self.records.values(),
+                         key=lambda r: (r["category"], r["real"].lower()))
+        if not allrows:
             return
+
+        def _reversible(r):
+            return (r["count"] > 0
+                    and "\n" not in str(r["real"]) and "\n" not in str(r["fake"]))
+        keyrows = [r for r in allrows if _reversible(r)]
         headers = ["Category", "Real Value", "Replacement", "Status", "Source",
                    "Occurrences"]
+
         try:
             import openpyxl
+        except ImportError:
+            import json
+
+            def dump(rows, p):
+                p.write_text(json.dumps(
+                    {"mappings": [{"category": r["category"], "real": r["real"],
+                                   "replacement": r["fake"],
+                                   "status": self._status(r),
+                                   "source": r["source"], "occurrences": r["count"]}
+                                  for r in rows]}, indent=2), encoding="utf-8")
+            kp = path.with_suffix(".json")
+            dump(keyrows, kp)
+            ap = path.with_name(f"{path.stem} audit.json")
+            dump(allrows, ap)
+            log.info(f"  openpyxl not installed; reversal key written as JSON: "
+                     f"{kp.name} ({len(keyrows)} mapping(s)); audit {ap.name}")
+            return
+
+        def sheet(rows, p, title):
             wb = openpyxl.Workbook()
             ws = wb.active
-            ws.title = "Pseudonym Key"
+            ws.title = title
             ws.append(headers)
             for r in rows:
                 ws.append([r["category"], r["real"], r["fake"], self._status(r),
                            r["source"], r["count"]])
-            wb.save(path)
-            log.info(f"  Pseudonym key written: {path.name} ({len(rows)} mapping(s))")
-        except ImportError:
-            import json
-            jp = path.with_suffix(".json")
-            jp.write_text(json.dumps(
-                {"mappings": [{"category": r["category"], "real": r["real"],
-                               "replacement": r["fake"], "status": self._status(r),
-                               "source": r["source"], "occurrences": r["count"]}
-                              for r in rows]},
-                indent=2), encoding="utf-8")
-            log.info(f"  openpyxl not installed; pseudonym key written as JSON: "
-                     f"{jp.name} ({len(rows)} mapping(s))")
+            wb.save(p)
+
+        sheet(keyrows, path, "Pseudonym Key")
+        ap = path.with_name(f"{path.stem} audit{path.suffix}")
+        sheet(allrows, ap, "Audit")
+        for cluster in self.alias_candidates():
+            log.warning("  possible alias (same given name, different surname) "
+                        "faked separately — add a --term to link: "
+                        + " | ".join(cluster))
+        dropped = len(allrows) - len(keyrows)
+        log.info(f"  Reversal key written: {path.name} ({len(keyrows)} mapping(s); "
+                 f"{dropped} non-matching/unusable row(s) moved to {ap.name})")
 
 
 # ── Partial (prefix) entity terms ───────────────────────────────────────────
