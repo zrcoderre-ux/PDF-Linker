@@ -5809,6 +5809,19 @@ def _pn_venue_cities(text):
     return out
 
 
+# Localities never anonymized on their own — a metropolis/venue this large is
+# not a party identifier, and faking it makes the record read oddly ("residing
+# in Glenmore, California"). It is only ever scrubbed when it is PART OF a party
+# name (e.g. an entity literally named "City of Los Angeles"), which the party's
+# own term handles — this set only stops a STANDALONE mention from being learned
+# as a locality or faked inside an address tail.
+_PN_NEVER_SCRUB_LOCALITIES = frozenset({"los angeles"})
+
+
+def _pn_is_protected_locality(city):
+    return re.sub(r"\s+", " ", city).strip().lower() in _PN_NEVER_SCRUB_LOCALITIES
+
+
 def _pn_locality_pairs(text):
     """[(city, state, zip), ...] every locality `text` states, whether it sits at
     the tail of a full street address or alone on its own line."""
@@ -6793,8 +6806,11 @@ class Pseudonymizer:
         new = []
         for city, _state, zipd in _pn_locality_pairs(text):
             if city.lower() in venue:
-                continue
-            if ("city", city.lower()) not in self.records:
+                continue        # the venue names the court, not a party
+            # A protected locality (e.g. "Los Angeles") is never scrubbed on its
+            # own; its ZIP still is (a ZIP is a far finer identifier).
+            if (not _pn_is_protected_locality(city)
+                    and ("city", city.lower()) not in self.records):
                 new.append(_PnTerm("city", city, self._fake_city(city),
                                    whole_word=True, case_sensitive=False,
                                    priority=1, source="document"))
@@ -6907,6 +6923,10 @@ class Pseudonymizer:
         return fake_street + suite + self._fake_cityzip(cityzip)
 
     def _fake_city(self, city):
+        # A protected locality ("Los Angeles") is kept even inside an address
+        # tail — only the street, number and ZIP around it are faked.
+        if _pn_is_protected_locality(city):
+            return city
         return _pn_case_like(city, self.registry.token(city.lower(),
                                                        _PN_CITY_NAMES, "city"))
 
@@ -7738,15 +7758,15 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
 # Main per-PDF processing
 # ────────────────────────────────────────────────────────────────────────────
 def _pn_prescan_folder(pdfs, pseudonymizer, log):
-    """Register declarant and "dba" names from EVERY PDF before any .txt is
-    written.
+    """Run EVERY document-learning register_* pass over the whole folder before
+    any .txt is written.
 
-    Both kinds of name are read out of document text, so a name learned from one
-    filing is only available to filings processed after it. The folder is walked
-    smallest-file-first, and the complaint — the one pleading that spells out
-    "South Bay Equity, a dba of Mortgage 2000, Inc." — is usually the largest
-    file, so every earlier .txt leaked the names it would have taught. One cheap
-    text-only pass up front removes that ordering dependency."""
+    Names, localities and identifiers are read out of document text, so a value
+    learned from one filing is only available to filings processed after it —
+    and one filing routinely states a party's full address (teaching the city)
+    while another states only the bare city, or spells out a "dba" the others
+    just use. Running all passes up front removes that ordering dependency
+    completely: the folder is scrubbed only after it has been read in full."""
     import fitz
     before = len(pseudonymizer.terms)
     corpus = []
@@ -7763,10 +7783,12 @@ def _pn_prescan_folder(pdfs, pseudonymizer, log):
         pseudonymizer.register_firm_names(text)
         pseudonymizer.register_label_names(text)
         pseudonymizer.register_short_names(text)
+        pseudonymizer.register_identifiers(text)
+        pseudonymizer.register_localities(text)
     added = len(pseudonymizer.terms) - before
     if added:
         log.info(f"  Pseudonymize: pre-scan of {len(pdfs)} file(s) added "
-                 f"{added} term(s) from declaration titles and dba names")
+                 f"{added} term(s) from names, localities and identifiers")
     return "\n\f\n".join(corpus)
 
 

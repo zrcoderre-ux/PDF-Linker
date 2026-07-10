@@ -153,3 +153,44 @@ class TestCaptionDividerGluedToText:
         assert pl._CAPTION_DIVIDER_LEAD_RE.match(") Case No.")
         assert not pl._CAPTION_DIVIDER_LEAD_RE.match(")Case")
         assert not pl._CAPTION_DIVIDER_LEAD_RE.match("(FAC, p. 8:17-18.)")
+
+
+class TestPrescanOrderIndependence:
+    """The folder-wide pre-scan must learn localities/identifiers from every
+    file before any file is scrubbed, regardless of processing order."""
+
+    def _text_pdf(self, path, lines):
+        doc = fitz.open()
+        page = doc.new_page(width=612, height=792)
+        for i, ln in enumerate(lines):
+            page.insert_text((72, 100 + i * 24), ln, fontsize=11)
+        doc.save(str(path))
+        doc.close()
+
+    def test_locality_learned_folder_wide(self, tmp_path):
+        import logging
+        # File that states only the BARE city sorts first (smaller); the file
+        # with the full address that teaches it sorts second.
+        self._text_pdf(tmp_path / "a_bare.pdf",
+                       ["Plaintiff resides in Montebello, California."])
+        self._text_pdf(tmp_path / "b_addr.pdf",
+                       ["Service at 414 S. Maple Ave. Montebello, CA 90640."])
+        reg = pl._PnFakeRegistry()
+        pz = pl.Pseudonymizer(pl._pn_build_terms([], [], [], reg),
+                              list(pl._PN_DEFAULT_DETECTORS), reg)
+        pdfs = sorted((tmp_path).glob("*.pdf"))
+        pl._pn_prescan_folder(pdfs, pz, logging.getLogger("t"))
+        # After the pre-scan the city is a term, so the bare mention scrubs even
+        # though its own file names no address.
+        assert ("city", "montebello") in pz.records
+        assert "Montebello" not in pz.apply("resides in Montebello, California.")
+
+    def test_identifier_learned_folder_wide(self, tmp_path):
+        import logging
+        self._text_pdf(tmp_path / "one.pdf", ["STATE BAR NO. 207972"])
+        reg = pl._PnFakeRegistry()
+        pz = pl.Pseudonymizer(pl._pn_build_terms([], [], [], reg),
+                              list(pl._PN_DEFAULT_DETECTORS), reg)
+        pl._pn_prescan_folder(sorted(tmp_path.glob("*.pdf")), pz,
+                              logging.getLogger("t"))
+        assert any(r["category"] == "bar_number" for r in pz.records.values())
