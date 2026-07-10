@@ -514,7 +514,32 @@ class TestLocalities:
 
 
 class TestProtectedLocality:
-    """'Los Angeles' is never anonymized on its own — only as part of a party."""
+    """A California county is never anonymized on its own — only as part of a
+    party name."""
+
+    def test_all_58_counties_are_protected(self):
+        assert len(pl._PN_CA_COUNTIES) == 58
+        for c in ["Orange", "Marin", "San Bernardino", "Contra Costa",
+                  "San Luis Obispo", "Ventura", "Napa", "Yuba"]:
+            assert pl._pn_is_protected_locality(c)
+
+    def test_x_county_phrasing(self):
+        assert pl._pn_is_protected_locality("Orange County")
+        assert pl._pn_is_protected_locality("LOS ANGELES COUNTY")
+
+    def test_non_county_city_still_scrubbed(self):
+        assert not pl._pn_is_protected_locality("Montebello")
+        pz, _reg = _pz()
+        body = "5 Oak St. Montebello, CA 90640"
+        pz.register_localities(body)
+        assert "Montebello" not in pz.apply(body)
+
+    def test_county_kept_as_address_city_zip_faked(self):
+        pz, _reg = _pz(detectors=["address"])
+        out = pz.apply("mailed to 5 Oak St. San Bernardino, CA 92401 today")
+        assert "San Bernardino" in out and "92401" not in out
+
+    # 'Los Angeles' (also a county) — the original protected locality.
 
     def test_bare_mention_kept(self):
         pz, _reg = _pz()

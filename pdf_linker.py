@@ -5809,17 +5809,34 @@ def _pn_venue_cities(text):
     return out
 
 
-# Localities never anonymized on their own — a metropolis/venue this large is
-# not a party identifier, and faking it makes the record read oddly ("residing
-# in Glenmore, California"). It is only ever scrubbed when it is PART OF a party
-# name (e.g. an entity literally named "City of Los Angeles"), which the party's
-# own term handles — this set only stops a STANDALONE mention from being learned
-# as a locality or faked inside an address tail.
-_PN_NEVER_SCRUB_LOCALITIES = frozenset({"los angeles"})
+# Localities never anonymized on their own — every California county (which is
+# the venue/jurisdiction, not a party identifier; many share their name with a
+# city, so faking it makes the record read oddly and helps no one). A county is
+# still scrubbed when it is PART OF a party name (e.g. an entity literally named
+# "County of Los Angeles"), which the party's own term handles — this set only
+# stops a STANDALONE mention from being learned as a locality or faked inside an
+# address tail.
+_PN_CA_COUNTIES = frozenset({
+    "alameda", "alpine", "amador", "butte", "calaveras", "colusa",
+    "contra costa", "del norte", "el dorado", "fresno", "glenn", "humboldt",
+    "imperial", "inyo", "kern", "kings", "lake", "lassen", "los angeles",
+    "madera", "marin", "mariposa", "mendocino", "merced", "modoc", "mono",
+    "monterey", "napa", "nevada", "orange", "placer", "plumas", "riverside",
+    "sacramento", "san benito", "san bernardino", "san diego", "san francisco",
+    "san joaquin", "san luis obispo", "san mateo", "santa barbara",
+    "santa clara", "santa cruz", "shasta", "sierra", "siskiyou", "solano",
+    "sonoma", "stanislaus", "sutter", "tehama", "trinity", "tulare",
+    "tuolumne", "ventura", "yolo", "yuba",
+})
+_PN_NEVER_SCRUB_LOCALITIES = _PN_CA_COUNTIES
 
 
 def _pn_is_protected_locality(city):
-    return re.sub(r"\s+", " ", city).strip().lower() in _PN_NEVER_SCRUB_LOCALITIES
+    norm = re.sub(r"\s+", " ", city).strip().lower()
+    if norm in _PN_NEVER_SCRUB_LOCALITIES:
+        return True
+    # "Orange County" / "Los Angeles County" -> the county itself.
+    return norm.removesuffix(" county").strip() in _PN_NEVER_SCRUB_LOCALITIES
 
 
 def _pn_locality_pairs(text):
