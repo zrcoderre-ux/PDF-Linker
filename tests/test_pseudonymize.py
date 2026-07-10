@@ -650,3 +650,40 @@ class TestRosterProtectedLocality:
         pz, _ = _pz(detectors=[])
         pz.register_label_names("Reach us at Los Angeles (213) 555-1212 today.")
         assert "Los Angeles" in pz.apply("Venue is the County of Los Angeles.")
+
+
+class TestPublicEntityParty:
+    """A government/public-entity party is kept verbatim (public record, and it
+    shares its text with the venue line); a private company that merely contains
+    a place name is still scrubbed."""
+
+    def test_predicate_public(self):
+        for n in ["County of Los Angeles", "Los Angeles County",
+                  "City of Montebello", "People of the State of California",
+                  "State of California", "United States", "Orange County"]:
+            assert pl._pn_is_public_entity(n), n
+
+    def test_predicate_private(self):
+        for n in ["Los Angeles Widgets, Inc.", "Azul Concreto, Inc.",
+                  "Roxane Estrada", "County Line Auto, LLC"]:
+            assert not pl._pn_is_public_entity(n), n
+
+    def test_county_party_builds_no_term(self):
+        reg = pl._PnFakeRegistry()
+        terms = pl._pn_build_terms([("County of Los Angeles", False)], [], None, reg)
+        assert terms == []
+
+    def test_county_party_and_venue_both_kept(self):
+        pz, _ = _pz(names=[("County of Los Angeles", False),
+                           ("Azul Concreto, Inc.", False)], detectors=[])
+        out = pz.apply("Defendant County of Los Angeles answers. SUPERIOR COURT "
+                       "OF CALIFORNIA, COUNTY OF LOS ANGELES. Sued Azul Concreto, Inc.")
+        assert "County of Los Angeles" in out          # party mention kept
+        assert "COUNTY OF LOS ANGELES" in out          # venue line kept
+        assert "Azul" not in out                        # private co still scrubbed
+
+    def test_private_company_with_place_still_scrubbed(self):
+        pz, _ = _pz(names=[("Los Angeles Widgets, Inc.", False)], detectors=[])
+        out = pz.apply("Defendant Los Angeles Widgets, Inc. did it. Venue: Los Angeles.")
+        assert "Los Angeles Widgets" not in out
+        assert out.rstrip().endswith("Los Angeles.")   # bare venue kept

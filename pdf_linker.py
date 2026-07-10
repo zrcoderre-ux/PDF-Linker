@@ -5641,6 +5641,10 @@ def _pn_append_name_terms(terms, raw, source, registry):
             head, dbas = parts[0], parts[1:]
             if _pn_is_party_role(head) or not re.search(r"[A-Za-z]", head):
                 continue
+            # A government/public-entity party is public record and shares its
+            # text with the venue line — keep it verbatim, don't build a term.
+            if _pn_is_public_entity(head):
+                continue
             if head_is_entity is None:
                 head_is_entity = _pn_looks_like_entity(head)
             if head_is_entity:
@@ -5652,7 +5656,7 @@ def _pn_append_name_terms(terms, raw, source, registry):
             # A fictitious business name is a business name whatever its head
             # is, so it always takes the entity path (never the person pool).
             for dba in dbas:
-                if _pn_is_party_role(dba):
+                if _pn_is_party_role(dba) or _pn_is_public_entity(dba):
                     continue
                 prefer.update(_pn_append_entity_terms(terms, dba, source,
                                                       registry, prefer))
@@ -5873,6 +5877,35 @@ def _pn_is_protected_locality(city):
         return True
     # "Orange County" / "Los Angeles County" -> the county itself.
     return norm.removesuffix(" county").strip() in _PN_NEVER_SCRUB_LOCALITIES
+
+
+# A government / public-entity party ("County of Los Angeles", "Los Angeles
+# County", "City of Montebello", "People of the State of California", "State of
+# California", "United States"). Its involvement is public record, so
+# pseudonymizing it protects nothing — and because the same string names the
+# VENUE ("Superior Court of California, County of Los Angeles"), scrubbing it as
+# a party would corrupt the court reference. Such a party is left as written.
+# A PRIVATE business whose name merely CONTAINS a place ("Los Angeles Widgets,
+# Inc.") is not matched here and is still scrubbed.
+_PN_PUBLIC_ENTITY_RE = re.compile(
+    r"(?ix)^\s*(?:the\s+)?(?:"
+    r"count(?:y|ies)\s+of\s+[A-Za-z]"        # County of X
+    r"|city\s+of\s+[A-Za-z]"                  # City of X
+    r"|town\s+of\s+[A-Za-z]"                  # Town of X
+    r"|people(?:\s+of\b|\s*$)"               # (The) People / People of the State…
+    r"|state\s+of\s+[A-Za-z]"                 # State of X
+    r"|united\s+states(?:\s+of\s+america)?"   # United States [of America]
+    r")")
+
+
+def _pn_is_public_entity(name):
+    """True for a government / public-entity party that is kept verbatim (see
+    above). Covers the "<protected county> County" form too."""
+    n = re.sub(r"\s+", " ", name or "").strip().strip('.,')
+    if _PN_PUBLIC_ENTITY_RE.match(n):
+        return True
+    m = re.match(r"(?i)(.+?)\s+county\b", n)
+    return bool(m and _pn_is_protected_locality(m.group(1)))
 
 
 def _pn_locality_pairs(text):
