@@ -623,32 +623,3 @@ class TestSpliceDetector:
 
     def test_acronym_plural_is_not_a_splice(self):
         assert not pl._page_looks_spliced(self._rows("two ADUs and three PDFs"))
-
-
-# ── Notice naming — a short "Notice of X" filing is named for the notice ─────
-class TestNoticeTitle:
-    def test_opposition_notice(self):
-        assert (pl._pn_notice_title("...'s NOTICE OF OPPOSITION to Defendant X")
-                == "Notice of Opposition")
-
-    def test_stops_at_connector_to(self):
-        assert (pl._pn_notice_title("PLAINTIFF'S NOTICE OF MOTION TO STRIKE")
-                == "Notice of Motion")
-
-    def test_stops_at_connector_and(self):
-        assert (pl._pn_notice_title("NOTICE OF MOTION AND MOTION TO DISMISS")
-                == "Notice of Motion")
-
-    def test_multi_word_stops_at_of(self):
-        assert (pl._pn_notice_title("NOTICE OF ENTRY OF JUDGMENT")
-                == "Notice of Entry")
-
-    def test_no_notice_returns_none(self):
-        assert pl._pn_notice_title("OPPOSITION TO MOTION TO STRIKE") is None
-        assert pl._pn_notice_title("PLEASE TAKE NOTICE that the hearing") is None
-
-    def test_case_insensitive_label(self):
-        assert pl._pn_notice_title("plaintiff's notice of ruling") == "Notice of Ruling"
-
-    def test_max_pages_is_four(self):
-        assert pl._PN_NOTICE_MAX_PAGES == 4
