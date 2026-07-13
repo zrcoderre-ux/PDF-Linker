@@ -5397,7 +5397,12 @@ _PN_NON_NAME_WORDS = frozenset({
     "regarding", "concerning", "compliance", "support", "opposition",
     "response", "reply", "declaration", "motion", "notice", "exhibit",
     "county", "state", "city", "court", "doe", "does", "roe", "roes",
+    # document/caption abbreviations, never a person's name:
+    "iso", "rjn",   # "In Support Of", "Request for Judicial Notice"
 })
+# Abbreviations kept VERBATIM even when they land inside a captured name, so
+# "Declaration of X ISO Motion" never fakes the "ISO".
+_PN_DOC_ABBREV = frozenset({"iso", "rjn"})
 _PN_CAPACITY_RE = re.compile(
     r"[\s,;]*\b(?:"
     r"(?:as\s+)?(?:an?\s+)?(?:the\s+)?successors?[-\s]in[-\s]interest"
@@ -5485,7 +5490,8 @@ def _pn_fake_person(name, registry):
     alone."""
     words = list(_PN_WORD_RE.finditer(name))
     def _keep(w):
-        return len(w) == 1 or _pn_is_suffix_token(w)
+        return (len(w) == 1 or _pn_is_suffix_token(w)
+                or w.strip(".,").lower() in _PN_DOC_ABBREV)
     mappable = [m for m in words if not _keep(m.group(0))]
     surname_at = None
     if mappable:
@@ -6644,6 +6650,8 @@ _PN_DECL_TRAIL_STOP = frozenset({
     "as", "in", "re", "regarding", "concerning", "for", "on", "of", "to",
     "and", "with", "support", "opposition", "response", "reply", "compliance",
     "successor", "interest", "pursuant", "filed", "submitted",
+    # "Declaration of X ISO Motion" / "... RJN" — the title, not the name.
+    "iso", "rjn", "motion", "notice",
     # Caption field labels: a declarant name that wrapped a line must not run on
     # into "License #:" / "State Bar No." / "Reservation ID:" on the next line.
     "license", "licence", "bar", "state", "sbn", "no", "reservation", "res",
