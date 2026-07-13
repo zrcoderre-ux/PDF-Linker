@@ -5143,8 +5143,22 @@ _PN_CITY_NAMES = [
 # generic, not identifying, so the real one is always kept — see
 # `_pn_addr_suffix_of`. Only the number and the street NAME are faked.
 _PN_EMAIL_DOMAINS = ["example.com", "mailhaven.net", "postbox.org", "letterbox.co"]
+# Generational and professional/degree suffixes that trail a name — never a name
+# themselves, always kept verbatim ("Jane Smith, M.D." -> "<fake> <fake>, M.D.").
 _PN_SUFFIX_TOKENS = {"jr", "jr.", "sr", "sr.", "ii", "iii", "iv", "v", "esq",
-                     "esq.", "md", "m.d.", "phd", "ph.d."}
+                     "esq.", "md", "m.d.", "phd", "ph.d.", "do", "d.o.",
+                     "dds", "d.d.s.", "rn", "r.n.", "cpa", "c.p.a.", "jd",
+                     "j.d.", "llm", "ll.m.", "np", "pa", "dvm", "psyd", "psy.d."}
+# Matched dot/space-insensitively so "M.D.", "MD", "M.D" and "m.d." all count.
+_PN_SUFFIX_NODOT = frozenset(re.sub(r"[.\s]", "", s) for s in _PN_SUFFIX_TOKENS)
+
+
+def _pn_is_suffix_token(word):
+    """True for a generational/degree suffix in any punctuation ("M.D.", "MD",
+    "Ph.D.", "Esq", "Jr.") — never pseudonymized, always kept as written."""
+    return re.sub(r"[.\s]", "", word).lower().removesuffix("'s") in _PN_SUFFIX_NODOT
+
+
 _PN_WORD_RE = re.compile(r"[A-Za-z][A-Za-z'\-]*")
 
 
@@ -5414,6 +5428,8 @@ def _pn_is_name_token(word):
     not be one of the procedural words above."""
     if not word or not word[0].isupper():
         return False
+    if _pn_is_suffix_token(word):  # "M.D.", "Ph.D.", "Esq" — a suffix, not a name
+        return False
     base = word.strip('.,:;"’\'').lower().removesuffix("'s")
     return (base not in _PN_NON_NAME_WORDS and base not in _PN_PARTY_ROLE_WORDS
             and base not in _PN_COMMON_WORD_SURNAMES)
@@ -5469,7 +5485,7 @@ def _pn_fake_person(name, registry):
     alone."""
     words = list(_PN_WORD_RE.finditer(name))
     def _keep(w):
-        return len(w) == 1 or w.lower().rstrip(".") in _PN_SUFFIX_TOKENS
+        return len(w) == 1 or _pn_is_suffix_token(w)
     mappable = [m for m in words if not _keep(m.group(0))]
     surname_at = None
     if mappable:
@@ -5563,7 +5579,7 @@ def _pn_person_token_map(name, registry):
     out = {}
     for m in _PN_WORD_RE.finditer(name):
         w = m.group(0)
-        if w.lower().rstrip(".") in _PN_SUFFIX_TOKENS:
+        if _pn_is_suffix_token(w):
             continue
         base = _pn_word_base(w)
         if base:
@@ -7497,7 +7513,7 @@ class Pseudonymizer:
                 continue
             core = [t for t in rec["real"].split()
                     if len(t.strip(".")) > 1 and re.search(r"[A-Za-z]", t)
-                    and t.lower().rstrip(".") not in _PN_SUFFIX_TOKENS]
+                    and not _pn_is_suffix_token(t)]
             if len(core) < 2:
                 continue
             given, surname = core[0].lower().rstrip("."), core[-1].lower().rstrip(".")

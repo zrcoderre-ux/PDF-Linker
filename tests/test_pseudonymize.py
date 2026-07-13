@@ -790,3 +790,37 @@ class TestAddressFragment:
         pz, _ = _pz(detectors=["address"])
         pz.register_addresses("1 A St")
         assert not any(t.category == "address_fragment" for t in pz.terms)
+
+
+class TestDegreeSuffixNeverScrubbed:
+    """A professional/generational suffix ("M.D.", "Ph.D.", "Esq.", "Jr.") is
+    never a name and is always kept as written, in any punctuation."""
+
+    def test_not_a_name_token(self):
+        for s in ["M.D.", "MD", "M.D", "m.d.", "Ph.D.", "PHD", "Esq.", "Jr.",
+                  "D.D.S.", "R.N.", "J.D."]:
+            assert not pl._pn_is_name_token(s), s
+
+    def test_is_suffix_token_dot_insensitive(self):
+        for s in ["M.D.", "MD", "M.D", "m.d.", "Ph.D.", "PhD"]:
+            assert pl._pn_is_suffix_token(s), s
+        assert not pl._pn_is_suffix_token("Madison")
+
+    def test_real_names_still_tokens(self):
+        for n in ["Smith", "Coderre", "Jane"]:
+            assert pl._pn_is_name_token(n)
+
+    def test_md_kept_when_party_is_scrubbed(self):
+        pz, _ = _pz(names=[("Jane Smith, M.D.", False)], detectors=[])
+        out = pz.apply("Defendant Jane Smith, M.D. answered.")
+        assert "Jane Smith" not in out and "M.D." in out
+
+    def test_bare_md_untouched(self):
+        pz, _ = _pz(names=[("Jane Smith, M.D.", False)], detectors=[])
+        assert pz.apply("The witness, an M.D., testified.") == \
+            "The witness, an M.D., testified."
+
+    def test_runtogether_md_kept(self):
+        # "MD" with no dots is still a suffix, not a surname
+        full, _bare = pl._pn_fake_person("Bob Jones MD", pl._PnFakeRegistry())
+        assert full.endswith("MD") and "Bob" not in full and "Jones" not in full
