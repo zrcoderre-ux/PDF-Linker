@@ -752,3 +752,41 @@ class TestSsnHardening:
         # "green" -> its stand-in, reused in the local part; domain neutralised.
         assert "pgreen@pgreenlaw.com" not in out
         assert "@pgreenlaw.com" not in out
+
+
+class TestAddressFragment:
+    """An address whose street-type suffix is wrapped off by a corrupted scan
+    ("1055 E Colorado" with "Blvd." on the next line) is still scrubbed, mapped
+    to the same fake as a clean occurrence of the address."""
+
+    CLEAN = "LAW OFFICE OF PAUL GREEN\n1055 E Colorado Blvd., Pasadena, CA 91106"
+    CORRUPT = "my business address 1055 E Colorado\nBlvd. I am employed"
+
+    def _pz_learned(self):
+        pz, _ = _pz(detectors=["address"])
+        pz.register_addresses(self.CLEAN)
+        return pz
+
+    def test_suffixless_fragment_scrubbed(self):
+        pz = self._pz_learned()
+        assert "1055 E Colorado" not in pz.apply(self.CORRUPT)
+
+    def test_fragment_reuses_the_clean_fake_street(self):
+        pz = self._pz_learned()
+        street = re.search(r"\d+ (\w+)", pz.apply(self.CLEAN)).group(1)
+        assert street in pz.apply(self.CORRUPT)   # same fake street name
+
+    def test_full_address_still_faked_and_locality_kept(self):
+        pz = self._pz_learned()
+        out = pz.apply(self.CLEAN)
+        assert "1055 E Colorado" not in out
+        assert "Pasadena" in out and "91106" in out   # locality kept (policy)
+
+    def test_prose_number_not_touched(self):
+        pz = self._pz_learned()
+        assert pz.apply("Chapter 1055 discusses zoning.") == "Chapter 1055 discusses zoning."
+
+    def test_trivial_address_spawns_no_fragment(self):
+        pz, _ = _pz(detectors=["address"])
+        pz.register_addresses("1 A St")
+        assert not any(t.category == "address_fragment" for t in pz.terms)
