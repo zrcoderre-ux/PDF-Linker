@@ -1018,7 +1018,13 @@ def find_case_citations(text: str):
 
         kind, mm = chosen
         defendant_text = rest[: mm.start()].rstrip(", ").strip()
-        if not defendant_text or not defendant_text[0].isupper():
+        # Defendant normally begins with a capital, but a real party can be an
+        # address or numbered entity ("100 Oak Street", "1200 Fifth Ave.
+        # Partners") — anchored by the reporter tail it is still a citation, and
+        # protecting that span keeps the address detector from rewriting a cited
+        # decision's name. Allow a leading digit; the reporter cite is the guard.
+        if not defendant_text or not (defendant_text[0].isupper()
+                                      or defendant_text[0].isdigit()):
             continue
         if len(defendant_text) > 200:
             continue
@@ -1060,6 +1066,11 @@ def find_case_citations(text: str):
             "span": full_span,
             "match_text": text[full_span[0]: full_span[1]],
             "short": _short_name(plaintiff_clean),
+            # Party sides kept separately so the pseudonymizer's citation-span
+            # protection can apply the caption exemption: a "X v. Y" span is
+            # replaced (not protected) only when BOTH sides name a trusted party.
+            "plaintiff": plaintiff_clean,
+            "defendant": defendant_clean,
             # Westlaw-only unpublished decisions can't be served by Lexis;
             # always resolve these to a Westlaw URL even when the user's
             # default provider is Lexis.
@@ -5231,6 +5242,7 @@ class _PnFakeRegistry:
     def __init__(self):
         self._memo = {}     # (memo_tag, real_lower) -> fake
         self._used = set()  # every fake handed out, lower-cased (global)
+        self._domain_reals = {}  # real host -> fake, for OCR-typo folding
 
     def _take(self, key, fake):
         self._memo[key] = fake
@@ -5282,6 +5294,59 @@ class _PnFakeRegistry:
             if cand.lower() not in self._used:
                 return self._take(key, cand)
         return self._take(key, cand)  # give up after 10k tries; keep it stable
+
+    def alnum(self, real, seed_tag, letters="ABCDEFGHIJKLMNOPQRSTUVWXYZ"):
+        """A char-for-char fake of an alphanumeric identifier (a VIN, a
+        confirmation code): each digit -> a random digit, each ASCII letter -> a
+        random letter drawn from `letters` (the VIN alphabet excludes I/O/Q),
+        every other character kept. Unique per case."""
+        key = (seed_tag, real.lower())
+        if key in self._memo:
+            return self._memo[key]
+        low = letters.lower()
+
+        def sub(c, r):
+            if c.isdigit():
+                return str(r.randrange(10))
+            if c.isascii() and c.isalpha():
+                pool = letters if c.isupper() else low
+                return pool[r.randrange(len(pool))]
+            return c
+        cand = real
+        for attempt in range(10000):
+            r = _pn_rng(seed_tag, real, attempt)
+            cand = "".join(sub(c, r) for c in real)
+            if cand.lower() not in self._used:
+                return self._take(key, cand)
+        return self._take(key, cand)
+
+    def domain(self, host, pool):
+        """An injective fake host. Folds a near-duplicate real host (an OCR typo,
+        edit distance 1) onto the same fake, and mints uniqueness by mutating the
+        registrable LABEL ("letterbox2.co"), never the TLD ("letterbox.co2",
+        which isn't a valid domain)."""
+        host = host.lower()
+        key = ("domain", host)
+        if key in self._memo:
+            return self._memo[key]
+        for prev, fake in self._domain_reals.items():
+            if _pn_edit_distance_le1(prev, host):
+                self._memo[key] = fake
+                return fake
+        rng = _pn_rng("emaildom", host)
+        order = list(pool)
+        rng.shuffle(order)
+        fake = next((c for c in order if c.lower() not in self._used), None)
+        if fake is None:
+            label, _dot, tld = order[0].partition(".")
+            n = 2
+            while f"{label}{n}.{tld}".lower() in self._used:
+                n += 1
+            fake = f"{label}{n}.{tld}"
+        self._used.add(fake.lower())
+        self._memo[key] = fake
+        self._domain_reals[host] = fake
+        return fake
 
     def unique(self, real, seed_tag, make):
         """A fake produced by `make(rng)`, retried with a fresh seed until it is
@@ -5797,6 +5862,23 @@ def _pn_fake_phone(real):
                               real)
 
 
+# A scanned RISC/contract date whose slashes the OCR dropped or read as "1"
+# collapses "06/06/2025" into the 10-digit run "0610612025", which the phone
+# detector's bare-digit branch then matches and fakes — silently rewriting a
+# load-bearing date. A run whose leading pair is a month (01-12) can never be a
+# valid NANP number anyway (an area code never starts with 0 or 1), so rejecting
+# these date shapes drops no real phone. Only the separator-free form is
+# ambiguous; a run carrying any phone punctuation is left to the detector.
+def _pn_phone_is_ocr_date(match):
+    if re.search(r"\D", match):          # has a separator -> a real phone
+        return False
+    d = match
+    if len(d) != 10 or d[2] != "1" or d[5] != "1":
+        return False
+    mm, dd, yyyy = int(d[0:2]), int(d[3:5]), int(d[6:10])
+    return 1 <= mm <= 12 and 1 <= dd <= 31 and 1900 <= yyyy <= 2099
+
+
 # SSN validity: the SSA never issues area 000, 666 or 900-999, group 00, or
 # serial 0000. A fake in those ranges is recognisably impossible (~10% of a
 # blind randomisation lands there); a valid-shaped fake reads naturally.
@@ -5830,9 +5912,9 @@ def _pn_fake_email(real):
 # anchored on a leading street NUMBER on the same row: "\d+ ... Court" never
 # matches "Superior Court".
 _PN_ADDR_SUFFIX = (
-    r"(?i:Street|St|Avenue|Ave|Boulevard|Blvd|Road|Rd|Lane|Ln|Drive|Dr|"
+    r"(?i:Street|St|A[ \t]?venue|Ave|Boulevard|Blvd|Road|Rd|Lane|Ln|Drive|Dr|"
     r"Circle|Cir|Highway|Hwy|Parkway|Pkwy|Trail|Trl|Court|Ct|Place|Pl|Way|"
-    r"Terrace|Ter|Square|Sq)")
+    r"Terrace|Ter|Square|Sq)")   # "A[ ]?venue" tolerates the OCR split "A venue"
 # A number component: a single number, or a hyphenated RANGE captured as ONE
 # span ("414–416"), so the leading half is never left stranded next to a fake.
 _PN_ADDR_NUM = r"\d{1,6}(?:[ \t]*[-–—][ \t]*\d{1,6})?"
@@ -6127,6 +6209,26 @@ _PN_PUBLIC_EMAIL_DOMAINS = frozenset({
 _PN_DOMAIN_REGISTRY = _PnFakeRegistry()
 
 
+def _pn_edit_distance_le1(a, b):
+    """True when `a` and `b` differ by at most one insertion, deletion, or
+    substitution (an OCR typo like autolegalgrouo vs autolegalgroup). Only for
+    strings of length >= 8 so two genuinely different short hosts aren't folded."""
+    if a == b or abs(len(a) - len(b)) > 1 or min(len(a), len(b)) < 8:
+        return a == b
+    if len(a) == len(b):
+        return sum(x != y for x, y in zip(a, b)) == 1
+    lo, hi = (a, b) if len(a) < len(b) else (b, a)   # hi is one longer
+    i = diff = 0
+    for j in range(len(hi)):
+        if i < len(lo) and lo[i] == hi[j]:
+            i += 1
+        else:
+            diff += 1
+            if diff > 1:
+                return False
+    return True
+
+
 def _pn_fake_domain(domain, registry=None):
     """A stable, injective fake host for a real domain. Common public providers
     (gmail, yahoo, outlook, …) pass through unchanged — they carry no identity.
@@ -6141,7 +6243,7 @@ def _pn_fake_domain(domain, registry=None):
     if host in _PN_PUBLIC_EMAIL_DOMAINS:
         return host
     reg = registry if registry is not None else _PN_DOMAIN_REGISTRY
-    return reg.token(host, _PN_EMAIL_DOMAINS, "emaildom")
+    return reg.domain(host, _PN_EMAIL_DOMAINS)
 
 
 def _pn_fake_url(real):
@@ -6197,8 +6299,13 @@ _PN_DEFAULT_DETECTORS = ["ssn", "email", "phone", "address", "url"]
 _PN_ID_RES = {
     "license number": re.compile(
         r"(?i)\blicen[cs]e\s*(?:no\.?|number|#)?\s*:?\s*(\d{6,})"),
+    # State Bar number, in every printed form seen in the corpus — "SBN 175977",
+    # "State Bar No. 207972", "S.B.# 108076". The old rule required the literal
+    # word "bar", so "SBN"/"S.B.#" (no "bar") rode straight through beside the
+    # fake attorney name — one public lookup then inverts the whole pseudonym map.
     "bar number": re.compile(
-        r"(?i)\b(?:state\s+)?bar\s*(?:no\.?|number|#)?\s*:?\s*(\d{5,6})\b"),
+        r"(?i)\b(?:(?:state\s+)?bar|sbn|s\.\s*b\.?)"
+        r"\s*(?:n\.?|no\.?|number|#)?\s*:?\s*(\d{5,7})\b"),
     "reservation id": re.compile(
         r"(?i)\bres(?:ervation)?\.?\s*i\.?\s*d\.?\s*:?\s*(\d{8,})"),
     "file number": re.compile(
@@ -6209,7 +6316,29 @@ _PN_ID_RES = {
     "ssn": re.compile(
         r"(?i)\b(?:ssn|social\s+security)"
         r"(?:\s*(?:no\.?|number|account|acct\.?|#))?\s*:?\s*(\d{9})\b"),
+    # Retail-installment account identifiers printed on a RISC/contract stamp:
+    # "DEAL# 23071", "CUST# 24248", "Account No. 55512".
+    "account id": re.compile(
+        r"(?i)\b(?:deal|cust(?:omer)?|acct|account|stock|inventory|inv)"
+        r"\s*(?:no\.?|number|#)?\s*:?\s*#?\s*([A-Z]*\d[\w-]{2,})"),
+    # A court-reservation CONFIRMATION code is alphanumeric ("CR-BFA76WFGYHSBGBCGZ")
+    # — its digits alone (registry.digits) leave the distinctive letters intact,
+    # so it is faked char-wise instead (see register_identifiers).
+    "confirmation code": re.compile(
+        r"(?i)\b(?:confirmation\s+(?:code|no\.?|number)\s*:?\s*|reservation\s+code\s*:?\s*)?"
+        r"(CR-[A-Z0-9]{6,})"),
 }
+# Identifier classes whose value is ALPHANUMERIC and must be faked char-wise
+# (letters too), not just digit-wise.
+_PN_ALNUM_IDS = {"confirmation code"}
+
+# A Vehicle Identification Number: 17 chars in the VIN alphabet (no I/O/Q). A
+# strong unique key — decodes to make/model/year/plant and links to title and
+# owner. Cued by "VIN" OR the 17-char VIN-alphabet shape with at least one digit
+# (so a 17-letter word can't match). Faked char-wise in the VIN alphabet.
+_PN_VIN_RE = re.compile(
+    r"(?i)\bVIN\b[:\s#]*([A-HJ-NPR-Z0-9]{17})\b"
+    r"|(?<![A-Z0-9])((?=[A-HJ-NPR-Z0-9]{17}(?![A-Z0-9]))(?=[A-Z0-9]*\d)[A-HJ-NPR-Z0-9]{17})")
 
 
 def _pn_identifier_values(text):
@@ -7007,6 +7136,7 @@ class Pseudonymizer:
             # Keep terms ordered biggest/most-specific first for apply()'s
             # overlap resolution.
             self.terms.sort(key=lambda t: (-t.priority, -len(t.real)))
+            self._trusted_tok_cache = None   # recompute over the new term set
         return added
 
     def register_short_names(self, text):
@@ -7134,9 +7264,25 @@ class Pseudonymizer:
                 continue
             # SSN shares the detector's faker (valid shape, digit-seeded) so a
             # labelled run-together SSN and a dashed one elsewhere map to the
-            # same fake; other identifiers keep the digit-for-digit faker.
-            fake = self._fake_ssn(val) if cls == "ssn" else self.registry.digits(val, cat)
+            # same fake; an alphanumeric id (confirmation code) is faked char-wise
+            # so its distinctive letters change too; the rest keep the digit faker.
+            if cls == "ssn":
+                fake = self._fake_ssn(val)
+            elif cls in _PN_ALNUM_IDS:
+                fake = self.registry.alnum(val, cat)
+            else:
+                fake = self.registry.digits(val, cat)
             new.append(_PnTerm(cat, val, fake,
+                               whole_word=True, case_sensitive=False,
+                               priority=2, source="document"))
+        # VINs: a 17-char VIN-alphabet run, faked char-wise into the VIN alphabet
+        # so the result stays a valid-shaped but fictitious VIN.
+        for m in _PN_VIN_RE.finditer(_NFKC(text)):
+            vin = m.group(1) or m.group(2)
+            if not vin or ("vin", vin.lower()) in self.records:
+                continue
+            new.append(_PnTerm("vin", vin,
+                               self.registry.alnum(vin, "vin", "ABCDEFGHJKLMNPRSTUVWXYZ"),
                                whole_word=True, case_sensitive=False,
                                priority=2, source="document"))
         self._add_terms(new)
@@ -7198,6 +7344,10 @@ class Pseudonymizer:
                 # appendix emits those deliberately — nor a fake we ourselves
                 # minted (so re-scrubbing already-fake text is a fixed point).
                 if cat == "url" and _pn_url_whitelisted(match):
+                    continue
+                # A bare 10-digit run that is really an OCR'd date ("06/06/2025"
+                # -> "0610612025") must not be faked as a phone; the date stays.
+                if cat == "phone" and _pn_phone_is_ocr_date(match):
                     continue
                 if match.lower().rstrip(" .,;:") in self._own_fakes:
                     continue
@@ -7320,12 +7470,67 @@ class Pseudonymizer:
             out.append((2, start + offset, m.end("name") + offset, rec))
         return out
 
-    def _substitute(self, text, cands, reflow=False, count=True):
+    def _trusted_party_tokens(self):
+        """Distinctive lower-cased word bases of the parties named in the
+        spreadsheet key (and any --term), used to decide the caption exemption.
+        Corporate suffixes, connectors and role words are excluded so only a
+        genuinely identifying token ("orellana", "acquisition") counts."""
+        cached = getattr(self, "_trusted_tok_cache", None)
+        if cached is not None:
+            return cached
+        toks = set()
+        for t in self.terms:
+            if t.source not in ("spreadsheet", "--term"):
+                continue
+            if t.category not in ("person", "entity", "person-token",
+                                  "entity-token"):
+                continue
+            for w in t.real.split():
+                base = _pn_word_base(w)
+                if (len(base) >= 3 and not _pn_is_entity_keep(base)
+                        and not _pn_is_role_token(w)):
+                    toks.add(base)
+        self._trusted_tok_cache = toks
+        return toks
+
+    def _side_is_trusted(self, side):
+        trusted = self._trusted_party_tokens()
+        return any(_pn_word_base(w) in trusted for w in side.split())
+
+    def _protected_citation_spans(self, text):
+        """Spans of published-authority citations whose party names must NOT be
+        rewritten. Renaming a cited decision is a worse failure than leaving a
+        party name in (the method's cardinal invariant), so any candidate
+        overlapping one of these spans is dropped in `_substitute`.
+
+        Caption exemption: a "X v. Y" case span is NOT protected — it is the
+        ruling's own caption and must still be replaced — when BOTH sides name a
+        trusted party from the key. One trusted side is not enough (Sanchez v.
+        Valencia Holding Co. has a trusted-looking plaintiff yet is authority)."""
+        spans = []
+        try:
+            cites = find_all_citations(text)
+        except Exception:
+            return spans
+        for c in cites:
+            if (c.get("kind") == "case" and c.get("plaintiff") is not None
+                    and self._side_is_trusted(c["plaintiff"])
+                    and self._side_is_trusted(c.get("defendant", ""))):
+                continue  # this document's own caption — replace it
+            spans.append(tuple(c["span"]))
+        return spans
+
+    def _substitute(self, text, cands, reflow=False, count=True, protected=None):
         # Biggest / most-specific first; skip anything overlapping a chosen span.
         cands.sort(key=lambda c: (-c[0], -(c[2] - c[1])))
         chosen, occ = [], []
         for _prio, s, e, rec in cands:
             if any(s < oe and os < e for os, oe in occ):
+                continue
+            # Never rewrite inside a protected citation span (P0-A): a candidate
+            # overlapping a cited decision's name is dropped so the authority
+            # survives byte-for-byte.
+            if protected and any(s < pe and ps < e for ps, pe in protected):
                 continue
             occ.append((s, e))
             chosen.append((s, e, rec))
@@ -7362,7 +7567,8 @@ class Pseudonymizer:
         text = _NFKC(text)
         cands = (self._detector_cands(text) + self._term_cands(text)
                  + self._display_name_cands(text))
-        return self._substitute(text, cands, count=count)
+        return self._substitute(text, cands, count=count,
+                                protected=self._protected_citation_spans(text))
 
     def apply_lines(self, bodies):
         """Pseudonymize a pleading page's line BODIES as one text, returning one
@@ -7384,7 +7590,9 @@ class Pseudonymizer:
         for b in bodies:
             cands += self._detector_cands(b, off)
             off += len(b) + 1
-        out = self._substitute(joined, cands, reflow=True).split("\n")
+        out = self._substitute(
+            joined, cands, reflow=True,
+            protected=self._protected_citation_spans(joined)).split("\n")
         # _pn_reflow preserves every newline, so this holds; fall back rather
         # than ever hand back the wrong number of lines.
         return out if len(out) == len(bodies) else [self.apply(b) for b in bodies]
@@ -7480,6 +7688,13 @@ class Pseudonymizer:
         """Record that `reals` survived in some export, for the key's Status."""
         for r in reals:
             self.leaked.add(r.lower())
+
+    def has_leaks(self):
+        """True when any real value survived in an export (a `leaked` key row).
+        The skill's order of operations is explicit: a leak means DO NOT
+        DELIVER, so the run must exit non-zero and quarantine the exports rather
+        than present them as clean."""
+        return bool(self.leaked)
 
     def known_fake_words(self):
         """Every word this run has minted as a stand-in, lower-cased. Lets the
@@ -8825,6 +9040,30 @@ def main():
                   "and re-run.")
 
     log.info(f"Done: {success} succeeded, {failed} failed")
+
+    # Leak gate (cardinal safety net): if any real value survived into an
+    # export, the delivery is compromised — a single public lookup can invert
+    # the whole map. Quarantine every written .txt (rename to *.LEAK so the
+    # content is preserved for review but can't be mistaken for a clean, ready-
+    # to-share export) and exit non-zero. The key spreadsheet already records
+    # WHICH values leaked (Status = "leaked"); it is left in place for triage.
+    if pseudonymizer is not None and pseudonymizer.has_leaks():
+        quarantined = []
+        for txt in pseudonymizer.written:
+            try:
+                if txt.exists():
+                    dest = txt.with_suffix(txt.suffix + ".LEAK")
+                    txt.replace(dest)
+                    quarantined.append(dest)
+            except OSError as e:
+                log.error(f"  Could not quarantine leaked export {txt.name}: {e}")
+        leaked = ", ".join(sorted(pseudonymizer.leaked)[:8])
+        _warn(f"!! Pseudonymize FAILED: {len(pseudonymizer.leaked)} real "
+              f"value(s) survived in the exports ({leaked}). "
+              f"{len(quarantined)} .txt export(s) quarantined to *.LEAK and "
+              f"NOT delivered. Add the survivor(s) with --term and re-run; see "
+              f"Status=leaked in {(args.key_out or (folder / 'pseudonym_key.xlsx')).name}.")
+        sys.exit(2)
 
 
 if __name__ == "__main__":
