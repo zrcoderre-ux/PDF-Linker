@@ -824,3 +824,28 @@ class TestDegreeSuffixNeverScrubbed:
         # "MD" with no dots is still a suffix, not a surname
         full, _bare = pl._pn_fake_person("Bob Jones MD", pl._PnFakeRegistry())
         assert full.endswith("MD") and "Bob" not in full and "Jones" not in full
+
+
+class TestDocAbbreviationsNeverScrubbed:
+    """Caption/title abbreviations "ISO" (In Support Of) and "RJN" (Request for
+    Judicial Notice) are never part of a person's name and are kept verbatim."""
+
+    def test_not_name_tokens(self):
+        assert not pl._pn_is_name_token("ISO")
+        assert not pl._pn_is_name_token("RJN")
+
+    def test_declarant_stops_before_them(self):
+        assert pl._pn_declarant_names(
+            "DECLARATION OF JOHN SMITH ISO MOTION TO STRIKE") == ["JOHN SMITH"]
+        assert pl._pn_declarant_names("DECLARATION OF JANE DOE RJN") == ["JANE DOE"]
+
+    def test_kept_inside_a_faked_name(self):
+        full, _ = pl._pn_fake_person("John Smith ISO RJN", pl._PnFakeRegistry())
+        assert "ISO" in full and "RJN" in full
+        assert "Smith" not in full   # the actual name is still faked
+
+    def test_end_to_end_declaration_title(self):
+        pz, _ = _pz(detectors=[])
+        pz.register_declarant_names("DECLARATION OF JOHN SMITH ISO MOTION")
+        out = pz.apply("DECLARATION OF JOHN SMITH ISO MOTION")
+        assert "JOHN SMITH" not in out and "ISO" in out and "MOTION" in out
