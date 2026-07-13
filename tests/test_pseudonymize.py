@@ -687,3 +687,68 @@ class TestPublicEntityParty:
         out = pz.apply("Defendant Los Angeles Widgets, Inc. did it. Venue: Los Angeles.")
         assert "Los Angeles Widgets" not in out
         assert out.rstrip().endswith("Los Angeles.")   # bare venue kept
+
+
+# ── SSN / phone hardening (review items 1-3) ────────────────────────────────
+class TestSsnHardening:
+    """The dash-only SSN rule let spaced/run-together SSNs ride into the export;
+    the fakes were also often facially invalid and not registry-injective."""
+
+    def test_spaced_and_dotted_ssn_are_scrubbed(self):
+        pz, _ = _pz()
+        out = pz.apply("A 123-45-6789 B 123 45 6789 C 123.45.6789 D")
+        for real in ("123-45-6789", "123 45 6789", "123.45.6789"):
+            assert real not in out
+        assert not pz.surviving_reals(out)
+
+    def test_labelled_runtogether_ssn_is_scrubbed(self):
+        pz, _ = _pz()
+        pz.register_identifiers("Claimant SSN: 123456789 on file")
+        out = pz.apply("Claimant SSN: 123456789 on file")
+        assert "123456789" not in out
+
+    def test_bare_runtogether_9digits_without_label_is_left_alone(self):
+        # A 9-digit Bates/account number must NOT be mistaken for an SSN.
+        pz, _ = _pz()
+        out = pz.apply("Bates 123456789 produced")
+        assert "123456789" in out
+
+    def test_same_ssn_two_spellings_map_to_same_digits(self):
+        pz, _ = _pz()
+        a = re.sub(r"\D", "", pz._fake_ssn("123-45-6789"))
+        b = re.sub(r"\D", "", pz._fake_ssn("123 45 6789"))
+        c = re.sub(r"\D", "", pz._fake_ssn("123456789"))
+        assert a == b == c
+
+    def test_fake_ssn_is_valid_shaped(self):
+        for i in range(500):
+            f = re.sub(r"\D", "", pl._pn_fake_ssn(f"{i:03d}-{(i*7) % 100:02d}-{(i*13) % 10000:04d}"))
+            area, group, serial = int(f[:3]), f[3:5], f[5:]
+            assert area not in (0, 666) and area < 900
+            assert group != "00" and serial != "0000"
+
+    def test_fake_phone_is_valid_nanp_and_keeps_format(self):
+        for tmpl in ("(626) 381-9893", "626.381.9893", "+1 626-381-9893", "626-381-9893"):
+            f = pl._pn_fake_phone(tmpl)
+            # Non-digit skeleton preserved exactly.
+            assert re.sub(r"\d", "#", f) == re.sub(r"\d", "#", tmpl)
+            d = re.sub(r"\D", "", f)
+            nat = d[-10:]
+            assert nat[0] in "23456789" and nat[3] in "23456789"
+            assert nat[1:3] != "11" and nat[4:6] != "11"
+
+    def test_phone_and_ssn_are_registry_injective(self):
+        pz, _ = _pz(detectors=["ssn", "phone"])
+        seen = {}
+        for i in range(2000):
+            real = f"{100+i:03d}-{i % 100:02d}-{i % 10000:04d}"
+            f = pz._fake_ssn(real)
+            assert f not in seen or seen[f] == real
+            seen[f] = real
+
+    def test_email_still_reuses_party_surname(self):
+        pz, _ = _pz(names=["Paul Green"])
+        out = pz.apply("Paul Green pgreen@pgreenlaw.com")
+        # "green" -> its stand-in, reused in the local part; domain neutralised.
+        assert "pgreen@pgreenlaw.com" not in out
+        assert "@pgreenlaw.com" not in out

@@ -44,27 +44,42 @@ def _lines(page):
     return {a["line_num"]: a["body_text"] for a in pl._detect_line_anchors(page)}
 
 
-class TestReadingOrder:
-    """Rows sharing one gutter number must not interleave."""
+def _rows(page):
+    """(line_num, body_text) in reading order — keeps continuation rows
+    (line_num=None) that a line_num-keyed dict would collapse."""
+    return [(a["line_num"], a["body_text"])
+            for a in sorted(pl._detect_line_anchors(page), key=lambda a: a["y_mid"])]
 
-    def test_two_rows_under_one_number_stay_in_order(self):
+
+class TestReadingOrder:
+    """Rows sharing one gutter number must not interleave, and rows STACKED in
+    one column under a number must stay on their own lines (a dense letterhead),
+    not weld into one."""
+
+    def test_two_rows_under_one_number_stay_on_their_own_lines(self):
         page = _page([
             (LEFT_X, FIRST_Y - 8, "SCHILLECI & TORTORICI, P.C."),
             (LEFT_X, FIRST_Y + 4, "JASON P. TORTORICI, STATE BAR NO. 207972"),
         ])
-        assert _lines(page)[1] == (
-            "SCHILLECI & TORTORICI, P.C. JASON P. TORTORICI, STATE BAR NO. 207972")
+        rows = _rows(page)
+        assert (1, "SCHILLECI & TORTORICI, P.C.") in rows
+        assert (None, "JASON P. TORTORICI, STATE BAR NO. 207972") in rows
+        # The number owns the first row; the second is a continuation, in order.
+        i = rows.index((1, "SCHILLECI & TORTORICI, P.C."))
+        assert rows[i + 1] == (None, "JASON P. TORTORICI, STATE BAR NO. 207972")
 
-    def test_caption_columns_do_not_splice(self):
-        """Left party column + a right column running at half the gutter lead."""
+    def test_caption_columns_pair_left_to_right_then_continue(self):
+        """Left party column + a right column running at half the gutter lead:
+        the party name pairs with the first caption line; the second caption
+        line continues below."""
         page = _page([
             (LEFT_X, FIRST_Y + 7 * LEAD, "ROXANE ESTRADA,"),
             (RIGHT_X, FIRST_Y + 7 * LEAD - 5, "Case No.: 25STCV37838"),
             (RIGHT_X, FIRST_Y + 7 * LEAD + 6, "Complaint Filed: Dec 29, 2025"),
         ])
-        body = _lines(page)[8]
-        assert body == ("ROXANE ESTRADA, Case No.: 25STCV37838 "
-                        "Complaint Filed: Dec 29, 2025")
+        rows = _rows(page)
+        assert (8, "ROXANE ESTRADA, Case No.: 25STCV37838") in rows
+        assert (None, "Complaint Filed: Dec 29, 2025") in rows
 
     def test_left_column_is_never_reordered_into_the_right(self):
         page = _page([
@@ -195,3 +210,64 @@ class TestPrescanOrderIndependence:
         pl._pn_prescan_folder(sorted(tmp_path.glob("*.pdf")), pz,
                               logging.getLogger("t"))
         assert any(r["category"] == "bar_number" for r in pz.records.values())
+
+
+class TestSuperscriptReattachment:
+    """A superscript ("5th", a footnote mark) is set smaller than the body and
+    its raised baseline pulls it onto the row above, where it lands as an orphan
+    segment and skews that row toward the wrong gutter number. It must attach to
+    the base word instead."""
+
+    def _page_with_superscript(self):
+        doc = fitz.open()
+        page = doc.new_page(width=612, height=792)
+        for i in range(28):
+            page.insert_text((GUTTER_X, FIRST_Y + i * LEAD), str(i + 1), fontsize=12)
+        # Line 1 body, then a base word "5" on line 2 with a raised "th".
+        page.insert_text((LEFT_X, FIRST_Y), "LAW OFFICE OF EXAMPLE", fontsize=11)
+        base_y = FIRST_Y + LEAD
+        page.insert_text((LEFT_X, base_y), "1055 E Colorado Blvd., 5", fontsize=11)
+        page.insert_text((LEFT_X + 150, base_y - 4), "th", fontsize=8)   # superscript
+        page.insert_text((LEFT_X + 162, base_y), "Floor", fontsize=11)
+        page._doc_ref = doc
+        return page
+
+    def test_superscript_joins_its_base_word(self):
+        lines = _lines(self._page_with_superscript())
+        assert "5th" in lines[2].replace(" th", "th")  # base + superscript reunited
+        assert "th" not in lines[1]                     # not orphaned onto line 1
+
+    def test_base_row_maps_to_its_own_gutter_number(self):
+        lines = _lines(self._page_with_superscript())
+        assert "1055 E Colorado Blvd." in lines[2]
+        assert "1055" not in lines.get(1, "")
+
+
+class TestDenseLetterheadDoesNotCollapse:
+    """A tightly-set attorney letterhead runs at ~half the numbered-body lead,
+    so two physical rows fall under one gutter number. They must stay on their
+    own lines instead of welding into 'Paul Green, Esq. (SBN 237707) LAW OFFICE
+    OF PAUL GREEN'."""
+
+    def _letterhead_page(self):
+        doc = fitz.open()
+        page = doc.new_page(width=612, height=792)
+        for i in range(28):
+            page.insert_text((GUTTER_X, FIRST_Y + i * LEAD), str(i + 1), fontsize=12)
+        # Two single-spaced letterhead rows in the vertical span of gutter 1.
+        page.insert_text((LEFT_X, FIRST_Y - 10), "Paul Green, Esq. (SBN 237707)", fontsize=11)
+        page.insert_text((LEFT_X, FIRST_Y + 2), "LAW OFFICE OF PAUL GREEN", fontsize=11)
+        page._doc_ref = doc
+        return page
+
+    def test_letterhead_rows_are_not_welded(self):
+        bodies = [b for _n, b in _rows(self._letterhead_page())]
+        assert "Paul Green, Esq. (SBN 237707)" in bodies
+        assert "LAW OFFICE OF PAUL GREEN" in bodies
+        # No line contains BOTH names welded together.
+        assert not any("Esq." in b and "LAW OFFICE" in b for b in bodies)
+
+    def test_first_row_keeps_the_number_second_is_a_continuation(self):
+        rows = _rows(self._letterhead_page())
+        assert rows[0] == (1, "Paul Green, Esq. (SBN 237707)")
+        assert rows[1] == (None, "LAW OFFICE OF PAUL GREEN")

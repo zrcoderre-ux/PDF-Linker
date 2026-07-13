@@ -1834,14 +1834,39 @@ def _span_baseline(sp):
 
 def _cluster_rows(spans, tol=_ROW_BASELINE_TOL):
     """Group spans into physical rows by baseline. Returns [{y, spans}] sorted
-    top to bottom, with every input span in exactly one row (nothing dropped)."""
+    top to bottom, with every input span in exactly one row (nothing dropped).
+
+    Superscripts and subscripts ("5th", a footnote mark) are set well below the
+    body size and their RAISED baseline pulls them onto the row above, where
+    they surface as an orphan segment ("...LAW OFFICE OF PAUL GREEN  th") and,
+    worse, skew that row toward the wrong gutter number. So body-size spans are
+    clustered first; each small span is then attached to the row whose baseline
+    its glyph-box BOTTOM sits on (that bottom rests on the base line of the word
+    it belongs to). The row's baseline `y` is always taken from its body spans,
+    so an attached superscript can't move it."""
+    sizes = [sp.get("size") for sp in spans if sp.get("size")]
+    med = statistics.median(sizes) if sizes else 0.0
+
+    def _is_small(sp):
+        return bool(med) and sp.get("size", med) < 0.72 * med
+
     rows = []
-    for sp in sorted(spans, key=_span_baseline):
+    for sp in sorted((s for s in spans if not _is_small(s)), key=_span_baseline):
         y = _span_baseline(sp)
         if rows and abs(y - rows[-1]["y"]) <= tol:
             rows[-1]["spans"].append(sp)
         else:
             rows.append({"y": y, "spans": [sp]})
+
+    for sp in (s for s in spans if _is_small(s)):
+        bottom = sp["bbox"][3]
+        best = min(rows, key=lambda r: abs(r["y"] - bottom)) if rows else None
+        if best is not None and abs(best["y"] - bottom) <= tol + 2.0:
+            best["spans"].append(sp)
+        else:
+            rows.append({"y": _span_baseline(sp), "spans": [sp]})
+
+    rows.sort(key=lambda r: r["y"])
     return rows
 
 
@@ -1977,12 +2002,26 @@ def _detect_line_anchors(page):
                 idx = k
         return idx
 
-    # Step 6: merge the rows WITHIN each band, top to bottom; emit the bands
-    # left to right. Spans from different rows are never sorted against each
-    # other by x, so reading order survives.
+    # Step 6: reconstruct each gutter number's lines from its column stacks.
+    #
+    # A dense letterhead or caption sets several physical rows under ONE gutter
+    # number (the block runs at ~half the numbered-body lead). Two shapes hide
+    # in that: a caption's two COLUMNS (party name left, case caption right) are
+    # one logical line and must read left to right; a letterhead's stacked ROWS
+    # in a SINGLE column are sequential lines and must stay on their own lines.
+    # Welding everything under the number into one line (the old behaviour)
+    # served the first shape but mangled the second — "Paul Green, Esq. (SBN
+    # 237707) LAW OFFICE OF PAUL GREEN" on one line.
+    #
+    # So: bucket the number's row segments into page COLUMNS; within a column
+    # keep an ordered stack of its distinct physical rows (same-row pieces
+    # joined). The number then emits `depth` lines, where depth is the tallest
+    # column's stack and line k pairs the k-th row of every column, left to
+    # right. The first line carries the gutter number; deeper lines are
+    # continuations (line_num=None) so a pinpoint "p.X:Y" never lands on one.
     results = []
     for num in sorted(rows_by_num):
-        buckets = defaultdict(list)          # band -> [(y, x0, text)]
+        stacks = {}                              # band -> {row_y: [x0, text]}
         for row in sorted(rows_by_num[num], key=lambda r: r["y"]):
             for x, text in _split_row_columns(row["spans"]):
                 if _CAPTION_DIVIDER_RE.match(text):
@@ -1990,19 +2029,32 @@ def _detect_line_anchors(page):
                 text = _CAPTION_DIVIDER_LEAD_RE.sub("", text)
                 if not text:
                     continue
-                buckets[_band_of(x)].append((row["y"], x, text))
-        segments = []
-        for band in sorted(buckets):
-            items = sorted(buckets[band])
-            segments.append((items[0][1], " ".join(t for _y, _x, t in items)))
-        if not segments:
+                col = stacks.setdefault(_band_of(x), {})
+                if row["y"] in col:              # another piece of the same row
+                    col[row["y"]][0] = min(col[row["y"]][0], x)
+                    col[row["y"]][1] += " " + text
+                else:
+                    col[row["y"]] = [x, text]
+        if not stacks:
             continue
-        results.append({
-            "line_num": num,
-            "body_text": " ".join(t for _x, t in segments),
-            "segments": segments,
-            "y_mid": min(r["y"] for r in rows_by_num[num]),
-        })
+        bands = sorted(stacks)
+        depth = max(len(col) for col in stacks.values())
+        for k in range(depth):
+            segs = []
+            for b in bands:
+                items = sorted(stacks[b].items())     # by row_y, top to bottom
+                if k < len(items):
+                    row_y, (x, text) = items[k]
+                    segs.append((x, row_y, text))
+            if not segs:
+                continue
+            segs.sort()                               # left to right by x0
+            results.append({
+                "line_num": num if k == 0 else None,
+                "body_text": " ".join(t for _x, _y, t in segs),
+                "segments": [(x, t) for x, _y, t in segs],
+                "y_mid": min(y for _x, y, _t in segs),
+            })
     return results
 
 
@@ -5674,15 +5726,71 @@ def _pn_fake_caseno(real, registry):
     return registry.digits(real, "caseno", keep_prefix=keep)
 
 
+def _pn_reapply_digits(fake_digits, real):
+    """Lay `fake_digits` back into `real`'s exact template: each real DIGIT
+    position takes the next fake digit; every separator, bracket and letter is
+    kept verbatim. "(626) 381-9893" -> "(NNN) NNN-NNNN"; "626.381.9893" keeps
+    its dots; a run-together "123456789" stays run-together. Format in == format
+    out, so a re-scan of the export is a fixed point."""
+    out, i = [], 0
+    for ch in real:
+        if ch.isdigit() and i < len(fake_digits):
+            out.append(fake_digits[i])
+            i += 1
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+# NANP validity: an area code and a central-office (exchange) code are each
+# [2-9] then any two digits, minus the N11 service codes (211, 911, ...). A fake
+# phone that randomises every digit comes out facially bogus ~40% of the time
+# (area/exchange leading 0 or 1), which reads as an error in a filing and can
+# even land on a real, in-service number; a valid NANP shape reads naturally and
+# still identifies no one.
+def _pn_nanp_nxx(rng):
+    a = rng.randrange(2, 10)
+    while True:
+        b, c = rng.randrange(10), rng.randrange(10)
+        if not (b == 1 and c == 1):        # reject N11 service codes
+            return f"{a}{b}{c}"
+
+
+def _pn_phone_digits(rng, n):
+    """`n` fake digits shaped like a valid NANP number: 7 == exchange+line,
+    10 == area+exchange+line, 11 keeps a leading country-code 1. Any other
+    length falls back to per-digit random (nothing to validate)."""
+    if n == 11:
+        return "1" + _pn_nanp_nxx(rng) + _pn_nanp_nxx(rng) + f"{rng.randrange(10000):04d}"
+    if n == 10:
+        return _pn_nanp_nxx(rng) + _pn_nanp_nxx(rng) + f"{rng.randrange(10000):04d}"
+    if n == 7:
+        return _pn_nanp_nxx(rng) + f"{rng.randrange(10000):04d}"
+    return "".join(str(rng.randrange(10)) for _ in range(n))
+
+
 def _pn_fake_phone(real):
-    r = _pn_rng("phone", re.sub(r"\D", "", real))
-    return re.sub(r"\d", lambda m: str(r.randrange(10)), real)
+    digits = re.sub(r"\D", "", real)
+    return _pn_reapply_digits(_pn_phone_digits(_pn_rng("phone", digits), len(digits)),
+                              real)
+
+
+# SSN validity: the SSA never issues area 000, 666 or 900-999, group 00, or
+# serial 0000. A fake in those ranges is recognisably impossible (~10% of a
+# blind randomisation lands there); a valid-shaped fake reads naturally.
+def _pn_ssn_digits(rng):
+    area = rng.randrange(1, 900)
+    if area == 666:
+        area = 665
+    return f"{area:03d}{rng.randrange(1, 100):02d}{rng.randrange(1, 10000):04d}"
 
 
 def _pn_fake_ssn(real):
-    r = _pn_rng("ssn", re.sub(r"\D", "", real))
-    return "{:03d}-{:02d}-{:04d}".format(r.randrange(1000), r.randrange(100),
-                                         r.randrange(10000))
+    # Seed on digits only so every separator spelling of one SSN
+    # ("123-45-6789", "123 45 6789", "123456789") maps to the same fake, then
+    # re-apply the original punctuation.
+    return _pn_reapply_digits(_pn_ssn_digits(_pn_rng("ssn", re.sub(r"\D", "", real))),
+                              real)
 
 
 def _pn_fake_email(real):
@@ -6012,7 +6120,13 @@ def _pn_fake_url(real):
 
 # Regex PII detectors found in the document body (not the spreadsheet).
 _PN_DETECTORS = {
-    "ssn": (re.compile(r"\b\d{3}-\d{2}-\d{4}\b"), _pn_fake_ssn),
+    # An SSN in its 3-2-4 grouped shape with a dash, dot or SPACE separator. The
+    # old dash-only rule let "123 45 6789" ride straight into a shareable export.
+    # The 3-2-4 grouping is distinctive: a 3-3-4 phone or a 2-2-4 date can't
+    # match. The run-together "123456789" form is deliberately NOT here (it is
+    # indistinguishable from a Bates/account/reservation number) — it is caught
+    # only behind an SSN label, in _PN_ID_RES below.
+    "ssn": (re.compile(r"(?<!\d)\d{3}[-. ]\d{2}[-. ]\d{4}(?!\d)"), _pn_fake_ssn),
     "email": (re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b"), _pn_fake_email),
     "phone": (re.compile(
         r"(?<!\d)(?:\+?1[\s.\-]?)?(?:\(\d{3}\)|\d{3})[\s.\-]?\d{3}[\s.\-]?\d{4}(?!\d)"),
@@ -6055,6 +6169,12 @@ _PN_ID_RES = {
         r"(?i)\bres(?:ervation)?\.?\s*i\.?\s*d\.?\s*:?\s*(\d{8,})"),
     "file number": re.compile(
         r"(?i)\b(?:my\s+)?file\s+no\.?\s*:?\s*([\w\-]{3,})"),
+    # A run-together 9-digit SSN, caught ONLY when an SSN label anchors it, so an
+    # ordinary 9-digit Bates/account number is never mistaken for one. Grouped
+    # SSNs (with dashes/dots/spaces) are handled by the "ssn" detector instead.
+    "ssn": re.compile(
+        r"(?i)\b(?:ssn|social\s+security)"
+        r"(?:\s*(?:no\.?|number|account|acct\.?|#))?\s*:?\s*(\d{9})\b"),
 }
 
 
@@ -6943,7 +7063,11 @@ class Pseudonymizer:
             cat = cls.replace(" ", "_")
             if (cat, val.lower()) in self.records:
                 continue
-            new.append(_PnTerm(cat, val, self.registry.digits(val, cat),
+            # SSN shares the detector's faker (valid shape, digit-seeded) so a
+            # labelled run-together SSN and a dashed one elsewhere map to the
+            # same fake; other identifiers keep the digit-for-digit faker.
+            fake = self._fake_ssn(val) if cls == "ssn" else self.registry.digits(val, cat)
+            new.append(_PnTerm(cat, val, fake,
                                whole_word=True, case_sensitive=False,
                                priority=2, source="document"))
         self._add_terms(new)
@@ -6979,6 +7103,10 @@ class Pseudonymizer:
                 fake = self._fake_street(real)
             elif cat == "url":
                 fake = self._fake_url(real)
+            elif cat == "phone":
+                fake = self._fake_phone(real)
+            elif cat == "ssn":
+                fake = self._fake_ssn(real)
             else:
                 fake = faker(real)
             rec = {"category": cat, "real": real, "fake": fake,
@@ -7058,6 +7186,24 @@ class Pseudonymizer:
                      real.strip(), re.IGNORECASE)
         host = m.group("host") if m else real
         return f"{m.group('scheme') or ''}{m.group('www') or ''}{_pn_fake_domain(host, self.registry)}"
+
+    def _fake_phone(self, real):
+        """A valid-NANP fake, format preserved, drawn through the registry so two
+        different real numbers can never collide onto one fake (the bijection the
+        pseudonym key round-trip depends on). Seeded on the digits alone, so a
+        number written two ways maps to one fake."""
+        digits = re.sub(r"\D", "", real)
+        fake = self.registry.unique(
+            digits, "phone", lambda rng: _pn_phone_digits(rng, len(digits)))
+        return _pn_reapply_digits(fake, real)
+
+    def _fake_ssn(self, real):
+        """A valid-shaped SSN fake, format preserved, drawn through the registry
+        for injectivity and seeded on the digits so every separator spelling of
+        one SSN resolves to the same fake."""
+        digits = re.sub(r"\D", "", real)
+        fake9 = self.registry.unique(digits, "ssn", _pn_ssn_digits)
+        return _pn_reapply_digits(fake9, real)
 
     def _term_cands(self, text):
         out = []
@@ -7599,11 +7745,13 @@ def _build_authorities_appendix(full_text, pseudonymizer=None):
 
 
 def _page_lined_rows(page):
-    """For a pleading-paper page, return [(line_num, segments), ...] sorted by
-    line number, so the .txt can mirror the PDF's line numbering. `segments` is
-    [(x0, text), ...] — the row split at column gutters. Returns None for pages
-    without a recognisable line-number column (exhibits, covers, signature
-    pages), which the caller renders as plain text.
+    """For a pleading-paper page, return [(line_num, segments), ...] in reading
+    order, so the .txt can mirror the PDF's line numbering. `segments` is
+    [(x0, text), ...] — the row split at column gutters. `line_num` is the
+    gutter number for the first row under it and None for a continuation row (a
+    dense letterhead/caption stacks several rows under one number). Returns None
+    for pages without a recognisable line-number column (exhibits, covers,
+    signature pages), which the caller renders as plain text.
 
     Returning the rows (rather than a joined string) lets the caller
     pseudonymize each line's BODY on its own — so the line-number prefix is
@@ -7614,7 +7762,7 @@ def _page_lined_rows(page):
     if not anchors:
         return None
     return [(a["line_num"], a["segments"])
-            for a in sorted(anchors, key=lambda a: a["line_num"])]
+            for a in sorted(anchors, key=lambda a: a["y_mid"])]
 
 
 _COLUMN_BAND_TOL = 30.0   # pt; segment left edges this close share a page column
@@ -7829,8 +7977,12 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
                 bodies = _pn_apply_page_rows(pseudonymizer, content)
             else:
                 bodies = [" ".join(t for _x, t in segs) for _num, segs in content]
-            display = "\n".join(f"{num:>2}  {body}".rstrip()
-                                for num, body in zip(nums, bodies))
+            # A gutter number owns its first row; continuation rows (a stacked
+            # letterhead/caption line) carry line_num=None and print under a
+            # blank, aligned gutter so the block reads as separate lines.
+            display = "\n".join(
+                ((f"{num:>2}  " if num is not None else "    ") + body).rstrip()
+                for num, body in zip(nums, bodies))
         else:                           # flowing text
             display = pseudonymizer.apply(content) if pseudonymizer is not None else content
         parts.append(f"{header}\n{display}")
