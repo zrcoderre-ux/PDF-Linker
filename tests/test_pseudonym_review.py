@@ -199,3 +199,127 @@ def test_guard_reservation_id_is_faked_digitwise():
     reg = P._PnFakeRegistry()
     fake = reg.digits("935605884885", "reservation_id")
     assert fake != "935605884885" and fake.isdigit() and len(fake) == 12
+
+
+# ─────────────────────── REVIEW (25STCV28413) ───────────────────────────────
+# Second corpus (Orellana v. AHC Acquisition LLC). Each test encodes one
+# acceptance criterion from the 2026-07-13 fix handoff; red against pre-fix
+# code, green after its fix.
+
+def _pz28413(names=("Alejandro Orellana", "AHC Acquisition LLC"),
+             casenos=("25STCV28413",)):
+    reg = P._PnFakeRegistry()
+    terms = P._pn_build_terms(list(names), list(casenos), [], registry=reg)
+    det = {k: P._PN_DETECTORS[k] for k in P._PN_DEFAULT_DETECTORS}
+    return P.Pseudonymizer(terms, det, registry=reg)
+
+
+# P0-A  A published decision's party names must never be rewritten. The address
+#   detector rewrote "100 Oak Street" (a real party) inside a citation; the
+#   entity harvester rewrote "DMS Services", "KPMG", "Valencia Holding Co.".
+def test_citation_party_names_survive_replacement():
+    z = _pz28413()
+    for cite in [
+        "Ericksen, Arbuthnot, McCarthy, Kearney & Walsh, Inc. v. 100 Oak Street "
+        "(1983) 35 Cal.3d 312",
+        "DMS Services, LLC v. Superior Court (2012) 205 Cal.App.4th 1346",
+        "Goldman v. KPMG, LLP (2009) 173 Cal.App.4th 209",
+        "Sanchez v. Valencia Holding Co., LLC (2015) 61 Cal.4th 899",
+    ]:
+        assert z.apply(cite) == cite, f"cited decision was corrupted: {cite!r}"
+
+
+def test_citation_survives_even_when_defendant_is_a_harvested_entity():
+    # "Valencia Holding Co., LLC" is ALSO in the term set as a harvested entity;
+    # the citation span must still win and leave the authority byte-identical.
+    z = _pz28413(names=["Alejandro Orellana", "AHC Acquisition LLC",
+                        "Valencia Holding Co., LLC"])
+    cite = "Sanchez v. Valencia Holding Co., LLC (2015) 61 Cal.4th 899"
+    assert z.apply(cite) == cite
+
+
+def test_caption_exemption_replaces_own_case_caption():
+    # Both sides name a trusted party -> this is the ruling's OWN caption and
+    # must still be replaced, not protected as if it were an authority.
+    z = _pz28413()
+    out = z.apply("Alejandro Orellana v. AHC Acquisition LLC")
+    assert "Orellana" not in out and "AHC Acquisition" not in out
+
+
+# P0-C  Attorney State Bar numbers unmask the pseudonyms in one public lookup.
+def test_bar_number_scrubbed_label_kept():
+    z = _pz28413()
+    for real, num in [("Holloway Vance, Esq., SBN 175977", "175977"),
+                      ("State Bar No. 291925", "291925"),
+                      ("JENNINGS R. LANGLEY, S.B.# 108076", "108076")]:
+        z.register_identifiers(real)
+        out = z.apply(real)
+        assert num not in out, f"bar number {num} survived in {out!r}"
+        assert "SBN" in out or "Bar" in out or "S.B." in out
+
+
+# P1-G  A 17-char VIN is a strong unique identifier and must be faked.
+def test_vin_scrubbed():
+    z = _pz28413()
+    real = 'the VIN 1C4JJXP65PW699184 ("Vehicle")'
+    z.register_identifiers(real)
+    out = z.apply(real)
+    assert "1C4JJXP65PW699184" not in out
+    m = re.search(r"VIN\s+([A-HJ-NPR-Z0-9]{17})", out)
+    assert m, f"replacement is not a 17-char VIN-alphabet run: {out!r}"
+
+
+# P1-H  Directional + two-word street + OCR-split suffix must be detected.
+def test_directional_two_word_street_detected():
+    z = _pz28413()
+    for real in ["817 N. La Brea Avenue, City of Inglewood",
+                 "817 N. La Brea A venue, City of Inglewood"]:
+        out = z.apply(real)
+        assert "817" not in out, f"house number survived: {out!r}"
+        assert "La Brea" not in out, f"street name survived: {out!r}"
+        assert "Inglewood" in out, f"locality was altered: {out!r}"
+
+
+# P2-E  Fake e-mail domains stay valid, and an OCR-typo host folds to the firm's.
+def test_fake_domains_valid_shape():
+    for h in ["schillecitortoricilaw.com", "themillenniallawyer.com",
+              "autolegalgroup.com", "adr.org", "quirklawoffice.com"]:
+        f = P._pn_fake_domain(h)
+        assert re.match(r"^[a-z0-9-]+(\.[a-z]{2,})+$", f), \
+            f"invalid fake domain {f!r} (trailing digit on TLD?)"
+
+
+def test_ocr_typo_host_folds_to_firm_domain():
+    assert (P._pn_fake_domain("autolegalgrouo.com")
+            == P._pn_fake_domain("autolegalgroup.com"))
+
+
+# P2-F  A 10-digit run that is really an OCR'd date is not faked as a phone.
+def test_ocr_date_not_faked_as_phone():
+    z = _pz28413()
+    for run in ["0610612025", "0612112031", "0712112025"]:
+        out = z.apply(f"Contract dated {run}.")
+        assert run in out, f"OCR date {run} was rewritten as a phone: {out!r}"
+    # a genuine bare NANP number is still faked
+    assert "6262920899" not in z.apply("Call 6262920899.")
+
+
+# P2-I  Label-anchored account and reservation identifiers must be scrubbed.
+def test_account_and_reservation_ids_scrubbed():
+    z = _pz28413()
+    for real, val in [("DEAL# 23071", "23071"), ("CUST# 24248", "24248"),
+                      ("CR-BFA76WFGYHSBGBCGZ", "CR-BFA76WFGYHSBGBCGZ")]:
+        z.register_identifiers(real)
+        out = z.apply(real)
+        assert val not in out, f"identifier {val} survived in {out!r}"
+
+
+# Pipeline leak gate: any surviving real value marks a `leaked` row and makes
+# has_leaks() true, which drives the run's non-zero exit + export quarantine.
+def test_leak_gate_flags_surviving_real():
+    z = _pz28413()
+    assert not z.has_leaks()
+    z.note_leaks({"Travelers"})
+    assert z.has_leaks()
+    rec = {"real": "Travelers", "count": 0}
+    assert z._status(rec) == "leaked"
