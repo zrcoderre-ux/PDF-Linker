@@ -5889,6 +5889,18 @@ def _pn_addr_suffix_of(real):
     return m.group(1) if m else "Street"
 
 
+_PN_ADDR_STRIP_SUFFIX_RE = re.compile(rf"[ \t]+{_PN_ADDR_SUFFIX}\b\.?\s*$")
+
+
+def _pn_addr_strip_suffix(street):
+    """A street with its trailing street-type suffix removed — the house number
+    + name only: "1055 E Colorado Blvd." -> "1055 E Colorado", "4372 Cedar Ave."
+    -> "4372 Cedar". Used to register a suffix-less address FRAGMENT so a
+    corrupted scan that wraps the suffix off ("1055 E Colorado" | "Blvd.") is
+    still scrubbed."""
+    return _PN_ADDR_STRIP_SUFFIX_RE.sub("", street.strip()).strip()
+
+
 # `_PN_ADDR_RE` deliberately consumes an optional suite and City, ST ZIP so the
 # locality is scrubbed too — but the fakers used to emit only "<num> <name>
 # <suffix>", so the tail was DELETED rather than replaced:
@@ -7047,6 +7059,39 @@ class Pseudonymizer:
         Retained for call-site stability (the pipeline still calls it)."""
         return
 
+    def register_addresses(self, text):
+        """For every full street address in `text`, register its house-number +
+        street-name FRAGMENT (suffix, suite and locality stripped) as a term
+        mapped to the SAME fake street.
+
+        A corrupted-scan text layer can wrap an address so its street-type
+        suffix lands on the next line ("...business address 1055 E Colorado" |
+        "Blvd. ..."); the address detector needs the suffix on the line, so the
+        bare "1055 E Colorado" is not matched and the real street leaks. Learning
+        the fragment from a clean occurrence of the same address (e.g. the
+        letterhead) scrubs the suffix-less one to the same fake. Whole-word and
+        low priority, so the full-address detector wins wherever the address is
+        intact. Idempotent; call before apply()."""
+        _DIRS = {"n", "s", "e", "w", "ne", "nw", "se", "sw"}
+        new = []
+        for m in _PN_ADDR_RE.finditer(_NFKC(text)):
+            street, _suite, _cz = _pn_addr_parts(m.group(0))
+            frag = _pn_addr_strip_suffix(street)
+            toks = frag.split()
+            # house number + a distinctive name word (never a bare "1 A St").
+            names = [t for t in toks[1:] if t.strip(".,").lower() not in _DIRS]
+            if (len(toks) < 2 or not re.match(r"^\d", frag)
+                    or not any(len(t.strip(".,")) >= 4 for t in names)):
+                continue
+            if ("address_fragment", frag.lower()) in self.records:
+                continue
+            fake = _pn_addr_strip_suffix(self._fake_street_core(m.group(0)))
+            if fake:
+                new.append(_PnTerm("address_fragment", frag, fake,
+                                   whole_word=True, case_sensitive=False,
+                                   priority=1, source="document"))
+        self._add_terms(new)
+
     def register_identifiers(self, text):
         """Detect label-anchored identifiers in `text` (bar number, contractor
         licence, court reservation ID, attorney file number) and register each
@@ -7136,6 +7181,18 @@ class Pseudonymizer:
                 out.append((3, m.start() + offset, m.end() + offset, rec))
         return out
 
+    def _fake_street_core(self, real):
+        """The faked "<number> <name> <suffix>" street alone (no suite, no
+        City/ST/ZIP), keyed on the STREET IDENTITY so every spelling of one
+        parcel shares one fake."""
+        suffix = _pn_addr_suffix_of(real)
+        core, _nums = _pn_addr_street_key(real)
+
+        def make(rng):
+            return (f"{rng.randrange(100, 9999)} "
+                    f"{rng.choice(_PN_STREET_NAMES)} {suffix}")
+        return self.registry.unique(core, "street", make)
+
     def _fake_street(self, real):
         """Injective address fake keyed on the STREET IDENTITY (number-stripped
         street name), so every spelling of one parcel — with or without the
@@ -7146,15 +7203,8 @@ class Pseudonymizer:
         verbatim: the locality identifies no one and is kept by house standard,
         and keeping it verbatim removes the tail-rebuild that had corrupted a
         spelled-out state ("California" -> "ia")."""
-        suffix = _pn_addr_suffix_of(real)
         _street, suite, cityzip = _pn_addr_parts(real)
-        core, _nums = _pn_addr_street_key(real)
-
-        def make(rng):
-            return (f"{rng.randrange(100, 9999)} "
-                    f"{rng.choice(_PN_STREET_NAMES)} {suffix}")
-        fake_street = self.registry.unique(core, "street", make)
-        return fake_street + suite + cityzip
+        return self._fake_street_core(real) + suite + cityzip
 
     def _fake_city(self, city):
         # A protected locality ("Los Angeles") is kept even inside an address
@@ -7966,6 +8016,7 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         pseudonymizer.register_short_names(detect_full)
         pseudonymizer.register_identifiers(detect_full)
         pseudonymizer.register_localities(detect_full)
+        pseudonymizer.register_addresses(detect_full)
 
     parts = []
     for header, content in page_blocks:
@@ -8104,6 +8155,7 @@ def _pn_prescan_folder(pdfs, pseudonymizer, log):
         pseudonymizer.register_short_names(text)
         pseudonymizer.register_identifiers(text)
         pseudonymizer.register_localities(text)
+        pseudonymizer.register_addresses(text)
     added = len(pseudonymizer.terms) - before
     if added:
         log.info(f"  Pseudonymize: pre-scan of {len(pdfs)} file(s) added "
