@@ -151,10 +151,22 @@ def test_reversal_key_has_no_zero_occurrence_rows(tmp_path):
     zero = [r for r in ws.iter_rows(min_row=2, values_only=True)
             if r[occ_i] in (0, None)]
     assert not zero, f"{len(zero)} zero-occurrence row(s) in the reversal key"
-    # The full report is a separate "pseudonym audit.xlsx" (trailing "key"
-    # dropped), kept out of anything that circulates with the document.
-    assert (tmp_path / "pseudonym audit.xlsx").exists()
+    # The separate audit spreadsheet was retired (repo owner: unnecessary for
+    # a casual-recognition precaution) — the key is the ONLY file written, and
+    # a stale audit from an earlier version is cleaned up.
+    assert not (tmp_path / "pseudonym audit.xlsx").exists()
     assert not (tmp_path / "pseudonym_key audit.xlsx").exists()
+
+
+def test_stale_audit_sheet_is_removed(tmp_path):
+    # A leftover "pseudonym audit.xlsx" from an earlier tool version must not
+    # sit beside a fresh key looking current.
+    z = _pz(names=["Roxane Estrada"])
+    z.apply("Plaintiff Roxane Estrada sued in 25STCV37838.")
+    stale = tmp_path / "pseudonym audit.xlsx"
+    stale.write_bytes(b"old")
+    z.write_key(tmp_path / "pseudonym_key.xlsx", log)
+    assert not stale.exists()
 
 
 # P1  Every name in a phone-roster block must be harvested, not just the first.
