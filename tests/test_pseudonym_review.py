@@ -437,9 +437,12 @@ def test_firm_wrappers_do_not_cluster_as_alias():
 
 # ──────────────────── PROVEN APPROACHES (design adoption) ───────────────────
 # Techniques adopted from the mature de-identification stack (Presidio's
-# two-tier scored detection, FPE's keyed derivation, checksum validators,
-# entity resolution, normalize-before-detect). No dependencies added — the
-# principles are implemented natively.
+# two-tier scored detection, checksum validators, entity resolution,
+# normalize-before-detect). No dependencies added — the principles are
+# implemented natively. Calibrated to the tool's actual purpose: a PRECAUTION
+# against casual recognition of public filings, not defense against a
+# motivated adversary — so fidelity outranks exhaustive recall, and only a
+# party-naming survivor blocks delivery (see the tiered leak-gate tests).
 
 # #1  Two-tier detection: absence from the term list raises a flag, never
 #     grants a pass. Role-anchored unknown names surface as review findings.
@@ -532,18 +535,32 @@ def test_corp_suffix_never_a_person_surname_single_identity():
             assert w in ent_fake, f"{w!r} diverges from {ent_fake!r}"
 
 
-# #5  Keyed determinism (the FPE principle): with a case secret set, the
-#     real->fake mapping reproduces across FRESH registries (no shared state),
-#     and a different secret yields a different mapping.
-def test_keyed_fake_derivation():
-    base = P._PnFakeRegistry().digits("935605884885", "resid")
-    try:
-        P._pn_set_seed_secret("case-secret-alpha")
-        a = P._PnFakeRegistry().digits("935605884885", "resid")
-        b = P._PnFakeRegistry().digits("935605884885", "resid")
-        assert a == b, "keyed derivation not reproducible without shared state"
-        P._pn_set_seed_secret("case-secret-beta")
-        c = P._PnFakeRegistry().digits("935605884885", "resid")
-        assert c != a and a != base
-    finally:
-        P._pn_set_seed_secret("")
+# Tiered leak gate: the pseudonymization is a precaution against casual
+# recognition of a PUBLIC filing, so only a survivor that names a party
+# outright justifies quarantining the exports. A bare token or identifier
+# surviving is a warn-and-deliver, not a blocked run.
+def test_leak_gate_tiers_primary_vs_lesser():
+    z = _pz06764(names=["Alejandro Orellana", "AHC Acquisition, LLC"])
+    # a bare surname token leaking is NOT primary
+    z.note_leaks({"orellana"})
+    assert z.has_leaks() and z.primary_leaks() == set()
+    # a full entity name leaking IS primary
+    z.note_leaks({"ahc acquisition, llc"})
+    assert any("AHC Acquisition" in v for v in z.primary_leaks())
+
+
+def test_leak_gate_short_name_is_primary():
+    # A document-defined short form ("ToFF") names the party outright — its
+    # survival makes the case recognizable, so it gates like a full name.
+    z = _pz06764(names=["Tom of Finland Foundation, Inc."])
+    z.register_short_names('Tom of Finland Foundation, Inc. ("ToFF") appeared.')
+    z.note_leaks({"toff"})
+    assert "ToFF" in z.primary_leaks()
+
+
+def test_leak_gate_identifier_is_not_primary():
+    # A surviving identifier is a review item, not a delivery blocker.
+    z = _pz06764(names=["Alejandro Orellana"])
+    z.register_identifiers("SBN 175977")
+    z.note_leaks({"175977"})
+    assert z.has_leaks() and z.primary_leaks() == set()

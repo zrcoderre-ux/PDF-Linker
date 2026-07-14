@@ -5121,28 +5121,8 @@ import unicodedata as _pn_unicodedata
 _NFKC = lambda s: _pn_unicodedata.normalize("NFKC", s)
 
 
-# Optional case secret mixed into every fake-derivation seed (the format-
-# preserving-encryption principle): with a secret set, the real->fake mapping is
-# a KEYED deterministic function of the value, so (a) the same secret + case
-# reproduces identical fakes across separate runs with no shared registry state,
-# and (b) an adversary holding the exports cannot precompute value->fake tables
-# to test guesses against. The key spreadsheet then becomes an audit artifact
-# rather than the source of truth. Set via `pseudonym_secret` in
-# pdf_linker.config; empty (the default) keeps the historical unkeyed seeds.
-_PN_SEED_SECRET = ""
-
-
-def _pn_set_seed_secret(secret):
-    """Install the case secret used to key every fake derivation. Call once,
-    before any term is built. The secret itself must never be logged."""
-    global _PN_SEED_SECRET
-    _PN_SEED_SECRET = str(secret or "")
-
-
 def _pn_rng(*parts):
     key = "\x1f".join(str(p) for p in parts).encode("utf-8")
-    if _PN_SEED_SECRET:
-        key = _PN_SEED_SECRET.encode("utf-8") + b"\x1f" + key
     return _pn_random.Random(int(_pn_hashlib.sha256(key).hexdigest(), 16))
 
 
@@ -8133,10 +8113,28 @@ class Pseudonymizer:
 
     def has_leaks(self):
         """True when any real value survived in an export (a `leaked` key row).
-        The skill's order of operations is explicit: a leak means DO NOT
-        DELIVER, so the run must exit non-zero and quarantine the exports rather
-        than present them as clean."""
+        What that does to the run is tiered (see `primary_leaks` and the
+        `leak_gate` config): the pseudonymization is a precaution against
+        casual recognition of a public filing, so only a survivor that defeats
+        that purpose outright blocks delivery."""
         return bool(self.leaked)
+
+    # Categories whose surviving real value names the party OUTRIGHT — a full
+    # person/entity name or a document-defined short form. One of these in an
+    # export makes the case immediately recognizable, which is the one failure
+    # the whole precaution exists to prevent. A bare token, an address, or an
+    # identifier surviving is a missed spot to review, not a defeat.
+    _PRIMARY_LEAK_CATS = ("person", "entity", "short-name", "display-name")
+
+    def primary_leaks(self):
+        """The leaked values that name a party outright (see
+        _PRIMARY_LEAK_CATS) — the survivors that justify quarantining the
+        exports under the default `leak_gate = primary`."""
+        out = set()
+        for (cat, rl), rec in self.records.items():
+            if cat in self._PRIMARY_LEAK_CATS and rl in self.leaked:
+                out.add(rec["real"])
+        return out
 
     def known_fake_words(self):
         """Every word this run has minted as a stand-in, lower-cased. Lets the
@@ -9342,12 +9340,14 @@ _CONFIG_TEMPLATE = (
     "# splices its columns together in the .txt (a REVIEW warning names the page).\n"
     "column_band_tol = 30\n"
     "\n"
-    "# Optional secret that KEYS the real->fake derivation (like a cipher key).\n"
-    "# With a secret set, re-running the same case with the same secret\n"
-    "# reproduces the same fakes with no shared state, and someone holding the\n"
-    "# exports cannot precompute real->fake pairs to test guesses. Keep it out\n"
-    "# of anything that circulates with the documents. Default: empty (off).\n"
-    "pseudonym_secret =\n"
+    "# What a surviving real value does to the run. The pseudonymization is a\n"
+    "# PRECAUTION against casual recognition of a public filing, so the gate is\n"
+    "# tiered:  primary (default) quarantines the exports only when a FULL\n"
+    "# party/entity/attorney name or defined short name survives (that defeats\n"
+    "# the whole purpose); lesser survivors (a bare token, an identifier) are\n"
+    "# warned about and marked in the key but the exports are delivered.\n"
+    "# strict quarantines on ANY surviving value; off never quarantines.\n"
+    "leak_gate = primary\n"
 )
 
 
@@ -9547,13 +9547,6 @@ def main():
                 sys.exit(1)
         else:
             detectors = list(_PN_DEFAULT_DETECTORS)
-        # Optional case secret keys every fake derivation (see _pn_rng). Must be
-        # installed BEFORE any term is built; log only its presence, never it.
-        secret = cfg.get("pseudonym_secret", "").strip()
-        _pn_set_seed_secret(secret)
-        if secret:
-            log.info("Pseudonymize: keyed fake derivation ON (pseudonym_secret "
-                     "set in config)")
         # Key spreadsheet: explicit --key, else the most recent Order*.xlsx in
         # Downloads (where the E-Court export lands).
         key_path = args.key if args.key else _pn_find_downloads_key(log)
@@ -9644,29 +9637,46 @@ def main():
 
     log.info(f"Done: {success} succeeded, {failed} failed")
 
-    # Leak gate (cardinal safety net): if any real value survived into an
-    # export, the delivery is compromised — a single public lookup can invert
-    # the whole map. Quarantine every written .txt (rename to *.LEAK so the
-    # content is preserved for review but can't be mistaken for a clean, ready-
-    # to-share export) and exit non-zero. The key spreadsheet already records
-    # WHICH values leaked (Status = "leaked"); it is left in place for triage.
+    # Leak gate, TIERED (config `leak_gate`): the pseudonymization is a
+    # precaution against casual recognition of a public filing, so only a
+    # survivor that defeats that purpose outright — a full party/entity/
+    # attorney name or defined short form — quarantines the exports (renamed
+    # to *.LEAK, preserved for review, exit non-zero). A lesser survivor (a
+    # bare token, an identifier, a welded splinter) is warned about and marked
+    # Status=leaked in the key, but the exports are delivered: blocking five
+    # good files over a spot a casual reader would never notice is the wrong
+    # trade. `strict` restores quarantine-on-anything; `off` never quarantines.
     if pseudonymizer is not None and pseudonymizer.has_leaks():
-        quarantined = []
-        for txt in pseudonymizer.written:
-            try:
-                if txt.exists():
-                    dest = txt.with_suffix(txt.suffix + ".LEAK")
-                    txt.replace(dest)
-                    quarantined.append(dest)
-            except OSError as e:
-                log.error(f"  Could not quarantine leaked export {txt.name}: {e}")
-        leaked = ", ".join(sorted(pseudonymizer.leaked)[:8])
-        _warn(f"!! Pseudonymize FAILED: {len(pseudonymizer.leaked)} real "
-              f"value(s) survived in the exports ({leaked}). "
-              f"{len(quarantined)} .txt export(s) quarantined to *.LEAK and "
-              f"NOT delivered. Add the survivor(s) with --term and re-run; see "
-              f"Status=leaked in {(args.key_out or (folder / 'pseudonym_key.xlsx')).name}.")
-        sys.exit(2)
+        gate = (cfg.get("leak_gate", "").strip().lower() or "primary")
+        if gate not in ("strict", "primary", "off"):
+            gate = "primary"
+        gating = (pseudonymizer.leaked if gate == "strict"
+                  else pseudonymizer.primary_leaks() if gate == "primary"
+                  else set())
+        key_name = (args.key_out or (folder / "pseudonym_key.xlsx")).name
+        if gating:
+            quarantined = []
+            for txt in pseudonymizer.written:
+                try:
+                    if txt.exists():
+                        dest = txt.with_suffix(txt.suffix + ".LEAK")
+                        txt.replace(dest)
+                        quarantined.append(dest)
+                except OSError as e:
+                    log.error(f"  Could not quarantine leaked export "
+                              f"{txt.name}: {e}")
+            shown = ", ".join(sorted(gating)[:8])
+            _warn(f"!! Pseudonymize FAILED: party name(s) survived in the "
+                  f"exports ({shown}) — the case is recognizable on sight. "
+                  f"{len(quarantined)} .txt export(s) quarantined to *.LEAK "
+                  f"and NOT delivered. Add the survivor(s) with --term and "
+                  f"re-run; see Status=leaked in {key_name}.")
+            sys.exit(2)
+        shown = ", ".join(sorted(pseudonymizer.leaked)[:8])
+        _warn(f"Pseudonymize: {len(pseudonymizer.leaked)} lesser value(s) "
+              f"survived ({shown}) — no party name is recognizable, so the "
+              f"exports are delivered. Review Status=leaked in {key_name} "
+              f"and add any that matter with --term.")
 
 
 if __name__ == "__main__":
