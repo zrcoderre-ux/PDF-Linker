@@ -271,3 +271,68 @@ class TestDenseLetterheadDoesNotCollapse:
         rows = _rows(self._letterhead_page())
         assert rows[0] == (1, "Paul Green, Esq. (SBN 237707)")
         assert rows[1] == (None, "LAW OFFICE OF PAUL GREEN")
+
+
+class TestDespliceGeometry:
+    """Normalize-before-detect: character-geometry de-splicing of welded spans
+    (`_split_char_runs`, `_despliced_body_spans`, and the `_page_lined_rows`
+    retry). The pure splitter is exercised on synthetic glyph boxes; the
+    rawdict plumbing on a real (clean) page, where it must change nothing."""
+
+    def test_char_runs_split_at_column_jumps(self):
+        def ch(x, w, c):
+            return (x, x + w, c, 700.0)
+        chars = []
+        x = 100.0
+        for c in "CULTUREEDIT,":
+            chars.append(ch(x, 6, c)); x += 6
+        x = 350.0                              # forward jump: other column
+        for c in "Attorneys":
+            chars.append(ch(x, 6, c)); x += 6
+        x = 172.0                              # backward jump: interleave
+        for c in " LLC":
+            chars.append(ch(x, 6, c)); x += 6
+        runs = pl._split_char_runs(chars)
+        assert [r[3].strip() for r in runs] == ["CULTUREEDIT,", "Attorneys", "LLC"]
+
+    def test_char_runs_keep_kerned_text_whole(self):
+        chars, x = [], 100.0
+        for c in "Hello World":
+            chars.append((x, x + 6, c, 700.0)); x += 5.5   # slight overlap
+        runs = pl._split_char_runs(chars)
+        assert len(runs) == 1 and runs[0][3] == "Hello World"
+
+    def test_desplice_is_identity_on_clean_page(self):
+        page = _page([(LEFT_X, FIRST_Y, "ALEJANDRO ORELLANA,"),
+                      (RIGHT_X, FIRST_Y, "Case No. 24STCV06764"),
+                      (LEFT_X, FIRST_Y + LEAD, "Plaintiff,")])
+        normal = [(a["line_num"], a["body_text"])
+                  for a in pl._detect_line_anchors(page)]
+        cured = [(a["line_num"], a["body_text"])
+                 for a in pl._detect_line_anchors(page, desplice=True)]
+        assert normal == cured
+
+    def test_lined_rows_adopt_cure_when_it_clears_the_splice(self, monkeypatch):
+        welded = [{"line_num": 1, "y_mid": 90.0,
+                   "segments": [(110.0, "CULTUREEDITservice of process")],
+                   "body_text": "CULTUREEDITservice of process"}]
+        clean = [{"line_num": 1, "y_mid": 90.0,
+                  "segments": [(110.0, "CULTUREEDIT, LLC"),
+                               (380.0, "service of process")],
+                  "body_text": "CULTUREEDIT, LLC service of process"}]
+        def fake_detect(page, desplice=False):
+            return clean if desplice else welded
+        monkeypatch.setattr(pl, "_detect_line_anchors", fake_detect)
+        rows = pl._page_lined_rows(object())
+        assert rows == [(1, [(110.0, "CULTUREEDIT, LLC"),
+                             (380.0, "service of process")])]
+
+    def test_lined_rows_keep_original_when_cure_does_not_help(self, monkeypatch):
+        welded = [{"line_num": 1, "y_mid": 90.0,
+                   "segments": [(110.0, "CULTUREEDITservice of process")],
+                   "body_text": "CULTUREEDITservice of process"}]
+        def fake_detect(page, desplice=False):
+            return welded
+        monkeypatch.setattr(pl, "_detect_line_anchors", fake_detect)
+        rows = pl._page_lined_rows(object())
+        assert rows == [(1, [(110.0, "CULTUREEDITservice of process")])]
