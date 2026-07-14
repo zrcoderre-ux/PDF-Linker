@@ -8101,8 +8101,8 @@ class Pseudonymizer:
         for o_s, o_e, fake, rec in sorted(repls, key=lambda r: -r[0]):
             out = out[:o_s] + _pn_case_like(out[o_s:o_e], fake) + out[o_e:]
             # Record the welded replacement so the reversal key carries this
-            # mapping (Status "replaced", not parked in the audit sheet): the
-            # fake is now in the document, so ReAnonymize must be able to undo it.
+            # mapping: the fake is now in the document, so ReAnonymize must be
+            # able to undo it (an unrecorded row is omitted from the key).
             rec["count"] += 1
         return out
 
@@ -8294,19 +8294,16 @@ class Pseudonymizer:
         return [sorted(d.values()) for d in groups.values() if len(d) > 1]
 
     def write_key(self, path, log):
-        """Write TWO files, resolving the conflict between the key's two jobs.
-
-          * `path` — the REVERSAL key the Word macro consumes. Only rows that
-            actually matched (Occurrences > 0) and contain no newline are
-            written, so it is a clean bijection: `ReAnonymize` can never replace
-            a Real Value that was never a party, and Word's Find (which cannot
-            match a literal newline) never meets a dead line-wrapped row.
-          * `<base> audit<suffix>` — the full QA report: every tracked term with
-            a Status column ("replaced" / "no match" / "leaked"), so a reviewer
-            can still see what was tracked but absent. Keep this OUT of anything
-            that circulates with the document. `<base>` is the key stem with a
-            trailing "key" dropped, so the default `pseudonym_key.xlsx` yields
-            `pseudonym audit.xlsx`.
+        """Write the REVERSAL key the Word macro consumes. Only rows that
+        actually matched (Occurrences > 0) and contain no newline are written,
+        so it is a clean bijection: `ReAnonymize` can never replace a Real
+        Value that was never a party, and Word's Find (which cannot match a
+        literal newline) never meets a dead line-wrapped row. The Status column
+        ("replaced" / "leaked") flags any matched value that ALSO survived
+        somewhere; never-matched terms are simply omitted — anything that
+        matters about them (a leak, a stale sheet) is already warned about on
+        the console and in the log, so a second spreadsheet just to restate
+        them earned its keep from nobody.
 
         xlsx if openpyxl is available, else JSON alongside.
         """
@@ -8314,10 +8311,6 @@ class Pseudonymizer:
                          key=lambda r: (r["category"], r["real"].lower()))
         if not allrows:
             return
-        # Audit filename: drop a trailing "key" from the key's stem so the
-        # default "pseudonym_key" becomes "pseudonym audit", not "pseudonym_key
-        # audit".
-        audit_base = re.sub(r"[ _-]?key$", "", path.stem, flags=re.IGNORECASE) or path.stem
 
         def _reversible(r):
             return (r["count"] > 0
@@ -8326,46 +8319,47 @@ class Pseudonymizer:
         headers = ["Category", "Real Value", "Replacement", "Status", "Source",
                    "Occurrences"]
 
+        # An audit spreadsheet from an earlier version of this tool would sit
+        # beside the key looking current; remove it so it can't mislead.
+        audit_base = (re.sub(r"[ _-]?key$", "", path.stem, flags=re.IGNORECASE)
+                      or path.stem)
+        for stale in (path.with_name(f"{audit_base} audit{path.suffix}"),
+                      path.with_name(f"{audit_base} audit.json")):
+            try:
+                if stale.exists():
+                    stale.unlink()
+            except OSError:
+                pass
+
         try:
             import openpyxl
         except ImportError:
             import json
-
-            def dump(rows, p):
-                p.write_text(json.dumps(
-                    {"mappings": [{"category": r["category"], "real": r["real"],
-                                   "replacement": r["fake"],
-                                   "status": self._status(r),
-                                   "source": r["source"], "occurrences": r["count"]}
-                                  for r in rows]}, indent=2), encoding="utf-8")
             kp = path.with_suffix(".json")
-            dump(keyrows, kp)
-            ap = path.with_name(f"{audit_base} audit.json")
-            dump(allrows, ap)
+            kp.write_text(json.dumps(
+                {"mappings": [{"category": r["category"], "real": r["real"],
+                               "replacement": r["fake"],
+                               "status": self._status(r),
+                               "source": r["source"], "occurrences": r["count"]}
+                              for r in keyrows]}, indent=2), encoding="utf-8")
             log.info(f"  openpyxl not installed; reversal key written as JSON: "
-                     f"{kp.name} ({len(keyrows)} mapping(s)); audit {ap.name}")
+                     f"{kp.name} ({len(keyrows)} mapping(s))")
             return
 
-        def sheet(rows, p, title):
-            wb = openpyxl.Workbook()
-            ws = wb.active
-            ws.title = title
-            ws.append(headers)
-            for r in rows:
-                ws.append([r["category"], r["real"], r["fake"], self._status(r),
-                           r["source"], r["count"]])
-            wb.save(p)
-
-        sheet(keyrows, path, "Pseudonym Key")
-        ap = path.with_name(f"{audit_base} audit{path.suffix}")
-        sheet(allrows, ap, "Audit")
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Pseudonym Key"
+        ws.append(headers)
+        for r in keyrows:
+            ws.append([r["category"], r["real"], r["fake"], self._status(r),
+                       r["source"], r["count"]])
+        wb.save(path)
         for cluster in self.alias_candidates():
             log.warning("  possible alias (same given name, different surname) "
                         "faked separately — add a --term to link: "
                         + " | ".join(cluster))
-        dropped = len(allrows) - len(keyrows)
-        log.info(f"  Reversal key written: {path.name} ({len(keyrows)} mapping(s); "
-                 f"{dropped} non-matching/unusable row(s) moved to {ap.name})")
+        log.info(f"  Reversal key written: {path.name} "
+                 f"({len(keyrows)} mapping(s))")
 
 
 # ── Partial (prefix) entity terms ───────────────────────────────────────────
@@ -9653,7 +9647,6 @@ def main():
         gating = (pseudonymizer.leaked if gate == "strict"
                   else pseudonymizer.primary_leaks() if gate == "primary"
                   else set())
-        key_name = (args.key_out or (folder / "pseudonym_key.xlsx")).name
         if gating:
             quarantined = []
             for txt in pseudonymizer.written:
@@ -9670,13 +9663,13 @@ def main():
                   f"exports ({shown}) — the case is recognizable on sight. "
                   f"{len(quarantined)} .txt export(s) quarantined to *.LEAK "
                   f"and NOT delivered. Add the survivor(s) with --term and "
-                  f"re-run; see Status=leaked in {key_name}.")
+                  f"re-run.")
             sys.exit(2)
         shown = ", ".join(sorted(pseudonymizer.leaked)[:8])
         _warn(f"Pseudonymize: {len(pseudonymizer.leaked)} lesser value(s) "
               f"survived ({shown}) — no party name is recognizable, so the "
-              f"exports are delivered. Review Status=leaked in {key_name} "
-              f"and add any that matter with --term.")
+              f"exports are delivered. Add any that matter with --term and "
+              f"re-run.")
 
 
 if __name__ == "__main__":
