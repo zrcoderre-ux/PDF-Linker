@@ -1881,6 +1881,71 @@ def _cluster_rows(spans, tol=_ROW_BASELINE_TOL):
     return rows
 
 
+def _split_char_runs(chars, gap_min=_COLUMN_GAP_MIN, back_tol=5.0):
+    """Split one span's characters into contiguous runs wherever the x-advance
+    JUMPS — forward by more than `gap_min` (the glyphs hopped to another page
+    column) or backward past `back_tol` (two columns interleaved, so the pen
+    snapped back left mid-span). This is the character-geometry cure for a
+    welded caption: the text layer hands back ONE span reading
+    "CULTUREEDIT, LLCAttorneys for Plaintiff", but its glyph boxes still sit in
+    two distinct columns, and splitting at the jump restores what the page
+    actually shows. Ordinary kerning overlaps by well under `back_tol`, so
+    clean spans come back as a single run.
+
+    `chars` is [(x0, x1, ch, origin_y), ...] in stream order; returns
+    [(x0, x1, origin_y, text), ...] with whitespace-only runs dropped."""
+    runs, cur, prev_x1 = [], None, None
+    for x0, x1, ch, oy in chars:
+        if cur is not None and prev_x1 is not None and (
+                x0 - prev_x1 > gap_min or x0 < prev_x1 - back_tol):
+            runs.append(cur)
+            cur = None
+        if cur is None:
+            cur = [x0, x1, oy, []]
+        cur[1] = max(cur[1], x1)
+        cur[3].append(ch)
+        prev_x1 = x1
+    if cur is not None:
+        runs.append(cur)
+    out = []
+    for x0, x1, oy, chs in runs:
+        text = "".join(chs)
+        if text.strip():
+            out.append((x0, x1, oy, text))
+    return out
+
+
+def _despliced_body_spans(page, body_x_min, footer_top):
+    """Body-text spans rebuilt from CHARACTER geometry (rawdict), each welded
+    span split at its column jumps — the normalize-before-detect stage for a
+    page whose ordinary extraction shows splice corruption. Returns span dicts
+    shaped like the "dict" spans downstream code expects, or None when the
+    rawdict layer is unavailable (caller keeps the ordinary extraction)."""
+    try:
+        blocks = page.get_text("rawdict")["blocks"]
+    except Exception:
+        return None
+    spans = []
+    for b in blocks:
+        if "lines" not in b:
+            continue
+        for ln in b["lines"]:
+            for sp in ln.get("spans", []):
+                chars = [(c["bbox"][0], c["bbox"][2], c.get("c", ""),
+                          c.get("origin", (0, c["bbox"][3]))[1])
+                         for c in sp.get("chars", [])]
+                if not chars:
+                    continue
+                y0, y1 = sp["bbox"][1], sp["bbox"][3]
+                for x0, x1, oy, text in _split_char_runs(chars):
+                    syn = {"text": text, "bbox": (x0, y0, x1, y1),
+                           "origin": (x0, oy), "size": sp.get("size")}
+                    if (text.strip() and x0 >= body_x_min
+                            and _span_baseline(syn) <= footer_top):
+                        spans.append(syn)
+    return spans
+
+
 def _split_row_columns(spans, gap_min=_COLUMN_GAP_MIN):
     """Split one row's spans into column segments at wide horizontal gaps.
 
@@ -1907,9 +1972,14 @@ def _split_row_columns(spans, gap_min=_COLUMN_GAP_MIN):
     return out
 
 
-def _detect_line_anchors(page):
+def _detect_line_anchors(page, desplice=False):
     """Per-page: find pleading-paper line numbers and gather body text on
     each numbered row.
+
+    With `desplice=True` the body spans are rebuilt from character-level
+    geometry (`_despliced_body_spans`), splitting any span whose glyphs jump
+    between columns — the retry path for a page whose ordinary extraction
+    shows splice corruption.
 
     Returns list of {line_num, body_text, segments, y_mid} for each row that has
     both a line number in the gutter and body text in the same horizontal band.
@@ -1981,6 +2051,10 @@ def _detect_line_anchors(page):
                   if sp["text"].strip()
                   and sp["bbox"][0] >= body_x_min
                   and _span_baseline(sp) <= footer_top]
+    if desplice:
+        cured = _despliced_body_spans(page, body_x_min, footer_top)
+        if cured is not None:
+            body_spans = cured
     rows = _cluster_rows(body_spans)
     if not rows:
         return []
@@ -5047,8 +5121,28 @@ import unicodedata as _pn_unicodedata
 _NFKC = lambda s: _pn_unicodedata.normalize("NFKC", s)
 
 
+# Optional case secret mixed into every fake-derivation seed (the format-
+# preserving-encryption principle): with a secret set, the real->fake mapping is
+# a KEYED deterministic function of the value, so (a) the same secret + case
+# reproduces identical fakes across separate runs with no shared registry state,
+# and (b) an adversary holding the exports cannot precompute value->fake tables
+# to test guesses against. The key spreadsheet then becomes an audit artifact
+# rather than the source of truth. Set via `pseudonym_secret` in
+# pdf_linker.config; empty (the default) keeps the historical unkeyed seeds.
+_PN_SEED_SECRET = ""
+
+
+def _pn_set_seed_secret(secret):
+    """Install the case secret used to key every fake derivation. Call once,
+    before any term is built. The secret itself must never be logged."""
+    global _PN_SEED_SECRET
+    _PN_SEED_SECRET = str(secret or "")
+
+
 def _pn_rng(*parts):
     key = "\x1f".join(str(p) for p in parts).encode("utf-8")
+    if _PN_SEED_SECRET:
+        key = _PN_SEED_SECRET.encode("utf-8") + b"\x1f" + key
     return _pn_random.Random(int(_pn_hashlib.sha256(key).hexdigest(), 16))
 
 
@@ -5383,9 +5477,49 @@ _PN_ENTITY_HINT_WORDS = {
 }
 
 
+# Corporate suffixes that are decisive on their own ("LLC" is never a surname)
+# vs. ones that need punctuation context ("Co."/"Na" could be name syllables:
+# "Li Na" is a person; "Smith & Co." is not).
+_PN_CORP_SUFFIX_UNAMBIG = {
+    "llc", "llp", "inc", "corp", "ltd", "plc", "incorporated", "corporation",
+    "company", "lp", "pc",
+}
+
+
+def _pn_trailing_corp_suffix(name):
+    """The name's final token when it is a corporate suffix — with or without a
+    trailing period, with or without a preceding comma ("AhC Acquisition, LLC.")
+    — else None. Classify a name by the entity it belongs to, not by its own
+    shape: a trailing corporate suffix is a decisive entity signal, and the
+    token itself must never be faked as a person surname. An ambiguous suffix
+    word ("Co", "Na") qualifies only with punctuation context (its own period or
+    a preceding comma), so a person name like "Li Na" is untouched."""
+    toks = name.split()
+    if len(toks) < 2:
+        return None
+    last = toks[-1]
+    norm = re.sub(r"[.\s]", "", _pn_word_base(last))
+    if norm not in _PN_ENTITY_SUFFIXES_NORM:
+        return None
+    if (norm in _PN_CORP_SUFFIX_UNAMBIG or "." in last
+            or toks[-2].endswith(",")):
+        return last
+    return None
+
+
+# Bare (unpunctuated) suffix words that are also plausible name syllables. As
+# naked tokens they must not classify a name as an entity ("Li Na", "Tyler Co"
+# the surname): they count only with punctuation context — "Co.", "N.A.", a
+# preceding comma — via _pn_trailing_corp_suffix or their dotted set entries.
+_PN_CORP_SUFFIX_AMBIG = {"na", "co", "lp", "pc"}
+
+
 def _pn_looks_like_entity(name):
+    if _pn_trailing_corp_suffix(name):
+        return True
     low = " " + re.sub(r"[^\w&. ]", " ", name).lower() + " "
-    if any(f" {s} " in low for s in _PN_ENTITY_SUFFIXES):
+    if any(f" {s} " in low
+           for s in _PN_ENTITY_SUFFIXES if s not in _PN_CORP_SUFFIX_AMBIG):
         return True
     if any(f" {w} " in low for w in _PN_ENTITY_HINT_WORDS):
         return True
@@ -5554,10 +5688,20 @@ def _pn_fake_person(name, registry):
     "J. Forsythe Ivers" in another, since the bare tokens leave the initial
     alone."""
     words = list(_PN_WORD_RE.finditer(name))
+    # A trailing corporate suffix ("…, LLC.") that slipped down the person path
+    # must never be faked as a surname — it is structure, not identity. Kept
+    # verbatim and excluded from surname selection (single-pool classification:
+    # the entity path is where such a name belongs; this is the safety net).
+    trail = _pn_trailing_corp_suffix(name)
+    trail_at = (words[-1].start()
+                if (trail and words
+                    and _pn_word_base(words[-1].group(0)) == _pn_word_base(trail))
+                else None)
     def _keep(w):
         return (len(w) == 1 or _pn_is_suffix_token(w)
                 or w.strip(".,").lower() in _PN_DOC_ABBREV)
-    mappable = [m for m in words if not _keep(m.group(0))]
+    mappable = [m for m in words
+                if not _keep(m.group(0)) and m.start() != trail_at]
     surname_at = None
     if mappable:
         if "," in name:
@@ -5570,7 +5714,7 @@ def _pn_fake_person(name, registry):
     for m in words:
         w = m.group(0)
         parts.append(name[cursor:m.start()])
-        if _keep(w):
+        if _keep(w) or m.start() == trail_at:
             parts.append(w)
         else:
             fake = _pn_fake_name_token(w, registry)
@@ -6409,6 +6553,17 @@ _PN_ID_RES = {
 # (letters too), not just digit-wise.
 _PN_ALNUM_IDS = {"confirmation code"}
 
+# Identifier classes that are RE-IDENTIFICATION KEYS: each resolves to a real
+# name/asset in one public lookup (State Bar search, DMV/title records, court
+# reservation system), so one surviving in an export inverts the pseudonym map
+# no matter how clean the names are. The reid_scan below re-checks the FINISHED
+# output for these shapes as its own adversarial pass — an export is not
+# certified clean until the scan comes back empty.
+_PN_REID_CLASSES = frozenset({
+    "bar number", "license number", "reservation id", "account id",
+    "confirmation code", "ssn",
+})
+
 # A Vehicle Identification Number: 17 chars in the VIN alphabet (no I/O/Q). A
 # strong unique key — decodes to make/model/year/plant and links to title and
 # owner. Cued by "VIN" OR the 17-char VIN-alphabet shape with at least one digit
@@ -6416,6 +6571,35 @@ _PN_ALNUM_IDS = {"confirmation code"}
 _PN_VIN_RE = re.compile(
     r"(?i)\bVIN\b[:\s#]*([A-HJ-NPR-Z0-9]{17})\b"
     r"|(?<![A-Z0-9])((?=[A-HJ-NPR-Z0-9]{17}(?![A-Z0-9]))(?=[A-Z0-9]*\d)[A-HJ-NPR-Z0-9]{17})")
+
+# ISO 3779 VIN check digit (position 9): transliterate letters to values, weight
+# each position, mod 11 ('X' encodes 10). Paired with the shape detector the way
+# NANP ranges pair with the phone faker and SSA ranges with the SSN faker: the
+# validator lets recall stay high while the FAKE stays facially valid — a fake
+# VIN with a bad check digit is recognisably bogus to anyone who runs it.
+_PN_VIN_VALUES = {c: v for c, v in zip("ABCDEFGH", range(1, 9))}
+_PN_VIN_VALUES.update(zip("JKLMNPR", (1, 2, 3, 4, 5, 7, 9)))
+_PN_VIN_VALUES.update(zip("STUVWXYZ", (2, 3, 4, 5, 6, 7, 8, 9)))
+_PN_VIN_VALUES.update((str(d), d) for d in range(10))
+_PN_VIN_WEIGHTS = (8, 7, 6, 5, 4, 3, 2, 10, 0, 9, 8, 7, 6, 5, 4, 3, 2)
+
+
+def _pn_vin_check_digit(vin):
+    """The ISO 3779 check character for a 17-char VIN (digit or 'X')."""
+    total = sum(_PN_VIN_VALUES.get(c.upper(), 0) * w
+                for c, w in zip(vin, _PN_VIN_WEIGHTS))
+    r = total % 11
+    return "X" if r == 10 else str(r)
+
+
+def _pn_fake_vin(vin, registry):
+    """A char-wise fake VIN with a CORRECT check digit, so the stand-in is
+    facially valid (same principle as the valid-NANP phone and valid-SSA SSN
+    fakes: an impossible fake reads as an error and invites 'correction')."""
+    fake = registry.alnum(vin, "vin", "ABCDEFGHJKLMNPRSTUVWXYZ")
+    if len(fake) == 17:
+        fake = fake[:8] + _pn_vin_check_digit(fake) + fake[9:]
+    return fake
 
 
 def _pn_identifier_values(text):
@@ -6464,7 +6648,7 @@ _PN_REVIEW_PERSON_RES = (
 )
 # Words that make a capitalised bigram an institution, not a person.
 _PN_REVIEW_NAME_STOP = frozenset({
-    "court", "courthouse", "county", "state", "superior", "department",
+    "city", "court", "courthouse", "county", "state", "superior", "department",
     "dept", "office", "law", "firm", "inc", "llc", "llp", "company", "corp",
     "corporation", "avenue", "street", "boulevard", "road", "drive", "suite",
     "california", "angeles", "america", "united", "district", "division",
@@ -6490,6 +6674,98 @@ def _pn_person_review_findings(text, known_fakes=()):
                 continue
             seen.add(name.lower())
             out.append(("possible person name", name))
+    return out
+
+
+# ── Common-word gazetteer ────────────────────────────────────────────────────
+# Frequency-derived list of capitalised words that are ordinary English or
+# legal boilerplate, NOT identity — the distinctiveness gate for the unknown-
+# name scanner below. A deny-list grown one incident at a time ("M.D.", "ISO",
+# "RJN") can't keep up; a gazetteer states the rule once: a word here is never,
+# by itself, evidence of an unscrubbed name. Drawn from high-frequency English
+# function/verb vocabulary plus the procedural vocabulary of motion practice.
+_PN_COMMON_WORDS = frozenset("""
+the a an and or nor but if then else when where while for to of in on at by
+with from into upon under over between among through during before after
+above below out off again further once here there all any both each few more
+most other some such no not only own same so than too very can will just may
+shall must might would could should did does do done was were been being is
+are am has have had having he she it they them his her its their this that
+these those which who whom whose what
+oppose opposes opposed opposition motion motions moving moved move compel
+compels compelling compelled strike stricken dismiss dismissal demurrer
+demurrers reply replies brief briefs briefing hearing hearings trial trials
+action actions complaint complaints answer answers petition petitions appeal
+appeals arbitration arbitrate arbitrator arbitrators agreement agreements
+contract contracts exhibit exhibits declaration declarations judgment
+judgments order orders ruling rulings notice notices request requests
+requests demand demands discovery deposition depositions interrogatory
+interrogatories sanction sanctions damages relief injunction stay stays
+statement statements facts fact introduction conclusion argument arguments
+summary points authorities authority memorandum support further supplemental
+amended first second third fourth fifth proposed joint separate general
+special service served serving filed filing files hereby herein hereto
+whereas therefore pursuant regarding concerning including without within
+entitled entitle avoid avoids avoided delegation clause clauses reserve
+reserves reserved rights right cite cites cited grant grants granted denies
+denied deny reject rejects rejected waive waives waived enforce enforces
+enforced enforceable unconscionable binding severable applies apply applied
+governs govern governed controls control controlled fails fail failed lacks
+lack lacked standing merits issue issues matter matters cause causes claim
+claims defense defenses
+january february march april may june july august september october november
+december monday tuesday wednesday thursday friday saturday sunday
+""".split())
+
+
+def _pn_unknown_name_findings(text, neutral_words):
+    """[("unscrubbed name?", sample), ...] — the HIGH-RECALL tier of a two-tier
+    detection design. The term/detector tier auto-replaces only what it can
+    match with high precision; this tier's one job is to surface anything
+    name-shaped it cannot confidently clear, so absence from the term list
+    raises a flag instead of granting a pass (the failure mode behind every
+    "name we didn't know to look for" leak: Travelers, ToFF, CULTUREEDIT).
+
+    A candidate is a capitalised run right after a party-role anchor
+    ("Defendant Travelers moved…", "Attorneys for Sunrise Motors"). It is
+    reported unless every word is neutral: a fake this run minted, a common/
+    boilerplate word (gazetteer above), a connector, a corporate suffix, a role
+    word, or a protected public entity/locality. Reported, never replaced —
+    that is the reviewer's call."""
+    anchor = re.compile(
+        r"(?:Plaintiffs?|Defendants?|Cross-(?:Complainants?|Defendants?)|"
+        r"Petitioners?|Respondents?|Appellants?|Movants?|Declarant|"
+        r"Attorneys?\s+for|Counsel\s+for)"
+        r"[,:]?\s+"
+        r"(?P<n>[A-Z][\w&.'’-]*"
+        r"(?:[ \t]+(?:(?:of|the|and|de|la|&)[ \t]+)?[A-Z][\w&.'’-]*){0,4})")
+    neutral = {w.lower() for w in neutral_words}
+    out, seen = [], set()
+    for m in anchor.finditer(text):
+        name = re.sub(r"\s+", " ", m.group("n")).strip(" .,;:")
+        if not name or name.lower() in seen:
+            continue
+        if _pn_is_public_entity(name) or _pn_is_protected_locality(name):
+            continue
+        def _neutral(w):
+            base = _pn_word_base(w)
+            return (len(base) < 3 or base in neutral
+                    or base in _PN_COMMON_WORDS or _pn_is_entity_keep(base)
+                    or _pn_is_role_token(w)
+                    or base in _PN_REVIEW_NAME_STOP)
+        words = name.split()
+        flags = [not _neutral(w) for w in words]
+        if not any(flags):
+            continue
+        # A title-case HEADING reads "Defendants Are Entitled To An Order…":
+        # function-word-led, with the odd distinctive word in the minority. A
+        # party name leads with its distinctive token ("Travelers", "Sunrise
+        # Motors Group"). Report only a name-shaped run — first word
+        # distinctive, or distinctive words at least half of it.
+        if not flags[0] and sum(flags) * 2 < len(flags):
+            continue
+        seen.add(name.lower())
+        out.append(("unscrubbed name?", name))
     return out
 
 
@@ -7390,8 +7666,7 @@ class Pseudonymizer:
             vin = m.group(1) or m.group(2)
             if not vin or ("vin", vin.lower()) in self.records:
                 continue
-            new.append(_PnTerm("vin", vin,
-                               self.registry.alnum(vin, "vin", "ABCDEFGHJKLMNPRSTUVWXYZ"),
+            new.append(_PnTerm("vin", vin, _pn_fake_vin(vin, self.registry),
                                whole_word=True, case_sensitive=False,
                                priority=2, source="document"))
         self._add_terms(new)
@@ -7934,6 +8209,57 @@ class Pseudonymizer:
                 self.review.append((c, s))
         return findings
 
+    def reid_scan(self, text):
+        """Adversarial re-identification pass over the FINISHED output: any
+        label-anchored identifier or VIN shape still present whose value is not
+        a fake this run minted. register_identifiers scrubs these at the source,
+        but it reads the source text — an identifier that only materialises in
+        the output rendering (a column re-join, a differently-wrapped line)
+        would slip past it and still invert the whole pseudonym map in one
+        public lookup. Framing the check as its own output-side scan means the
+        export is never certified clean while carrying one. Findings accumulate
+        into the folder review list, tagged REID so they sort above the ordinary
+        review noise."""
+        fake_vals = set()
+        for rec in self.records.values():
+            fake_vals.add(re.sub(r"[^a-z0-9]", "", str(rec["fake"]).lower()))
+        findings = []
+        for cls, val in _pn_identifier_values(text):
+            if cls not in _PN_REID_CLASSES:
+                continue
+            if re.sub(r"[^a-z0-9]", "", val.lower()) in fake_vals:
+                continue          # our own stand-in, riding under its label
+            findings.append((f"REID {cls}", val))
+        for m in _PN_VIN_RE.finditer(_NFKC(text)):
+            vin = (m.group(1) or m.group(2) or "").lower()
+            if vin and vin not in fake_vals:
+                findings.append(("REID vin", vin.upper()))
+        seen = {(c, s.lower()) for c, s in self.review}
+        out = []
+        for c, s in findings:
+            if (c, s.lower()) not in seen:
+                seen.add((c, s.lower()))
+                self.review.append((c, s))
+                out.append((c, s))
+        return out
+
+    def unknown_name_scan(self, text):
+        """High-recall tier over the FINISHED output: role-anchored capitalised
+        runs that are neither our own fakes nor common words (see
+        _pn_unknown_name_findings). Run on the output, a correctly scrubbed
+        party shows up as its fake (neutral, silent); an unlisted survivor —
+        the "Travelers" class of leak — gets flagged. Accumulates into the
+        folder review list."""
+        findings = _pn_unknown_name_findings(text, self.known_fake_words())
+        seen = {(c, s.lower()) for c, s in self.review}
+        out = []
+        for c, s in findings:
+            if (c, s.lower()) not in seen:
+                seen.add((c, s.lower()))
+                self.review.append((c, s))
+                out.append((c, s))
+        return out
+
     def _status(self, rec):
         if rec["real"].lower() in self.leaked:
             return "leaked"
@@ -8276,8 +8602,25 @@ def _page_lined_rows(page):
     anchors = _detect_line_anchors(page)
     if not anchors:
         return None
-    return [(a["line_num"], a["segments"])
+    rows = [(a["line_num"], a["segments"])
             for a in sorted(anchors, key=lambda a: a["y_mid"])]
+    # Normalize before detect: when the ordinary extraction shows splice
+    # corruption, retry from character geometry — a welded span splits at its
+    # column jumps and the party name comes out contiguous, so the ordinary
+    # term patterns can replace it. Adopted only when the cure actually clears
+    # the splice signature; otherwise the original rows stand and the
+    # reduced-span scrub (scrub_welded) remains the net beneath.
+    if _page_looks_spliced(rows):
+        try:
+            cured = _detect_line_anchors(page, desplice=True)
+        except Exception:
+            cured = None
+        if cured:
+            crows = [(a["line_num"], a["segments"])
+                     for a in sorted(cured, key=lambda a: a["y_mid"])]
+            if not _page_looks_spliced(crows):
+                return crows
+    return rows
 
 
 _COLUMN_BAND_TOL = 30.0   # pt; segment left edges this close share a page column
@@ -8560,6 +8903,13 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         # (a definition shape register_short_names didn't anticipate).
         review = list(review) + pseudonymizer.review_definition_survivors(
             detect_full, body)
+        # High-recall tier: role-anchored name shapes in the output that are
+        # neither our fakes nor common words — the "unknown name" net.
+        review = list(review) + pseudonymizer.unknown_name_scan(body)
+        # Adversarial re-identification pass: a bar number / VIN / reservation
+        # shape in the OUTPUT that isn't one of our own fakes. Sorted first —
+        # these invert the map in one lookup, so they outrank ordinary review.
+        review = pseudonymizer.reid_scan(body) + review
         if review:
             shown = "; ".join(f"{c}: {s}" for c, s in review[:8])
             log.warning(f"  Pseudonymization REVIEW on {pdf_path.name}: "
@@ -8991,6 +9341,13 @@ _CONFIG_TEMPLATE = (
     "# treated as ONE page column. Default: 30. Raise it if a two-column caption\n"
     "# splices its columns together in the .txt (a REVIEW warning names the page).\n"
     "column_band_tol = 30\n"
+    "\n"
+    "# Optional secret that KEYS the real->fake derivation (like a cipher key).\n"
+    "# With a secret set, re-running the same case with the same secret\n"
+    "# reproduces the same fakes with no shared state, and someone holding the\n"
+    "# exports cannot precompute real->fake pairs to test guesses. Keep it out\n"
+    "# of anything that circulates with the documents. Default: empty (off).\n"
+    "pseudonym_secret =\n"
 )
 
 
@@ -9190,6 +9547,13 @@ def main():
                 sys.exit(1)
         else:
             detectors = list(_PN_DEFAULT_DETECTORS)
+        # Optional case secret keys every fake derivation (see _pn_rng). Must be
+        # installed BEFORE any term is built; log only its presence, never it.
+        secret = cfg.get("pseudonym_secret", "").strip()
+        _pn_set_seed_secret(secret)
+        if secret:
+            log.info("Pseudonymize: keyed fake derivation ON (pseudonym_secret "
+                     "set in config)")
         # Key spreadsheet: explicit --key, else the most recent Order*.xlsx in
         # Downloads (where the E-Court export lands).
         key_path = args.key if args.key else _pn_find_downloads_key(log)

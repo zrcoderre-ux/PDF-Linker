@@ -433,3 +433,117 @@ def test_firm_wrappers_do_not_cluster_as_alias():
                         "Law Offices of Rob Hennig"])
     pair = {"Law Office of Neal S. Zaslavsky", "Law Offices of Rob Hennig"}
     assert not any(pair <= set(c) for c in z.alias_candidates())
+
+
+# ──────────────────── PROVEN APPROACHES (design adoption) ───────────────────
+# Techniques adopted from the mature de-identification stack (Presidio's
+# two-tier scored detection, FPE's keyed derivation, checksum validators,
+# entity resolution, normalize-before-detect). No dependencies added — the
+# principles are implemented natively.
+
+# #1  Two-tier detection: absence from the term list raises a flag, never
+#     grants a pass. Role-anchored unknown names surface as review findings.
+def test_unknown_name_scan_flags_unlisted_party():
+    z = _pz06764(names=["Alejandro Orellana", "AHC Acquisition LLC"])
+    out = z.apply("Plaintiff Alejandro Orellana sued. Defendant Travelers "
+                  "joined. Attorneys for Sunrise Motors Group filed.")
+    flagged = {s for _c, s in z.unknown_name_scan(out)}
+    assert any("Travelers" in s for s in flagged), flagged
+    assert any("Sunrise Motors Group" in s for s in flagged), flagged
+
+
+def test_unknown_name_scan_quiet_on_fakes_headings_and_public_entities():
+    z = _pz06764(names=["Alejandro Orellana", "AHC Acquisition LLC"])
+    out = z.apply("Defendant AHC Acquisition LLC moved. Defendants Oppose The "
+                  "Motion To Compel Arbitration. Defendant City of Los "
+                  "Angeles appeared.")
+    flagged = {s for _c, s in z.unknown_name_scan(out)}
+    fakes = z.known_fake_words()
+    for s in flagged:
+        assert "Oppose" not in s, f"heading false positive: {s}"
+        assert "Los Angeles" not in s and s != "City", f"public entity: {s}"
+        assert not all(w.lower() in fakes for w in s.split()), f"pure fake: {s}"
+
+
+def test_unknown_name_scan_silent_on_fully_handled_prose():
+    # Reviewer-fatigue guard: on a text where every party is tracked, the
+    # scanner must emit NOTHING — title-case headings ("Defendants Are
+    # Entitled To An Order…"), role phrases, and our own fakes are all
+    # neutral. Review noise is how a real survivor gets waved past.
+    z = _pz06764(names=["Alejandro Orellana", "AHC Acquisition, LLC",
+                        "Rafael Quintero"])
+    out = z.apply(
+        "Defendant AHC Acquisition, LLC submits this Reply. Plaintiff "
+        "Alejandro Orellana signed. Defendants Are Entitled To An Order "
+        "Compelling Arbitration. Plaintiff May Not Avoid The Delegation "
+        "Clause. Defendant Reserves All Rights. Plaintiff Cites No "
+        "Authority. Attorneys for Defendant filed the Declaration of "
+        "Rafael Quintero.")
+    assert z.unknown_name_scan(out) == []
+
+
+# #3  Validators: a fake VIN carries a CORRECT ISO 3779 check digit, the way a
+#     fake phone is valid NANP and a fake SSN is valid SSA.
+def test_fake_vin_is_facially_valid():
+    # canonical ISO example: check digit (position 9) of this VIN is 'X'
+    assert P._pn_vin_check_digit("1M8GDM9AXKP042788") == "X"
+    reg = P._PnFakeRegistry()
+    fake = P._pn_fake_vin("1C4JJXP65PW699184", reg)
+    assert re.fullmatch(r"[A-HJ-NPR-Z0-9]{17}", fake)
+    assert fake[8] == P._pn_vin_check_digit(fake)
+    assert fake != "1C4JJXP65PW699184"
+
+
+# #3  Re-identification scan: a lookup-key identifier in the OUTPUT that is not
+#     one of our fakes is reported; our own fakes are not.
+def test_reid_scan_flags_survivor_not_own_fake():
+    z = _pz06764(names=["Alejandro Orellana"])
+    src = "HOLLOWAY VANCE, SBN 175977."
+    z.register_identifiers(src)
+    out = z.apply(src)
+    assert z.reid_scan(out) == [], "flagged our own fake"
+    found = z.reid_scan("stray block SBN 332686 and VIN 1C4JJXP65PW699184")
+    cats = {c for c, _v in found}
+    assert "REID bar number" in cats and "REID vin" in cats, found
+
+
+# #4  Entity resolution: a trailing corporate suffix (with period) is a
+#     decisive entity signal; the suffix is never faked as a person surname;
+#     the person-path form of the same party reuses the entity identity.
+def test_trailing_corp_suffix_is_decisive_entity_signal():
+    assert P._pn_looks_like_entity("AhC Acquisition, LLC.")
+    assert P._pn_looks_like_entity("Smith & Co.")
+    assert not P._pn_looks_like_entity("Li Na")       # ambiguous bare suffix
+    assert not P._pn_looks_like_entity("Roxane Estrada")
+
+
+def test_corp_suffix_never_a_person_surname_single_identity():
+    reg = P._PnFakeRegistry()
+    terms = P._pn_build_terms(["AhC Acquisition, LLC."], ["24STCV06764"], [],
+                              registry=reg)
+    assert any(t.category == "entity" for t in terms)
+    assert not any(t.category == "person" for t in terms)
+    fake_full, bare = P._pn_fake_person("AhC Acquisition, LLC.", reg)
+    assert fake_full.rstrip().endswith("LLC."), fake_full
+    assert not any(rt.lower().startswith("llc") for rt, _f, _s in bare)
+    ent_fake = next(t.fake for t in terms if t.category == "entity")
+    for w in fake_full.replace(",", " ").split():
+        if w != "LLC.":
+            assert w in ent_fake, f"{w!r} diverges from {ent_fake!r}"
+
+
+# #5  Keyed determinism (the FPE principle): with a case secret set, the
+#     real->fake mapping reproduces across FRESH registries (no shared state),
+#     and a different secret yields a different mapping.
+def test_keyed_fake_derivation():
+    base = P._PnFakeRegistry().digits("935605884885", "resid")
+    try:
+        P._pn_set_seed_secret("case-secret-alpha")
+        a = P._PnFakeRegistry().digits("935605884885", "resid")
+        b = P._PnFakeRegistry().digits("935605884885", "resid")
+        assert a == b, "keyed derivation not reproducible without shared state"
+        P._pn_set_seed_secret("case-secret-beta")
+        c = P._PnFakeRegistry().digits("935605884885", "resid")
+        assert c != a and a != base
+    finally:
+        P._pn_set_seed_secret("")
