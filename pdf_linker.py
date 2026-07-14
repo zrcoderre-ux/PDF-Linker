@@ -5618,6 +5618,83 @@ def _pn_is_entity_keep(base):
     return re.sub(r"[./\s]", "", base) in _PN_DBA_NORM
 
 
+# Connective words an initialism may skip or fold in ("Tom OF Finland" -> the
+# "o" in ToFF, or dropped entirely in TFF), and the narrow set of purely legal
+# corporate suffixes that a trailing acronym letter never stands for ("Inc.").
+# Deliberately excludes name-bearing suffix words like "Foundation"/"Group"
+# that DO contribute a letter (ToFF's second F is Foundation).
+_PN_ACRONYM_CONNECTIVES = {"of", "and", "the", "for", "a", "an", "de", "la", "&"}
+_PN_ACRONYM_DROP_SUFFIX = {
+    "inc", "incorporated", "llc", "llp", "lp", "corp", "corporation", "co",
+    "company", "ltd", "pc", "plc", "na",
+}
+
+
+def _pn_acronym_trim(words):
+    """Drop a trailing purely-legal corporate suffix ("Inc.", "LLC") so it does
+    not have to be represented by an acronym letter. Name-bearing words are
+    kept."""
+    out = list(words)
+    while out and re.sub(r"[.\s]", "", _pn_word_base(out[-1])) in _PN_ACRONYM_DROP_SUFFIX:
+        out.pop()
+    return out
+
+
+def _pn_initialism_fake(short, real_words, fake_words):
+    """If single-token `short` is an initialism of `real_words` (initials in
+    order; a connective word's initial may be included or skipped; a trailing
+    legal suffix is ignored), return the matching acronym built from the aligned
+    `fake_words`, re-cased like `short`. Otherwise None.
+
+    "ToFF" over ["Tom","of","Finland","Foundation","Inc."] with the fake
+    ["Kaldor","of","Ironbridge","Foundation","Inc."] -> "KoIF": every name word
+    contributes its fake's initial, so the short form stays the same party and
+    the reversal key round-trips. Returns None (caller falls back) when the real
+    and fake word lists don't align 1:1."""
+    letters = re.sub(r"[^A-Za-z]", "", short)
+    if len(letters) < 2:
+        return None
+    rw = _pn_acronym_trim(real_words)
+    fw = _pn_acronym_trim(fake_words)
+    if not rw or len(rw) != len(fw):
+        return None
+    low = letters.lower()
+    out, i = [], 0
+    for r_word, f_word in zip(rw, fw):
+        base = _pn_word_base(r_word)
+        if i < len(low) and base[:1] == low[i]:
+            f_init = (re.sub(r"[^A-Za-z]", "", f_word)[:1] or base[:1])
+            out.append(f_init.upper() if letters[i].isupper() else f_init.lower())
+            i += 1
+        elif base in _PN_ACRONYM_CONNECTIVES:
+            continue          # an unused connective ("of" in TFF) is allowed
+        else:
+            return None        # a name word with no acronym letter -> not one
+    return "".join(out) if i == len(low) else None
+
+
+def _pn_paren_short_forms(body):
+    """Candidate short forms inside a parenthetical definition body. Every
+    double-quoted alternative is returned (`"TOFF" OR "TOM OF FINLAND
+    FOUNDATION"` -> two), so a multi-alternative definition is fully harvested.
+    When nothing is quoted, only a leading capitalised short phrase is taken
+    (mirroring the original pattern) so a descriptive parenthetical isn't
+    swept in. Double-quote delimiters only, so an apostrophe inside a name
+    ("O'Brien") is never mistaken for a quote."""
+    quoted = re.findall(r'["“”]\s*([^"“”]{1,60}?)\s*["“”]', body)
+    forms = []
+    for s in (quoted or [body]):
+        s = re.sub(r"\s+", " ", s).strip(" .,;")
+        if not quoted:
+            mm = re.match(r"[A-Z][\w'’.\-]*(?:\s+[A-Z0-9][\w'’.\-]*){0,3}", s)
+            if not mm:
+                continue
+            s = mm.group(0).strip(" .,")
+        if s:
+            forms.append(s)
+    return forms
+
+
 def _pn_fake_entity_parts(name, registry, prefer=None):
     """(fake_name, {word_base: canonical_fake}) — the entity faked word by word.
 
@@ -6428,8 +6505,11 @@ def _pn_review_findings(text, known_fakes=()):
             if cls == "url/domain":
                 if _pn_url_whitelisted(sample):
                     continue
-                if _pn_url_host(sample) in _PN_EMAIL_DOMAINS:
-                    continue  # our own fake domain, not a leak
+                host = _pn_url_host(sample)
+                # Our own fake domain — the base pool OR a numbered mint of it
+                # (`postbox2.org`) that known_fakes now carries — is not a leak.
+                if host in _PN_EMAIL_DOMAINS or host in known_fakes:
+                    continue
             key = (cls, sample.lower())
             if key not in seen:
                 seen.add(key)
@@ -6446,6 +6526,17 @@ def _pn_alnum_core(real):
     while toks and _pn_is_entity_keep(_pn_word_base(toks[-1])):
         toks.pop()
     return re.sub(r"[^a-z0-9]", "", " ".join(toks).lower())
+
+
+def _pn_fake_core_display(fake):
+    """The fake with its trailing corporate suffix/connector tokens dropped, so
+    a welded-span replacement inserts the bare stand-in ("Brightpath") where a
+    real name's core was welded to a neighbour, not the full "Brightpath, LLC"
+    that would drag a stray suffix into the middle of the run."""
+    toks = str(fake).split()
+    while toks and _pn_is_entity_keep(_pn_word_base(toks[-1])):
+        toks.pop()
+    return re.sub(r"[,\s]+$", "", " ".join(toks)) or str(fake)
 
 
 def _pn_address_adjacency(records):
@@ -7141,37 +7232,55 @@ class Pseudonymizer:
 
     def register_short_names(self, text):
         """Register a parenthetical short form the document itself defines:
-        `Defendant Glenwood Group ("Glenwood")`.
+        `Defendant Glenwood Group ("Glenwood")` or the initialism
+        `Tom of Finland Foundation ("ToFF")`.
 
-        The short form must immediately follow a name already known, and every
-        one of its words must appear in that name — so `("Glenwood")` qualifies
-        and `(collectively "Broker Defendants")` does not. That keeps this from
-        becoming a licence to register arbitrary capitalised words. The fake is
-        composed from the parent's own word fakes, so the two forms stay
-        recognisably the same party. Idempotent; call before apply()."""
-        paren = (r"[\s,;]*\(\s*[\"“'’]?\s*(?P<s>[A-Z][\w'’.-]*"
-                 r"(?:\s+[A-Z0-9][\w'’.-]*){0,2})\s*[\"”'’]?\s*\)")
+        A short form qualifies two ways: (a) every one of its words appears in
+        the parent name (`Glenwood` of `Glenwood Group`), or (b) it is a single
+        token that spells the parent's initials in order (`ToFF`). Both keep
+        this from becoming a licence to register arbitrary words — a bare
+        capitalised word that is neither a parent word nor an initialism (e.g.
+        `("Team")` from `Dream Team Real Estate`) is rejected. The definition may
+        carry a short descriptor between the name and the parenthetical
+        (`…, INC., A PUBLIC BENEFIT CORPORATION ("TOFF" OR …)`) and more than one
+        quoted alternative; every alternative is considered. The fake is built
+        from the parent's own fake so the forms stay one party. Idempotent; call
+        before apply()."""
+        # Optional descriptor run ("…, A PUBLIC BENEFIT CORPORATION") then a
+        # parenthetical whose whole body is captured so each quoted alternative
+        # can be pulled out.
+        paren = (r"[\s,;]*(?:[A-Za-z0-9][A-Za-z0-9.,&\-' ]{0,70}?)?[\s,;]*"
+                 r"\(\s*(?P<body>[^()]{0,160})\)")
         for t in list(self.terms):
             if t.category not in ("entity", "person"):
                 continue
-            parent_words = {_pn_word_base(w) for w in t.real.split()}
+            real_words = t.real.split()
+            fake_words = str(t.fake).split()
+            parent_words = {_pn_word_base(w) for w in real_words}
             try:
                 rx = re.compile(t.pattern + paren, t.flags)
             except re.error:
                 continue
             for m in rx.finditer(text):
-                short = re.sub(r"\s+", " ", m.group("s")).strip(" .,")
-                words = short.split()
-                if not words or _pn_is_party_role(short):
-                    continue
-                if any(_pn_word_base(w) not in parent_words for w in words):
-                    continue
-                fake = (_pn_fake_entity(short, self.registry)
-                        if t.category == "entity"
-                        else _pn_fake_person(short, self.registry)[0])
-                self._add_terms([_PnTerm("short-name", short, fake,
-                                         whole_word=True, case_sensitive=False,
-                                         priority=1, source="document")])
+                for short in _pn_paren_short_forms(m.group("body")):
+                    if _pn_is_party_role(short):
+                        continue
+                    words = short.split()
+                    if words and all(_pn_word_base(w) in parent_words
+                                     for w in words):
+                        fake = (_pn_fake_entity(short, self.registry)
+                                if t.category == "entity"
+                                else _pn_fake_person(short, self.registry)[0])
+                    elif len(words) == 1:
+                        fake = _pn_initialism_fake(short, real_words, fake_words)
+                        if fake is None:
+                            continue
+                    else:
+                        continue
+                    self._add_terms([_PnTerm("short-name", short, fake,
+                                             whole_word=True,
+                                             case_sensitive=False,
+                                             priority=1, source="document")])
 
     def register_firm_names(self, text):
         """Register the name inside a "Law Offices of X" label. The attorney
@@ -7684,6 +7793,64 @@ class Pseudonymizer:
                 out.append(rec["real"])
         return out
 
+    def scrub_welded(self, text):
+        """Write-side mirror of `surviving_reals_reduced`: remove a tracked real
+        that survives only in the ALPHANUMERIC reduction of `text`.
+
+        On a column-spliced caption a party name welds to its neighbour
+        (`CULTUREEDITservice`, `AZUL@SCHILLECITORTORICILAW`), so the boundary-
+        anchored term patterns leave it standing while the reduced substring test
+        still finds it — detection then out-runs replacement and the leak gate
+        quarantines an export the substituter simply couldn't clean. Here the
+        welded span is located in the ORIGINAL text (via a reduced-index map) and
+        replaced with the party's fake, so replacement can never lag detection.
+
+        Longest cores first and non-overlapping, so a name nested in a longer
+        firm name doesn't double-substitute; the fake is case-matched to the
+        span it replaces. A >=8-char core can coincide inside an unrelated word,
+        so callers run this ONLY on a page already flagged spliced — a page the
+        tool already reports as corrupted and asks a human to verify."""
+        src = _NFKC(text)
+        reduced, idx = [], []
+        for i, ch in enumerate(src):
+            c = ch.lower()
+            if "a" <= c <= "z" or "0" <= c <= "9":
+                reduced.append(c)
+                idx.append(i)
+        reduced = "".join(reduced)
+        if not reduced:
+            return text
+        cands = []
+        for rec in self.records.values():
+            core = _pn_alnum_core(rec["real"])
+            if len(core) >= 8:
+                cands.append((core, _pn_fake_core_display(rec["fake"]), rec))
+        cands.sort(key=lambda c: -len(c[0]))
+        taken = [False] * len(reduced)
+        repls = []
+        for core, fake, rec in cands:
+            start = 0
+            while True:
+                k = reduced.find(core, start)
+                if k < 0:
+                    break
+                end = k + len(core)
+                if not any(taken[k:end]):
+                    for z in range(k, end):
+                        taken[z] = True
+                    repls.append((idx[k], idx[end - 1] + 1, fake, rec))
+                start = k + 1
+        if not repls:
+            return text
+        out = src
+        for o_s, o_e, fake, rec in sorted(repls, key=lambda r: -r[0]):
+            out = out[:o_s] + _pn_case_like(out[o_s:o_e], fake) + out[o_e:]
+            # Record the welded replacement so the reversal key carries this
+            # mapping (Status "replaced", not parked in the audit sheet): the
+            # fake is now in the document, so ReAnonymize must be able to undo it.
+            rec["count"] += 1
+        return out
+
     def note_leaks(self, reals):
         """Record that `reals` survived in some export, for the key's Status."""
         for r in reals:
@@ -7698,11 +7865,28 @@ class Pseudonymizer:
 
     def known_fake_words(self):
         """Every word this run has minted as a stand-in, lower-cased. Lets the
-        open-world review scan tell a fake it just wrote from a real survivor."""
+        open-world review scan tell a fake it just wrote from a real survivor.
+
+        An e-mail/URL fake is stored whole ("local@postbox2.org",
+        "www.postbox2.org"), so a plain whitespace split never yields the bare
+        registrable host — and the review scan then flagged the tool's OWN
+        numbered fake domain (`postbox2.org`) as an unknown identifier. Contribute
+        the bare host too (drop a local part, scheme, leading www., and any
+        path) so those false positives are suppressed while a real domain in a
+        source document is still surfaced."""
         words = set()
         for rec in self.records.values():
-            words.update(w.strip(".,").lower()
-                         for w in str(rec["fake"]).split() if w)
+            for w in str(rec["fake"]).split():
+                w = w.strip(".,").lower()
+                if not w:
+                    continue
+                words.add(w)
+                host = re.sub(r"^https?://", "", w.split("@", 1)[-1])
+                if host.startswith("www."):
+                    host = host[4:]
+                host = host.split("/", 1)[0].rstrip(".")
+                if "." in host and re.fullmatch(r"[a-z0-9.\-]+", host):
+                    words.add(host)
         return words
 
     def review_scan(self, text):
@@ -7715,6 +7899,40 @@ class Pseudonymizer:
                 seen.add((c, s.lower()))
                 self.review.append((c, s))
         return found
+
+    def review_definition_survivors(self, source, output):
+        """Backstop for the acronym short-form path: a document-defined
+        parenthetical short form (`("TOFF")`) whose token is an initialism of a
+        TRACKED party and still appears verbatim in the finished `output` — which
+        means `register_short_names` missed that definition shape and the highest-
+        value survivor (a one-lookup key inversion) shipped uncaught.
+
+        Scoped to initialisms of a tracked party, so an ordinary defined term
+        (`("Agreement")`, `("ISO")`, `("RJN")`) is never surfaced — it is not a
+        party's initials. Accumulates into the folder review list and returns the
+        new findings."""
+        parties = [(rec["real"].split(), str(rec["fake"]).split())
+                   for (cat, _rl), rec in self.records.items()
+                   if cat in ("entity", "person")]
+        if not parties:
+            return []
+        findings, local = [], set()
+        for m in re.finditer(r"\(([^()]{0,120})\)", _NFKC(source)):
+            for form in _pn_paren_short_forms(m.group(1)):
+                low = form.lower()
+                if len(form.split()) != 1 or low in local:
+                    continue
+                if not re.search(r"(?<!\w)" + re.escape(form) + r"(?!\w)", output):
+                    continue          # already scrubbed / absent — fine
+                if any(_pn_initialism_fake(form, rw, fw) for rw, fw in parties):
+                    local.add(low)
+                    findings.append(("party acronym", form))
+        seen = {(c, s.lower()) for c, s in self.review}
+        for c, s in findings:
+            if (c, s.lower()) not in seen:
+                seen.add((c, s.lower()))
+                self.review.append((c, s))
+        return findings
 
     def _status(self, rec):
         if rec["real"].lower() in self.leaked:
@@ -7730,6 +7948,12 @@ class Pseudonymizer:
         people. It surfaces them instead, so a reviewer can add an explicit
         alias term (`--term`) that binds both to one fake. Returns
         [[real, real, ...], ...], each inner list a possible-alias cluster."""
+        # Firm-wrapper lead words: a "Law Office(s) of <person>" string routed
+        # into the person pool must not cluster on the shared word "Law" (which
+        # paired two unrelated firms as if they were one attorney's aliases).
+        # Strip a leading wrapper run so the given name is the real personal one.
+        lead = {"law", "office", "offices", "firm", "firms", "of", "the",
+                "and", "&"}
         groups = {}
         for (cat, _rl), rec in self.records.items():
             if cat != "person":
@@ -7737,6 +7961,8 @@ class Pseudonymizer:
             core = [t for t in rec["real"].split()
                     if len(t.strip(".")) > 1 and re.search(r"[A-Za-z]", t)
                     and not _pn_is_suffix_token(t)]
+            while core and core[0].lower().rstrip(".") in lead:
+                core.pop(0)
             if len(core) < 2:
                 continue
             given, surname = core[0].lower().rstrip("."), core[-1].lower().rstrip(".")
@@ -8294,8 +8520,6 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         # page wrapped mid-name is only contiguous down its own column, so the
         # display text alone would report a page like that as clean.
         scrubbed_detect = pseudonymizer.apply(detect_full, count=False)
-        survivors = set(pseudonymizer.surviving_reals(body))
-        survivors |= set(pseudonymizer.surviving_reals(scrubbed_detect))
 
         # Column-splice check: if a page's extraction is corrupted, the whole-
         # word patterns match nothing, so also scan the alphanumeric reduction of
@@ -8305,11 +8529,22 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         spliced = [i + 1 for i, (_h, c) in enumerate(page_blocks)
                    if isinstance(c, list) and _page_looks_spliced(c)]
         if spliced:
-            survivors |= set(pseudonymizer.surviving_reals_reduced(body))
-            survivors |= set(pseudonymizer.surviving_reals_reduced(scrubbed_detect))
+            # A welded party name defeats the boundary-anchored patterns, so
+            # cure the written body with the reduced-span replacement (the
+            # write-side mirror of surviving_reals_reduced) BEFORE re-scanning —
+            # otherwise detection out-runs replacement and quarantines an export
+            # the substituter never had a chance to clean.
+            body = pseudonymizer.scrub_welded(body)
+            scrubbed_detect = pseudonymizer.scrub_welded(scrubbed_detect)
             log.warning(f"  Pseudonymization REVIEW on {pdf_path.name}: caption "
                         f"on page(s) {spliced} appears column-spliced; term "
                         f"matching is unreliable there — verify by hand.")
+
+        survivors = set(pseudonymizer.surviving_reals(body))
+        survivors |= set(pseudonymizer.surviving_reals(scrubbed_detect))
+        if spliced:
+            survivors |= set(pseudonymizer.surviving_reals_reduced(body))
+            survivors |= set(pseudonymizer.surviving_reals_reduced(scrubbed_detect))
 
         if survivors:
             pseudonymizer.note_leaks(survivors)
@@ -8321,6 +8556,10 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         # Open-world REVIEW scan: identifier shapes (licence/bar/reservation/file
         # numbers, bare URLs) that must never ride along even without a key entry.
         review = pseudonymizer.review_scan(body)
+        # Backstop: a party acronym defined in the source that survived the scrub
+        # (a definition shape register_short_names didn't anticipate).
+        review = list(review) + pseudonymizer.review_definition_survivors(
+            detect_full, body)
         if review:
             shown = "; ".join(f"{c}: {s}" for c, s in review[:8])
             log.warning(f"  Pseudonymization REVIEW on {pdf_path.name}: "

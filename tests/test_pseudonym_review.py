@@ -323,3 +323,113 @@ def test_leak_gate_flags_surviving_real():
     assert z.has_leaks()
     rec = {"real": "Travelers", "count": 0}
     assert z._status(rec) == "leaked"
+
+
+# ─────────────────────── REVIEW (24STCV06764) ───────────────────────────────
+# Third corpus (Tom of Finland Foundation v. CultureEdit). Acceptance criteria
+# from the 2026 leak handoff: a document-defined acronym and a column-spliced
+# caption both leaked past the scrub.
+
+def _pz06764(names=("Tom of Finland Foundation, Inc.", "CultureEdit, LLC"),
+             casenos=("24STCV06764",)):
+    reg = P._PnFakeRegistry()
+    terms = P._pn_build_terms(list(names), list(casenos), [], registry=reg)
+    det = {k: P._PN_DETECTORS[k] for k in P._PN_DEFAULT_DETECTORS}
+    return P.Pseudonymizer(terms, det, registry=reg)
+
+
+# P0  A document-defined acronym short form must be registered and scrubbed.
+def test_acronym_short_form_registered_and_scrubbed():
+    z = _pz06764()
+    z.register_short_names('Plaintiff Tom of Finland Foundation, Inc. ("ToFF") '
+                           "is a foundation.")
+    out = z.apply("ToFF promotes the artist. See Toff and TOFF too.")
+    assert "toff" not in out.lower(), f"acronym survived: {out!r}"
+    # a short-name row exists for the acronym
+    assert any(cat == "short-name" and rl == "toff"
+               for (cat, rl) in z.records), "no short-name row for ToFF"
+
+
+def test_acronym_definition_with_descriptor_and_alternatives():
+    # "…, INC., A PUBLIC BENEFIT CORPORATION ("TOFF" OR "TOM OF FINLAND …")"
+    z = _pz06764(names=["Tom of Finland Foundation"])
+    z.register_short_names(
+        'TOM OF FINLAND FOUNDATION, INC., A PUBLIC BENEFIT CORPORATION '
+        '("TOFF" OR "TOM OF FINLAND FOUNDATION") filed suit.')
+    assert "toff" not in z.apply("TOFF did things.").lower()
+
+
+def test_acronym_over_match_guard_rejects_non_initialism():
+    # "Team" is not an initialism of Dream Team Real Estate; the initialism
+    # path must reject it (it remains covered only by the parent-word path).
+    assert P._pn_initialism_fake(
+        "Team", ["Dream", "Team", "Real", "Estate"],
+        ["Falcon", "Ridge", "Vale", "Court"]) is None
+
+
+def test_acronym_review_backstop_reports_leftover():
+    # Registration missed the definition shape; the leftover party acronym in the
+    # output is caught by the review backstop.
+    z = _pz06764(names=["Tom of Finland Foundation, Inc."])
+    src = 'TOM OF FINLAND FOUNDATION, INC. ("TOFF") sued.'
+    out = 'Kaldor of Ironbridge Foundation ("TOFF") sued. TOFF acted.'
+    found = z.review_definition_survivors(src, out)
+    assert ("party acronym", "TOFF") in found
+    # ordinary defined terms are never surfaced
+    z.review = []
+    assert not z.review_definition_survivors(
+        'the vehicle ("Vehicle") and ("ISO") and ("RJN")',
+        "the Vehicle and ISO and RJN survive")
+
+
+# P0  A column-spliced caption welds a party name to its neighbours; the
+#   reduced-span replacement must remove it (write side mirrors detection).
+def test_spliced_welded_entity_is_scrubbed():
+    z = _pz06764()
+    welded = z.apply("Defendant CULTUREEDITservice of process and cultureeditllc.")
+    # the boundary-anchored pass can't remove the welded token …
+    assert z.surviving_reals_reduced(welded), "fixture no longer welds"
+    cured = z.scrub_welded(welded)
+    assert "cultureedit" not in cured.lower().replace(" ", "")
+    assert not z.surviving_reals_reduced(cured), "reduced survivor remains"
+
+
+def test_spliced_replacement_recorded_in_key():
+    # A welded name cured by scrub_welded must be recorded (Status "replaced"),
+    # so the reversal key carries the mapping instead of parking it in the audit.
+    z = _pz06764()
+    rec = z.records[("entity", "cultureedit, llc")]
+    assert z._status(rec) == "no match"
+    z.scrub_welded("Defendant CULTUREEDITservice appears.")
+    assert rec["count"] > 0 and z._status(rec) == "replaced"
+
+
+# P2  known_fake_words() contributes the bare host of a faked e-mail/URL, so the
+#   open-world review scan no longer flags the tool's own numbered fake domain.
+def test_review_scan_ignores_own_fake_domain():
+    z = _pz06764(names=["Alpha Corp"])
+    hosts = ["alphalegal.com", "bravofirm.net", "charliegroup.org",
+             "deltapartners.co", "echoholdings.com", "foxtrotcorp.biz"]
+    minted = None
+    for h in hosts:
+        out = z.apply(f"x@{h}")
+        host = out.split("@")[-1]
+        if any(c.isdigit() for c in host):
+            minted = host
+            break
+    assert minted, "no numbered fake domain was minted"
+    kf = z.known_fake_words()
+    findings = P._pn_review_findings(f"see info@{minted} and www.{minted}", kf)
+    assert not [f for f in findings if f[0] == "url/domain"], \
+        f"tool fake domain {minted} was flagged: {findings}"
+    # a real source domain is still surfaced
+    assert any(f[0] == "url/domain"
+               for f in P._pn_review_findings("visit www.realclientco.com", kf))
+
+
+# P2  "Law Office(s) of <person>" must not cluster as a person alias on "Law".
+def test_firm_wrappers_do_not_cluster_as_alias():
+    z = _pz06764(names=["Law Office of Neal S. Zaslavsky",
+                        "Law Offices of Rob Hennig"])
+    pair = {"Law Office of Neal S. Zaslavsky", "Law Offices of Rob Hennig"}
+    assert not any(pair <= set(c) for c in z.alias_candidates())
