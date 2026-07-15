@@ -8075,6 +8075,12 @@ class Pseudonymizer:
         reduced = "".join(reduced)
         if not reduced:
             return text
+        # The same citation protection the ordinary substitution path applies
+        # (P0-A): a cited decision whose party name contains a tracked core
+        # ("Sanchez v. Valencia Holding Co.") must survive byte-for-byte even
+        # on a splice-flagged page — renaming an authority is a worse failure
+        # than leaving a welded name in.
+        protected = self._protected_citation_spans(src)
         cands = []
         for rec in self.records.values():
             core = _pn_alnum_core(rec["real"])
@@ -8090,10 +8096,14 @@ class Pseudonymizer:
                 if k < 0:
                     break
                 end = k + len(core)
+                o_s, o_e = idx[k], idx[end - 1] + 1
+                if any(o_s < pe and ps < o_e for ps, pe in protected):
+                    start = k + 1
+                    continue
                 if not any(taken[k:end]):
                     for z in range(k, end):
                         taken[z] = True
-                    repls.append((idx[k], idx[end - 1] + 1, fake, rec))
+                    repls.append((o_s, o_e, fake, rec))
                 start = k + 1
         if not repls:
             return text
