@@ -622,6 +622,36 @@ def test_caption_wrapped_name_is_attributed_and_rebuilt():
     assert "ahc" not in joined and "acquisition" not in joined, out
 
 
+def test_caption_tolerates_contact_furniture_and_descriptors():
+    # A realistic first page: attorney block (SBN, address, phone), court
+    # heading, and a multi-line class descriptor. None of it is a party, so
+    # none of it may block reconstruction — only a distinctive capitalized
+    # word unattributable to a tracked party does.
+    z = _caption_pz()
+    rows = [
+        (1, [(110.0, "RAFAEL QUINTERO, ESQ., SBN 175977")]),
+        (2, [(110.0, "817 N. La Brea Avenue, Suite 200")]),
+        (3, [(110.0, "Telephone: (626) 292-0899")]),
+        (4, [(110.0, "Attorneys for Plaintiff")]),
+        (5, [(110.0, "SUPERIOR COURT OF THE STATE OF CALIFORNIA")]),
+        (6, [(110.0, "COUNTY OF LOS ANGELES")]),
+        (7, [(110.0, "ALEJANDRO ORELLANA, an individual, on behalf"),
+             (380.0, "Case No. 24STCV06764")]),
+        (8, [(110.0, "of himself and all others similarly situated,"),
+             (380.0, "NOTICE OF MOTION")]),
+        (9, [(110.0, "Plaintiff,")]),
+        (10, [(110.0, "vs.")]),
+        (11, [(110.0, "AHC ACQUISITION, LLC; and DOES 1-10, inclusive,")]),
+        (12, [(110.0, "Defendants.")]),
+    ]
+    out = P._pn_apply_page_rows(z, rows)
+    joined = " ".join(out).lower()
+    for real in ("alejandro", "orellana", "ahc", "acquisition"):
+        assert real not in joined, f"{real!r} survived: {out}"
+    assert "COUNTY OF LOS ANGELES" in out[5]     # court heading untouched
+    assert "does 1-10" in joined
+
+
 def test_caption_not_reconstructed_without_structure():
     z = _caption_pz()
     # ordinary prose: no role/vs rows
