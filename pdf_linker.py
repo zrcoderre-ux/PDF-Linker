@@ -8737,6 +8737,15 @@ _PN_CAPTION_PROLE_RE = re.compile(
     r"(?i)^\s*(?:plaintiffs?|petitioners?|cross-complainants?)\s*[.,;]?\s*$")
 _PN_CAPTION_DROLE_RE = re.compile(
     r"(?i)^\s*(?:defendants?|respondents?|cross-defendants?)\s*[.,;]?\s*$")
+# A line that is page FURNITURE, never a party-name row: the attorney block's
+# contact lines (bar number, address, phone, e-mail), an "Attorneys for" tag,
+# the court/county heading, or a label ending in a colon. The walk-back from
+# the plaintiff-role row stops before these, so incidental content above the
+# caption box can't leak into the party block and spoil attribution.
+_PN_CAPTION_STOP_RE = re.compile(
+    r"(?i)\d|@|:\s*$|\battorneys?\s+(?:for|at)\b|\bcourt\b|\bcounty of\b|"
+    r"\btelephone\b|\btel\b|\bfax\b|\bfacsimile\b|\be-?mail\b|\bsuite\b|"
+    r"\bfloor\b|\besq\b|\blaw\s+offices?\b")
 
 
 def _pn_reconstruct_caption(pseudonymizer, rows):
@@ -8792,12 +8801,13 @@ def _pn_reconstruct_caption(pseudonymizer, rows):
     if p_role < 0 or vs_k < 0 or d_role < 0 or d_role - p_role > 40:
         return None
 
-    # Walk back from the plaintiff-role row to the top of the name run.
+    # Walk back from the plaintiff-role row to the top of the name run,
+    # stopping before any furniture line (attorney contacts, court heading).
     start = p_role
     while (start > 0 and texts[start - 1].strip()
            and not _PN_CAPTION_PROLE_RE.match(texts[start - 1])
            and not _PN_CAPTION_VS_RE.match(texts[start - 1])
-           and not re.search(r"(?i)\bcourt\b|:\s*$", texts[start - 1])):
+           and not _PN_CAPTION_STOP_RE.search(texts[start - 1])):
         start -= 1
     if start == p_role:
         return None                           # no plaintiff name rows found
@@ -8811,15 +8821,24 @@ def _pn_reconstruct_caption(pseudonymizer, rows):
     p_text = " ".join(texts[start:p_role])
     d_text = " ".join(texts[vs_k + 1:d_role])
 
-    # Fail-safe attribution: every word of the name rows must be a party word,
-    # a role word, caption boilerplate, or a non-alphabetic token.
+    # Fail-safe attribution, scoped to what could actually BE a party: only a
+    # DISTINCTIVE CAPITALIZED word not attributable to a tracked party blocks
+    # reconstruction (an unlisted cross-defendant, welded junk). Everything
+    # else is incidental and must not stop the rebuild: lowercase descriptors
+    # ("an individual, on behalf of himself"), common/boilerplate words,
+    # street/contact vocabulary, localities, and digit tokens are all
+    # irrelevant to who the parties are.
     for w in (p_text + " " + d_text).split():
         base = _pn_word_base(w)
-        if (not re.search(r"[a-z]", base) or len(base) == 1
+        if (not base or len(base) == 1 or not re.search(r"[a-z]", base)
+                or not w[:1].isupper()
                 or base in _PN_CAPTION_VOCAB
                 or base in _PN_PARTY_ROLE_WORDS
+                or base in _PN_COMMON_WORDS
+                or base in _PN_REVIEW_NAME_STOP
                 or _pn_is_entity_keep(base)
-                or base in all_party_bases):
+                or base in all_party_bases
+                or _pn_is_protected_locality(base)):
             continue
         return None
 
