@@ -560,6 +560,115 @@ def test_corp_suffix_never_a_person_surname_single_identity():
             assert w in ent_fake, f"{w!r} diverges from {ent_fake!r}"
 
 
+# ─────────────────────── REVIEW (24STCV23198, Ramirez) ──────────────────────
+# Fifth corpus (Ramirez v. Ford Motor Company). Leaks that survive OUTSIDE the
+# caption: name-bearing Bates stamps, an undefined firm acronym, a suffix-less
+# street address, and label/anchor gaps.
+
+def _pz23198(names=("Ernest Ramirez", "Ford Motor Company",
+                    "BP Ford of Long Beach")):
+    reg = P._PnFakeRegistry()
+    terms = P._pn_build_terms(list(names), ["24STCV23198"], [], registry=reg)
+    det = {k: P._PN_DETECTORS[k] for k in P._PN_DEFAULT_DETECTORS}
+    return P.Pseudonymizer(terms, det, registry=reg)
+
+
+# L1  A Bates/production stamp embeds the party's name in cleartext; word
+#     boundaries can't see it, so the token is faked whole, and a production
+#     series keeps ONE consistent fake prefix.
+def test_bates_stamps_scrubbed_with_consistent_prefix():
+    z = _pz23198()
+    src = ("See FMC_RAMIREZ_ERNEST_000007 and RAM000013-RAM000018; "
+           "also RAM000013 alone. Compare CACI No. 2320.")
+    z.register_identifiers(src)
+    out = z.apply(src)
+    low = out.lower()
+    for real in ("ramirez", "ernest", "ram00", "000007"):
+        assert real not in low, f"{real!r} survived: {out}"
+    assert "CACI No. 2320" in out            # citation-style refs untouched
+    stamps = re.findall(r"[A-Z]{2,}\d{4,}", out)
+    assert len({re.match(r"[A-Z]+", s).group(0) for s in stamps}) == 1, \
+        f"inconsistent series prefixes: {stamps}"
+    assert z.reid_scan(out) == []            # certified clean
+    # a stamp that never got registered IS flagged on the way out
+    assert any(c == "REID production number"
+               for c, _v in z.reid_scan("produced as XYZ_CORP_004412"))
+
+
+# L2  A firm acronym used with no defining parenthetical is derived from the
+#     tracked entity's initials, occurrence-gated, and mapped to the initials
+#     of the entity's fake. ISO/RJN and lowercase words are untouched.
+def test_undefined_firm_acronym_scrubbed():
+    z = _pz23198(names=["Ernest Ramirez", "Strategic Legal Practices, APC",
+                        "Mortenson Taggart Adams LLP"])
+    src = ("SLP's remote desktop failed. SLP does not employ in-house IT. "
+           "Plaintiff filed an ISO and RJN. The slp lowercase word stays.")
+    z.register_entity_acronyms(src)
+    out = z.apply(src)
+    assert not re.search(r"(?<!\w)SLP(?!\w)", out), out
+    assert "ISO" in out and "RJN" in out
+    assert "slp lowercase" in out
+    # occurrence gate: MTA never used in the document, so never registered
+    assert ("short-name", "mta") not in z.records
+    # the acronym fake is the initials of the entity's fake
+    ent = z.records[("entity", "strategic legal practices, apc")]["fake"]
+    initials = "".join(
+        w[0].upper() for w in P._pn_acronym_trim(ent.replace(",", " ").split())
+        if P._pn_word_base(w) not in P._PN_ACRONYM_CONNECTIVES
+        and len(P._pn_word_base(w)) >= 2)
+    assert z.records[("short-name", "slp")]["fake"] == initials
+
+
+# L3  A street with no street-type suffix ("Century Park East") is detected
+#     when a floor/suite or City, ST ZIP tail follows; prose can't qualify.
+def test_suffixless_street_detected_with_tail():
+    z = _pz23198()
+    out = z.apply("offices at 1888 Century Park East, 19th Floor, "
+                  "Los Angeles, CA 90067.")
+    assert "Century Park" not in out and "1888" not in out, out
+    assert "19th Floor" in out and "Los Angeles, CA 90067" in out
+    for prose in ("24 Hour Fitness Center opened a new gym",
+                  "100 Years War East narrative"):
+        assert P._PN_ADDR_RE.search(prose) is None, prose
+
+
+# L4  A non-party dealer near a purchase cue is REPORTED, never replaced.
+#     (A dealer sharing a tracked token — "Worthington FORD" with Ford a
+#     party — is already partially handled by the token pass; the review net
+#     is for the dealer no term touches at all.)
+def test_dealer_purchase_cue_is_review_only():
+    z = _pz23198(names=["Ernest Ramirez"])
+    out = z.apply("Plaintiff purchased the vehicle from Worthington Motors "
+                  "in Long Beach.")
+    assert "Worthington Motors" in out       # no term -> not auto-replaced
+    findings = P._pn_review_findings(out, z.known_fake_words())
+    assert ("possible business (purchase)", "Worthington Motors") in findings
+
+
+# L5  "RES. NO." is recognized directly, independent of any "Reservation ID".
+def test_res_no_label_recognized():
+    vals = dict(P._pn_identifier_values("RES. NO.: 134890490939"))
+    assert vals.get("reservation id") == "134890490939"
+
+
+# Item 7  The "Ford" short form must be replaced in prose while every
+#     "... v. Ford Motor Co." authority survives byte-identical.
+def test_ford_short_form_vs_ford_citations():
+    z = _pz23198()
+    z.register_short_names('Ford Motor Company ("Ford") makes vehicles.')
+    cites = [
+        "Donlen v. Ford Motor Co. (2013) 217 Cal.App.4th 138",
+        "Valdez v. Ford Motor Co. (2022) 134 Cal.App.5th 1",
+    ]
+    body = ("Ford admitted the defect. " + cites[0] + ". Ford knew. "
+            + cites[1] + ".")
+    out = z.apply(body)
+    for c in cites:
+        assert c in out, f"authority corrupted: {out}"
+    assert not re.search(r"(?<!\w)Ford(?!\w) (?:admitted|knew)", out), \
+        f"prose short form survived: {out}"
+
+
 # ─────────────────────── CAPTION RECONSTRUCTION ─────────────────────────────
 # The caption party block — where every hard extraction failure has lived —
 # is cut out and re-rendered from the tracked parties' fakes, but ONLY when
@@ -593,6 +702,11 @@ def test_caption_block_is_rebuilt_from_fakes():
     assert len(out) == len(_CAPTION_ROWS)            # row count preserved
     assert out[0].split(",")[0].isupper()            # caption casing followed
     assert z.records[("entity", "ahc acquisition, llc")]["count"] > 0
+    # Line NUMBERING is untouched: reconstruction rewrites segment text in
+    # place and never adds/removes rows, so every gutter number (including
+    # None continuation rows) survives in order.
+    rebuilt = P._pn_reconstruct_caption(_caption_pz(), _CAPTION_ROWS)
+    assert [n for n, _ in rebuilt] == [n for n, _ in _CAPTION_ROWS]
 
 
 def test_caption_failsafe_unknown_party_blocks_reconstruction():
