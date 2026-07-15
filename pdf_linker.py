@@ -617,7 +617,8 @@ SLIP_TAIL = re.compile(
 # code relies on — so the consumer re-extracts it from `match.group(0)`
 # via _NONV_PREFIX_RE below.
 _NONV_PREFIX = (
-    r"In re|"
+    # "In re" in any casing an OCR layer produces ("In Re", "IN RE").
+    r"In [Rr][Ee]|IN RE|"
     r"Estate of|"
     r"Guardianship of|"
     r"Conservatorship of|"
@@ -639,7 +640,8 @@ INRE_RE = re.compile(
     rf"(?:"
     rf"\((\d{{4}})\)\s+(\d{{1,4}})\s+({REPORTER_PATTERN})\s+(\d{{1,5}})"
     rf"|"
-    rf",?\s+(\d{{1,4}})\s+({REPORTER_PATTERN})\s+(\d{{1,5}})\s*"
+    rf",?\s+(\d{{1,4}})\s+({REPORTER_PATTERN})\s+(\d{{1,5}})"
+    rf"(?:,\s*\d{{1,5}}(?:[–\-]\d{{1,5}})?)?\s*"
     rf"\((?:[^)]*?\b)?(\d{{4}})\)"
     rf"|"
     # WL alternative: "In re X, [docket text], YYYY WL NNNNNN (court year)".
@@ -5898,7 +5900,10 @@ def _pn_append_entity_terms(terms, raw, source, registry, prefer=None):
                          whole_word=False, case_sensitive=False, priority=2,
                          source=source))
     bare = _pn_entity_bare(raw, registry, prefer)
-    if bare and not _pn_is_party_role(bare[0]):
+    if (bare and not _pn_is_party_role(bare[0])
+            and not (len(bare[0].split()) <= 2
+                     and all(_pn_is_generic_token(_pn_word_base(w))
+                             for w in bare[0].split()))):
         terms.append(_PnTerm("entity-token", bare[0], bare[1], whole_word=True,
                              case_sensitive=False, priority=1, source=source))
     return mapping
@@ -5930,6 +5935,11 @@ def _pn_append_person_terms(terms, raw, source, registry):
     terms.append(_PnTerm("person", raw, fake_full, whole_word=False,
                          case_sensitive=False, priority=2, source=source))
     for real_tok, fake_tok, _is_surname in bare:
+        # A generic word ("Legal" of a firm name, "Warranty", "Beach" of
+        # "Long Beach") must never be a free-standing token — it rewrites
+        # ordinary prose and the venue everywhere. The full name still scrubs.
+        if _pn_is_generic_token(_pn_word_base(real_tok)):
+            continue
         terms.append(_PnTerm("person-token", real_tok, fake_tok,
                              whole_word=True, case_sensitive=False,
                              priority=1, source=source))
@@ -5981,6 +5991,20 @@ def _pn_append_name_terms(terms, raw, source, registry):
             parts = _pn_split_dba(alias)
             head, dbas = parts[0], parts[1:]
             if _pn_is_party_role(head) or not re.search(r"[A-Za-z]", head):
+                continue
+            # A SHORT candidate made entirely of generic words is a header
+            # cell or a harvested label ("Name", "Customer Relations",
+            # "Warranty Complaints"), never a party — registering one rewrites
+            # ordinary prose document-wide (the run that replaced all 140
+            # occurrences of the word "Name" with a surname). A LONGER
+            # all-generic name ("Strategic Legal Practices") is a plausible
+            # firm and stays: its whole-phrase match is safe, and its generic
+            # bare tokens are suppressed separately.
+            head_words = [w for w in head.split() if re.search(r"[A-Za-z]", w)]
+            if 1 <= len(head_words) <= 2 and all(
+                    _pn_is_generic_token(_pn_word_base(w)) or
+                    _pn_is_entity_keep(_pn_word_base(w))
+                    for w in head_words):
                 continue
             # A government/public-entity party is public record and shares its
             # text with the venue line — keep it verbatim, don't build a term.
@@ -6309,6 +6333,28 @@ _PN_CA_COUNTIES = frozenset({
     "tuolumne", "ventura", "yolo", "yuba",
 })
 _PN_NEVER_SCRUB_LOCALITIES = _PN_CA_COUNTIES
+# The individual WORDS of the protected localities ("long", "beach", "los",
+# "angeles"): a bare pseudonym token equal to one of these corrupts the venue
+# everywhere it appears ("Long Beach" -> "Long Waverly"), so no bare token may
+# be one.
+_PN_LOCALITY_WORDS = frozenset(
+    w for loc in _PN_NEVER_SCRUB_LOCALITIES for w in loc.split()) | frozenset("""
+beach hills valley springs grove heights gardens lake canyon ranch palms
+shores vista mesa park city long
+""".split())
+
+
+def _pn_is_generic_token(base):
+    """True for a word that must never become a BARE pseudonym token, however
+    it was harvested: ordinary English / procedural vocabulary ("Warranty",
+    "Legal", "Name" — the run that faked every 'warranty' as 'langley' and
+    'Legal Standard' as 'Granite Standard' came from exactly these), an
+    institution word, or a word of a protected locality ("Beach"). The FULL
+    name a token came from is still registered; only the free-standing token
+    is withheld, so the cost is a missed bare occurrence (caught by the
+    unknown-name net), never a corrupted document."""
+    return (base in _PN_COMMON_WORDS or base in _PN_REVIEW_NAME_STOP
+            or base in _PN_LOCALITY_WORDS)
 
 
 def _pn_is_protected_locality(city):
@@ -6613,6 +6659,16 @@ def _pn_fake_vin(vin, registry):
     return fake
 
 
+# A Westlaw-cite run, tolerant of the shapes the full citation parser can't
+# read: an optional capitalized case-name lead, "No. <docket>," then
+# "<year> WL <number>", pin cite and court paren optional (the year inside the
+# paren may be OCR-damaged or missing). Used ONLY to extend citation
+# PROTECTION, never for linking.
+_PN_WL_RUN_RE = re.compile(
+    r"(?:[A-Z][\w.,&'’\- ]{0,60}?,?\s+)?No\.\s*[\w:().\-]+,?\s+\d{4}\s+WL\s+"
+    r"\d{4,}(?:,?\s*at\s+\*\d+)?(?:\s*\([^)\n]{0,50}\))?")
+
+
 def _pn_fake_production(val, registry):
     """Fake a production/Bates stamp with a CONSISTENT head: the alpha prefix
     maps as its own unit and the digit run as its own, so "RAM000013" and
@@ -6779,6 +6835,9 @@ enforced enforceable unconscionable binding severable applies apply applied
 governs govern governed controls control controlled fails fail failed lacks
 lack lacked standing merits issue issues matter matters cause causes claim
 claims defense defenses
+warranty warranties warrant legal name names customer customers relation
+relations practice practices standard standards consumer consumers repair
+repairs vehicle vehicles motor motors strategic
 january february march april may june july august september october november
 december monday tuesday wednesday thursday friday saturday sunday
 """.split())
@@ -6893,14 +6952,23 @@ def _pn_address_adjacency(records):
             continue
         street, nums = _pn_addr_street_key(r["real"])
         if street and nums:
-            by_street.setdefault(street, []).append((min(nums), max(nums), r["real"]))
+            by_street.setdefault(street, []).append(
+                (min(nums), max(nums), r["real"], str(r["fake"])))
     warns = []
     for entries in by_street.values():
         entries.sort()
         for i in range(len(entries)):
-            lo1, hi1, a = entries[i]
-            for lo2, hi2, b in entries[i + 1:]:
+            lo1, hi1, a, fa = entries[i]
+            for lo2, hi2, b, fb in entries[i + 1:]:
                 if lo2 <= hi1 + 2 and lo1 <= hi2 + 2:  # within 2, or overlapping
+                    # Two SPELLINGS of one parcel ("Dr." vs "Drive", with or
+                    # without the city tail) that resolved to the SAME fake
+                    # street are the injective key working, not a conflict —
+                    # nine such warnings buried the one that matters. DIFFERENT
+                    # house numbers are different parcels and always warn.
+                    if ((lo1, hi1) == (lo2, hi2)
+                            and _pn_addr_street_key(fa) == _pn_addr_street_key(fb)):
+                        continue
                     warns.append(f"'{a}' and '{b}' are adjacent/overlapping on "
                                  f"one street but were faked separately")
     return warns
@@ -7273,6 +7341,13 @@ _PN_LABEL_RES = (
                r"(?P<n>" + _PN_LABEL_NAME + r")"),
     re.compile(r"(?i:dear)[ \t]+(?i:mr|ms|mrs|dr|messrs)\.?[ \t]+"
                r"(?P<n>" + _PN_LABEL_NAME + r")"),
+    # An attorney's name immediately BEFORE their bar-number label — the one
+    # place a letterhead prints counsel with no other anchor ("Michael D.
+    # Mortenson, State Bar No. 230831"). A run faked the bar number while the
+    # name beside it shipped in cleartext; the trailing label makes this a
+    # zero-false-positive anchor.
+    re.compile(r"(?P<n>" + _PN_LABEL_NAME + r")\s*,?\s*(?:Esq\.?\s*,?\s*)?"
+               r"\(?(?i:State\s+Bar\s+No|SBN|S\.\s*B\.?\s*(?:N|#))"),
 )
 
 
@@ -7553,12 +7628,15 @@ class Pseudonymizer:
         return None
 
     def _add_terms(self, new_terms):
-        """Add freshly minted terms, skipping any real value already tracked.
-        Returns True when anything was added."""
+        """Add freshly minted terms, skipping any real value already tracked
+        and any value pruned as citation-only (a per-file re-harvest must not
+        resurrect it). Returns True when anything was added."""
         added = False
         for t in new_terms:
             k = (t.category, t.real.lower())
             if k in self.records:
+                continue
+            if t.real.lower() in getattr(self, "_pruned_reals", ()):
                 continue
             self.terms.append(t)
             self.records[k] = {
@@ -7624,6 +7702,48 @@ class Pseudonymizer:
                                              whole_word=True,
                                              case_sensitive=False,
                                              priority=1, source="document")])
+
+    def prune_citation_only_terms(self, text):
+        """Drop every DOCUMENT-harvested name term whose occurrences in `text`
+        all lie inside protected citation spans — the corpus-wide equivalent of
+        "don't harvest a party out of the authorities table".
+
+        A lemon-law brief cites "FCA US, LLC", "Mercedes-Benz USA, LLC", "BMW
+        of N. Am., LLC" dozens of times; the suffix-anchored harvester swept
+        those (and welded fragments like "N. Am., LLC") in as entities. Each
+        was then correctly PRESERVED inside its citations by span protection —
+        and the leak scan counted every preserved occurrence as a leak,
+        quarantining ten clean exports. A name that never appears outside a
+        citation is an authority, not a party: it needs no fake, no key row,
+        and no leak status. Pruned values are remembered so a later per-file
+        re-harvest cannot resurrect them. Call after ALL register_* passes,
+        with the FULL corpus text (a name citation-only in one filing may be a
+        real party in another)."""
+        text = _NFKC(text)
+        spans = self._protected_citation_spans(text)
+        if not spans:
+            return []
+        self._pruned_reals = getattr(self, "_pruned_reals", set())
+        doomed = []
+        for t in list(self.terms):
+            if (t.source != "document"
+                    or t.category not in ("person", "entity", "person-token",
+                                          "entity-token", "short-name")):
+                continue
+            try:
+                ms = list(re.finditer(t.pattern, text, t.flags))
+            except re.error:
+                continue
+            if ms and all(any(m.start() < e and s < m.end() for s, e in spans)
+                          for m in ms):
+                doomed.append(t)
+        for t in doomed:
+            self.terms.remove(t)
+            self.records.pop((t.category, t.real.lower()), None)
+            self._pruned_reals.add(t.real.lower())
+        if doomed:
+            self._trusted_tok_cache = None
+        return [t.real for t in doomed]
 
     def register_entity_acronyms(self, text):
         """Register the bare initialism of every tracked multi-word entity that
@@ -7795,10 +7915,18 @@ class Pseudonymizer:
                                        whole_word=True, case_sensitive=False,
                                        priority=2, source="document"))
         # VINs: a 17-char VIN-alphabet run, faked char-wise into the VIN alphabet
-        # so the result stays a valid-shaped but fictitious VIN.
+        # so the result stays a valid-shaped but fictitious VIN. The UNCUED
+        # 17-char branch additionally requires a VALID ISO check digit —
+        # federal docket numbers ("221CV01063RGKAFMX") share the alphabet and
+        # length, and faking one rewrites a citation. A real VIN passes; a
+        # docket essentially never does; a VIN behind a printed "VIN" label
+        # stays loose (the label is the guard there).
         for m in _PN_VIN_RE.finditer(_NFKC(text)):
             vin = m.group(1) or m.group(2)
             if not vin or ("vin", vin.lower()) in self.records:
+                continue
+            if (m.group(2) and (len(vin) != 17
+                                or vin[8].upper() != _pn_vin_check_digit(vin))):
                 continue
             new.append(_PnTerm("vin", vin, _pn_fake_vin(vin, self.registry),
                                whole_word=True, case_sensitive=False,
@@ -7820,7 +7948,9 @@ class Pseudonymizer:
             new_terms += [_PnTerm("person-token", rt, ft, whole_word=True,
                                   case_sensitive=False, priority=1,
                                   source="declarant")
-                          for rt, ft, _s in bare if not _pn_is_role_token(rt)]
+                          for rt, ft, _s in bare
+                          if not _pn_is_role_token(rt)
+                          and not _pn_is_generic_token(_pn_word_base(rt))]
             self._add_terms(new_terms)
 
     def _detector_record(self, cat, real, faker):
@@ -8036,7 +8166,31 @@ class Pseudonymizer:
                     and self._side_is_trusted(c.get("defendant", ""))):
                 continue  # this document's own caption — replace it
             spans.append(tuple(c["span"]))
+        # A "…, No. <docket>, <year> WL <n>" run names an authority even when
+        # the citation parser can't read it (no "v." — a case cited by its
+        # defendant name alone; a court paren the OCR dropped the year from).
+        # Protect the run plus the name immediately before it. Protection-only:
+        # the worst case is a nearby value left unreplaced (a warning), never
+        # a renamed authority.
+        for m in _PN_WL_RUN_RE.finditer(text):
+            spans.append(m.span())
         return spans
+
+    def _mask_protected_citations(self, text):
+        """`text` with every protected citation span blanked to spaces, for the
+        LEAK scans: a party name correctly preserved inside a cited authority
+        ("Silvio v. Ford Motor Co.") is the protection working, not a leak —
+        counting it quarantined ten clean exports over text that was required
+        to stay."""
+        spans = self._protected_citation_spans(text)
+        if not spans:
+            return text
+        chars = list(text)
+        for s, e in spans:
+            for i in range(s, min(e, len(chars))):
+                if not chars[i].isspace():
+                    chars[i] = " "
+        return "".join(chars)
 
     def _substitute(self, text, cands, reflow=False, count=True, protected=None):
         # Biggest / most-specific first; skip anything overlapping a chosen span.
@@ -8176,7 +8330,7 @@ class Pseudonymizer:
         ZERO times: a term whose only occurrences were line-wrapped used to
         match nothing, so it had no replacement count, so the old count>0 guard
         skipped it and the leak was reported as clean."""
-        text = _NFKC(text)
+        text = self._mask_protected_citations(_NFKC(text))
         out = []
         for rec in self.records.values():
             try:
@@ -8194,7 +8348,8 @@ class Pseudonymizer:
         boundaries — yet the reduction `schillecitortoricilaw` still CONTAINS
         `schillecitortorici`. Only reasonably long cores are checked so a short
         name can't match inside an unrelated word."""
-        red = re.sub(r"[^a-z0-9]", "", _NFKC(text).lower())
+        masked = self._mask_protected_citations(_NFKC(text))
+        red = re.sub(r"[^a-z0-9]", "", masked.lower())
         out = []
         for rec in self.records.values():
             core = _pn_alnum_core(rec["real"])
@@ -8359,6 +8514,11 @@ class Pseudonymizer:
                 low = form.lower()
                 if len(form.split()) != 1 or low in local:
                     continue
+                # A 2-char title-case token ("El") is a word, not an acronym;
+                # only an all-caps form or a 3+ char initialism is worth a
+                # reviewer's attention.
+                if len(form) < 3 and not form.isupper():
+                    continue
                 if not re.search(r"(?<!\w)" + re.escape(form) + r"(?!\w)", output):
                     continue          # already scrubbed / absent — fine
                 if any(_pn_initialism_fake(form, rw, fw) for rw, fw in parties):
@@ -8393,9 +8553,14 @@ class Pseudonymizer:
                 continue          # our own stand-in, riding under its label
             findings.append((f"REID {cls}", val))
         for m in _PN_VIN_RE.finditer(_NFKC(text)):
-            vin = (m.group(1) or m.group(2) or "").lower()
-            if vin and vin not in fake_vals:
-                findings.append(("REID vin", vin.upper()))
+            vin = (m.group(1) or m.group(2) or "").upper()
+            # The uncued shape must carry a valid check digit — otherwise a
+            # federal docket number gets reported as a surviving VIN.
+            if (m.group(2) and (len(vin) != 17
+                                or vin[8] != _pn_vin_check_digit(vin))):
+                continue
+            if vin and vin.lower() not in fake_vals:
+                findings.append(("REID vin", vin))
         seen = {(c, s.lower()) for c, s in self.review}
         out = []
         for c, s in findings:
@@ -8404,6 +8569,21 @@ class Pseudonymizer:
                 self.review.append((c, s))
                 out.append((c, s))
         return out
+
+    def apply_to_citation(self, cite, s):
+        """Pseudonymize a CITATION-derived string (an appendix display line, a
+        search query) only when `cite` is this case's own caption — both
+        v.-sides trusted — which surfaces as a slip cite and must scrub. Every
+        real authority passes through verbatim: a bare cite key re-parsed by
+        apply() often can't be re-detected as a citation (the key format drops
+        the reporter context), so the party-token terms would rewrite the
+        authority's name — the appendix shipped "McGee v. <fake>, LLC" beside
+        a body that correctly kept the real name."""
+        if (cite.get("kind") == "case" and cite.get("plaintiff") is not None
+                and self._side_is_trusted(cite["plaintiff"])
+                and self._side_is_trusted(cite.get("defendant", ""))):
+            return self.apply(s)
+        return s
 
     def unknown_name_scan(self, text):
         """High-recall tier over the FINISHED output: role-anchored capitalised
@@ -8696,7 +8876,11 @@ def _public_authority_url(cite, pseudonymizer=None):
     from urllib.parse import quote
 
     def _pn(s):
-        return pseudonymizer.apply(s) if pseudonymizer is not None else s
+        # Only this case's OWN caption (a slip cite with both sides trusted)
+        # is scrubbed; a real authority's query must stay verbatim, or the
+        # verification link points at a nonexistent case.
+        return (pseudonymizer.apply_to_citation(cite, s)
+                if pseudonymizer is not None else s)
 
     key = cite.get("key", "")
     kind = cite.get("kind")
@@ -8725,15 +8909,15 @@ def _build_authorities_appendix(full_text, pseudonymizer=None):
     pseudonymizer is given, the displayed cite text and the search query are
     pseudonymized as plain text (so the current case's own caption is scrubbed
     without the percent-encoding boundary issue that would sneak it through)."""
-    def _pn(s):
-        return pseudonymizer.apply(s) if pseudonymizer is not None else s
     seen = {}
     for c in find_all_citations(full_text):
         if c["key"] in seen:
             continue
         url = _public_authority_url(c, pseudonymizer)
         if url:
-            seen[c["key"]] = (_pn(c["key"]), url)
+            disp = (pseudonymizer.apply_to_citation(c, c["key"])
+                    if pseudonymizer is not None else c["key"])
+            seen[c["key"]] = (disp, url)
     if not seen:
         return ""
     lines = ["====== Authorities cited (public verification links) ======"]
@@ -9344,7 +9528,13 @@ def _pn_prescan_folder(pdfs, pseudonymizer, log):
     if added:
         log.info(f"  Pseudonymize: pre-scan of {len(pdfs)} file(s) added "
                  f"{added} term(s) from names, localities and identifiers")
-    return "\n\f\n".join(corpus)
+    full = "\n\f\n".join(corpus)
+    pruned = pseudonymizer.prune_citation_only_terms(full)
+    if pruned:
+        log.info(f"  Pseudonymize: dropped {len(pruned)} harvested name(s) "
+                 f"that appear only inside case citations "
+                 f"({', '.join(sorted(pruned)[:6])})")
+    return full
 
 
 def process_pdf(pdf_path: Path, log: logging.Logger,

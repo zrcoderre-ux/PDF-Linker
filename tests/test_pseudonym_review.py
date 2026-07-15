@@ -669,6 +669,139 @@ def test_ford_short_form_vs_ford_citations():
         f"prose short form survived: {out}"
 
 
+# ────────────────── REVIEW (24STCV23198, delivered run) ─────────────────────
+# Failures observed in the ACTUAL delivered run (quarantined *.LEAK exports +
+# key): generic words registered as terms ("Name" x140, "warranty"->"langley",
+# "Legal Standard"->"Granite Standard"); citation-harvested entities counted
+# as leaks; federal dockets faked as VINs; authorities rewritten where the
+# parser missed a shape; appendix queries faking real authorities.
+
+def _pzR(names=("Ernest N Ramirez", "Ford Motor Company",
+                "BP Ford of Long Beach")):
+    reg = P._PnFakeRegistry()
+    terms = P._pn_build_terms(list(names), ["24STCV23198"], [], registry=reg)
+    det = {k: P._PN_DETECTORS[k] for k in P._PN_DEFAULT_DETECTORS}
+    return P.Pseudonymizer(terms, det, registry=reg)
+
+
+def test_generic_words_never_become_terms():
+    z = _pzR(names=["Ernest N Ramirez", "Ford Motor Company",
+                    "Strategic Legal Practices, APC", "BP Ford of Long Beach",
+                    "Name"])
+    for bad in [("person", "name"), ("entity", "name"),
+                ("person-token", "legal"), ("person-token", "beach"),
+                ("person-token", "long")]:
+        assert bad not in z.records, f"{bad} was registered"
+    out = z.apply("A. Legal Standard. The written warranty covers it. "
+                  "Case Name: x. He lives in Long Beach. Their relationship "
+                  "ended. Strategic Legal Practices appeared.")
+    for kept in ("Legal Standard", "warranty", "Case Name", "Long Beach",
+                 "relationship"):
+        assert kept in out, f"{kept!r} corrupted: {out}"
+    assert "Strategic Legal Practices" not in out   # the firm itself scrubs
+
+
+def test_generic_label_harvest_rejected():
+    z = _pzR(names=["Ernest N Ramirez"])
+    z.register_label_names("Contractor: Customer Relations (323) 555-1212\n"
+                           "Warranty Complaints (562) 555-3434")
+    assert ("person", "customer relations") not in z.records
+    assert ("person", "warranty complaints") not in z.records
+
+
+def test_citation_only_harvest_is_pruned_and_stays_pruned():
+    z = _pzR()
+    corpus = ("McGee v. Mercedes-Benz USA, LLC, No. 19CV513-MMA (WVG), 2020 "
+              "WL 1530921, at *5 (S.D. Cal. Mar. 30, 2020).")
+    new = []
+    P._pn_append_name_terms(new, "Mercedes-Benz USA, LLC", "document",
+                            z.registry)
+    z._add_terms(new)
+    pruned = z.prune_citation_only_terms(corpus)
+    assert any("Mercedes-Benz" in p for p in pruned)
+    # a per-file re-harvest cannot resurrect a pruned value
+    new2 = []
+    P._pn_append_name_terms(new2, "Mercedes-Benz USA, LLC", "document",
+                            z.registry)
+    z._add_terms(new2)
+    assert ("entity", "mercedes-benz usa, llc") not in z.records
+    assert "Mercedes-Benz USA, LLC" in z.apply(corpus)
+
+
+def test_leak_scan_ignores_protected_citations():
+    # "Silvio v. Ford Motor Co." preserved in a citation is the protection
+    # WORKING — counting it as a leak quarantined ten clean exports.
+    z = _pzR()
+    body = ("Prose about Zephyr here. Silvio v. Ford Motor Co., 109 "
+            "Cal.App.4th 1205, 1207 (2003).")
+    assert not any("ford" in s.lower() for s in z.surviving_reals(body))
+    assert not any("ford" in s.lower()
+                   for s in z.surviving_reals_reduced(body))
+    # a genuine PROSE survivor still counts
+    sv = z.surviving_reals("Defendant Ford Motor Company moved in prose.")
+    assert "Ford Motor Company" in sv
+
+
+def test_inre_nakedwl_and_yearless_wl_protected():
+    z = _pzR()
+    for cite in [
+        'x."); In Re Ford Motor Co. DPS6 Powershift Transmission Products '
+        "Liability Litigation, 689 F.Supp.3d 760, 776 (C.D. Cal. 2023)",
+        "(x); Ford Motor Co., No. CV222111DSFAGRX, 2023 WL 3035369, at *3 "
+        "(C.D. Cal. Feb. 21, 2023)",
+        "see Noori v. Jaguar Land Rover N. Am., LLC, No. 220CV0813SVWJEMX, "
+        "2021 WL 1232450, at *9 (C.D. Cal. Apr.);",
+    ]:
+        assert z.apply(cite) == cite, f"authority rewritten: {z.apply(cite)}"
+
+
+def test_docket_numbers_are_not_vins():
+    z = _pzR(names=["Ernest N Ramirez"])
+    z.register_identifiers("No. 221CV01063RGKAFMX, 2022 WL 1591701 and "
+                           "VIN 1C4JJXP65PW699184")
+    assert ("vin", "221cv01063rgkafmx") not in z.records
+    assert ("vin", "1c4jjxp65pw699184") in z.records   # real VIN still caught
+    assert not any(c == "REID vin"
+                   for c, _v in z.reid_scan("stray 20EDCV221896MWFJC here"))
+
+
+def test_attorney_before_bar_label_registered():
+    z = _pzR(names=["Ernest N Ramirez"])
+    z.register_label_names("Michael D. Mortenson, State Bar No. 230831\n"
+                           "Craig A. Taggart, State Bar No. 239168")
+    out = z.apply("Michael D. Mortenson and Craig A. Taggart appeared.")
+    assert "Mortenson" not in out and "Taggart" not in out, out
+
+
+def test_appendix_query_keeps_authority_scrubs_own_caption():
+    z = _pzR()
+    authority = {"kind": "case", "plaintiff": "McGee",
+                 "defendant": "Mercedes-Benz USA, LLC"}
+    s = "McGee v. Mercedes-Benz USA, LLC 2020 WL 1530921"
+    assert z.apply_to_citation(authority, s) == s
+    own = {"kind": "case", "plaintiff": "Ernest N Ramirez",
+           "defendant": "Ford Motor Company"}
+    cap = "Ernest N Ramirez v. Ford Motor Company Case No. 24STCV23198"
+    scrubbed = z.apply_to_citation(own, cap)
+    assert "Ramirez" not in scrubbed and "Ford" not in scrubbed
+
+
+def test_adjacency_warning_only_for_real_conflicts():
+    recs = [
+        {"category": "address", "real": "300 Spectrum Center Dr., Suite 1200",
+         "fake": "7956 Foxglove Drive, Suite 1200"},
+        {"category": "address",
+         "real": "300 Spectrum Center Drive, Suite 1200, Irvine, CA 92618",
+         "fake": "7956 Foxglove Drive, Suite 1200, Irvine, CA 92618"},
+        {"category": "address", "real": "414 S. Maple Ave.",
+         "fake": "1533 Cypress Ave."},
+        {"category": "address", "real": "416 S. Maple Ave.",
+         "fake": "2044 Birch Ave."},
+    ]
+    w = P._pn_address_adjacency(recs)
+    assert len(w) == 1 and "Maple" in w[0], w
+
+
 # ─────────────────────── CAPTION RECONSTRUCTION ─────────────────────────────
 # The caption party block — where every hard extraction failure has lived —
 # is cut out and re-rendered from the tracked parties' fakes, but ONLY when
