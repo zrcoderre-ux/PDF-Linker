@@ -8709,15 +8709,194 @@ def _page_column_streams(rows):
     return sorted(streams.items())
 
 
+# ── Caption reconstruction ───────────────────────────────────────────────────
+# The caption's party block is where nearly every hard extraction failure has
+# lived (wraps, splices, welds, OCR variants) — and it is also the one region
+# whose content is KNOWN: parties, roles, DOES boilerplate. So instead of
+# repairing its extraction, the block is cut out and RE-RENDERED from the
+# tracked parties' fakes. Fail-safe by construction: every word of the block
+# must be attributed to a known party, a role label, or caption boilerplate,
+# or the page falls back to the ordinary pipeline untouched — reconstruction
+# can never silently drop a party it didn't recognise.
+
+# Words that legitimately appear in a party block without naming anyone: the
+# capacity/descriptor vocabulary of a California caption.
+_PN_CAPTION_VOCAB = frozenset("""
+a an and the of on behalf all others similarly situated individual
+individuals corporation company entity entities form unknown business
+capacity partnership partnerships limited liability california delaware
+nevada domestic foreign profit nonprofit public benefit municipal
+association organization trust joint venture does doe roes roe inclusive to
+through thru et al sued herein as related cross actions action consolidated
+successor in interest trustee guardian conservator estate deceased minor by
+his her their its dba aka fka
+""".split())
+
+_PN_CAPTION_VS_RE = re.compile(r"(?i)^\s*vs?\.?\s*,?\s*$")
+_PN_CAPTION_PROLE_RE = re.compile(
+    r"(?i)^\s*(?:plaintiffs?|petitioners?|cross-complainants?)\s*[.,;]?\s*$")
+_PN_CAPTION_DROLE_RE = re.compile(
+    r"(?i)^\s*(?:defendants?|respondents?|cross-defendants?)\s*[.,;]?\s*$")
+
+
+def _pn_reconstruct_caption(pseudonymizer, rows):
+    """Rebuild a page's caption party block from the tracked parties' fakes.
+
+    Detects the classic layout in the leftmost column band — plaintiff names,
+    a role row ("Plaintiff,"), a "vs." row, defendant names, a role row
+    ("Defendants.") — beside a second column (case number / title). The name
+    rows are replaced by lines rendered from the matched parties' fakes (plus
+    any DOES phrase, kept verbatim); role and "vs." rows are kept as printed.
+    Row count, line numbers, and every other column are untouched, so pinpoint
+    anchoring is unaffected and the right column flows through the ordinary
+    scrub.
+
+    Returns the rebuilt rows, or None when anything stops it: no such block,
+    no second column beside it, a side that matches no tracked party, or —
+    the fail-safe — ANY word in the name rows that is not attributable to a
+    tracked party, a role label, or caption boilerplate. On None the caller
+    proceeds exactly as before, so reconstruction can only ever replace text
+    it fully understands."""
+    if not rows:
+        return None
+    parties = []
+    for (cat, _rl), rec in pseudonymizer.records.items():
+        if cat not in ("person", "entity"):
+            continue
+        pb = {_pn_word_base(w) for w in rec["real"].split()
+              if len(_pn_word_base(w)) >= 2
+              and not _pn_is_entity_keep(_pn_word_base(w))}
+        if pb:
+            parties.append((rec, pb))
+    if not parties:
+        return None
+    all_party_bases = set().union(*(pb for _r, pb in parties))
+
+    bands = _page_column_bands(rows)
+    b0 = []                                   # (row_i, seg_j, text) in band 0
+    for i, (_num, segs) in enumerate(rows):
+        for j in range(len(segs)):
+            if bands[i][j] == 0:
+                b0.append((i, j, segs[j][1]))
+                break
+    texts = [t for _i, _j, t in b0]
+
+    def _find(rx, lo):
+        for k in range(lo, len(texts)):
+            if rx.match(texts[k]):
+                return k
+        return -1
+    p_role = _find(_PN_CAPTION_PROLE_RE, 0)
+    vs_k = _find(_PN_CAPTION_VS_RE, p_role + 1) if p_role >= 0 else -1
+    d_role = _find(_PN_CAPTION_DROLE_RE, vs_k + 1) if vs_k >= 0 else -1
+    if p_role < 0 or vs_k < 0 or d_role < 0 or d_role - p_role > 40:
+        return None
+
+    # Walk back from the plaintiff-role row to the top of the name run.
+    start = p_role
+    while (start > 0 and texts[start - 1].strip()
+           and not _PN_CAPTION_PROLE_RE.match(texts[start - 1])
+           and not _PN_CAPTION_VS_RE.match(texts[start - 1])
+           and not re.search(r"(?i)\bcourt\b|:\s*$", texts[start - 1])):
+        start -= 1
+    if start == p_role:
+        return None                           # no plaintiff name rows found
+
+    # Two-column requirement: the block must sit beside another column.
+    rng = {i for i, _j, _t in b0[start:d_role + 1]}
+    if not any(bands[i][j] >= 1
+               for i in rng for j in range(len(rows[i][1]))):
+        return None
+
+    p_text = " ".join(texts[start:p_role])
+    d_text = " ".join(texts[vs_k + 1:d_role])
+
+    # Fail-safe attribution: every word of the name rows must be a party word,
+    # a role word, caption boilerplate, or a non-alphabetic token.
+    for w in (p_text + " " + d_text).split():
+        base = _pn_word_base(w)
+        if (not re.search(r"[a-z]", base) or len(base) == 1
+                or base in _PN_CAPTION_VOCAB
+                or base in _PN_PARTY_ROLE_WORDS
+                or _pn_is_entity_keep(base)
+                or base in all_party_bases):
+            continue
+        return None
+
+    def _side_parties(txt):
+        ws = {_pn_word_base(w) for w in txt.split()}
+        hits = sorted((r for r, pb in parties if pb <= ws),
+                      key=lambda r: -len(r["real"]))
+        out, covered = [], set()
+        for r in hits:
+            pb = next(pb for rr, pb in parties if rr is r)
+            if not pb <= covered:             # skip a variant already covered
+                covered |= pb
+                out.append(r)
+        return out
+    ps, ds = _side_parties(p_text), _side_parties(d_text)
+    if not ps or not ds:
+        return None
+
+    def _cased(rec, txt):
+        # Match how the party's OWN words are printed (captions are usually
+        # ALL CAPS while the descriptors around them are not).
+        pb = next(pb for rr, pb in parties if rr is rec)
+        own = [w for w in txt.split() if _pn_word_base(w) in pb]
+        joined = "".join(own)
+        alpha = [c for c in joined if c.isalpha()]
+        upper = sum(c.isupper() for c in alpha)
+        return (rec["fake"].upper()
+                if alpha and upper > 0.8 * len(alpha) else rec["fake"])
+    m = re.search(r"(?i)\bdoes?\s+\d+\s*(?:through|to|thru|[-–])\s*\d+"
+                  r"(?:,?\s*inclusive)?", d_text)
+    p_line = "; ".join(_cased(r, p_text) for r in ps) + ","
+    d_line = "; ".join(_cased(r, d_text) for r in ds)
+    if m:
+        d_line += f"; and {m.group(0)}"
+    d_line += ","
+
+    # Rebuild: the first name row of each side carries the rendered line, the
+    # rest go blank; role and "vs." rows are kept exactly as printed.
+    new_text = {}
+    for k in range(start, p_role):
+        new_text[k] = p_line if k == start else ""
+    for k in range(vs_k + 1, d_role):
+        new_text[k] = d_line if k == vs_k + 1 else ""
+    out_rows = []
+    replace = {(b0[k][0], b0[k][1]): new_text[k] for k in new_text}
+    for i, (num, segs) in enumerate(rows):
+        nsegs = []
+        for j, (x, t) in enumerate(segs):
+            if (i, j) in replace:
+                t = replace[(i, j)]
+                if not t:
+                    continue                  # blank filler row: drop the seg
+            nsegs.append((x, t))
+        out_rows.append((num, nsegs))
+    for r in ps + ds:
+        # Record the replacement so the reversal key carries the mapping.
+        r["count"] += 1
+    return out_rows
+
+
 def _pn_apply_page_rows(pseudonymizer, rows):
     """Pseudonymize a pleading page column by column and return one display
     string per row.
+
+    The caption party block, when confidently detected and fully attributed,
+    is RE-RENDERED from the tracked parties' fakes first (see
+    _pn_reconstruct_caption) — extraction pathologies in that block (wraps,
+    splices, OCR variants) then never reach the matching layer at all.
 
     A party name that the printed page wrapped mid-name is only contiguous
     within its own column; read straight across the page it is interrupted by
     whatever the other column holds on that line. Running each column as its own
     line stream restores the contiguity `apply_lines` needs, then the row is
     re-assembled left to right exactly as it reads on paper."""
+    rebuilt = _pn_reconstruct_caption(pseudonymizer, rows)
+    if rebuilt is not None:
+        rows = rebuilt
     faked = {}
     for _band, items in _page_column_streams(rows):
         bodies = [rows[i][1][j][1] for i, j in items]

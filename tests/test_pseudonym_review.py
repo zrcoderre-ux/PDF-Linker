@@ -560,6 +560,78 @@ def test_corp_suffix_never_a_person_surname_single_identity():
             assert w in ent_fake, f"{w!r} diverges from {ent_fake!r}"
 
 
+# ─────────────────────── CAPTION RECONSTRUCTION ─────────────────────────────
+# The caption party block — where every hard extraction failure has lived —
+# is cut out and re-rendered from the tracked parties' fakes, but ONLY when
+# every word of it is attributable to a known party, role label, or caption
+# boilerplate. Anything unattributed and the page falls back untouched.
+
+_CAPTION_ROWS = [
+    (1, [(110.0, "ALEJANDRO ORELLANA, an individual,"),
+         (380.0, "Case No. 24STCV06764")]),
+    (2, [(110.0, "Plaintiff,"), (380.0, "NOTICE OF MOTION")]),
+    (3, [(110.0, "vs.")]),
+    (4, [(110.0, "AHC ACQUISITION, LLC; and DOES 1-10,")]),
+    (5, [(110.0, "inclusive,")]),
+    (6, [(110.0, "Defendants.")]),
+]
+
+
+def _caption_pz():
+    return _pz06764(names=["Alejandro Orellana", "AHC Acquisition, LLC"])
+
+
+def test_caption_block_is_rebuilt_from_fakes():
+    z = _caption_pz()
+    out = P._pn_apply_page_rows(z, _CAPTION_ROWS)
+    joined = " ".join(out).lower()
+    for real in ("alejandro", "orellana", "ahc", "acquisition"):
+        assert real not in joined, f"{real!r} survived: {out}"
+    assert "does 1-10" in joined                     # boilerplate kept
+    assert "Plaintiff," in out[1] and "vs." in out[2] and "Defendants." in out[5]
+    assert "NOTICE OF MOTION" in out[1]              # right column untouched
+    assert len(out) == len(_CAPTION_ROWS)            # row count preserved
+    assert out[0].split(",")[0].isupper()            # caption casing followed
+    assert z.records[("entity", "ahc acquisition, llc")]["count"] > 0
+
+
+def test_caption_failsafe_unknown_party_blocks_reconstruction():
+    # An unattributed name in the block must abort reconstruction — silently
+    # dropping a party the key doesn't know would misrepresent the case.
+    z = _caption_pz()
+    rows = list(_CAPTION_ROWS)
+    rows[3] = (4, [(110.0, "AHC ACQUISITION, LLC; ZENITH PARTNERS; and "
+                           "DOES 1-10,")])
+    assert P._pn_reconstruct_caption(z, rows) is None
+
+
+def test_caption_wrapped_name_is_attributed_and_rebuilt():
+    # The DREAM TEAM failure shape: a defendant wrapped mid-name across rows
+    # matches no whole-string pattern, but word-set attribution still binds it.
+    z = _caption_pz()
+    rows = [
+        (1, [(110.0, "ALEJANDRO ORELLANA,"), (380.0, "Case No. 24STCV06764")]),
+        (2, [(110.0, "Plaintiff,"), (380.0, "COMPLAINT")]),
+        (3, [(110.0, "vs.")]),
+        (4, [(110.0, "AHC")]),
+        (5, [(110.0, "ACQUISITION, LLC,")]),
+        (6, [(110.0, "Defendant.")]),
+    ]
+    out = P._pn_apply_page_rows(z, rows)
+    joined = " ".join(out).lower()
+    assert "ahc" not in joined and "acquisition" not in joined, out
+
+
+def test_caption_not_reconstructed_without_structure():
+    z = _caption_pz()
+    # ordinary prose: no role/vs rows
+    assert P._pn_reconstruct_caption(
+        z, [(1, [(110.0, "The parties met and conferred.")])]) is None
+    # single-column page: a caption block needs a second column beside it
+    rows = [(n, [s for s in segs if s[0] < 300]) for n, segs in _CAPTION_ROWS]
+    assert P._pn_reconstruct_caption(z, rows) is None
+
+
 # Tiered leak gate: the pseudonymization is a precaution against casual
 # recognition of a PUBLIC filing, so only a survivor that names a party
 # outright justifies quarantining the exports. A bare token or identifier
