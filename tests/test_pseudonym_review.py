@@ -406,6 +406,19 @@ def test_spliced_welded_entity_is_scrubbed():
     assert not z.surviving_reals_reduced(cured), "reduced survivor remains"
 
 
+def test_spliced_scrub_respects_citation_spans():
+    # The loose (reduced-substring) replacer must honor the same citation
+    # protection as the precise path: a cited decision whose party name
+    # contains a tracked core survives byte-for-byte even on a splice-flagged
+    # page, while a welded occurrence of the same party elsewhere is cured.
+    z = _pz06764(names=["Valencia Holding Co., LLC", "Alejandro Orellana"])
+    cite = "Sanchez v. Valencia Holding Co., LLC (2015) 61 Cal.4th 899"
+    out = z.scrub_welded(
+        cite + ". Defendant VALENCIAHOLDINGservice of process appears.")
+    assert cite in out, "scrub_welded rewrote a cited authority"
+    assert "VALENCIAHOLDINGservice" not in out, "welded name survived"
+
+
 def test_spliced_replacement_recorded_in_key():
     # A welded name cured by scrub_welded must be recorded (Status "replaced"),
     # so the reversal key carries the mapping instead of parking it in the audit.
