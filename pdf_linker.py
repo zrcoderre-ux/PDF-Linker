@@ -5156,6 +5156,7 @@ _PN_ENTITY_SUFFIXES = {
     "limited", "pc", "p.c.", "plc", "na", "n.a.", "trust", "bank", "assn",
     "association", "partners", "partnership", "group", "fund", "holdings",
     "enterprises", "systems", "services", "solutions", "foundation",
+    "apc", "a.p.c.", "pllc", "p.l.l.c.",
 }
 _PN_ENTITY_KEEP = {"the", "of", "and", "for", "a", "an", "&", "de", "la"} | _PN_ENTITY_SUFFIXES
 # Suffix set with dots/spaces removed, so "P.C." / "L.L.C." normalize to the
@@ -5750,7 +5751,7 @@ def _pn_is_entity_keep(base):
 _PN_ACRONYM_CONNECTIVES = {"of", "and", "the", "for", "a", "an", "de", "la", "&"}
 _PN_ACRONYM_DROP_SUFFIX = {
     "inc", "incorporated", "llc", "llp", "lp", "corp", "corporation", "co",
-    "company", "ltd", "pc", "plc", "na",
+    "company", "ltd", "pc", "plc", "na", "apc", "pllc",
 }
 
 
@@ -6122,14 +6123,29 @@ _PN_ADDR_NUM = r"\d{1,6}(?:[ \t]*[-–—][ \t]*\d{1,6})?"
 # A name word: a capitalised word (no IGNORECASE, so "the court" can't qualify),
 # an ordinal ("5th", "101st"), or a directional ("N", "S.", "NW").
 _PN_ADDR_WORD = r"(?:[NSEW]{1,3}\.?|\d{1,3}(?:st|nd|rd|th)|[A-Z][A-Za-z0-9.'&-]*)"
-# Optional trailing suite and City, ST ZIP, so the locality is scrubbed too.
-_PN_ADDR_SUITE = r"(?:[ \t]*,?[ \t]*(?i:Suite|Ste|Unit|Apt|Bldg|#)[ \t]*[\w-]+)?"
+# Optional trailing suite/floor and City, ST ZIP, so the locality is kept too.
+# The floor form is "<ordinal> Floor" — value BEFORE the label, unlike Suite.
+_PN_ADDR_SUITE = (
+    r"(?:[ \t]*,?[ \t]*(?:(?i:Suite|Ste|Unit|Apt|Bldg|#)[ \t]*[\w-]+"
+    r"|\d{1,3}(?:st|nd|rd|th)[ \t]+(?i:Floor|Fl)\b\.?))?")
 _PN_ADDR_CITYZIP = (
     r"(?:[ \t]*,?[ \t]*(?:[A-Z][A-Za-z]+[ \t]*,?[ \t]*){1,3}[A-Za-z]{2}\.?[ \t]+"
     r"\d{5}(?:-\d{4})?)?")
+# A street with no street-TYPE suffix ("1888 Century Park East") may close on a
+# trailing directional or plaza-head word instead — but ONLY when a suite/floor
+# token or a City, ST ZIP tail actually follows, so prose that merely starts
+# with a number ("24 Hour Fitness Center opened") can never qualify by shape.
+_PN_ADDR_CLOSE = r"(?i:East|West|North|South|Park|Center|Centre|Plaza)"
+_PN_ADDR_TAIL_CUE = (
+    r"[ \t]*,?[ \t]*(?:(?i:Suite|Ste|Unit|Apt|Bldg|#)[ \t]*[\w-]"
+    r"|\d{1,3}(?:st|nd|rd|th)[ \t]+(?i:Floor|Fl)\b"
+    r"|(?:[A-Z][A-Za-z]+[ \t]*,?[ \t]*){1,3}[A-Za-z]{2}\.?[ \t]+\d{5})")
+_PN_ADDR_STREET_PAT = (
+    rf"{_PN_ADDR_NUM}[ \t]+"
+    rf"(?:(?:{_PN_ADDR_WORD}[ \t]+){{1,4}}{_PN_ADDR_SUFFIX}\b\.?"
+    rf"|(?:{_PN_ADDR_WORD}[ \t]+){{1,3}}{_PN_ADDR_CLOSE}\b(?={_PN_ADDR_TAIL_CUE}))")
 _PN_ADDR_RE = re.compile(
-    rf"\b{_PN_ADDR_NUM}[ \t]+(?:{_PN_ADDR_WORD}[ \t]+){{1,4}}{_PN_ADDR_SUFFIX}"
-    rf"\b\.?{_PN_ADDR_SUITE}{_PN_ADDR_CITYZIP}")
+    rf"\b{_PN_ADDR_STREET_PAT}{_PN_ADDR_SUITE}{_PN_ADDR_CITYZIP}")
 
 _PN_ADDR_ABBR = {
     "st": "Street", "ave": "Avenue", "av": "Avenue", "blvd": "Boulevard",
@@ -6214,8 +6230,7 @@ def _pn_addr_strip_suffix(street):
 # Montebello, California" three lines below survived untouched. These parse the
 # match back into its parts so each is replaced in kind.
 _PN_ADDR_PARSE_RE = re.compile(
-    rf"^(?P<street>{_PN_ADDR_NUM}[ \t]+(?:{_PN_ADDR_WORD}[ \t]+){{1,4}}"
-    rf"{_PN_ADDR_SUFFIX}\b\.?)"
+    rf"^(?P<street>{_PN_ADDR_STREET_PAT})"
     rf"(?P<suite>{_PN_ADDR_SUITE})(?P<cityzip>{_PN_ADDR_CITYZIP})$")
 _PN_CITYZIP_PARSE_RE = re.compile(
     r"^(?P<lead>[ \t]*,?[ \t]*)(?P<city>.+?)[ \t]*,?[ \t]*"
@@ -6507,8 +6522,13 @@ _PN_ID_RES = {
     "bar number": re.compile(
         r"(?i)\b(?:(?:state\s+)?bar|sbn|s\.\s*b\.?)"
         r"\s*(?:n\.?|no\.?|number|#)?\s*:?\s*(\d{5,7})\b"),
+    # "RES. I.D.", "RES. NO.", "Reservation Number" — the caption block and the
+    # portal page label the same value differently, and requiring "I.D." made
+    # the "RES. NO." spelling invisible (it was saved only transitively, when a
+    # "Reservation ID" occurrence elsewhere registered the value).
     "reservation id": re.compile(
-        r"(?i)\bres(?:ervation)?\.?\s*i\.?\s*d\.?\s*:?\s*(\d{8,})"),
+        r"(?i)\bres(?:ervation)?\.?\s*(?:i\.?\s*d\.?|no\.?|num(?:ber)?\.?|#)"
+        r"\s*:?\s*(\d{8,})"),
     "file number": re.compile(
         r"(?i)\b(?:my\s+)?file\s+no\.?\s*:?\s*([\w\-]{3,})"),
     # A run-together 9-digit SSN, caught ONLY when an SSN label anchors it, so an
@@ -6528,10 +6548,21 @@ _PN_ID_RES = {
     "confirmation code": re.compile(
         r"(?i)\b(?:confirmation\s+(?:code|no\.?|number)\s*:?\s*|reservation\s+code\s*:?\s*)?"
         r"(CR-[A-Z0-9]{6,})"),
+    # A Bates / document-production stamp: an uppercase alpha prefix welded (or
+    # underscore-joined) to a zero-padded digit run, optionally a range —
+    # "FMC_RAMIREZ_ERNEST_000007", "RAM000013-RAM000018". These frequently
+    # EMBED a party's name, and the whole-word term patterns can't see it:
+    # `_` and digits are \w, so there is no word boundary at the name inside
+    # the token. Shape-anchored (no label exists in print); the space-separated
+    # "SBN 175977" style stays with its own labelled class.
+    "production number": re.compile(
+        r"(?<![A-Za-z0-9])([A-Z]{2,}[A-Z0-9]*(?:_[A-Z0-9]+)*_?\d{4,}"
+        r"(?:[ \t]*[-–][ \t]*[A-Z0-9_]*\d{2,})?)(?![A-Za-z0-9])"),
 }
 # Identifier classes whose value is ALPHANUMERIC and must be faked char-wise
-# (letters too), not just digit-wise.
-_PN_ALNUM_IDS = {"confirmation code"}
+# (letters too), not just digit-wise — a production stamp's letters ARE the
+# party-name abbreviation, so they must change along with the digits.
+_PN_ALNUM_IDS = {"confirmation code", "production number"}
 
 # Identifier classes that are RE-IDENTIFICATION KEYS: each resolves to a real
 # name/asset in one public lookup (State Bar search, DMV/title records, court
@@ -6541,7 +6572,7 @@ _PN_ALNUM_IDS = {"confirmation code"}
 # certified clean until the scan comes back empty.
 _PN_REID_CLASSES = frozenset({
     "bar number", "license number", "reservation id", "account id",
-    "confirmation code", "ssn",
+    "confirmation code", "ssn", "production number",
 })
 
 # A Vehicle Identification Number: 17 chars in the VIN alphabet (no I/O/Q). A
@@ -6580,6 +6611,23 @@ def _pn_fake_vin(vin, registry):
     if len(fake) == 17:
         fake = fake[:8] + _pn_vin_check_digit(fake) + fake[9:]
     return fake
+
+
+def _pn_fake_production(val, registry):
+    """Fake a production/Bates stamp with a CONSISTENT head: the alpha prefix
+    maps as its own unit and the digit run as its own, so "RAM000013" and
+    "RAM000018" — and both endpoints of "RAM000013-RAM000018" — come out under
+    one fake prefix, the way a real production series reads."""
+    def one(tok):
+        m = re.match(r"^([A-Za-z][A-Za-z0-9_]*?)(\d{2,})$", tok)
+        if not m:
+            return registry.alnum(tok, "production_number")
+        head, digits = m.groups()
+        return (registry.alnum(head, "prod_prefix")
+                + registry.digits(digits, "prod_digits"))
+    parts = re.split(r"([ \t]*[-–][ \t]*)", val)
+    return "".join(p if i % 2 or not p else one(p)
+                   for i, p in enumerate(parts))
 
 
 def _pn_identifier_values(text):
@@ -6634,6 +6682,44 @@ _PN_REVIEW_NAME_STOP = frozenset({
     "california", "angeles", "america", "united", "district", "division",
     "clerk", "judge", "honorable", "hon", "plaintiff", "defendant", "attorney",
 })
+
+
+# A business name anchored by a PURCHASE cue ("purchased ... from Worthington
+# Ford", "Worthington Ford, the dealership"): a non-party dealer has no
+# corporate suffix, no caption entry, and no label anchor, so nothing else can
+# see it — yet it re-identifies the sale. Reported, never replaced: a
+# non-party is scrubbed only via the curated list (--term / the "Other Names"
+# spreadsheet column), exactly because inferring parties is the failure mode
+# the closed-entity rule exists to prevent.
+_PN_REVIEW_DEALER_RES = (
+    re.compile(r"(?i:purchased|bought|leased|acquired|sold)[^.\n]{0,60}?"
+               r"(?i:from|at|by|to)[ \t]+(?P<n>" + _PN_REVIEW_NAME + r")"),
+    re.compile(r"(?P<n>" + _PN_REVIEW_NAME + r")"
+               r"(?=[ \t]*,?[ \t]*(?:(?i:a|an|the)[ \t]+)?"
+               r"(?i:dealer(?:ship)?|authorized\s+repair)\b)"),
+)
+
+
+def _pn_dealer_review_findings(text, known_fakes=()):
+    """[("possible business (purchase)", sample), ...] — capitalized names
+    beside a purchase/dealer cue that no term covers. Same suppression rules
+    as the person scan: institution stop-words and this run's own fakes are
+    never reported."""
+    known = {w.lower() for w in known_fakes}
+    out, seen = [], set()
+    for rx in _PN_REVIEW_DEALER_RES:
+        for m in rx.finditer(text):
+            name = re.sub(r"\s+", " ", m.group("n")).strip()
+            words = [w.strip(".,").lower() for w in name.split()]
+            if any(w in _PN_REVIEW_NAME_STOP for w in words):
+                continue
+            if all(w in known or w in _PN_COMMON_WORDS for w in words):
+                continue
+            if name.lower() in seen:
+                continue
+            seen.add(name.lower())
+            out.append(("possible business (purchase)", name))
+    return out
 
 
 def _pn_person_review_findings(text, known_fakes=()):
@@ -6771,6 +6857,7 @@ def _pn_review_findings(text, known_fakes=()):
                 seen.add(key)
                 out.append((cls, sample))
     out += _pn_person_review_findings(text, known_fakes)
+    out += _pn_dealer_review_findings(text, known_fakes)
     return out
 
 
@@ -7538,6 +7625,47 @@ class Pseudonymizer:
                                              case_sensitive=False,
                                              priority=1, source="document")])
 
+    def register_entity_acronyms(self, text):
+        """Register the bare initialism of every tracked multi-word entity that
+        the document ACTUALLY USES — briefs adopt a firm's acronym ("SLP" for
+        Strategic Legal Practices) without ever writing the defining
+        parenthetical that register_short_names needs, and the bare initialism
+        then re-identifies the firm all over the prose.
+
+        Occurrence-gated (the acronym must appear standalone in `text`) and
+        case-sensitive (a 2-5 letter uppercase token; prose words never
+        match), guarded against document abbreviations (ISO/RJN), common
+        words, and role words. The fake is the initials of the entity's OWN
+        fake, so the long and short forms stay recognisably one firm.
+        Idempotent; call before apply()."""
+        def initials(name):
+            words = _pn_acronym_trim(name.replace(",", " ").split())
+            core = [w for w in words
+                    if _pn_word_base(w) not in _PN_ACRONYM_CONNECTIVES
+                    and len(_pn_word_base(w)) >= 2]
+            return "".join(w[0].upper() for w in core) if len(core) >= 2 else ""
+        new = []
+        for t in list(self.terms):
+            if t.category != "entity":
+                continue
+            acr = initials(t.real)
+            if not 2 <= len(acr) <= 5:
+                continue
+            low = acr.lower()
+            if (low in _PN_DOC_ABBREV or low in _PN_COMMON_WORDS
+                    or low in _PN_PARTY_ROLE_WORDS
+                    or ("short-name", low) in self.records):
+                continue
+            if not re.search(rf"(?<!\w){re.escape(acr)}(?!\w)", text):
+                continue
+            fake = initials(str(t.fake))
+            if not fake or fake == acr:
+                fake = self.registry.alnum(acr, "acronym")
+            new.append(_PnTerm("short-name", acr, fake, whole_word=True,
+                               case_sensitive=True, priority=1,
+                               source="document"))
+        self._add_terms(new)
+
     def register_firm_names(self, text):
         """Register the name inside a "Law Offices of X" label. The attorney
         columns of the E-Court export frequently omit the firm, leaving a real
@@ -7633,6 +7761,8 @@ class Pseudonymizer:
             # so its distinctive letters change too; the rest keep the digit faker.
             if cls == "ssn":
                 fake = self._fake_ssn(val)
+            elif cls == "production number":
+                fake = _pn_fake_production(val, self.registry)
             elif cls in _PN_ALNUM_IDS:
                 fake = self.registry.alnum(val, cat)
             else:
@@ -7640,6 +7770,30 @@ class Pseudonymizer:
             new.append(_PnTerm(cat, val, fake,
                                whole_word=True, case_sensitive=False,
                                priority=2, source="document"))
+        # A tracked party name INSIDE an alphanumeric token that carries a
+        # digit run ("FMC_RAMIREZ_ERNEST_000007", "Ramirez000013"): the word-
+        # boundary lookarounds can't see the name (`_` and digits are \w), so
+        # the enclosing token is faked whole, char-wise. Requires a digit run
+        # of 3+ (a document stamp, never prose) and a distinctive 4+ char
+        # party word, so ordinary text can't qualify.
+        party_bases = {b for (cat, _rl), rec in self.records.items()
+                       if cat in ("person", "entity", "person-token",
+                                  "entity-token", "short-name")
+                       for b in (_pn_word_base(w) for w in rec["real"].split())
+                       if len(b) >= 4 and not _pn_is_entity_keep(b)}
+        if party_bases:
+            for m in re.finditer(r"(?<![A-Za-z0-9_])(?=[A-Za-z0-9_]*\d{3,})"
+                                 r"([A-Za-z][A-Za-z0-9_]{5,})(?![A-Za-z0-9_])",
+                                 _NFKC(text)):
+                tok = m.group(1)
+                low = tok.lower()
+                if ("production number", low) in self.records:
+                    continue
+                if any(b in low for b in party_bases):
+                    new.append(_PnTerm("production number", tok,
+                                       _pn_fake_production(tok, self.registry),
+                                       whole_word=True, case_sensitive=False,
+                                       priority=2, source="document"))
         # VINs: a 17-char VIN-alphabet run, faked char-wise into the VIN alphabet
         # so the result stays a valid-shaped but fictitious VIN.
         for m in _PN_VIN_RE.finditer(_NFKC(text)):
@@ -9022,6 +9176,7 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         pseudonymizer.register_firm_names(detect_full)
         pseudonymizer.register_label_names(detect_full)
         pseudonymizer.register_short_names(detect_full)
+        pseudonymizer.register_entity_acronyms(detect_full)
         pseudonymizer.register_identifiers(detect_full)
         pseudonymizer.register_localities(detect_full)
         pseudonymizer.register_addresses(detect_full)
@@ -9181,6 +9336,7 @@ def _pn_prescan_folder(pdfs, pseudonymizer, log):
         pseudonymizer.register_firm_names(text)
         pseudonymizer.register_label_names(text)
         pseudonymizer.register_short_names(text)
+        pseudonymizer.register_entity_acronyms(text)
         pseudonymizer.register_identifiers(text)
         pseudonymizer.register_localities(text)
         pseudonymizer.register_addresses(text)
