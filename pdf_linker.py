@@ -6987,7 +6987,7 @@ def _pn_build_pattern(term, *, whole_word):
 
 class _PnTerm:
     __slots__ = ("category", "real", "fake", "pattern", "flags", "priority",
-                 "source", "whole_word", "count")
+                 "source", "whole_word", "count", "loaded")
 
     def __init__(self, category, real, fake, *, whole_word, case_sensitive,
                  priority, source):
@@ -7000,6 +7000,7 @@ class _PnTerm:
         self.priority = priority
         self.source = source
         self.count = 0
+        self.loaded = False   # set on a term pre-bound from a reused key
 
 
 # ── Spreadsheet key (the E-Court order-template export) ──────────────────────
@@ -7162,6 +7163,120 @@ def _pn_terms_from_xlsx(path, extra_name_headers, log):
     wb.close()
     log.info(f"  Pseudonym key: {len(names)} name(s), {len(casenos)} case number(s)")
     return names, casenos
+
+
+# ── Reusing a previously written key ─────────────────────────────────────────
+# The key spreadsheet this tool writes IS a complete real->fake map of a run.
+# Feeding it back in (drop the forgotten PDF and pseudonym_key.xlsx in one
+# folder) makes a solo re-run reproduce the batch fakes EXACTLY — a party is
+# "Ernest N Ramirez" -> "Radley N Vance" here just as in the batch — while
+# anything genuinely new in this file gets a fresh fake that can't collide with
+# one already in the key. The written-back key carries every loaded row forward
+# plus the new ones, so it never shrinks.
+_PN_KEY_HEADERS = ("Category", "Real Value", "Replacement", "Status", "Source",
+                   "Occurrences")
+# The regex-detector categories: in the batch these were computed live at
+# priority 3, so a loaded literal must sit ABOVE that to reproduce the exact
+# stored fake instead of letting the detector recompute a different one.
+_PN_KEY_DETECTOR_CATS = frozenset({"email", "phone", "address", "url", "ssn"})
+_PN_KEY_TOKEN_CATS = frozenset({"person-token", "entity-token", "short-name",
+                                "address_fragment"})
+
+
+def _pn_key_looks_like_ours(path):
+    """True when `path` is a key THIS tool wrote (header row = _PN_KEY_HEADERS),
+    as opposed to an E-Court "Order Template Input" name list."""
+    try:
+        import openpyxl
+    except ImportError:
+        return False
+    try:
+        wb = openpyxl.load_workbook(path, read_only=True)
+        ws = wb.active
+        header = next(ws.iter_rows(values_only=True), ())
+        wb.close()
+    except Exception:
+        return False
+    return tuple((h or "").strip() if isinstance(h, str) else h
+                 for h in (header or ())[:6]) == _PN_KEY_HEADERS
+
+
+def _pn_load_key(path, registry, log):
+    """Load a key THIS tool wrote as authoritative real->fake bindings, seeding
+    `registry` so new values can't collide and re-harvested names recompose
+    identically. Returns the list of pre-bound _PnTerm objects.
+
+    Each row becomes a literal term carrying its stored fake, so the value
+    reproduces verbatim however it was originally composed (a full e-mail, a
+    house number + street). The registry's used-pool, name-token memo and
+    domain memo are seeded from the rows so a genuinely new value drawn later
+    avoids every fake already handed out and reuses a party's established
+    token/domain."""
+    import openpyxl
+    wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
+    ws = wb.active
+    rows = ws.iter_rows(values_only=True)
+    header = [(_pn_norm_header(h)) for h in next(rows, ())]
+    idx = {name: header.index(name) for name in
+           ("category", "real value", "replacement", "source", "occurrences")
+           if name in header}
+    terms, seen = [], set()
+    for row in rows:
+        def cell(name):
+            i = idx.get(name)
+            return row[i] if i is not None and i < len(row) else None
+        cat = (cell("category") or "").strip()
+        real = cell("real value")
+        fake = cell("replacement")
+        if not cat or real in (None, "") or fake in (None, ""):
+            continue
+        real, fake = str(real), str(fake)
+        if (cat, real.lower()) in seen:
+            continue
+        seen.add((cat, real.lower()))
+        source = (cell("source") or "spreadsheet").strip() or "spreadsheet"
+        try:
+            occ = int(cell("occurrences") or 0)
+        except (TypeError, ValueError):
+            occ = 0
+
+        # Seed the registry so re-derivations and new values stay consistent.
+        for w in [fake] + fake.split():
+            registry._used.add(w.lower())
+        if cat in ("person-token", "entity-token"):
+            registry._memo.setdefault(("name_or_entity", real.lower()), fake)
+        if cat in ("email", "url"):
+            rh = real.split("@", 1)[-1] if cat == "email" else _pn_url_host(real)
+            fh = fake.split("@", 1)[-1] if cat == "email" else _pn_url_host(fake)
+            rh, fh = rh.lower().lstrip("www."), fh.lower()
+            if rh and fh and "." in rh:
+                registry._memo.setdefault(("domain", rh), fh)
+                registry._domain_reals.setdefault(rh, fh)
+                registry._used.add(fh.lower())
+
+        if cat in _PN_KEY_DETECTOR_CATS:
+            priority, whole, csens = 4, True, False
+        elif cat in _PN_KEY_TOKEN_CATS:
+            priority = 1
+            whole = True
+            # An all-caps short acronym ("SLP") stays case-sensitive so a
+            # lowercase word is left alone; other short forms match either case.
+            csens = (cat == "short-name" and real.isalpha()
+                     and real == real.upper() and len(real) <= 5)
+        elif cat in ("person", "entity"):
+            priority, whole, csens = 2, False, False
+        else:                       # case_number, identifiers, display-name
+            priority, whole, csens = 2, True, False
+        t = _PnTerm(cat, real, fake, whole_word=whole, case_sensitive=csens,
+                    priority=priority, source=source)
+        t.count = occ
+        t.loaded = True
+        terms.append(t)
+    wb.close()
+    terms.sort(key=lambda t: (-t.priority, -len(t.real)))
+    log.info(f"  Pseudonym key REUSED: loaded {len(terms)} binding(s) from "
+             f"{path.name} — fakes will match the original run")
+    return terms
 
 
 def _pn_build_terms(names, casenos, extra_terms, registry=None):
@@ -7605,8 +7720,13 @@ class Pseudonymizer:
         for t in terms:
             self.records[(t.category, t.real.lower())] = {
                 "category": t.category, "real": t.real, "fake": t.fake,
-                "source": t.source, "count": 0, "pattern": t.pattern,
+                "source": t.source, "count": t.count, "pattern": t.pattern,
                 "flags": t.flags}
+        # Real values pre-bound from a reused key: authoritative, so the
+        # citation-only prune must never drop one (a party that happens to
+        # appear only in a citation in THIS file is still a known party).
+        self._loaded_reals = {t.real.lower() for t in terms
+                              if getattr(t, "loaded", False)}
 
     def has_spreadsheet_terms(self):
         return any(t.source == "spreadsheet" for t in self.terms)
@@ -7725,8 +7845,10 @@ class Pseudonymizer:
             return []
         self._pruned_reals = getattr(self, "_pruned_reals", set())
         doomed = []
+        loaded = getattr(self, "_loaded_reals", ())
         for t in list(self.terms):
             if (t.source != "document"
+                    or t.real.lower() in loaded
                     or t.category not in ("person", "entity", "person-token",
                                           "entity-token", "short-name")):
                 continue
@@ -9871,6 +9993,12 @@ _CONFIG_TEMPLATE = (
     "# attorney names, case numbers, and detected PII in the .txt exports are\n"
     "# swapped for stable fakes using the newest Order*.xlsx in Downloads; the\n"
     "# PDFs themselves are never modified.\n"
+    "#\n"
+    "# Forgot a PDF from the batch? Drop it and the run's pseudonym_key.xlsx in a\n"
+    "# folder and run again (or point --key at the key): the tool recognizes its\n"
+    "# own key and reproduces the same fakes as the batch, so the new .txt stays\n"
+    "# consistent. New values in that file get fresh fakes and are added to the\n"
+    "# key.\n"
     "pseudonymize = on\n"
     "\n"
     "# Match a TRUNCATED party name (the front of it) when a two-column page\n"
@@ -10098,21 +10226,36 @@ def main():
         # Key spreadsheet: explicit --key, else the most recent Order*.xlsx in
         # Downloads (where the E-Court export lands).
         key_path = args.key if args.key else _pn_find_downloads_key(log)
-        names, casenos = [], []
+        registry = _PnFakeRegistry()
+        terms, reused_key = [], False
         if key_path:
             if not key_path.is_file():
                 print(f"Key spreadsheet not found: {key_path}")
                 sys.exit(1)
             try:
-                names, casenos = _pn_terms_from_xlsx(key_path, args.name_column, log)
+                if _pn_key_looks_like_ours(key_path):
+                    # A key this tool wrote: reuse its bindings so a follow-up
+                    # single-file run reproduces the original run's fakes.
+                    terms = _pn_load_key(key_path, registry, log)
+                    terms += _pn_build_terms([], [], args.term, registry)
+                    reused_key = True
+                else:
+                    names, casenos = _pn_terms_from_xlsx(
+                        key_path, args.name_column, log)
+                    terms = _pn_build_terms(names, casenos, args.term, registry)
             except RuntimeError as e:
                 # e.g. openpyxl missing. Don't abort the whole run (linking and
                 # PII-only pseudonymization still work) — warn and continue.
                 _warn(f"Pseudonymize: could not read key {key_path.name}: {e}. "
                       f"Party names will NOT be pseudonymized in the .txt exports.")
-        registry = _PnFakeRegistry()
-        terms = _pn_build_terms(names, casenos, args.term, registry)
+        else:
+            terms = _pn_build_terms([], [], args.term, registry)
         pseudonymizer = Pseudonymizer(terms, detectors, registry)
+        if reused_key:
+            # Loaded fakes are already-final strings; don't let a detector try
+            # to re-fake one it meets in the new file.
+            for r in pseudonymizer.records.values():
+                pseudonymizer._own_fakes.add(str(r["fake"]).lower().rstrip(" .,;:"))
         log.info(f"Pseudonymizing .txt exports: {len(terms)} term(s), "
                  f"detectors={detectors or 'none'}")
 
