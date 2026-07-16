@@ -9428,7 +9428,8 @@ def _pseudonymized_txt_path(out_dir: Path, pdf_path: Path, pseudonymizer, log):
 
 
 def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
-                        pseudonymizer=None, text_subdir="Text Files") -> bool:
+                        pseudonymizer=None, text_subdir="Text Files",
+                        original_subdir=None) -> bool:
     """Write a plain-text companion for the PDF into a `text_subdir` subfolder
     of the case folder (created if needed), with pdf_linker's own invisible
     right-margin markers stripped. Overwrites on re-runs. Returns True if
@@ -9439,6 +9440,12 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
     never modified. The finished text is re-scanned and any real value that
     survived the replacement is LOGGED as a leak for review; the file is still
     written (it is not withheld).
+
+    When `original_subdir` is also given (and a pseudonymizer is running), the
+    UNSCRUBBED text is additionally written to that sibling folder under the
+    PDF's real name — a QA / reference copy. It carries real names by design,
+    so it is never tracked for the leak gate and never quarantined; the folder
+    name is meant to flag that it must not be shared.
     """
     out_dir = pdf_path.parent / text_subdir
     txt_path = out_dir / (pdf_path.stem + ".txt")
@@ -9487,35 +9494,38 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         pseudonymizer.register_localities(detect_full)
         pseudonymizer.register_addresses(detect_full)
 
-    parts = []
-    for header, content in page_blocks:
-        if isinstance(content, list):   # pleading page: (line_num, segments)
-            nums = [num for num, _ in content]
-            if pseudonymizer is not None:
-                # Column by column, so a name the page wrapped mid-name stays
-                # contiguous; rows are re-assembled left to right afterwards.
-                bodies = _pn_apply_page_rows(pseudonymizer, content)
-            else:
-                bodies = [" ".join(t for _x, t in segs) for _num, segs in content]
-            # A gutter number owns its first row; continuation rows (a stacked
-            # letterhead/caption line) carry line_num=None and print under a
-            # blank, aligned gutter so the block reads as separate lines.
-            display = "\n".join(
-                ((f"{num:>2}  " if num is not None else "    ") + body).rstrip()
-                for num, body in zip(nums, bodies))
-        else:                           # flowing text
-            display = pseudonymizer.apply(content) if pseudonymizer is not None else content
-        parts.append(f"{header}\n{display}")
-    body = "\n\n".join(parts) + "\n"
+    def build_body(pz):
+        """Assemble the page text — scrubbed when `pz` is given, the raw
+        extraction when `pz` is None (the original-text copy)."""
+        parts = []
+        for header, content in page_blocks:
+            if isinstance(content, list):   # pleading page: (line_num, segments)
+                nums = [num for num, _ in content]
+                if pz is not None:
+                    # Column by column, so a name the page wrapped mid-name
+                    # stays contiguous; rows re-assembled left to right after.
+                    bodies = _pn_apply_page_rows(pz, content)
+                else:
+                    bodies = [" ".join(t for _x, t in segs)
+                              for _num, segs in content]
+                # A gutter number owns its first row; continuation rows (a
+                # stacked letterhead/caption line) carry line_num=None and print
+                # under a blank, aligned gutter so the block reads as lines.
+                display = "\n".join(
+                    ((f"{num:>2}  " if num is not None else "    ") + b).rstrip()
+                    for num, b in zip(nums, bodies))
+            else:                           # flowing text
+                display = pz.apply(content) if pz is not None else content
+            parts.append(f"{header}\n{display}")
+        out = "\n\n".join(parts) + "\n"
+        # Append a list of every cited authority with a free public
+        # verification link — the text copy points somewhere anyone can open.
+        appendix = _build_authorities_appendix("\n\f\n".join(orig_pages), pz)
+        if appendix:
+            out += "\n" + appendix + "\n"
+        return out
 
-    # Append a list of every cited authority with a free public verification
-    # link (leginfo / Cornell LII / Google Scholar) — the PDF keeps its
-    # Lexis/Westlaw links, but the text copy points somewhere anyone can open.
-    # The builder pseudonymizes cite text/queries as plain text so the current
-    # case's own caption (which surfaces as a slip cite) is scrubbed here too.
-    appendix = _build_authorities_appendix("\n\f\n".join(orig_pages), pseudonymizer)
-    if appendix:
-        body += "\n" + appendix + "\n"
+    body = build_body(pseudonymizer)
 
     if pseudonymizer is not None:
         # Report (but do NOT withhold) any real value that survived the scrub —
@@ -9610,6 +9620,22 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         pseudonymizer.written.append(txt_path)
     log.info(f"  Wrote {'pseudonymized ' if pseudonymizer else ''}text "
              f"version: {text_subdir}/{txt_path.name}")
+
+    # Optional UNSCRUBBED reference copy in a sibling folder, under the real
+    # filename. Real names by design → never tracked for the leak gate, never
+    # quarantined. Written only when pseudonymization is actually running (with
+    # it off, the single export above already IS the original).
+    if original_subdir and pseudonymizer is not None:
+        orig_dir = pdf_path.parent / original_subdir
+        orig_path = orig_dir / (pdf_path.stem + ".txt")
+        try:
+            orig_dir.mkdir(parents=True, exist_ok=True)
+            orig_path.write_text(build_body(None), encoding="utf-8", newline="\n")
+            log.info(f"  Wrote original text version: "
+                     f"{original_subdir}/{orig_path.name}")
+        except OSError as e:
+            log.warning(f"  Could not write original text version "
+                        f"(non-fatal): {e}")
     return True
 
 
@@ -9661,7 +9687,8 @@ def _pn_prescan_folder(pdfs, pseudonymizer, log):
 
 def process_pdf(pdf_path: Path, log: logging.Logger,
                 provider: str = "lexis", extract_text: bool = True,
-                pseudonymizer=None, text_subdir="Text Files") -> bool:
+                pseudonymizer=None, text_subdir="Text Files",
+                original_subdir=None) -> bool:
     """Process one PDF. Returns True on success."""
     try:
         import fitz
@@ -9724,7 +9751,8 @@ def process_pdf(pdf_path: Path, log: logging.Logger,
     # the linking passes below. Skipped for scanned-only PDFs.
     if want_text_export:
         try:
-            _write_text_version(pdf_path, doc, log, pseudonymizer, text_subdir)
+            _write_text_version(pdf_path, doc, log, pseudonymizer, text_subdir,
+                                original_subdir)
         except Exception as e:
             log.warning(f"  Text export failed (non-fatal): {e}")
 
@@ -10011,6 +10039,17 @@ _CONFIG_TEMPLATE = (
     "# Default: Text Files.\n"
     "text_subfolder = Text Files\n"
     "\n"
+    "# Also write the UNSCRUBBED text to a second folder, for QA / your own\n"
+    "# reference? on/off (default: off). The pseudonymized folder above stays\n"
+    "# the shareable one; this second folder holds the ORIGINAL text under the\n"
+    "# real filename and, by design, contains real names — it is never checked\n"
+    "# by the leak gate and must NOT be shared. Diff the two folders to confirm\n"
+    "# the scrub is clean and nothing load-bearing (a citation, a date) changed.\n"
+    "keep_original_text = off\n"
+    "# Name of that second folder. The default flags it so it isn't mistaken\n"
+    "# for the shareable one.\n"
+    "original_text_subfolder = Original Text (real names - do not share)\n"
+    "\n"
     "# How close (in points) two caption-column left edges may be and still be\n"
     "# treated as ONE page column. Default: 30. Raise it if a two-column caption\n"
     "# splices its columns together in the .txt (a REVIEW warning names the page).\n"
@@ -10193,6 +10232,13 @@ def main():
     # Subfolder (within each case folder) that the .txt exports are written to.
     text_subdir = cfg.get("text_subfolder", "").strip() or "Text Files"
 
+    # Optional second folder holding the UNSCRUBBED text, for QA/reference. Off
+    # by default so the tool's default output is only the shareable artifact.
+    original_subdir = None
+    if args.pseudonymize and _config_bool(cfg, "keep_original_text", False):
+        original_subdir = (cfg.get("original_text_subfolder", "").strip()
+                           or "Original Text (real names - do not share)")
+
     # Column-band tolerance for splitting two-column caption pages (points).
     global _COLUMN_BAND_TOL
     try:
@@ -10279,7 +10325,8 @@ def main():
             if process_pdf(pdf, log, provider=args.provider,
                            extract_text=args.extract_text,
                            pseudonymizer=pseudonymizer,
-                           text_subdir=text_subdir):
+                           text_subdir=text_subdir,
+                           original_subdir=original_subdir):
                 success += 1
             else:
                 failed += 1
