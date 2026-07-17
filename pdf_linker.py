@@ -10152,6 +10152,38 @@ def _write_eta_marker(folder, label):
         pass
 
 
+# Relative processing cost of a page for the ETA. A page that must be OCR'd
+# runs seconds; a page with a usable text layer is cheap. Weighting by these
+# (instead of file bytes) is what keeps the estimate from lurching when a
+# scanned declaration comes up — its cost is priced in from the first estimate
+# rather than tanking the bytes/sec rate mid-run. The exact ratio need not be
+# precise; the sec-per-unit self-calibrates, the ratio only proportions the
+# remaining work.
+_WORK_OCR_PAGE = 40.0
+_WORK_TEXT_PAGE = 1.0
+
+
+def _pdf_work_weight(pdf):
+    """A cheap per-file cost weight for the ETA: count pages that will need OCR
+    (empty or garbled text layer — the same test the re-OCR pass uses) heavily,
+    text pages lightly. Metadata only — no rendering, no OCR — so it is fast
+    even on a big scanned set. Returns None if the file can't be opened (caller
+    falls back to a bytes-based weight)."""
+    try:
+        import fitz
+        ocr = text = 0
+        with fitz.open(pdf) as doc:
+            for page in doc:
+                t = page.get_text("text")
+                if not t.strip() or _text_looks_garbled(t):
+                    ocr += 1
+                else:
+                    text += 1
+        return (ocr * _WORK_OCR_PAGE + text * _WORK_TEXT_PAGE) or _WORK_TEXT_PAGE
+    except Exception:
+        return None
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # Entry point
 # ────────────────────────────────────────────────────────────────────────────
@@ -10357,10 +10389,17 @@ def main():
 
     # Estimated-finish marker: worth it only for a multi-file batch (a single
     # file has no throughput to project from until it is already done).
-    total_bytes = sum(sizes.values()) or 1
     show_eta = len(pdfs) >= 2
+    weights, total_work = {}, 1.0
     if show_eta:
         _write_eta_marker(folder, "(estimating...)")
+        # Weight each file by processing cost (OCR pages dominate runtime), not
+        # bytes, so the scanned declaration's cost is priced in from the start
+        # and the estimate stops lurching when it comes up. Cheap metadata pass.
+        for p in pdfs:
+            w = _pdf_work_weight(p)
+            weights[p] = w if w is not None else max(1.0, sizes[p] / 50000.0)
+        total_work = sum(weights.values()) or 1.0
 
     if pseudonymizer is not None and pdfs:
         corpus = _pn_prescan_folder(pdfs, pseudonymizer, log)
@@ -10371,7 +10410,7 @@ def main():
 
     success = 0
     failed = 0
-    done_bytes = 0
+    done_work = 0.0
     proc_start = time.monotonic()
     for i, pdf in enumerate(pdfs, 1):
         try:
@@ -10387,21 +10426,22 @@ def main():
             log.error(f"Unhandled error processing {pdf.name}: {e}")
             log.error(traceback.format_exc())
             failed += 1
-        # Size-weighted estimate: files run smallest-first and the OCR-heavy
-        # ones land last, so a file-COUNT estimate would read 80% done with the
-        # two slowest still ahead. Cumulative bytes/sec self-corrects as each
-        # big file completes. The marker names the projected finish CLOCK time.
+        # Work-weighted estimate (OCR pages counted heavily): the cost of the
+        # slow scanned files is priced into total_work from the start, so the
+        # projected finish holds steady instead of swinging when one comes up.
+        # Cumulative work-units/sec self-calibrates. The marker names the
+        # projected finish CLOCK time.
         if show_eta:
-            done_bytes += sizes.get(pdf, 0)
+            done_work += weights.get(pdf, 0.0)
             elapsed = time.monotonic() - proc_start
-            rate = done_bytes / elapsed if elapsed > 0 else 0
+            rate = done_work / elapsed if elapsed > 0 else 0
             if i < len(pdfs) and rate > 0:
                 finish = datetime.datetime.now() + datetime.timedelta(
-                    seconds=(total_bytes - done_bytes) / rate)
+                    seconds=(total_work - done_work) / rate)
                 clock = _fmt_clock(finish)
                 _write_eta_marker(folder, f"~{clock} ({i} of {len(pdfs)})")
                 log.info(f"Progress: {i}/{len(pdfs)} files "
-                         f"({done_bytes * 100 // total_bytes}% by size); "
+                         f"({done_work * 100 / total_work:.0f}% of work); "
                          f"estimated finish ~{clock}")
     if show_eta:
         _clear_eta_markers(folder)   # clean finish removes the marker
