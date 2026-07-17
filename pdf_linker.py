@@ -5254,7 +5254,44 @@ def _pn_is_suffix_token(word):
     return re.sub(r"[.\s]", "", word).lower().removesuffix("'s") in _PN_SUFFIX_NODOT
 
 
-_PN_WORD_RE = re.compile(r"[A-Za-z][A-Za-z'\-]*")
+# Latin letters INCLUDING the accented forms that appear in California party
+# and declarant names — Spanish ("Alarcón", "Muñoz", "Peña", "Hernández"),
+# Portuguese, French. An ASCII-only [A-Za-z] class split "Alarcón" into "Alarc"
+# + "n" at the "ó": the truncated stem was stored in the key (so the real name
+# no longer round-trips) and, on a spliced page, matched the prefix of the real
+# word and left the accented tail welded onto the fake ("Isleyón"). The range
+# covers Latin-1 Supplement letters (U+00C0–U+00FF, skipping the × and ÷ math
+# signs) plus Latin Extended-A (U+0100–U+017F); digits and underscores stay out.
+_PN_LAT = "A-Za-zÀ-ÖØ-öø-ÿĀ-ſ"
+_PN_LAT_UPPER = "A-ZÀ-ÖØ-Þ"
+_PN_WORD_RE = re.compile(rf"[{_PN_LAT}][{_PN_LAT}'\-]*")
+
+
+def _pn_build_accent_fold():
+    """Char->char map folding an accented Latin letter to its ASCII base
+    (ó->o, ñ->n, é->e). ONE char in, ONE char out, so it can be applied inside
+    a reduced-index map without shifting offsets — only letters whose NFKD base
+    is a single ASCII letter are mapped; ligatures (æ->ae) and ß are left alone
+    (they drop out of the [a-z0-9] reduction anyway)."""
+    fold = {}
+    for cp in range(0xC0, 0x180):
+        ch = chr(cp)
+        base = "".join(c for c in _pn_unicodedata.normalize("NFKD", ch)
+                       if not _pn_unicodedata.combining(c))
+        if len(base) == 1 and ("A" <= base <= "Z" or "a" <= base <= "z"):
+            fold[cp] = ord(base)
+    return fold
+
+
+_PN_ACCENT_FOLD = _pn_build_accent_fold()
+
+
+def _pn_ascii_fold(s):
+    """`s` with accented Latin letters folded to their ASCII base. Used by the
+    reduced-alphabet leak scan / welded scrub so "Alarcón" and an un-accented
+    "Alarcon" (a common OCR/typing variant, and the only form an e-mail carries)
+    share one reduced core instead of missing each other."""
+    return s.translate(_PN_ACCENT_FOLD)
 
 
 def _pn_titlecase_like(fake, original):
@@ -6980,7 +7017,7 @@ def _pn_alnum_core(real):
     toks = real.split()
     while toks and _pn_is_entity_keep(_pn_word_base(toks[-1])):
         toks.pop()
-    return re.sub(r"[^a-z0-9]", "", " ".join(toks).lower())
+    return re.sub(r"[^a-z0-9]", "", _pn_ascii_fold(" ".join(toks)).lower())
 
 
 def _pn_fake_core_display(fake):
@@ -7417,7 +7454,11 @@ _PN_DECL_STOPWORDS = {
     "defendant", "defendants", "plaintiff", "plaintiffs", "movant", "the",
     "undersigned", "reasonable", "attempted", "electronic", "personal",
 }
-_PN_DECL_NAME_WORD = r"[A-Z][A-Za-z.'’-]*"
+# Includes accented Latin letters (see _PN_LAT) so "Declaration of Teresa C.
+# Alarcón" captures the whole surname instead of truncating to "Alarc" at the
+# "ó" — the truncated stem broke key round-trip and produced the welded fake
+# "Isleyón". The leading letter may itself be accented ("Óscar", "Ángela").
+_PN_DECL_NAME_WORD = rf"[{_PN_LAT_UPPER}][{_PN_LAT}.'’-]*"
 _PN_DECL_NAME = (
     rf"{_PN_DECL_NAME_WORD}(?:\s+{_PN_DECL_NAME_WORD}){{0,3}}"
     r"(?:,\s*(?i:esq|jr|sr|ii|iii|iv|m\.?d|ph\.?d|c\.?p\.?a|r\.?n|d\.?d\.?s)\.?)?"
@@ -8539,7 +8580,7 @@ class Pseudonymizer:
         `schillecitortorici`. Only reasonably long cores are checked so a short
         name can't match inside an unrelated word."""
         masked = self._mask_protected_citations(_NFKC(text))
-        red = re.sub(r"[^a-z0-9]", "", masked.lower())
+        red = re.sub(r"[^a-z0-9]", "", _pn_ascii_fold(masked).lower())
         out = []
         for rec in self.records.values():
             core = _pn_alnum_core(rec["real"])
@@ -8567,7 +8608,7 @@ class Pseudonymizer:
         src = _NFKC(text)
         reduced, idx = [], []
         for i, ch in enumerate(src):
-            c = ch.lower()
+            c = _pn_ascii_fold(ch).lower()
             if "a" <= c <= "z" or "0" <= c <= "9":
                 reduced.append(c)
                 idx.append(i)

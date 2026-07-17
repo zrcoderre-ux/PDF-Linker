@@ -989,3 +989,40 @@ def test_bates_stamp_with_apostrophe_scrubs_party_prefix():
         out = z.apply(f"(See {stamp}.)")
         assert stamp not in out, f"whole stamp survived: {out}"
         assert "FORD" not in out.upper(), f"party prefix leaked: {out}"
+
+
+# ─── Accented declarant/party names (Spanish surnames, LA County corpus) ──────
+# "Declaration of Teresa C. Alarcón" was captured as "Teresa C. Alarc" — the
+# ASCII-only name class stopped at the "ó". The truncated stem went into the
+# key (so the real name never round-tripped) and left the accented tail welded
+# onto the fake in the body ("Isleyón Decl."). Names must be captured, keyed,
+# and replaced WHOLE, accents included.
+
+def test_accented_declarant_name_captured_and_replaced_whole():
+    z = _pzR(names=["Ernest N Ramirez"])
+    z.register_declarant_names("Declaration of Teresa C. Alarcón in support "
+                               "of the motion.")
+    # the WHOLE name is keyed, not a stem truncated at the accent
+    assert ("person", "teresa c. alarcón") in z.records
+    assert ("person", "teresa c. alarc") not in z.records
+    out = z.apply("(Alarcón Decl., ¶ 4, Ex. 3 at 73:4-13.) Alarcón testified.")
+    assert "Alarcón" not in out, f"real accented name survived: {out}"
+    assert "Isleyón" not in out and "ón" not in out, f"welded fragment: {out}"
+    # nothing real survives in the finished text
+    assert z.surviving_reals(out) == [] and z.surviving_reals_reduced(out) == []
+
+
+def test_word_tokenizer_keeps_accented_letters():
+    assert P._PN_WORD_RE.findall("Alarcón Muñoz Hernández Peña") == \
+        ["Alarcón", "Muñoz", "Hernández", "Peña"]
+
+
+def test_reduced_scan_folds_accents_so_ocr_variants_match():
+    # A spliced page often drops the accent ("ALARCON") or welds the name to a
+    # neighbour; the accent-folded reduction still ties it to the real value.
+    z = _pzR(names=["Ernest N Ramirez"])
+    z.register_declarant_names("Declaration of Teresa C. Alarcón in support.")
+    spliced = "TERESACALARCONDECLARATION"          # accent dropped + welded
+    assert any("Alarcón" in s for s in z.surviving_reals_reduced(spliced))
+    scrubbed = z.scrub_welded(spliced)
+    assert "ALARCON" not in scrubbed.upper(), scrubbed
