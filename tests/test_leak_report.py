@@ -71,3 +71,70 @@ def test_pseudonymizer_collects_located_findings():
     det = {k: P._PN_DETECTORS[k] for k in P._PN_DEFAULT_DETECTORS}
     z = P.Pseudonymizer(terms, det, registry=reg)
     assert z.leak_report == []       # starts empty, accumulates during a run
+
+
+def test_decisions_read_back_from_annotated_worksheet(tmp_path):
+    P._pn_write_leak_report(tmp_path, [
+        {"file": "M.txt", "type": "LEAK", "value": "Travelers", "where": "p.5:16"},
+        {"file": "M.txt", "type": "possible business (purchase)",
+         "value": "Worthington Motors", "where": "p.9:2"},
+    ], log)
+    xp = tmp_path / "pdf_linker_leaks.xlsx"
+    wb = openpyxl.load_workbook(xp)
+    ws = wb.active
+    for row in ws.iter_rows(min_row=2):
+        if row[2].value == "Travelers":
+            row[4].value = "yes"
+        if row[2].value == "Worthington Motors":
+            row[4].value = "No"          # case/space-insensitive
+    wb.save(xp)
+
+    dec = P._pn_read_leak_decisions(tmp_path)
+    assert dec["travelers"]["fix"] == "yes"
+    assert dec["worthington motors"]["fix"] == "no"
+
+
+def test_roundtrip_persists_yes_suppresses_no_and_surfaces_new(tmp_path):
+    decisions = {
+        "travelers": {"value": "Travelers", "type": "LEAK", "fix": "yes",
+                      "notes": ""},
+        "worthington motors": {"value": "Worthington Motors",
+                               "type": "possible business (purchase)",
+                               "fix": "no", "notes": ""},
+    }
+    # This run: Travelers was scrubbed (gone), Worthington still present, and a
+    # brand-new undecided finding appears.
+    entries = [
+        {"file": "M.txt", "type": "possible business (purchase)",
+         "value": "Worthington Motors", "where": "p.9:2"},
+        {"file": "M.txt", "type": "unscrubbed name?", "value": "New Corp",
+         "where": "p.2:1"},
+    ]
+    P._pn_write_leak_report(tmp_path, entries, log, decisions)
+    rows = list(openpyxl.load_workbook(tmp_path / "pdf_linker_leaks.xlsx")
+                .active.iter_rows(values_only=True))
+    by_val = {r[2]: r for r in rows[1:]}
+    # a marked-yes value that's now gone is RETAINED so the term keeps applying
+    assert by_val["Travelers"][4] == "yes"
+    assert by_val["Travelers"][3] == P._PN_LEAK_ABSENT
+    # a marked-no value is carried forward
+    assert by_val["Worthington Motors"][4] == "no"
+    # a new undecided finding is blank and sorts ABOVE the resolved rows
+    assert by_val["New Corp"][4] in (None, "")
+    order = [r[2] for r in rows[1:]]
+    assert order.index("New Corp") < order.index("Worthington Motors")
+    assert order.index("New Corp") < order.index("Travelers")
+
+
+def test_suppressed_value_excluded_from_gate():
+    reg = P._PnFakeRegistry()
+    terms = P._pn_build_terms(["AHC Acquisition, LLC"], ["24STCV06764"], [],
+                              registry=reg)
+    det = {k: P._PN_DETECTORS[k] for k in P._PN_DEFAULT_DETECTORS}
+    z = P.Pseudonymizer(terms, det, registry=reg)
+    z.note_leaks({"ahc acquisition, llc"})
+    z.suppressed = {"ahc acquisition, llc"}
+    # the gate's expression must exclude a suppressed value
+    gating = {v for v in z.primary_leaks()
+              if str(v).lower() not in z.suppressed}
+    assert gating == set()
