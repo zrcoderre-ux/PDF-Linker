@@ -76,11 +76,13 @@ pages. Those files are authoritative whenever they disagree with this one.
 Logs to <folder>/pdf_linker.log.
 """
 
+import datetime
 import logging
 import os
 import re
 import statistics
 import sys
+import time
 import traceback
 from pathlib import Path
 
@@ -10109,6 +10111,43 @@ def _config_bool(cfg, key, default):
     return default
 
 
+# ── Live progress marker ─────────────────────────────────────────────────────
+# A run can take many minutes (an OCR-heavy declaration set is minutes per
+# file), so a 0-byte marker file dropped beside pdf_linker.log carries the
+# estimated FINISH TIME in its NAME — visible at a glance in the folder without
+# opening anything. It is rewritten after each PDF and removed when the run
+# finishes cleanly; a marker left behind means the run didn't complete. A clock
+# time (not a shrinking "~10 min") reads better because it only refreshes once
+# per file. The name is colon-free so it is valid on Windows.
+_ETA_MARKER_PREFIX = "pdf_linker_ETA"
+
+
+def _fmt_clock(dt):
+    """A Windows-legal 12-hour clock string with no colon: 5:55 PM -> '5.55PM'."""
+    h = dt.hour % 12 or 12
+    return f"{h}.{dt.minute:02d}{'AM' if dt.hour < 12 else 'PM'}"
+
+
+def _clear_eta_markers(folder):
+    for m in folder.glob(_ETA_MARKER_PREFIX + "*"):
+        try:
+            m.unlink()
+        except OSError:
+            pass
+
+
+def _write_eta_marker(folder, label):
+    """Replace the live ETA marker with a fresh 0-byte file whose NAME is the
+    estimate, e.g. 'pdf_linker_ETA ~5.55PM (4 of 10).txt'. Best-effort: a
+    marker that can't be written (locked folder, etc.) is never fatal."""
+    _clear_eta_markers(folder)
+    try:
+        (folder / f"{_ETA_MARKER_PREFIX} {label}.txt").write_text(
+            "", encoding="utf-8")
+    except OSError:
+        pass
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # Entry point
 # ────────────────────────────────────────────────────────────────────────────
@@ -10308,8 +10347,16 @@ def main():
     # Collect PDFs excluding _linked and _temp files, then sort by file size (smallest first)
     pdfs = [p for p in folder.glob("*.pdf")
             if not p.stem.endswith("_linked") and not p.stem.endswith("_temp")]
-    pdfs = sorted(pdfs, key=lambda p: p.stat().st_size)
+    sizes = {p: p.stat().st_size for p in pdfs}
+    pdfs = sorted(pdfs, key=lambda p: sizes[p])
     log.info(f"Found {len(pdfs)} PDF(s) to process (sorted by size)")
+
+    # Estimated-finish marker: worth it only for a multi-file batch (a single
+    # file has no throughput to project from until it is already done).
+    total_bytes = sum(sizes.values()) or 1
+    show_eta = len(pdfs) >= 2
+    if show_eta:
+        _write_eta_marker(folder, "(estimating...)")
 
     if pseudonymizer is not None and pdfs:
         corpus = _pn_prescan_folder(pdfs, pseudonymizer, log)
@@ -10320,7 +10367,9 @@ def main():
 
     success = 0
     failed = 0
-    for pdf in pdfs:
+    done_bytes = 0
+    proc_start = time.monotonic()
+    for i, pdf in enumerate(pdfs, 1):
         try:
             if process_pdf(pdf, log, provider=args.provider,
                            extract_text=args.extract_text,
@@ -10334,6 +10383,24 @@ def main():
             log.error(f"Unhandled error processing {pdf.name}: {e}")
             log.error(traceback.format_exc())
             failed += 1
+        # Size-weighted estimate: files run smallest-first and the OCR-heavy
+        # ones land last, so a file-COUNT estimate would read 80% done with the
+        # two slowest still ahead. Cumulative bytes/sec self-corrects as each
+        # big file completes. The marker names the projected finish CLOCK time.
+        if show_eta:
+            done_bytes += sizes.get(pdf, 0)
+            elapsed = time.monotonic() - proc_start
+            rate = done_bytes / elapsed if elapsed > 0 else 0
+            if i < len(pdfs) and rate > 0:
+                finish = datetime.datetime.now() + datetime.timedelta(
+                    seconds=(total_bytes - done_bytes) / rate)
+                clock = _fmt_clock(finish)
+                _write_eta_marker(folder, f"~{clock} ({i} of {len(pdfs)})")
+                log.info(f"Progress: {i}/{len(pdfs)} files "
+                         f"({done_bytes * 100 // total_bytes}% by size); "
+                         f"estimated finish ~{clock}")
+    if show_eta:
+        _clear_eta_markers(folder)   # clean finish removes the marker
 
     # One key file for the whole folder maps every real value to its fake.
     if pseudonymizer is not None:
