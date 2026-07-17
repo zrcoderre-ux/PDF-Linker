@@ -6,8 +6,10 @@ name must be valid on Windows (no colon) and must never disturb the real log.
 Run:  cd PDF-Linker && python3 -m pytest tests/test_eta_marker.py -v
 """
 import datetime
+import tempfile
 from pathlib import Path
 
+import fitz
 import pytest
 
 import pdf_linker as P
@@ -48,3 +50,32 @@ def test_clear_removes_marker_but_not_the_log(tmp_path):
     P._clear_eta_markers(tmp_path)
     assert not list(tmp_path.glob("ETA *.txt"))
     assert (tmp_path / "pdf_linker.log").read_text() == "real log"
+
+
+def test_work_weight_prices_ocr_pages_over_bytes(tmp_path):
+    # A native-text PDF vs a scanned-like one (empty text layer). The scanned
+    # file can be SMALLER in bytes yet far costlier to process (OCR), which is
+    # exactly why the ETA weights by OCR pages, not file size.
+    doc = fitz.open()
+    for _ in range(3):
+        doc.new_page().insert_text((72, 100), "A real text layer with words.")
+    native = tmp_path / "native.pdf"
+    doc.save(native)
+    doc.close()
+
+    doc = fitz.open()
+    for _ in range(5):
+        doc.new_page()                       # no text -> will need OCR
+    scanned = tmp_path / "scanned.pdf"
+    doc.save(scanned)
+    doc.close()
+
+    wn = P._pdf_work_weight(native)
+    ws = P._pdf_work_weight(scanned)
+    assert wn == 3 * P._WORK_TEXT_PAGE
+    assert ws == 5 * P._WORK_OCR_PAGE
+    assert ws > wn * 10                       # OCR cost dominates
+    # an unreadable file returns None so the caller can fall back to bytes
+    bad = tmp_path / "bad.pdf"
+    bad.write_text("not a pdf")
+    assert P._pdf_work_weight(bad) is None
