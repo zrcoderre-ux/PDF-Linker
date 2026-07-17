@@ -7716,6 +7716,8 @@ class Pseudonymizer:
         self.review = []         # (class, sample) open-world findings across files
         self.leak_report = []    # {file, type, value, where} rows for the
                                  # human-triage worksheet (page:line located)
+        self.suppressed = set()  # value_lowers the reviewer marked "no fix" in
+                                 # the worksheet — never quarantine on these
         self._own_fakes = set()  # detector fakes we minted, so a re-scrub of
                                  # already-fake text never re-fakes them
         # (category, real_lower) -> record dict {category, real, fake, source,
@@ -9482,19 +9484,75 @@ def _pn_locate(parsed, needle, limit=12):
     return ", ".join(out[:limit]) + (" …" if len(out) > limit else "")
 
 
-def _pn_write_leak_report(folder, entries, log):
-    """Write/refresh the leak-triage worksheet 'pdf_linker_leaks.xlsx' beside
-    the log: one located row per potential leak, real leaks first, with a blank
-    'Fix?' column for the reviewer. A clean run (no findings) removes any stale
-    report. Falls back to a plain-text checklist without openpyxl."""
+_PN_LEAK_HEADERS = ("File", "Type", "Value", "Where (page:line)",
+                    "Fix? (yes/no)", "Notes")
+_PN_LEAK_ABSENT = "(no longer present)"
+
+
+def _pn_read_leak_decisions(folder):
+    """{value_lower: {value, type, fix, notes}} read back from a leak worksheet
+    the reviewer annotated on a prior run. `fix` is normalised to 'yes'/'no'/''.
+    Empty when there is no readable worksheet — the round-trip is a no-op then."""
+    xlsx = folder / "pdf_linker_leaks.xlsx"
+    if not xlsx.is_file():
+        return {}
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(xlsx, data_only=True, read_only=True)
+        rows = list(wb.active.iter_rows(values_only=True))
+        wb.close()
+    except Exception:
+        return {}
+    if not rows:
+        return {}
+    hdr = [str(h).strip().lower() if h else "" for h in rows[0]]
+
+    def idx(name):
+        return hdr.index(name) if name in hdr else None
+    ci = {k: idx(k) for k in ("type", "value", "fix? (yes/no)", "notes")}
+    out = {}
+    for r in rows[1:]:
+        def cell(k):
+            i = ci.get(k)
+            return r[i] if i is not None and i < len(r) else None
+        val = cell("value")
+        if val in (None, ""):
+            continue
+        val = str(val)
+        raw = str(cell("fix? (yes/no)") or "").strip().lower()
+        fix = "yes" if raw.startswith("y") else "no" if raw.startswith("n") else ""
+        out[val.lower()] = {"value": val, "type": str(cell("type") or "").strip(),
+                            "fix": fix, "notes": str(cell("notes") or "").strip()}
+    return out
+
+
+def _pn_write_leak_report(folder, entries, log, decisions=None):
+    """Write/refresh the leak-triage worksheet 'pdf_linker_leaks.xlsx'. Each
+    located finding is one row with a 'Fix?' column; prior yes/no decisions are
+    carried forward (and persisted even when the value no longer appears, so the
+    decision keeps applying on later runs). Rows needing attention — undecided,
+    or marked-yes-but-still-present — sort to the top; resolved ones sink to the
+    bottom. A run with no findings AND no prior decisions removes the worksheet.
+    Plain-text checklist fallback without openpyxl."""
+    decisions = decisions or {}
     xlsx = folder / "pdf_linker_leaks.xlsx"
     txt = folder / "pdf_linker_leaks.txt"
 
-    def _sev(e):
-        t = e["type"]
-        return (0 if t == "LEAK" else 1 if t.startswith("REID") else 2,
-                e["file"], e["value"].lower())
-    rows = sorted(entries, key=_sev)
+    rows, seen = [], set()
+    for e in entries:
+        vl = e["value"].lower()
+        seen.add(vl)
+        d = decisions.get(vl, {})
+        rows.append({**e, "fix": d.get("fix", ""), "notes": d.get("notes", ""),
+                     "present": True})
+    # Persist a decision whose value didn't recur this run, so a Fix?=yes term
+    # keeps being applied and a Fix?=no stays suppressed on future runs.
+    for vl, d in decisions.items():
+        if vl not in seen and d.get("fix") in ("yes", "no"):
+            rows.append({"file": "—", "type": d.get("type") or "(decided)",
+                         "value": d["value"], "where": _PN_LEAK_ABSENT,
+                         "fix": d["fix"], "notes": d.get("notes", ""),
+                         "present": False})
 
     if not rows:
         for p in (xlsx, txt):
@@ -9506,19 +9564,33 @@ def _pn_write_leak_report(folder, entries, log):
         log.info("  No potential leaks flagged — no review worksheet written.")
         return
 
-    headers = ["File", "Type", "Value", "Where (page:line)",
-               "Fix? (yes/no)", "Notes"]
+    def _attention(r):        # 0 = needs a look, 2 = resolved -> bottom
+        if r["fix"] == "":
+            return 0
+        if r["fix"] == "yes" and r["present"]:
+            return 0          # marked to fix but STILL present — the fix missed
+        return 2
+
+    def _sev(r):
+        t = r["type"]
+        return 0 if t == "LEAK" else 1 if str(t).startswith("REID") else 2
+    rows.sort(key=lambda r: (_attention(r), _sev(r), str(r["file"]),
+                             r["value"].lower()))
+    active = sum(1 for r in rows if _attention(r) == 0)
+
     try:
         import openpyxl
     except ImportError:
-        lines = ["Potential leaks to review — mark each Fix? yes or no", ""]
-        for e in rows:
-            lines.append(f"[ ] {e['type']}: {e['value']}  "
-                         f"({e['file']} — {e['where']})")
+        lines = ["Potential leaks — mark each Fix? yes or no (yes = scrub it "
+                 "next run; no = leave it, stop flagging)", ""]
+        for r in rows:
+            mark = {"yes": "[x]", "no": "[-]"}.get(r["fix"], "[ ]")
+            lines.append(f"{mark} {r['type']}: {r['value']}  "
+                         f"({r['file']} — {r['where']})")
         try:
             txt.write_text("\n".join(lines) + "\n", encoding="utf-8")
             log.warning(f"  Wrote leak-review checklist: {txt.name} "
-                        f"({len(rows)} item(s) to triage).")
+                        f"({active} to triage).")
         except OSError as ex:
             log.warning(f"  Could not write leak-review checklist: {ex}")
         return
@@ -9526,10 +9598,11 @@ def _pn_write_leak_report(folder, entries, log):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Potential Leaks"
-    ws.append(headers)
-    for e in rows:
-        ws.append([e["file"], e["type"], e["value"], e["where"], "", ""])
-    for col, width in zip("ABCDEF", (22, 22, 34, 30, 12, 24)):
+    ws.append(list(_PN_LEAK_HEADERS))
+    for r in rows:
+        ws.append([r["file"], r["type"], r["value"], r["where"],
+                   r["fix"], r["notes"]])
+    for col, width in zip("ABCDEF", (20, 22, 34, 30, 12, 24)):
         ws.column_dimensions[col].width = width
     try:                                    # a yes/no dropdown on the Fix? column
         from openpyxl.worksheet.datavalidation import DataValidation
@@ -9542,8 +9615,9 @@ def _pn_write_leak_report(folder, entries, log):
         wb.save(xlsx)
         if txt.exists():
             txt.unlink()
-        log.warning(f"  Wrote leak-review worksheet: {xlsx.name} ({len(rows)} "
-                    f"item(s) to triage — set Fix? yes/no).")
+        log.warning(f"  Wrote leak-review worksheet: {xlsx.name} — {active} "
+                    f"item(s) to triage (set Fix?: yes scrubs it next run, "
+                    f"no leaves it and stops flagging).")
     except OSError as ex:
         log.warning(f"  Could not write leak-review worksheet: {ex}")
 
@@ -10479,6 +10553,22 @@ def main():
         # Downloads (where the E-Court export lands).
         key_path = args.key if args.key else _pn_find_downloads_key(log)
         registry = _PnFakeRegistry()
+        # Round-trip the leak-triage worksheet: values the reviewer marked
+        # "yes" (needs fixing) are scrubbed as if passed via --term; values
+        # marked "no" are remembered so they never quarantine and drop out of
+        # the active review list. Decisions persist in the worksheet itself.
+        leak_decisions = _pn_read_leak_decisions(folder)
+        fix_terms = [d["value"] for d in leak_decisions.values()
+                     if d["fix"] == "yes"]
+        suppressed = {vl for vl, d in leak_decisions.items() if d["fix"] == "no"}
+        extra_terms = list(args.term or []) + fix_terms
+        if fix_terms:
+            log.info(f"  Leak worksheet: scrubbing {len(fix_terms)} value(s) "
+                     f"marked Fix?=yes ({', '.join(fix_terms[:6])}).")
+        if suppressed:
+            log.info(f"  Leak worksheet: {len(suppressed)} value(s) marked "
+                     f"Fix?=no will be left as-is and not re-flagged.")
+
         terms, reused_key = [], False
         if key_path:
             if not key_path.is_file():
@@ -10489,20 +10579,21 @@ def main():
                     # A key this tool wrote: reuse its bindings so a follow-up
                     # single-file run reproduces the original run's fakes.
                     terms = _pn_load_key(key_path, registry, log)
-                    terms += _pn_build_terms([], [], args.term, registry)
+                    terms += _pn_build_terms([], [], extra_terms, registry)
                     reused_key = True
                 else:
                     names, casenos = _pn_terms_from_xlsx(
                         key_path, args.name_column, log)
-                    terms = _pn_build_terms(names, casenos, args.term, registry)
+                    terms = _pn_build_terms(names, casenos, extra_terms, registry)
             except RuntimeError as e:
                 # e.g. openpyxl missing. Don't abort the whole run (linking and
                 # PII-only pseudonymization still work) — warn and continue.
                 _warn(f"Pseudonymize: could not read key {key_path.name}: {e}. "
                       f"Party names will NOT be pseudonymized in the .txt exports.")
         else:
-            terms = _pn_build_terms([], [], args.term, registry)
+            terms = _pn_build_terms([], [], extra_terms, registry)
         pseudonymizer = Pseudonymizer(terms, detectors, registry)
+        pseudonymizer.suppressed = suppressed
         if reused_key:
             # Loaded fakes are already-final strings; don't let a detector try
             # to re-fake one it meets in the new file.
@@ -10581,7 +10672,9 @@ def main():
     if pseudonymizer is not None:
         # Human-triage worksheet of every located potential leak — written even
         # if the leak gate quarantines below, so the reviewer always gets it.
-        _pn_write_leak_report(folder, pseudonymizer.leak_report, log)
+        # Prior yes/no decisions are carried through (yes was scrubbed above).
+        _pn_write_leak_report(folder, pseudonymizer.leak_report, log,
+                              leak_decisions)
         # Two addresses on one street with adjacent numbers were faked to two
         # unrelated streets — the failure that moved an ADU off its parcel.
         for w in _pn_address_adjacency(pseudonymizer.records.values()):
@@ -10636,6 +10729,9 @@ def main():
         gating = (pseudonymizer.leaked if gate == "strict"
                   else pseudonymizer.primary_leaks() if gate == "primary"
                   else set())
+        # A value the reviewer marked "no fix" in the worksheet never blocks
+        # delivery — that is exactly what the mark means.
+        gating = {v for v in gating if str(v).lower() not in pseudonymizer.suppressed}
         if gating:
             quarantined = []
             for txt in pseudonymizer.written:
