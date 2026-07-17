@@ -7714,6 +7714,8 @@ class Pseudonymizer:
         self.written = []        # .txt paths written with pseudonymization applied
         self.leaked = set()      # real_lower values that survived in some export
         self.review = []         # (class, sample) open-world findings across files
+        self.leak_report = []    # {file, type, value, where} rows for the
+                                 # human-triage worksheet (page:line located)
         self._own_fakes = set()  # detector fakes we minted, so a re-scrub of
                                  # already-fake text never re-fakes them
         # (category, real_lower) -> record dict {category, real, fake, source,
@@ -9429,6 +9431,123 @@ def _pseudonymized_txt_path(out_dir: Path, pdf_path: Path, pseudonymizer, log):
     return out_dir / (safe + ".txt")
 
 
+# ── Leak-triage worksheet ────────────────────────────────────────────────────
+# Every potential leak the tool flags (a real value that survived, plus the
+# open-world REVIEW / REID / unknown-name findings) is collected across the
+# whole run into one spreadsheet, EACH ROW LOCATED to the printed page and
+# gutter line so it can be found in seconds, with a blank "Fix?" column for the
+# reviewer to triage. Written next to pdf_linker.log; removed on a clean run.
+_PN_PAGE_HEADER_RE = re.compile(
+    r"^====== Page (\d+)(?: \(printed p\. (.+?)\))? ======$")
+_PN_GUTTER_RE = re.compile(r"^\s*(\d+)\s{2}\S")
+
+
+def _pn_body_lines(body):
+    """Parse an assembled .txt body into [(page_label, line_label, text), ...],
+    tracking the current page (from '====== Page N ======' headers, preferring
+    the printed page number) and the current gutter line number, so a finding
+    can be reported as 'p.8:16'. A continuation row keeps the last gutter
+    number; the authorities appendix is labelled 'appendix'."""
+    page, gutter = "?", None
+    out = []
+    for raw in body.split("\n"):
+        mh = _PN_PAGE_HEADER_RE.match(raw)
+        if mh:
+            page, gutter = (mh.group(2) or mh.group(1)), None
+            continue
+        if raw.startswith("====== Authorities"):
+            page, gutter = "appendix", None
+            continue
+        mg = _PN_GUTTER_RE.match(raw)
+        if mg:
+            gutter = mg.group(1)
+        out.append((page, gutter, raw))
+    return out
+
+
+def _pn_locate(parsed, needle, limit=12):
+    """Human-readable 'p.<page>:<line>' locations of `needle` in a parsed body
+    (case-insensitive substring), de-duplicated, capped. '(not located)' when a
+    welded/reduced finding has no clean line to point at."""
+    nl = needle.lower()
+    seen, out = set(), []
+    for page, gutter, text in parsed:
+        if nl in text.lower():
+            loc = f"p.{page}:{gutter}" if gutter else f"p.{page}"
+            if loc not in seen:
+                seen.add(loc)
+                out.append(loc)
+    if not out:
+        return "(not located)"
+    return ", ".join(out[:limit]) + (" …" if len(out) > limit else "")
+
+
+def _pn_write_leak_report(folder, entries, log):
+    """Write/refresh the leak-triage worksheet 'pdf_linker_leaks.xlsx' beside
+    the log: one located row per potential leak, real leaks first, with a blank
+    'Fix?' column for the reviewer. A clean run (no findings) removes any stale
+    report. Falls back to a plain-text checklist without openpyxl."""
+    xlsx = folder / "pdf_linker_leaks.xlsx"
+    txt = folder / "pdf_linker_leaks.txt"
+
+    def _sev(e):
+        t = e["type"]
+        return (0 if t == "LEAK" else 1 if t.startswith("REID") else 2,
+                e["file"], e["value"].lower())
+    rows = sorted(entries, key=_sev)
+
+    if not rows:
+        for p in (xlsx, txt):
+            try:
+                if p.exists():
+                    p.unlink()
+            except OSError:
+                pass
+        log.info("  No potential leaks flagged — no review worksheet written.")
+        return
+
+    headers = ["File", "Type", "Value", "Where (page:line)",
+               "Fix? (yes/no)", "Notes"]
+    try:
+        import openpyxl
+    except ImportError:
+        lines = ["Potential leaks to review — mark each Fix? yes or no", ""]
+        for e in rows:
+            lines.append(f"[ ] {e['type']}: {e['value']}  "
+                         f"({e['file']} — {e['where']})")
+        try:
+            txt.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            log.warning(f"  Wrote leak-review checklist: {txt.name} "
+                        f"({len(rows)} item(s) to triage).")
+        except OSError as ex:
+            log.warning(f"  Could not write leak-review checklist: {ex}")
+        return
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Potential Leaks"
+    ws.append(headers)
+    for e in rows:
+        ws.append([e["file"], e["type"], e["value"], e["where"], "", ""])
+    for col, width in zip("ABCDEF", (22, 22, 34, 30, 12, 24)):
+        ws.column_dimensions[col].width = width
+    try:                                    # a yes/no dropdown on the Fix? column
+        from openpyxl.worksheet.datavalidation import DataValidation
+        dv = DataValidation(type="list", formula1='"yes,no"', allow_blank=True)
+        ws.add_data_validation(dv)
+        dv.add(f"E2:E{len(rows) + 1}")
+    except Exception:
+        pass
+    try:
+        wb.save(xlsx)
+        if txt.exists():
+            txt.unlink()
+        log.warning(f"  Wrote leak-review worksheet: {xlsx.name} ({len(rows)} "
+                    f"item(s) to triage — set Fix? yes/no).")
+    except OSError as ex:
+        log.warning(f"  Could not write leak-review worksheet: {ex}")
+
+
 def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
                         pseudonymizer=None, text_subdir="Text Files",
                         original_subdir=None) -> bool:
@@ -9587,6 +9706,18 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
             shown = "; ".join(f"{c}: {s}" for c, s in review[:8])
             log.warning(f"  Pseudonymization REVIEW on {pdf_path.name}: "
                         f"identifier(s) to check before sharing ({shown}).")
+
+        # Collect every finding into the run-wide triage worksheet, each located
+        # to its printed page and gutter line so it can be found and judged.
+        parsed = _pn_body_lines(body)
+        for real in sorted(survivors):
+            pseudonymizer.leak_report.append(
+                {"file": pdf_path.name, "type": "LEAK", "value": real,
+                 "where": _pn_locate(parsed, real)})
+        for cls, sample in review:
+            pseudonymizer.leak_report.append(
+                {"file": pdf_path.name, "type": cls, "value": sample,
+                 "where": _pn_locate(parsed, sample)})
 
         # Pseudonymize the output filename too — the .txt is the artifact that
         # gets shared, so a party/attorney name must not survive in its name.
@@ -10448,6 +10579,9 @@ def main():
 
     # One key file for the whole folder maps every real value to its fake.
     if pseudonymizer is not None:
+        # Human-triage worksheet of every located potential leak — written even
+        # if the leak gate quarantines below, so the reviewer always gets it.
+        _pn_write_leak_report(folder, pseudonymizer.leak_report, log)
         # Two addresses on one street with adjacent numbers were faked to two
         # unrelated streets — the failure that moved an ADU off its parcel.
         for w in _pn_address_adjacency(pseudonymizer.records.values()):
