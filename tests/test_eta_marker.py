@@ -28,7 +28,7 @@ def test_clock_is_colon_free_and_unpadded(dt, want):
 
 def test_marker_name_is_windows_legal(tmp_path):
     P._write_eta_marker(tmp_path, "~5.55PM (4 of 10)")
-    markers = list(tmp_path.glob("pdf_linker_ETA*"))
+    markers = list(tmp_path.glob("ETA *.txt"))
     assert len(markers) == 1
     assert not (set(markers[0].name) & _WINDOWS_ILLEGAL)
     assert markers[0].read_text() == ""          # the name is the message
@@ -36,9 +36,9 @@ def test_marker_name_is_windows_legal(tmp_path):
 
 def test_marker_is_replaced_not_accumulated(tmp_path):
     P._write_eta_marker(tmp_path, "~5.55PM (4 of 10)")
-    first = list(tmp_path.glob("pdf_linker_ETA*"))[0].name
+    first = list(tmp_path.glob("ETA *.txt"))[0].name
     P._write_eta_marker(tmp_path, "~5.40PM (5 of 10)")
-    markers = list(tmp_path.glob("pdf_linker_ETA*"))
+    markers = list(tmp_path.glob("ETA *.txt"))
     assert len(markers) == 1 and markers[0].name != first
 
 
@@ -46,5 +46,5 @@ def test_clear_removes_marker_but_not_the_log(tmp_path):
     P._write_eta_marker(tmp_path, "~5.55PM (4 of 10)")
     (tmp_path / "pdf_linker.log").write_text("real log")
     P._clear_eta_markers(tmp_path)
-    assert not list(tmp_path.glob("pdf_linker_ETA*"))
+    assert not list(tmp_path.glob("ETA *.txt"))
     assert (tmp_path / "pdf_linker.log").read_text() == "real log"
