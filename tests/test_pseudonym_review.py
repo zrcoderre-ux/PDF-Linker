@@ -1026,3 +1026,61 @@ def test_reduced_scan_folds_accents_so_ocr_variants_match():
     assert any("Alarcón" in s for s in z.surviving_reals_reduced(spliced))
     scrubbed = z.scrub_welded(spliced)
     assert "ALARCON" not in scrubbed.upper(), scrubbed
+
+
+# ─── Short surnames + first/last token rows in the key (reversal-macro) ───────
+# "Gregory Yu" -> "Ivers Kingsley": the surname "Yu" is two letters, so the old
+# >=3 floor never registered it. A bare "Yu" leaked in the text, and the key had
+# no standalone "Yu"->"Kingsley" row, so the token-level reversal macro could
+# not undo a bare "Kingsley".
+
+def test_two_letter_surname_is_scrubbed_and_keyed():
+    z = _pzR(names=["Gregory Yu"])
+    out = z.apply("(Yu Decl., ¶ 3.) Yu testified. Gregory Yu signed it.")
+    assert "Yu" not in out, f"two-letter surname leaked: {out}"
+    assert ("person-token", "yu") in z.records
+
+
+def test_two_letter_english_word_surname_not_registered():
+    # A surname spelled like a common word ("As", "Of") must NOT become a term,
+    # or it would rewrite that word throughout the brief.
+    z = _pzR(names=["Robert As", "Mary Of"])
+    assert ("person-token", "as") not in z.records
+    assert ("person-token", "of") not in z.records
+    out = z.apply("This applies as of the date, as noted.")
+    assert out == "This applies as of the date, as noted.", out
+
+
+def _write_and_read_key(z, tmp_path):
+    import openpyxl
+    p = tmp_path / "pseudonym_key.xlsx"
+    z.write_key(p, log)
+    ws = openpyxl.load_workbook(p)["Pseudonym Key"]
+    return list(ws.iter_rows(min_row=2, values_only=True))
+
+
+def test_key_carries_first_and_last_name_rows(tmp_path):
+    # Even when only the FULL name appears, the key gets a row per first/last
+    # token so a token-level reversal macro can undo either alone.
+    z = _pzR(names=["Gregory Yu"])
+    z.apply("Gregory Yu signed the declaration.")   # full name only
+    rows = _write_and_read_key(z, tmp_path)
+    pairs = {(r[0], r[1], r[2]) for r in rows}
+    assert ("person", "Gregory Yu", "Ivers Kessler") in pairs
+    assert ("person-token", "Gregory", "Ivers") in pairs
+    assert ("person-token", "Yu", "Kessler") in pairs
+
+
+def test_key_orders_people_before_other_categories(tmp_path):
+    z = _pzR(names=["Gregory Yu"])
+    z.register_identifiers("VIN 1FA6P8TH5J5100001")
+    z.apply("Gregory Yu drove VIN 1FA6P8TH5J5100001.")
+    rows = _write_and_read_key(z, tmp_path)
+    cats = [r[0] for r in rows]
+    # every person/token row precedes the first non-people row
+    last_person = max(i for i, c in enumerate(cats)
+                      if c in ("person", "person-token"))
+    first_other = min(i for i, c in enumerate(cats)
+                      if c not in ("person", "person-token", "entity",
+                                   "entity-token", "short-name", "display-name"))
+    assert last_person < first_other, cats
