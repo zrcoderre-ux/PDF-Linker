@@ -10389,6 +10389,56 @@ def _pdf_work_weight(pdf):
         return None
 
 
+# ── One-click re-run launcher ────────────────────────────────────────────────
+# After a run, drop a double-clickable file in the folder that re-runs the tool
+# on THIS same folder — the fast path for applying the Fix? decisions saved in
+# pdf_linker_leaks.xlsx, or just re-processing. It targets its own directory
+# (%~dp0 on Windows, $(dirname "$0") on POSIX) so it keeps working if the folder
+# is moved, and points --key at the folder's own key so the re-run reproduces
+# the same fakes (and applies the worksheet decisions on top).
+def _rerun_launcher_spec(exe, script, provider, want_key, windows):
+    """(filename, content, make_executable) for the re-run launcher."""
+    if windows:
+        key = ' --key "%~dp0pseudonym_key.xlsx"' if want_key else ""
+        content = (
+            "@echo off\r\n"
+            "REM PDF-Linker re-run - double-click to process this folder again.\r\n"
+            "REM Picks up any Fix? decisions saved in pdf_linker_leaks.xlsx.\r\n"
+            f'"{exe}" "{script}" "%~dp0." --provider {provider}{key}\r\n'
+            "echo.\r\n"
+            "pause\r\n")
+        return "Re-run PDF-Linker.bat", content, False
+    key = ' --key "$(dirname "$0")/pseudonym_key.xlsx"' if want_key else ""
+    content = (
+        "#!/bin/sh\n"
+        "# PDF-Linker re-run - double-click to process this folder again.\n"
+        "# Picks up any Fix? decisions saved in pdf_linker_leaks.xlsx.\n"
+        f'exec "{exe}" "{script}" "$(dirname "$0")" --provider {provider}{key}\n')
+    return "Re-run PDF-Linker.command", content, True
+
+
+def _write_rerun_launcher(folder, provider, want_key, log):
+    """Write/refresh the double-click re-run launcher in `folder`. Best-effort;
+    a failure is never fatal to the run."""
+    exe = Path(sys.executable)
+    if os.name == "nt" and exe.name.lower() == "pythonw.exe":
+        # Use the console python for the re-run so the window shows progress.
+        cand = exe.with_name("python.exe")
+        if cand.exists():
+            exe = cand
+    script = Path(__file__).resolve()
+    name, content, make_exec = _rerun_launcher_spec(
+        str(exe), str(script), provider, want_key, os.name == "nt")
+    try:
+        path = folder / name
+        path.write_text(content, encoding="utf-8", newline="")
+        if make_exec:
+            os.chmod(path, 0o755)
+        log.info(f"  Wrote one-click re-run launcher: {name}")
+    except OSError as e:
+        log.warning(f"  Could not write re-run launcher: {e}")
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # Entry point
 # ────────────────────────────────────────────────────────────────────────────
@@ -10712,6 +10762,14 @@ def main():
                   "and re-run.")
 
     log.info(f"Done: {success} succeeded, {failed} failed")
+
+    # One-click re-run launcher (written before the leak gate can exit, so it's
+    # there to apply Fix? decisions after a quarantine). --key points at the
+    # folder's own key when it exists, so a re-run reproduces the same fakes.
+    if pdfs:
+        want_key = (pseudonymizer is not None
+                    and (folder / "pseudonym_key.xlsx").is_file())
+        _write_rerun_launcher(folder, args.provider, want_key, log)
 
     # Leak gate, TIERED (config `leak_gate`): the pseudonymization is a
     # precaution against casual recognition of a public filing, so only a
