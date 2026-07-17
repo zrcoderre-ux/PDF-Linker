@@ -527,7 +527,12 @@ REPORTER_PART = (
     # different code points, and missing one breaks otherwise-valid cites
     # (this caused "Santana v. FCA US, LLC, 56 Cal.App.5th 324, 345‒46
     # (2020)" to be undetected — the figure dash U+2012 wasn't in the class).
-    rf"(?:,\s*\d{{1,5}}(?:[-\u2012\u2013\u2014\u2212]\d{{1,5}})?)?"
+    # Repeated (`*`, not `?`) so a cite with more than one pin page still
+    # reaches the "(year)" close: "Bowser v. Ford Motor Co., 78 Cal.App.5th
+    # 587, 599, 617 (2022)" pins to two pages, and a single-pin tail stopped
+    # before the year \u2014 leaving the whole span undetected and the party token
+    # inside it ("Ford Motor Co.") exposed to rewriting.
+    rf"(?:,\s*\d{{1,5}}(?:[-\u2012\u2013\u2014\u2212]\d{{1,5}})?)*"
 )
 CSM_TAIL = re.compile(rf"\s*\((?:[^)]*?\b)?(\d{{4}})\)\s+{REPORTER_PART}")
 # Bluebook tail: ", REPORTER (court year)" — allow optional court abbreviation
@@ -6603,9 +6608,14 @@ _PN_ID_RES = {
     # `_` and digits are \w, so there is no word boundary at the name inside
     # the token. Shape-anchored (no label exists in print); the space-separated
     # "SBN 175977" style stays with its own labelled class.
+    # The alpha/underscore segments tolerate an interior apostrophe: a Bates
+    # stamp built from a name like O'Neill welds it in as "FORD_O'WBYSOZ_91084",
+    # and an apostrophe-free class split the token at the "'", matched only the
+    # "WBYSOZ_91084" tail, and left the party prefix "FORD" in cleartext. Both
+    # straight (') and curly (’) marks are allowed.
     "production number": re.compile(
-        r"(?<![A-Za-z0-9])([A-Z]{2,}[A-Z0-9]*(?:_[A-Z0-9]+)*_?\d{4,}"
-        r"(?:[ \t]*[-–][ \t]*[A-Z0-9_]*\d{2,})?)(?![A-Za-z0-9])"),
+        r"(?<![A-Za-z0-9'’])([A-Z]{2,}[A-Z0-9'’]*(?:_[A-Z0-9'’]+)*_?\d{4,}"
+        r"(?:[ \t]*[-–][ \t]*[A-Z0-9_'’]*\d{2,})?)(?![A-Za-z0-9])"),
 }
 # Identifier classes whose value is ALPHANUMERIC and must be faked char-wise
 # (letters too), not just digit-wise — a production stamp's letters ARE the
@@ -6666,9 +6676,50 @@ def _pn_fake_vin(vin, registry):
 # "<year> WL <number>", pin cite and court paren optional (the year inside the
 # paren may be OCR-damaged or missing). Used ONLY to extend citation
 # PROTECTION, never for linking.
+#
+# The docket segment allows interior whitespace: OCR routinely splits a docket
+# number ("No. 19-CV- 02217-BAS- MDD") mid-token, which stopped the old
+# single-run docket class before it reached "WL" and left the party name in
+# "Hastings v. Ford Motor Co., No. 19-CV- 02217-BAS- MDD 2022 WL 848330"
+# rewritable. Over-consuming a couple of words before "WL" is harmless here —
+# this run only PROTECTS a span, it never links it.
 _PN_WL_RUN_RE = re.compile(
-    r"(?:[A-Z][\w.,&'’\- ]{0,60}?,?\s+)?No\.\s*[\w:().\-]+,?\s+\d{4}\s+WL\s+"
+    r"(?:[A-Z][\w.,&'’\- ]{0,60}?,?\s+)?"
+    r"(?:No\.\s*[\w:().\-]+(?:[ \t]+[\w:().\-]+){0,5}?,?\s+)?"
+    r"\d{4}\s+WL\s+"
     r"\d{4,}(?:,?\s*at\s+\*\d+)?(?:\s*\([^)\n]{0,50}\))?")
+
+# ── Protection-only authority-name shapes the full parser can't read ─────────
+# These extend citation PROTECTION (never linking) to two families the strict
+# parsers in find_case_citations miss, both of which recur in warranty/lemon-law
+# briefs and both of which weld a defendant's name INTO a published authority:
+#
+#   * "In re <Name> ... Litig." — a coordinated/MDL proceeding cited by name,
+#     often as a bare short form with no reporter tail ("In re Ford Motor Co.
+#     DPS6 Powershift Transmission Prod. Liability Litig."), and sometimes with
+#     the leading signal welded on by OCR ("SeeIn re ..."). Anchored on the
+#     distinctive "Litig."/"Litigation" suffix so it can't run away into prose.
+_PN_INRE_LITIG_RE = re.compile(
+    r"(?<![A-Za-z])(?:See\s*)?In\s*[Rr]e\s+"
+    r"[A-Z][\w.'’&\-]*(?:\s+[A-Za-z0-9][\w.'’&\-]*){0,12}?\s+Litig(?:ation)?\.?"
+    r"(?![A-Za-z])")
+
+# A Title-Case run that does not open with a sentence connector, used to anchor
+# the two "Cases"/"Warranty" authority shapes below.
+_PN_TITLE_RUN = (
+    r"(?!The\b|In\b|See\b|Cf\b|But\b|These\b|Those\b|Such\b|All\b|This\b|"
+    r"That\b|Its\b|Under\b|When\b|Where\b|Here\b|A\b|An\b)"
+    r"[A-Z][a-z][A-Za-z]*(?:\s+[A-Z][a-z][A-Za-z]*){0,5}")
+#   * "<Name> Warranty Cases" — a consolidated-proceeding title cited by name
+#     with no "v.", plus its later short forms ("Ford Motor Warranty Cases",
+#     then "Ford Motor Warranty, 17 Cal.5th at 1133", "the Ford Motor Warranty
+#     Court"). Anchored on the capital-C "Cases" or the "Warranty" short-name
+#     immediately followed by a cite/Court signal, so lowercase "warranty" in
+#     ordinary prose (which fills these very briefs) is never touched.
+_PN_CASES_RUN_RE = re.compile(
+    rf"(?<![A-Za-z])(?:{_PN_TITLE_RUN}\s+Warranty\s+Cases\b"
+    rf"|{_PN_TITLE_RUN}\s+Warranty(?=\s+Court\b|,?\s+\d|,?\s*supra\b|\s+at\s)"
+    rf"|{_PN_TITLE_RUN}\s+Cases\b(?=[\s,]+(?:\(?\d|supra\b|at\s)))")
 
 
 def _pn_fake_production(val, registry):
@@ -8030,8 +8081,12 @@ class Pseudonymizer:
                        for b in (_pn_word_base(w) for w in rec["real"].split())
                        if len(b) >= 4 and not _pn_is_entity_keep(b)}
         if party_bases:
-            for m in re.finditer(r"(?<![A-Za-z0-9_])(?=[A-Za-z0-9_]*\d{3,})"
-                                 r"([A-Za-z][A-Za-z0-9_]{5,})(?![A-Za-z0-9_])",
+            # An interior apostrophe (straight or curly) is part of the token,
+            # not a boundary: "FORD_O'WBYSOZ_91084" must be read whole so the
+            # party base "ford" inside it is seen and the stamp faked entire —
+            # otherwise the apostrophe split the run and "FORD" leaked.
+            for m in re.finditer(r"(?<![A-Za-z0-9_'’])(?=[A-Za-z0-9_'’]*\d{3,})"
+                                 r"([A-Za-z][A-Za-z0-9_'’]{5,})(?![A-Za-z0-9_])",
                                  _NFKC(text)):
                 tok = m.group(1)
                 low = tok.lower()
@@ -8302,6 +8357,13 @@ class Pseudonymizer:
         # a renamed authority.
         for m in _PN_WL_RUN_RE.finditer(text):
             spans.append(m.span())
+        # "In re <Name> ... Litig." and "<Name> Warranty Cases" (and their bare
+        # short forms) name authorities the strict parser can't read — a party
+        # token welded into one otherwise gets rewritten inside the cite.
+        # Protection-only, same as the WL run above.
+        for rx in (_PN_INRE_LITIG_RE, _PN_CASES_RUN_RE):
+            for m in rx.finditer(text):
+                spans.append(m.span())
         return spans
 
     def _mask_protected_citations(self, text):

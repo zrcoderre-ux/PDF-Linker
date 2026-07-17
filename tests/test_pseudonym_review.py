@@ -938,3 +938,54 @@ def test_leak_gate_identifier_is_not_primary():
     z.register_identifiers("SBN 175977")
     z.note_leaks({"175977"})
     assert z.has_leaks() and z.primary_leaks() == set()
+
+
+# ─────────────── REVIEW (25STCV24253, Emmett v. Ford, delivered run) ─────────
+# Quarantined *.LEAK exports showed the defendant's name ("Ford Motor Company")
+# rewritten INSIDE published authorities the strict parser couldn't read, and a
+# Bates stamp whose interior apostrophe hid a party prefix. Renaming a cited
+# decision is the method's cardinal failure, so each shape below must survive
+# apply() byte-for-byte; the stamp must be faked WHOLE so no party token leaks.
+
+def test_defendant_side_citations_survive_unreadable_shapes():
+    z = _pzR()  # Ford Motor Company registered as a party
+    cites = [
+        # OCR split the docket number across spaces -> WL run stopped early
+        "Hastings v. Ford Motor Co., No. 19-CV- 02217-BAS- MDD 2022 WL 848330",
+        # two pin pages before "(year)" -> single-pin tail missed the close
+        "Bowser v. Ford Motor Co., 78 Cal. App. 5th 587, 599, 617 (2022)",
+        # short form cited by defendant name only, no "X v."
+        "Ford Motor Co., No. CV222111DSFAGRX, 2023 WL 3035369, at *3 "
+        "(C.D. Cal. Feb. 21, 2023)",
+        # consolidated-proceeding title with no "v.", plus its short forms
+        "Ford Motor Warranty Cases (2025) 17 Cal.5th 1122",
+        "See Ford Motor Warranty, 333 17 Cal.5th at 1133-1134",
+        "the Ford Motor Warranty Court highlighted",
+        # In re short form, no reporter, "Litig." anchor (and welded "SeeIn re")
+        "SeeIn re Ford Motor Co. DPS6 Powershift Transmission Prod. "
+        "Liability Litig.",
+        # In re with a naked WL number and no court paren
+        "In re Ford Motor Co. DPS6 2019 WL 7185524",
+    ]
+    for c in cites:
+        assert z.apply(c) == c, f"authority rewritten: {z.apply(c)!r}"
+
+
+def test_warranty_prose_is_not_over_protected():
+    # Lowercase "warranty" fills these very briefs; only the capital-C title and
+    # the "Warranty <cite|Court>" short name are authorities. The party's own
+    # name near ordinary "warranty" prose must still scrub.
+    z = _pzR()
+    out = z.apply("During the warranty coverage period, Ford Motor Company "
+                  "warrants the vehicle under the New Vehicle Limited Warranty.")
+    assert "Ford Motor Company" not in out, out
+    assert "warranty coverage period" in out and "Limited Warranty" in out
+
+
+def test_bates_stamp_with_apostrophe_scrubs_party_prefix():
+    z = _pzR()  # Ford is a party base
+    for stamp in ("FORD_O’WBYSOZ_91084", "FORD_O'WBYSOZ_44370"):
+        z.register_identifiers(f"(See {stamp} for the calibration note.)")
+        out = z.apply(f"(See {stamp}.)")
+        assert stamp not in out, f"whole stamp survived: {out}"
+        assert "FORD" not in out.upper(), f"party prefix leaked: {out}"
