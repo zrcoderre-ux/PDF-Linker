@@ -10115,11 +10115,12 @@ def _config_bool(cfg, key, default):
 # A run can take many minutes (an OCR-heavy declaration set is minutes per
 # file), so a 0-byte marker file dropped beside pdf_linker.log carries the
 # estimated FINISH TIME in its NAME — visible at a glance in the folder without
-# opening anything. It is rewritten after each PDF and removed when the run
-# finishes cleanly; a marker left behind means the run didn't complete. A clock
-# time (not a shrinking "~10 min") reads better because it only refreshes once
-# per file. The name is colon-free so it is valid on Windows.
-_ETA_MARKER_PREFIX = "pdf_linker_ETA"
+# opening anything ('ETA ~6.04PM (6 of 13).txt'). It is rewritten after each
+# PDF and removed when the run finishes cleanly; a marker left behind means the
+# run didn't complete. A clock time (not a shrinking "~10 min") reads better
+# because it only refreshes once per file. The name is colon-free so it is
+# valid on Windows.
+_ETA_MARKER_PREFIX = "ETA"
 
 
 def _fmt_clock(dt):
@@ -10129,17 +10130,20 @@ def _fmt_clock(dt):
 
 
 def _clear_eta_markers(folder):
-    for m in folder.glob(_ETA_MARKER_PREFIX + "*"):
+    # Scoped to EMPTY .txt files matching the marker shape, so the short "ETA "
+    # prefix can never delete a real (non-empty) file a user named similarly.
+    for m in folder.glob(_ETA_MARKER_PREFIX + " *.txt"):
         try:
-            m.unlink()
+            if m.is_file() and m.stat().st_size == 0:
+                m.unlink()
         except OSError:
             pass
 
 
 def _write_eta_marker(folder, label):
     """Replace the live ETA marker with a fresh 0-byte file whose NAME is the
-    estimate, e.g. 'pdf_linker_ETA ~5.55PM (4 of 10).txt'. Best-effort: a
-    marker that can't be written (locked folder, etc.) is never fatal."""
+    estimate, e.g. 'ETA ~6.04PM (6 of 13).txt'. Best-effort: a marker that
+    can't be written (locked folder, etc.) is never fatal."""
     _clear_eta_markers(folder)
     try:
         (folder / f"{_ETA_MARKER_PREFIX} {label}.txt").write_text(
