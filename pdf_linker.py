@@ -5203,6 +5203,15 @@ _PN_DBA_SPLIT_RE = re.compile(
     r"(?:^|(?<=[\s,;(]))\(?" + _PN_DBA_MARK + r"\)?(?=$|[\s,;)])")
 _PN_AKA_SPLIT_RE = re.compile(
     r"(?:^|(?<=[\s,;(]))\(?" + _PN_AKA_MARK + r"\)?(?=$|[\s,;)])")
+# Two-letter tokens that are ordinary English words. A surname of the same
+# letters is rare, but registering one as a case-insensitive whole-word term
+# would rewrite the word throughout a brief. Ambiguous real surnames that are
+# NOT everyday formal-writing words (Yu, Ng, Le, Wu, Vo, Xu, Ho, Oh) are left
+# OUT so they still register and scrub.
+_PN_SHORT_TOKEN_STOP = frozenset({
+    "as", "at", "am", "an", "be", "by", "do", "go", "he", "if", "in", "is",
+    "it", "me", "my", "no", "of", "on", "or", "so", "to", "up", "us", "we",
+})
 _PN_COMMON_WORD_SURNAMES = {
     "green", "brown", "white", "black", "gray", "grey", "young", "long",
     "short", "small", "rich", "best", "price", "king", "bell", "cook", "wood",
@@ -5747,12 +5756,41 @@ def _pn_fake_person(name, registry):
             fake = _pn_fake_name_token(w, registry)
             parts.append(fake)
             is_surname = (m.start() == surname_at)
-            if (len(w) >= 3 and _pn_is_name_token(w)
-                    and (is_surname or len(w) >= 4)):
+            # A surname as short as two letters (Yu, Ng, Le, Wu, Vo) is real and
+            # identifying — the old `len >= 3` floor dropped it, so a bare "Yu"
+            # both leaked in the text and had no token row for the reversal
+            # macro. Single letters are already held out by `_keep`. A non-
+            # surname (first/middle) still needs four letters to earn its own
+            # token; the common-word guard in `_pn_append_person_terms` keeps a
+            # two-letter word ("As", "Of") from becoming a term.
+            if _pn_is_name_token(w) and (is_surname or len(w) >= 4):
                 bare.append((w, fake, is_surname))
         cursor = m.end()
     parts.append(name[cursor:])
     return "".join(parts), bare
+
+
+def _pn_name_token_rows(real, fake):
+    """Aligned (real_word, fake_word) pairs for a composed full name.
+
+    The reversal macro replaces token by token, so it needs a row per first and
+    last name — "Kingsley" -> "Yu" on its own, not only inside the full-name row
+    "Ivers Kingsley" -> "Gregory Yu". A person/entity fake is built word-for-word
+    from the real, so zipping the two word lists recovers each token's fake.
+    Yields nothing when the sides don't tokenize to the same length (a fake that
+    was not composed word-for-word), so a mis-aligned pair is never emitted.
+    Identical words (kept initials, shared verbatim tokens) and lone initials are
+    skipped — there is nothing to reverse there."""
+    rw = _PN_WORD_RE.findall(str(real))
+    fw = _PN_WORD_RE.findall(str(fake))
+    if not rw or len(rw) != len(fw):
+        return
+    for rtok, ftok in zip(rw, fw):
+        if rtok == ftok:
+            continue
+        if len(rtok.strip(".'’-")) < 2:
+            continue
+        yield rtok, ftok
 
 
 def _pn_word_affixes(tok):
@@ -5982,7 +6020,13 @@ def _pn_append_person_terms(terms, raw, source, registry):
         # A generic word ("Legal" of a firm name, "Warranty", "Beach" of
         # "Long Beach") must never be a free-standing token — it rewrites
         # ordinary prose and the venue everywhere. The full name still scrubs.
-        if _pn_is_generic_token(_pn_word_base(real_tok)):
+        base = _pn_word_base(real_tok)
+        if _pn_is_generic_token(base):
+            continue
+        # A two-letter surname that spells an ordinary English word ("As", "Of",
+        # "In") would rewrite that word throughout the brief; skip it. A short
+        # surname that is NOT a word (Yu, Ng, Le, Wu) still registers.
+        if len(base) <= 2 and base in _PN_SHORT_TOKEN_STOP:
             continue
         terms.append(_PnTerm("person-token", real_tok, fake_tok,
                              whole_word=True, case_sensitive=False,
@@ -8882,15 +8926,42 @@ class Pseudonymizer:
 
         xlsx if openpyxl is available, else JSON alongside.
         """
-        allrows = sorted(self.records.values(),
-                         key=lambda r: (r["category"], r["real"].lower()))
-        if not allrows:
+        if not self.records:
             return
 
         def _reversible(r):
             return (r["count"] > 0
                     and "\n" not in str(r["real"]) and "\n" not in str(r["fake"]))
-        keyrows = [r for r in allrows if _reversible(r)]
+        keyrows = [r for r in self.records.values() if _reversible(r)]
+
+        # Emit a row per first/last name so a token-level reversal macro can
+        # undo a bare "Kingsley" — not only the full "Ivers Kingsley". Each
+        # person/entity fake is composed word-for-word, so its tokens are
+        # recovered by zipping the real and fake word lists; only tokens not
+        # already keyed (as a person-token / entity-token) are added.
+        seen = {(r["category"], str(r["real"]).lower()) for r in keyrows}
+        derived = []
+        for r in keyrows:
+            if r["category"] not in ("person", "entity"):
+                continue
+            tokcat = f"{r['category']}-token"
+            for rtok, ftok in _pn_name_token_rows(r["real"], r["fake"]):
+                dk = (tokcat, rtok.lower())
+                if dk in seen:
+                    continue
+                seen.add(dk)
+                derived.append({"category": tokcat, "real": rtok, "fake": ftok,
+                                "source": r["source"], "count": r["count"]})
+        keyrows += derived
+
+        # People (and their bare tokens / short forms) sort to the TOP of the
+        # key, entities next, every other class after in name order — the reader
+        # scans party names first, not an alphabetical run that buries them
+        # between "address" and "phone".
+        rank = {"person": 0, "person-token": 1, "display-name": 2,
+                "short-name": 3, "entity": 4, "entity-token": 5}
+        keyrows.sort(key=lambda r: (rank.get(r["category"], 50),
+                                    r["category"], str(r["real"]).lower()))
         headers = ["Category", "Real Value", "Replacement", "Status", "Source",
                    "Occurrences"]
 
