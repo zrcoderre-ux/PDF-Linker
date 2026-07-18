@@ -10682,16 +10682,27 @@ def _pdf_work_weight(pdf):
 # (%~dp0 on Windows, $(dirname "$0") on POSIX) so it keeps working if the folder
 # is moved, and points --key at the folder's own key so the re-run reproduces
 # the same fakes (and applies the worksheet decisions on top).
-def _rerun_launcher_spec(exe, script, provider, want_key, windows):
-    """(filename, content, make_executable) for the re-run launcher."""
+def _rerun_launcher_spec(exe, script, provider, want_key, windows, frozen=False):
+    """(filename, content, make_executable) for the re-run launcher.
+
+    `frozen` True means the tool runs as a packaged executable (PyInstaller /
+    py2exe): the exe IS the entry point, so the script path must NOT be passed
+    (a frozen exe treats a stray .py argument as an unknown target and can open
+    an empty console). Otherwise the exe is a Python interpreter and needs the
+    script. A running banner and a trailing status line are always printed, so
+    the window is never blank even if the interpreter writes nothing itself."""
+    prog = f'"{exe}"' if frozen else f'"{exe}" "{script}"'
     if windows:
         key = ' --key "%~dp0pseudonym_key.xlsx"' if want_key else ""
         content = (
             "@echo off\r\n"
             "REM PDF-Linker re-run - double-click to process this folder again.\r\n"
             "REM Picks up any Fix? decisions saved in pdf_linker_leaks.xlsx.\r\n"
-            f'"{exe}" "{script}" "%~dp0." --provider {provider}{key}\r\n'
+            "echo Re-running PDF-Linker on this folder...\r\n"
             "echo.\r\n"
+            f'{prog} "%~dp0." --provider {provider}{key}\r\n'
+            "echo.\r\n"
+            "echo Finished - exit code %ERRORLEVEL%. You can close this window.\r\n"
             "pause\r\n")
         return "Re-run PDF-Linker.bat", content, False
     key = ' --key "$(dirname "$0")/pseudonym_key.xlsx"' if want_key else ""
@@ -10699,7 +10710,9 @@ def _rerun_launcher_spec(exe, script, provider, want_key, windows):
         "#!/bin/sh\n"
         "# PDF-Linker re-run - double-click to process this folder again.\n"
         "# Picks up any Fix? decisions saved in pdf_linker_leaks.xlsx.\n"
-        f'exec "{exe}" "{script}" "$(dirname "$0")" --provider {provider}{key}\n')
+        'echo "Re-running PDF-Linker on this folder..."\n'
+        f'{prog} "$(dirname "$0")" --provider {provider}{key}\n'
+        'echo "Finished - exit code $?."\n')
     return "Re-run PDF-Linker.command", content, True
 
 
@@ -10707,14 +10720,18 @@ def _write_rerun_launcher(folder, provider, want_key, log):
     """Write/refresh the double-click re-run launcher in `folder`. Best-effort;
     a failure is never fatal to the run."""
     exe = Path(sys.executable)
-    if os.name == "nt" and exe.name.lower() == "pythonw.exe":
-        # Use the console python for the re-run so the window shows progress.
-        cand = exe.with_name("python.exe")
-        if cand.exists():
-            exe = cand
+    frozen = bool(getattr(sys, "frozen", False))
+    if os.name == "nt" and not frozen and exe.stem.lower().startswith("pythonw"):
+        # The tool is normally launched via pythonw.exe (the mail-merge macro),
+        # which has NO console — a double-clicked .bat that re-invokes it opens
+        # an EMPTY window. Re-run through the console python instead: the one
+        # beside pythonw.exe if present, else a bare "python.exe" resolved from
+        # PATH (still a console interpreter, unlike the windowless pythonw).
+        cand = exe.with_name(exe.name.lower().replace("pythonw", "python", 1))
+        exe = cand if cand.exists() else Path("python.exe")
     script = Path(__file__).resolve()
     name, content, make_exec = _rerun_launcher_spec(
-        str(exe), str(script), provider, want_key, os.name == "nt")
+        str(exe), str(script), provider, want_key, os.name == "nt", frozen=frozen)
     try:
         path = folder / name
         path.write_text(content, encoding="utf-8", newline="")

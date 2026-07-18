@@ -28,6 +28,22 @@ def test_windows_bat_targets_own_folder_with_key():
     assert '--key "%~dp0pseudonym_key.xlsx"' in content
     assert content.endswith("pause\r\n")          # window stays to show result
     assert "\r\n" in content                       # CRLF for cmd
+    # A visible banner so the window is never blank, even under a windowless
+    # interpreter that prints nothing of its own.
+    assert "echo Re-running PDF-Linker" in content
+    # Non-frozen: the interpreter needs the script path.
+    assert r'"C:\Tools\pdf_linker.py"' in content
+
+
+def test_windows_bat_frozen_omits_script_path():
+    # A packaged .exe IS the entry point; passing the (bundled, ephemeral)
+    # script path is what opened an empty console.
+    _n, content, _e = P._rerun_launcher_spec(
+        r"C:\App\pdf_linker.exe", r"C:\App\_MEI\pdf_linker.py", "lexis",
+        want_key=True, windows=True, frozen=True)
+    assert r'"C:\App\pdf_linker.exe" "%~dp0."' in content
+    assert "pdf_linker.py" not in content          # no script arg when frozen
+    assert "--provider lexis" in content
 
 
 def test_windows_bat_without_key_when_not_pseudonymizing():
@@ -45,6 +61,8 @@ def test_posix_command_is_executable_and_self_locating():
     assert content.startswith("#!/bin/sh")
     assert '"$(dirname "$0")"' in content
     assert '--key "$(dirname "$0")/pseudonym_key.xlsx"' in content
+    # No `exec`, so the trailing status line still runs after the tool exits.
+    assert "Re-running PDF-Linker" in content and "Finished" in content
 
 
 def test_writer_creates_launcher_without_clobbering_other_markers(tmp_path):
