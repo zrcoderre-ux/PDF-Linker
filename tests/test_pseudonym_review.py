@@ -1143,3 +1143,53 @@ def test_declarant_scan_skips_nonnames(text):
 def test_declarant_scan_skips_our_own_fake():
     assert P._pn_declarant_ref_findings("(Kingsley Decl.)",
                                         known_fakes={"kingsley"}) == []
+
+
+# ─── Declarant references are auto-PSEUDONYMIZED, not just flagged ────────────
+# "Smith Decl.", "Alarcón Declaration", "Yu Dec." — the name is scrubbed even
+# when that declaration isn't in the batch. The word "Declaration" and its
+# variants ("Decl.", "Dec.") are NEVER faked.
+
+def _pz_blank():
+    return P.Pseudonymizer([], {}, registry=P._PnFakeRegistry())
+
+
+def test_declarant_ref_name_is_registered_and_scrubbed():
+    z = _pz_blank()
+    doc = "(Smith Decl., ¶ 3.) Smith testified. See Alarcón Declaration, ¶ 4."
+    z.register_declarant_refs(doc)
+    out = z.apply(doc)
+    assert "Smith" not in out and "Alarcón" not in out, out
+    # the reference word itself is intact in both spellings
+    assert "Decl." in out and "Declaration" in out
+
+
+def test_two_letter_declarant_surname_is_scrubbed():
+    z = _pz_blank()
+    doc = "(Yu Dec.) Later Yu signed the declaration."
+    z.register_declarant_refs(doc)
+    out = z.apply(doc)
+    assert "Yu" not in out, out
+    assert "Dec." in out
+
+
+def test_declaration_word_and_variants_are_never_faked():
+    z = _pz_blank()
+    doc = "Smith Decl.; Doe Declaration; Roe Dec.; the Declaration of Coe."
+    z.register_declarant_refs(doc)
+    # none of the reference words are registered as terms
+    for w in ("declaration", "decl", "dec"):
+        assert not any(P._pn_word_base(t) == w
+                       for (_c, _rl), rec in z.records.items()
+                       for t in str(rec["real"]).split())
+    out = z.apply(doc)
+    assert out.count("Decl") >= 2 and "Declaration" in out
+
+
+def test_descriptor_and_date_declarations_are_left_alone():
+    z = _pz_blank()
+    doc = ("The Supporting Declaration and Expert Witness Declaration were "
+           "filed. In Dec. 2024 they met.")
+    z.register_declarant_refs(doc)
+    out = z.apply(doc)
+    assert out == doc, f"descriptor/date wrongly scrubbed: {out}"

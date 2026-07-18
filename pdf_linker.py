@@ -7574,13 +7574,24 @@ _PN_DECL_REF_RE = re.compile(
     + r"[ \t]+(?:Declaration|Decl\.?|Dec\.(?![ \t]*\d))(?![A-Za-z])")
 
 
-def _pn_declarant_ref_findings(text, known_fakes=()):
-    """[("unscrubbed declarant name?", "Alarcón"), ...] — the name cited before
-    a "Declaration"/"Decl."/"Dec." reference in `text`. Leading role/connector/
-    boilerplate words are trimmed so "See Smith Decl." reports "Smith"; a name
-    that is entirely procedural ("Reply Declaration") or is one of this run's
-    own fakes is not reported."""
-    known = {w.lower() for w in known_fakes}
+# Descriptor words that precede "Declaration" without naming the declarant —
+# "Supporting Declaration", "Expert Witness Declaration", "Custodian of Records
+# Declaration". A name made ENTIRELY of these (plus boilerplate) is not a person
+# and is neither flagged nor pseudonymized.
+_PN_DECL_DESCRIPTOR = frozenset({
+    "expert", "witness", "custodian", "records", "supporting", "responding",
+    "opposing", "rebuttal", "percipient", "sworn", "verified", "authenticating",
+    "foundational", "initial", "final", "corrected", "additional", "further",
+    "supplemental", "amended", "joint", "declarant", "moving", "responsive",
+})
+
+
+def _pn_declarant_ref_names(text):
+    """Clean declarant names cited before a "Declaration"/"Decl."/"Dec."
+    reference in `text`. Leading signal/role/boilerplate words are trimmed
+    ("See Smith Decl." -> "Smith"), and a value that is entirely procedural
+    ("Reply Declaration") or descriptive ("Supporting Declaration") is dropped.
+    The Declaration word itself is NEVER part of a returned name."""
     out, seen = [], set()
     for m in _PN_DECL_REF_RE.finditer(_NFKC(text)):
         toks = m.group("n").split()
@@ -7588,6 +7599,7 @@ def _pn_declarant_ref_findings(text, known_fakes=()):
         while toks and (_pn_word_base(toks[0]) in _PN_COMMON_WORDS
                         or _pn_word_base(toks[0]) in _PN_PLEADING_WORDS
                         or _pn_word_base(toks[0]) in SIGNAL_PREFIXES
+                        or _pn_word_base(toks[0]) in _PN_DECL_DESCRIPTOR
                         or _pn_is_role_token(toks[0])):
             toks.pop(0)
         name = " ".join(toks).strip(" .,;:")
@@ -7596,9 +7608,23 @@ def _pn_declarant_ref_findings(text, known_fakes=()):
             continue
         if _pn_is_procedural_phrase(name):
             continue
-        if all(_pn_word_base(w) in known for w in toks):
-            continue                       # already scrubbed to our fake
+        if all(_pn_word_base(w) in _PN_DECL_DESCRIPTOR for w in toks):
+            continue
         seen.add(low)
+        out.append(name)
+    return out
+
+
+def _pn_declarant_ref_findings(text, known_fakes=()):
+    """[("unscrubbed declarant name?", "Alarcón"), ...] — a backstop review for
+    a declarant name that reached the OUTPUT un-pseudonymized (e.g. on a spliced
+    page the registrar couldn't scrub). A name already replaced with one of this
+    run's fakes is not reported."""
+    known = {w.lower() for w in known_fakes}
+    out = []
+    for name in _pn_declarant_ref_names(text):
+        if all(_pn_word_base(w) in known for w in name.split()):
+            continue                       # already scrubbed to our fake
         out.append(("unscrubbed declarant name?", name))
     return out
 
@@ -8308,6 +8334,43 @@ class Pseudonymizer:
                           if not _pn_is_role_token(rt)
                           and not _pn_is_generic_token(_pn_word_base(rt))]
             self._add_terms(new_terms)
+
+    def register_declarant_refs(self, text):
+        """Auto-pseudonymize the name a brief uses to cite a declaration —
+        "Smith Decl., ¶ 3", "Alarcón Declaration", "Yu Dec." — even when that
+        declaration itself isn't in this batch, so the reference is SCRUBBED,
+        not merely flagged. Only the name is registered; the word "Declaration"
+        and its variants ("Decl.", "Dec.") are never faked. A descriptive or
+        procedural lead ("Supporting Declaration", "Reply Decl.") names no
+        person and is skipped. Idempotent; call before apply()."""
+        new = []
+        for raw in _pn_declarant_ref_names(text):
+            if _pn_is_party_role(raw) or ("person", raw.lower()) in self.records:
+                continue
+            toks = raw.split()
+            # The surname must look like a name, not ordinary vocabulary — auto-
+            # scrubbing is higher stakes than flagging, so a bare descriptive or
+            # common word never triggers it. Two-letter surnames (Yu, Ng, Le) are
+            # allowed, except those that spell a short English word ("As", "Of").
+            surname = _pn_word_base(toks[-1])
+            if (len(surname) < 2 or surname in _PN_COMMON_WORDS
+                    or surname in _PN_PLEADING_WORDS or surname in _PN_DECL_DESCRIPTOR
+                    or surname in _PN_REVIEW_NAME_STOP
+                    or (len(surname) <= 2 and surname in _PN_SHORT_TOKEN_STOP)
+                    or not _pn_is_name_token(toks[-1])):
+                continue
+            fake_full, bare = _pn_fake_person(raw, self.registry)
+            new.append(_PnTerm("person", raw, fake_full, whole_word=False,
+                               case_sensitive=False, priority=2,
+                               source="declarant"))
+            new += [_PnTerm("person-token", rt, ft, whole_word=True,
+                            case_sensitive=False, priority=1, source="declarant")
+                    for rt, ft, _s in bare
+                    if not _pn_is_role_token(rt)
+                    and not _pn_is_generic_token(_pn_word_base(rt))
+                    # Hard guard: the Declaration word never becomes a term.
+                    and _pn_word_base(rt) not in {"declaration", "decl", "dec"}]
+        self._add_terms(new)
 
     def _detector_record(self, cat, real, faker):
         rk = (cat, real.lower())
@@ -9942,6 +10005,7 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
     detect_full = "\n\f\n".join(detect_pages)
     if pseudonymizer is not None:
         pseudonymizer.register_declarant_names(detect_full)
+        pseudonymizer.register_declarant_refs(detect_full)
         pseudonymizer.register_dba_names(detect_full)
         pseudonymizer.register_firm_names(detect_full)
         pseudonymizer.register_label_names(detect_full)
@@ -10140,6 +10204,7 @@ def _pn_prescan_folder(pdfs, pseudonymizer, log):
             continue
         corpus.append(text)
         pseudonymizer.register_declarant_names(text)
+        pseudonymizer.register_declarant_refs(text)
         pseudonymizer.register_dba_names(text)
         pseudonymizer.register_firm_names(text)
         pseudonymizer.register_label_names(text)
