@@ -1269,3 +1269,21 @@ def test_welded_declaration_is_auto_scrubbed_keeping_the_word():
     out = z.apply(doc)
     assert "Smith" not in out and "Yu" not in out, out
     assert "Decl." in out and "Dec." in out          # reference word preserved
+
+
+# ─── Quarantine only the files that carry a leak, not the whole batch ─────────
+
+def test_only_leaking_files_are_quarantined():
+    from pathlib import Path
+    z = _pz_blank()
+    a, b, c = Path("Motion.txt"), Path("Opposition.txt"), Path("Reply.txt")
+    z.written = [a, b, c]
+    # b carries a party-name leak; a carries a lesser token; c is clean
+    z.leaked_by_file = {a: {"sometoken"}, b: {"ford motor company"}}
+    # primary gate blocks only the party name -> only b is held
+    assert z.files_to_quarantine({"Ford Motor Company"}) == [b]
+    # strict gate (all leaks) -> a and b, never the clean c
+    assert set(z.files_to_quarantine({"Ford Motor Company", "sometoken"})) == {a, b}
+    assert c not in z.files_to_quarantine({"Ford Motor Company", "sometoken"})
+    # nothing blocking -> nothing quarantined
+    assert z.files_to_quarantine(set()) == []

@@ -8020,6 +8020,9 @@ class Pseudonymizer:
         self.texts_applied = 0   # how many text bodies were run through apply()
         self.written = []        # .txt paths written with pseudonymization applied
         self.leaked = set()      # real_lower values that survived in some export
+        self.leaked_by_file = {} # written txt path -> {real_lower} that survived
+                                 # IN THAT FILE, so the gate quarantines only the
+                                 # files carrying a leak, not the whole batch
         self.review = []         # (class, sample) open-world findings across files
         self.leak_report = []    # {file, type, value, where} rows for the
                                  # human-triage worksheet (page:line located)
@@ -8937,6 +8940,16 @@ class Pseudonymizer:
             if cat in self._PRIMARY_LEAK_CATS and rl in self.leaked:
                 out.add(rec["real"])
         return out
+
+    def files_to_quarantine(self, gating):
+        """The written .txt paths that actually contain one of the `gating`
+        values — so only the offending exports are renamed to *.LEAK, not the
+        whole batch. A file whose leak was in `gating` is held; every other file
+        is delivered. `gating` is the gate's blocking set (strict: all leaks;
+        primary: party-naming leaks)."""
+        want = {str(v).lower() for v in gating}
+        return [txt for txt in self.written
+                if self.leaked_by_file.get(txt, set()) & want]
 
     def known_fake_words(self):
         """Every word this run has minted as a stand-in, lower-cased. Lets the
@@ -10213,8 +10226,12 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         log.warning(f"  Could not write text version (non-fatal): {e}")
         return False
     if pseudonymizer is not None:
-        # Track it so the folder-level no-match check can report a count.
+        # Track it so the folder-level no-match check can report a count, and
+        # record which real values leaked IN THIS file so the gate can
+        # quarantine only the offending exports.
         pseudonymizer.written.append(txt_path)
+        if survivors:
+            pseudonymizer.leaked_by_file[txt_path] = {s.lower() for s in survivors}
     log.info(f"  Wrote {'pseudonymized ' if pseudonymizer else ''}text "
              f"version: {text_subdir}/{txt_path.name}")
 
@@ -11285,8 +11302,11 @@ def main():
         # delivery — that is exactly what the mark means.
         gating = {v for v in gating if str(v).lower() not in pseudonymizer.suppressed}
         if gating:
+            # Quarantine ONLY the files that actually carry a gating leak; the
+            # rest of the batch is clean and gets delivered.
+            offenders = pseudonymizer.files_to_quarantine(gating)
             quarantined = []
-            for txt in pseudonymizer.written:
+            for txt in offenders:
                 try:
                     if txt.exists():
                         dest = txt.with_suffix(txt.suffix + ".LEAK")
@@ -11295,12 +11315,13 @@ def main():
                 except OSError as e:
                     log.error(f"  Could not quarantine leaked export "
                               f"{txt.name}: {e}")
+            delivered = len(pseudonymizer.written) - len(quarantined)
             shown = ", ".join(sorted(gating)[:8])
             _warn(f"!! Pseudonymize FAILED: party name(s) survived in the "
                   f"exports ({shown}) — the case is recognizable on sight. "
-                  f"{len(quarantined)} .txt export(s) quarantined to *.LEAK "
-                  f"and NOT delivered. Add the survivor(s) with --term and "
-                  f"re-run.")
+                  f"{len(quarantined)} .txt export(s) with a leak quarantined to "
+                  f"*.LEAK and NOT delivered ({delivered} clean export(s) "
+                  f"delivered). Add the survivor(s) with --term and re-run.")
             sys.exit(2)
         shown = ", ".join(sorted(pseudonymizer.leaked)[:8])
         _warn(f"Pseudonymize: {len(pseudonymizer.leaked)} lesser value(s) "
