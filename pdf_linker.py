@@ -6896,20 +6896,61 @@ _PN_PLEADING_WORDS = frozenset({
 })
 
 
+# Vocabulary used to re-split a token whose spaces OCR dropped ("OppositiontoMot",
+# "ReplyBrief") back into document words. Single-token document/role words plus
+# the few connectors that join them in a pleading title ("Notice OF Motion",
+# "Points AND Authorities", "Motion FOR Summary Judgment"). Kept deliberately
+# small so an ordinary surname doesn't happen to segment into it.
+_PN_PROC_SEG_CONNECTORS = frozenset({"of", "to", "the", "and", "for", "in", "on"})
+_PN_PROC_SEG_VOCAB = (_PN_PLEADING_WORDS
+                      | {w for w in _PN_PARTY_ROLE_WORDS if " " not in w}
+                      | _PN_PROC_SEG_CONNECTORS)
+
+
+def _pn_token_is_procedural(base):
+    """True when `base` (lower-cased) is a document/role/boilerplate word OR an
+    OCR-welded run of them ("oppositiontomotion", "replybrief"). Segmentation
+    requires every piece to be >=2 chars and at least one to be a real document
+    word, so a surname doesn't fragment into connectors."""
+    if (base in _PN_PLEADING_WORDS or base in _PN_COMMON_WORDS
+            or base in _PN_REVIEW_NAME_STOP or base in _PN_PARTY_ROLE_WORDS
+            or _pn_is_entity_keep(base)):
+        return True
+    # Drop interior possessives / dots that OCR carries into a welded run
+    # ("Plaintiff'sOppositiontoMot." -> "plaintiffsoppositiontomot").
+    base = re.sub(r"['’.]", "", base)
+    n = len(base)
+    if n < 6 or n > 40 or not base.isalpha():
+        return False
+    # DP: can `base` be split entirely into vocab words, using >=1 document word?
+    reach = [False] * (n + 1)
+    doc = [False] * (n + 1)
+    reach[0] = True
+    for i in range(n):
+        if not reach[i]:
+            continue
+        for j in range(i + 2, min(n, i + 16) + 1):
+            piece = base[i:j]
+            if piece in _PN_PROC_SEG_VOCAB:
+                reach[j] = True
+                if doc[i] or piece in _PN_PLEADING_WORDS:
+                    doc[j] = True
+    return reach[n] and doc[n]
+
+
 def _pn_is_procedural_phrase(value):
     """True when EVERY word in `value` is a document type, a party role, a
     connector, a corporate suffix, or common/legal boilerplate — so the phrase
     names a pleading or an argument, not a person or entity. Such a value is
     never a genuine unscrubbed name and is not surfaced for review ("Opposition",
-    "Plaintiff's Opposition to Mot.", "Reply Declaration")."""
+    "Plaintiff's Opposition to Mot.", "Reply Declaration"). Robust to a dropped
+    space: a welded run of document words ("OppositiontoMotion") still counts."""
     words = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿĀ-ſ][\wÀ-ÖØ-öø-ÿĀ-ſ'’.\-]*", value)
     if not words:
         return False
     for w in words:
         base = _pn_word_base(w)
-        if (base in _PN_PLEADING_WORDS or base in _PN_COMMON_WORDS
-                or base in _PN_REVIEW_NAME_STOP or _pn_is_entity_keep(base)
-                or _pn_is_role_token(w) or _pn_is_suffix_token(w)
+        if (_pn_token_is_procedural(base) or _pn_is_suffix_token(w)
                 or len(base) < 2):
             continue
         return False                     # a distinctive word remains

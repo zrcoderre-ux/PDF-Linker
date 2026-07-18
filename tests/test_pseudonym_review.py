@@ -1215,3 +1215,24 @@ def test_procedural_filenames_are_not_renamed():
         sp = re.sub(r"[_\-]+", " ", stem)
         z.register_declarant_refs(sp)
         assert z.apply(sp) == sp, stem
+
+
+# ─── Document terms survive a dropped space (OCR welds) ───────────────────────
+# If OCR eats the space, a pleading phrase becomes one token
+# ("OppositiontoMotion"); it must still read as procedural, not a name.
+
+@pytest.mark.parametrize("welded", [
+    "OppositiontoMotion", "ReplyBrief", "NoticeofMotion", "PointsandAuthorities",
+    "MotionforSummaryJudgment", "ExParteApplication", "OppositiontoMotiontoCompel",
+    "ReplyDeclaration", "Plaintiff’sOppositiontoMot.", "Defendant’sReplyBrief",
+])
+def test_welded_document_phrase_still_procedural(welded):
+    assert P._pn_is_procedural_phrase(welded) is True
+
+
+@pytest.mark.parametrize("name", [
+    "Sotomayor", "Bennett", "Delacroix", "Motioned", "Reyes", "Ordonez",
+    "Compton", "Ashford", "O’Brien", "OConnor", "Alarcón",
+])
+def test_welded_segmentation_does_not_swallow_real_names(name):
+    assert P._pn_is_procedural_phrase(name) is False
