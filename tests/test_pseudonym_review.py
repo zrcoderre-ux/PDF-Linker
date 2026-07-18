@@ -1193,3 +1193,25 @@ def test_descriptor_and_date_declarations_are_left_alone():
     z.register_declarant_refs(doc)
     out = z.apply(doc)
     assert out == doc, f"descriptor/date wrongly scrubbed: {out}"
+
+
+def test_declarant_name_only_in_filename_is_scrubbed():
+    # A declarant named only in the FILENAME ("Alarcón Declaration ISO Reply")
+    # — never in the body — is registered from the stem so the output filename
+    # scrubs it. (The prescan feeds the separator-normalized stem in.)
+    import re
+    z = _pz_blank()
+    stem = re.sub(r"[_\-]+", " ", "Alarcón_Declaration_ISO_Reply")
+    z.register_declarant_refs(stem)
+    faked = z.apply(stem)
+    assert "Alarcón" not in faked and "Declaration" in faked, faked
+
+
+def test_procedural_filenames_are_not_renamed():
+    import re
+    for stem in ["Reply_Brief", "Opposition_to_Motion", "Expert_Declaration",
+                 "Motion_for_Summary_Judgment"]:
+        z = _pz_blank()
+        sp = re.sub(r"[_\-]+", " ", stem)
+        z.register_declarant_refs(sp)
+        assert z.apply(sp) == sp, stem

@@ -10205,6 +10205,10 @@ def _pn_prescan_folder(pdfs, pseudonymizer, log):
         corpus.append(text)
         pseudonymizer.register_declarant_names(text)
         pseudonymizer.register_declarant_refs(text)
+        # The FILENAME often names a declarant ("Yu Declaration ISO Opp.pdf")
+        # whose name may appear nowhere in the body — scan it too, so both the
+        # body and the pseudonymized output filename scrub that name.
+        pseudonymizer.register_declarant_refs(re.sub(r"[_\-]+", " ", pdf.stem))
         pseudonymizer.register_dba_names(text)
         pseudonymizer.register_firm_names(text)
         pseudonymizer.register_label_names(text)
