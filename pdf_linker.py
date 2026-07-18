@@ -10495,11 +10495,13 @@ def _config_bool(cfg, key, default):
 # file), so a 0-byte marker file dropped beside pdf_linker.log carries the
 # estimated FINISH TIME in its NAME — visible at a glance in the folder without
 # opening anything ('ETA ~6.04PM (6 of 13).txt'). It is rewritten after each
-# PDF and removed when the run finishes cleanly; a marker left behind means the
-# run didn't complete. A clock time (not a shrinking "~10 min") reads better
+# PDF and, when the run finishes cleanly, renamed to a 'DONE <clock>.txt' stamp
+# of the actual finish time; an ETA marker still left behind means the run
+# didn't complete. A clock time (not a shrinking "~10 min") reads better
 # because it only refreshes once per file. The name is colon-free so it is
 # valid on Windows.
 _ETA_MARKER_PREFIX = "ETA"
+_DONE_MARKER_PREFIX = "DONE"
 
 
 def _fmt_clock(dt):
@@ -10509,14 +10511,17 @@ def _fmt_clock(dt):
 
 
 def _clear_eta_markers(folder):
-    # Scoped to EMPTY .txt files matching the marker shape, so the short "ETA "
-    # prefix can never delete a real (non-empty) file a user named similarly.
-    for m in folder.glob(_ETA_MARKER_PREFIX + " *.txt"):
-        try:
-            if m.is_file() and m.stat().st_size == 0:
-                m.unlink()
-        except OSError:
-            pass
+    # Scoped to EMPTY .txt files matching a run-status marker shape, so the short
+    # "ETA "/"DONE " prefix can never delete a real (non-empty) file a user named
+    # similarly. Both prefixes are cleared, so a stale DONE stamp from a prior
+    # run doesn't sit beside a fresh ETA (and vice versa).
+    for prefix in (_ETA_MARKER_PREFIX, _DONE_MARKER_PREFIX):
+        for m in folder.glob(prefix + " *.txt"):
+            try:
+                if m.is_file() and m.stat().st_size == 0:
+                    m.unlink()
+            except OSError:
+                pass
 
 
 def _write_eta_marker(folder, label):
@@ -10527,6 +10532,18 @@ def _write_eta_marker(folder, label):
     try:
         (folder / f"{_ETA_MARKER_PREFIX} {label}.txt").write_text(
             "", encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _write_done_marker(folder):
+    """Replace the live ETA marker with a 0-byte 'DONE <clock>.txt' stamp on a
+    clean finish, so the folder shows the actual finish time at a glance instead
+    of the marker simply vanishing. Best-effort, same as the ETA marker."""
+    _clear_eta_markers(folder)
+    try:
+        (folder / f"{_DONE_MARKER_PREFIX} {_fmt_clock(datetime.datetime.now())}.txt"
+         ).write_text("", encoding="utf-8")
     except OSError:
         pass
 
@@ -10890,7 +10907,7 @@ def main():
                          f"({done_work * 100 / total_work:.0f}% of work); "
                          f"estimated finish ~{clock}")
     if show_eta:
-        _clear_eta_markers(folder)   # clean finish removes the marker
+        _write_done_marker(folder)   # clean finish stamps 'DONE <finish time>'
 
     # One key file for the whole folder maps every real value to its fake.
     if pseudonymizer is not None:
