@@ -10811,6 +10811,56 @@ def _write_rerun_launcher(folder, provider, want_key, log):
         log.warning(f"  Could not write re-run launcher: {e}")
 
 
+# ── Protected-vocabulary inventory ───────────────────────────────────────────
+# The pseudonymizer PROTECTS a fixed vocabulary: words it never fakes and never
+# flags as a name, plus citation SHAPES it never rewrites a party name inside.
+# `--dump-terms` prints it from these live constants (the source of truth), so
+# the inventory can't drift from a hand-kept doc. The word sets are:
+#   _PN_PLEADING_WORDS   document types / procedural vocabulary
+#   _PN_DECL_DESCRIPTOR  words that precede "Declaration" without naming anyone
+#   _PN_SHORT_TOKEN_STOP two-letter English words never registered as a surname
+# and the reference words "declaration/decl/dec" are hard-blocked from faking.
+def _dump_protected_terms(out=None):
+    """Print the protected vocabulary from the live constants. Returns the text
+    (also written to `out`, default stdout) so a test can assert on it."""
+    import io
+    buf = io.StringIO()
+
+    def block(title, note, words):
+        buf.write(f"\n{title} ({len(words)})\n  {note}\n")
+        line = "   "
+        for w in sorted(words):
+            if len(line) + len(w) + 2 > 78:
+                buf.write(line.rstrip() + "\n")
+                line = "   "
+            line += " " + w + ","
+        buf.write(line.rstrip().rstrip(",") + "\n")
+
+    buf.write("PDF-Linker protected vocabulary "
+              "(never faked, never flagged as a name)\n")
+    block("Pleading / document-type words  [_PN_PLEADING_WORDS]",
+          "A phrase made only of these (plus roles/connectors) is a document, "
+          "not a person.", _PN_PLEADING_WORDS)
+    block("Declaration descriptors  [_PN_DECL_DESCRIPTOR]",
+          "Precede 'Declaration' without naming the declarant "
+          "('Supporting Declaration').", _PN_DECL_DESCRIPTOR)
+    block("Two-letter word guard  [_PN_SHORT_TOKEN_STOP]",
+          "Never registered as a surname, so prose ('as', 'of') is not "
+          "rewritten.", _PN_SHORT_TOKEN_STOP)
+    buf.write("\nHard never-fake reference words (3)\n"
+              "  the declaration reference word itself is never a term:\n"
+              "   dec, decl, declaration\n")
+    buf.write("\nCitation shapes protected from party-name rewriting "
+              "(regex families, not word lists):\n"
+              "   In re <Name> ... Litig.             [_PN_INRE_LITIG_RE]\n"
+              "   <Name> Warranty Cases / Warranty    [_PN_CASES_RUN_RE]\n"
+              "   <name> <year> WL <number> runs      [_PN_WL_RUN_RE]\n"
+              "   reporter cites with multiple pins   [REPORTER_PART]\n")
+    text = buf.getvalue()
+    (out or sys.stdout).write(text)
+    return text
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # Entry point
 # ────────────────────────────────────────────────────────────────────────────
@@ -10823,7 +10873,14 @@ def main():
     parser = argparse.ArgumentParser(
         description="Add citation hyperlinks to PDFs in a case folder."
     )
-    parser.add_argument("folder", help="Folder containing PDFs to link.")
+    parser.add_argument("folder", nargs="?",
+                        help="Folder containing PDFs to link.")
+    parser.add_argument(
+        "--dump-terms", action="store_true",
+        help="Print the protected vocabulary the pseudonymizer never fakes or "
+             "flags as a name (and the citation shapes it never rewrites), then "
+             "exit. No folder needed.",
+    )
     parser.add_argument(
         "--provider",
         choices=("westlaw", "lexis"),
@@ -10903,6 +10960,14 @@ def main():
     )
     args = parser.parse_args()
 
+    # `--dump-terms` is an inspection command: print the protected vocabulary
+    # and exit, no folder required.
+    if args.dump_terms:
+        _dump_protected_terms()
+        sys.exit(0)
+
+    if not args.folder:
+        parser.error("the following arguments are required: folder")
     folder = Path(args.folder)
     if not folder.is_dir():
         print(f"Not a folder: {folder}")
