@@ -6873,6 +6873,48 @@ _PN_REVIEW_NAME_STOP = frozenset({
     "clerk", "judge", "honorable", "hon", "plaintiff", "defendant", "attorney",
 })
 
+# Document-type / procedural vocabulary — the canonical pleading names and their
+# abbreviations (mirrors the pdf-viewer footer-naming rules the same author
+# maintains). A phrase built ENTIRELY from these plus role words, connectors,
+# and corporate suffixes names a DOCUMENT or an argument, never a person or an
+# entity, so it must never be surfaced as an unscrubbed-name finding
+# ("Opposition", "Demurrer", "Plaintiff's Opposition to Mot.").
+_PN_PLEADING_WORDS = frozenset({
+    "motion", "motions", "mot", "mtn", "opposition", "oppositions", "opp",
+    "reply", "replies", "demurrer", "demurrers", "complaint", "complaints",
+    "petition", "petitions", "pet", "answer", "answers", "cross-complaint",
+    "declaration", "declarations", "decl", "dec", "order", "orders", "notice",
+    "notices", "memorandum", "memo", "points", "authorities", "brief", "briefs",
+    "stipulation", "stipulations", "objection", "objections", "application",
+    "applications", "app", "ex", "parte", "exparte", "statement", "statements",
+    "separate", "umf", "aumf", "rjn", "iso", "fac", "sac", "tac", "amendment",
+    "amended", "proof", "service", "dismissal", "request", "requests",
+    "judgment", "judgement", "adjudication", "compel", "strike", "quash",
+    "sanction", "sanctions", "reconsideration", "continuance", "arbitration",
+    "arbitrate", "summary", "support", "opposition", "opposing", "response",
+    "responses", "responsive", "supplemental", "amend", "trial", "hearing",
+})
+
+
+def _pn_is_procedural_phrase(value):
+    """True when EVERY word in `value` is a document type, a party role, a
+    connector, a corporate suffix, or common/legal boilerplate — so the phrase
+    names a pleading or an argument, not a person or entity. Such a value is
+    never a genuine unscrubbed name and is not surfaced for review ("Opposition",
+    "Plaintiff's Opposition to Mot.", "Reply Declaration")."""
+    words = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿĀ-ſ][\wÀ-ÖØ-öø-ÿĀ-ſ'’.\-]*", value)
+    if not words:
+        return False
+    for w in words:
+        base = _pn_word_base(w)
+        if (base in _PN_PLEADING_WORDS or base in _PN_COMMON_WORDS
+                or base in _PN_REVIEW_NAME_STOP or _pn_is_entity_keep(base)
+                or _pn_is_role_token(w) or _pn_is_suffix_token(w)
+                or len(base) < 2):
+            continue
+        return False                     # a distinctive word remains
+    return True
+
 
 # A business name anchored by a PURCHASE cue ("purchased ... from Worthington
 # Ford", "Worthington Ford, the dealership"): a non-party dealer has no
@@ -6926,6 +6968,8 @@ def _pn_person_review_findings(text, known_fakes=()):
                 continue
             if all(w in known for w in words):
                 continue      # a fake we minted, not a survivor
+            if _pn_is_procedural_phrase(name):
+                continue      # a document type, not a person ("Reply Brief")
             if name.lower() in seen:
                 continue
             seen.add(name.lower())
@@ -7051,6 +7095,7 @@ def _pn_review_findings(text, known_fakes=()):
                 out.append((cls, sample))
     out += _pn_person_review_findings(text, known_fakes)
     out += _pn_dealer_review_findings(text, known_fakes)
+    out += _pn_declarant_ref_findings(text, known_fakes)
     return out
 
 
@@ -7513,6 +7558,49 @@ _PN_DECL_TITLE_RE = re.compile(
 _PN_DECL_SELF_RE = re.compile(
     r"\bI,\s+(" + _PN_DECL_NAME + r")\s*,\s*(?i:declare|hereby|do\s+hereby|"
     r"state|being\s+duly\s+sworn)")
+
+# A declaration is cited by its declarant's name — "Smith Decl.", "Alarcón
+# Declaration, ¶ 4", "Yu Dec." — which is the single highest-value place a
+# witness or party name leaks (see the Alarcón / Yu misses). This review scan
+# ALWAYS surfaces the name in front of a Declaration reference so a human checks
+# it, unless it is a fake this run minted or procedural boilerplate ("Reply
+# Declaration" names a document). Up to three capitalised words are captured so
+# "Gregory Yu Decl." keeps both name tokens.
+_PN_DECL_REF_RE = re.compile(
+    r"(?<![A-Za-z])(?P<n>" + _PN_DECL_NAME_WORD
+    + r"(?:[ \t]+" + _PN_DECL_NAME_WORD + r"){0,2})"
+    # "Dec." only when NOT a date ("Dec. 5, 2024") — a following digit means the
+    # month, not a declaration short cite ("Yu Dec., ¶ 4").
+    + r"[ \t]+(?:Declaration|Decl\.?|Dec\.(?![ \t]*\d))(?![A-Za-z])")
+
+
+def _pn_declarant_ref_findings(text, known_fakes=()):
+    """[("unscrubbed declarant name?", "Alarcón"), ...] — the name cited before
+    a "Declaration"/"Decl."/"Dec." reference in `text`. Leading role/connector/
+    boilerplate words are trimmed so "See Smith Decl." reports "Smith"; a name
+    that is entirely procedural ("Reply Declaration") or is one of this run's
+    own fakes is not reported."""
+    known = {w.lower() for w in known_fakes}
+    out, seen = [], set()
+    for m in _PN_DECL_REF_RE.finditer(_NFKC(text)):
+        toks = m.group("n").split()
+        # Drop leading words that aren't the declarant ("See"/"The"/"Plaintiff").
+        while toks and (_pn_word_base(toks[0]) in _PN_COMMON_WORDS
+                        or _pn_word_base(toks[0]) in _PN_PLEADING_WORDS
+                        or _pn_word_base(toks[0]) in SIGNAL_PREFIXES
+                        or _pn_is_role_token(toks[0])):
+            toks.pop(0)
+        name = " ".join(toks).strip(" .,;:")
+        low = name.lower()
+        if not name or low in seen:
+            continue
+        if _pn_is_procedural_phrase(name):
+            continue
+        if all(_pn_word_base(w) in known for w in toks):
+            continue                       # already scrubbed to our fake
+        seen.add(low)
+        out.append(("unscrubbed declarant name?", name))
+    return out
 
 
 def _pn_is_personlike_declarant(name):
@@ -9959,10 +10047,17 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         # to its printed page and gutter line so it can be found and judged.
         parsed = _pn_body_lines(body)
         for real in sorted(survivors):
+            # A pure pleading phrase ("Opposition", "Plaintiff's Opposition to
+            # Mot.") is a document type, never a party — never worth a worksheet
+            # row no matter which scan produced it.
+            if _pn_is_procedural_phrase(real):
+                continue
             pseudonymizer.leak_report.append(
                 {"file": pdf_path.name, "type": "LEAK", "value": real,
                  "where": _pn_locate(parsed, real)})
         for cls, sample in review:
+            if _pn_is_procedural_phrase(sample):
+                continue
             pseudonymizer.leak_report.append(
                 {"file": pdf_path.name, "type": cls, "value": sample,
                  "where": _pn_locate(parsed, sample)})

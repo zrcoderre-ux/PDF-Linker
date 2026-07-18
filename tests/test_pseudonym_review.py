@@ -1084,3 +1084,62 @@ def test_key_orders_people_before_other_categories(tmp_path):
                       if c not in ("person", "person-token", "entity",
                                    "entity-token", "short-name", "display-name"))
     assert last_person < first_other, cats
+
+
+# ─── Procedural phrases never flagged; declarant refs always flagged ──────────
+# Document-type words ("Opposition", "Demurrer", "Reply") and any combination
+# of them ("Plaintiff's Opposition to Mot.") name a pleading, not a person, and
+# must never appear as an unscrubbed-name finding. Conversely, the name before a
+# "Declaration"/"Decl."/"Dec." reference is the top place a witness name leaks
+# and is always surfaced.
+
+@pytest.mark.parametrize("phrase", [
+    "Opposition", "Demurrer", "Reply", "Motion", "Complaint",
+    "Plaintiff’s Opposition to Mot.", "Reply Declaration", "Notice of Motion",
+    "Opposition to Motion to Compel", "Separate Statement",
+    "Motion for Summary Judgment", "Defendant’s Reply Brief",
+])
+def test_procedural_phrases_are_never_names(phrase):
+    assert P._pn_is_procedural_phrase(phrase) is True
+
+
+@pytest.mark.parametrize("name", [
+    "Smith", "Alarcón", "Gregory Yu", "Smith Opposition", "Worthington Ford",
+])
+def test_real_names_are_not_procedural(name):
+    assert P._pn_is_procedural_phrase(name) is False
+
+
+def test_procedural_phrase_suppressed_in_person_review():
+    # Even reached through the "possible person name" scan, a doc phrase is
+    # dropped. (Anchored via a "signed by:" cue so the person regex fires.)
+    hits = P._pn_person_review_findings("Signed by: Reply Brief")
+    assert hits == []
+    hits = P._pn_person_review_findings("Signed by: Gregory Yu")
+    assert any("Gregory Yu" in s for _c, s in hits)
+
+
+@pytest.mark.parametrize("text,want", [
+    ("(Smith Decl., ¶ 3.)", "Smith"),
+    ("(Alarcón Declaration, ¶ 4.)", "Alarcón"),
+    ("See Gregory Yu Decl.", "Gregory Yu"),
+    ("cf. Nguyen Decl.", "Nguyen"),
+    ("(Yu Dec.)", "Yu"),
+])
+def test_declarant_reference_is_always_flagged(text, want):
+    hits = P._pn_declarant_ref_findings(text)
+    assert hits and hits[0][1] == want, hits
+
+
+@pytest.mark.parametrize("text", [
+    "the Reply Declaration argues",       # procedural, not a person
+    "In Dec. 2024 he signed",             # a date, not a declaration
+    "Meeting on Dec. 5, 2024",            # a date
+])
+def test_declarant_scan_skips_nonnames(text):
+    assert P._pn_declarant_ref_findings(text) == []
+
+
+def test_declarant_scan_skips_our_own_fake():
+    assert P._pn_declarant_ref_findings("(Kingsley Decl.)",
+                                        known_fakes={"kingsley"}) == []
