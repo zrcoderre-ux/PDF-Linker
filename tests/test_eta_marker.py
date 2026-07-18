@@ -52,6 +52,28 @@ def test_clear_removes_marker_but_not_the_log(tmp_path):
     assert (tmp_path / "pdf_linker.log").read_text() == "real log"
 
 
+def test_clean_finish_stamps_done_marker(tmp_path):
+    # Mid-run there is a live ETA marker; a clean finish renames it to a
+    # 'DONE <clock>.txt' stamp of the actual finish time — not a deletion.
+    P._write_eta_marker(tmp_path, "~6.04PM (6 of 13)")
+    P._write_done_marker(tmp_path)
+    assert not list(tmp_path.glob("ETA *.txt"))         # estimate is gone
+    done = list(tmp_path.glob("DONE *.txt"))
+    assert len(done) == 1
+    assert done[0].read_text() == ""                    # name carries the time
+    assert not (set(done[0].name) & _WINDOWS_ILLEGAL)   # Windows-legal
+
+
+def test_next_run_clears_a_stale_done_stamp(tmp_path):
+    # A DONE stamp from a previous run must not linger beside a fresh ETA marker.
+    P._write_done_marker(tmp_path)
+    (tmp_path / "pdf_linker.log").write_text("real log")
+    P._write_eta_marker(tmp_path, "(estimating...)")
+    assert not list(tmp_path.glob("DONE *.txt"))
+    assert len(list(tmp_path.glob("ETA *.txt"))) == 1
+    assert (tmp_path / "pdf_linker.log").read_text() == "real log"
+
+
 def test_work_weight_prices_ocr_pages_over_bytes(tmp_path):
     # A native-text PDF vs a scanned-like one (empty text layer). The scanned
     # file can be SMALLER in bytes yet far costlier to process (OCR), which is
