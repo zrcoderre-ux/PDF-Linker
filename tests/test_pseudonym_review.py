@@ -1236,3 +1236,36 @@ def test_welded_document_phrase_still_procedural(welded):
 ])
 def test_welded_segmentation_does_not_swallow_real_names(name):
     assert P._pn_is_procedural_phrase(name) is False
+
+
+# ─── Declaration references survive a dropped space too ───────────────────────
+# OCR welding the space in "Smith Decl." -> "SmithDecl." must still scrub the
+# name (the reference word "Decl."/"Declaration"/"Dec." is preserved).
+
+@pytest.mark.parametrize("text,want", [
+    ("(SmithDecl., ¶ 3.)", "Smith"),
+    ("AlarcónDeclaration, ¶ 4", "Alarcón"),
+    ("(YuDec.)", "Yu"),
+    ("DeckerDecl.", "Decker"),
+])
+def test_welded_declaration_reference_name_is_found(text, want):
+    names = P._pn_declarant_ref_names(text)
+    assert names and names[0] == want, names
+
+
+@pytest.mark.parametrize("text", [
+    "SupportingDeclaration", "ExpertWitnessDeclaration",
+    "CustodianofRecordsDeclaration", "ReplyDeclaration",
+    "Redeclaration of rights", "Declan filed it", "In Dec. 2024 he signed",
+])
+def test_welded_declaration_nonnames_are_dropped(text):
+    assert P._pn_declarant_ref_names(text) == []
+
+
+def test_welded_declaration_is_auto_scrubbed_keeping_the_word():
+    z = _pz_blank()
+    doc = "(SmithDecl.) SmithDecl. again. YuDec. signed."
+    z.register_declarant_refs(doc)
+    out = z.apply(doc)
+    assert "Smith" not in out and "Yu" not in out, out
+    assert "Decl." in out and "Dec." in out          # reference word preserved

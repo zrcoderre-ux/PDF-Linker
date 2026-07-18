@@ -6897,24 +6897,33 @@ _PN_PLEADING_WORDS = frozenset({
 
 
 # Vocabulary used to re-split a token whose spaces OCR dropped ("OppositiontoMot",
-# "ReplyBrief") back into document words. Single-token document/role words plus
-# the few connectors that join them in a pleading title ("Notice OF Motion",
-# "Points AND Authorities", "Motion FOR Summary Judgment"). Kept deliberately
-# small so an ordinary surname doesn't happen to segment into it.
+# "ReplyBrief", "ExpertWitness") back into document words. Substantive document /
+# role / declaration-descriptor words plus the few connectors that join them in a
+# pleading title ("Notice OF Motion", "Points AND Authorities"). Kept deliberately
+# small so an ordinary surname doesn't happen to segment into it. Defined lazily
+# (after _PN_DECL_DESCRIPTOR exists) via _pn_proc_seg_vocab().
 _PN_PROC_SEG_CONNECTORS = frozenset({"of", "to", "the", "and", "for", "in", "on"})
-_PN_PROC_SEG_VOCAB = (_PN_PLEADING_WORDS
-                      | {w for w in _PN_PARTY_ROLE_WORDS if " " not in w}
-                      | _PN_PROC_SEG_CONNECTORS)
+_PN_PROC_SEG_VOCAB = None
+
+
+def _pn_proc_seg_vocab():
+    global _PN_PROC_SEG_VOCAB
+    if _PN_PROC_SEG_VOCAB is None:
+        substantive = (_PN_PLEADING_WORDS | _PN_DECL_DESCRIPTOR
+                       | {w for w in _PN_PARTY_ROLE_WORDS if " " not in w})
+        _PN_PROC_SEG_VOCAB = (substantive, substantive | _PN_PROC_SEG_CONNECTORS)
+    return _PN_PROC_SEG_VOCAB
 
 
 def _pn_token_is_procedural(base):
-    """True when `base` (lower-cased) is a document/role/boilerplate word OR an
-    OCR-welded run of them ("oppositiontomotion", "replybrief"). Segmentation
-    requires every piece to be >=2 chars and at least one to be a real document
-    word, so a surname doesn't fragment into connectors."""
+    """True when `base` (lower-cased) is a document/role/descriptor/boilerplate
+    word OR an OCR-welded run of them ("oppositiontomotion", "expertwitness").
+    Segmentation requires every piece to be >=2 chars and at least one to be a
+    substantive document word, so a surname doesn't fragment into connectors."""
+    substantive, seg_vocab = _pn_proc_seg_vocab()
     if (base in _PN_PLEADING_WORDS or base in _PN_COMMON_WORDS
             or base in _PN_REVIEW_NAME_STOP or base in _PN_PARTY_ROLE_WORDS
-            or _pn_is_entity_keep(base)):
+            or base in _PN_DECL_DESCRIPTOR or _pn_is_entity_keep(base)):
         return True
     # Drop interior possessives / dots that OCR carries into a welded run
     # ("Plaintiff'sOppositiontoMot." -> "plaintiffsoppositiontomot").
@@ -6931,9 +6940,9 @@ def _pn_token_is_procedural(base):
             continue
         for j in range(i + 2, min(n, i + 16) + 1):
             piece = base[i:j]
-            if piece in _PN_PROC_SEG_VOCAB:
+            if piece in seg_vocab:
                 reach[j] = True
-                if doc[i] or piece in _PN_PLEADING_WORDS:
+                if doc[i] or piece in substantive:
                     doc[j] = True
     return reach[n] and doc[n]
 
@@ -7607,12 +7616,19 @@ _PN_DECL_SELF_RE = re.compile(
 # it, unless it is a fake this run minted or procedural boilerplate ("Reply
 # Declaration" names a document). Up to three capitalised words are captured so
 # "Gregory Yu Decl." keeps both name tokens.
+#
+# The separator before the reference word is [ \t]* (not +), so a dropped space
+# still resolves: OCR that welds "Smith Decl." into "SmithDecl." leaves the name
+# rewritable, and the greedy name group backtracks to the capital-D reference
+# word ("Smith" + "Decl."). The reference word stays case-sensitive with a
+# trailing (?![A-Za-z]), so it anchors to a real "Decl"/"Dec."/"Declaration"
+# and can't bite into a name that merely starts that way ("Declan").
 _PN_DECL_REF_RE = re.compile(
     r"(?<![A-Za-z])(?P<n>" + _PN_DECL_NAME_WORD
-    + r"(?:[ \t]+" + _PN_DECL_NAME_WORD + r"){0,2})"
+    + r"(?:[ \t]+" + _PN_DECL_NAME_WORD + r"){0,2}?)"
     # "Dec." only when NOT a date ("Dec. 5, 2024") — a following digit means the
     # month, not a declaration short cite ("Yu Dec., ¶ 4").
-    + r"[ \t]+(?:Declaration|Decl\.?|Dec\.(?![ \t]*\d))(?![A-Za-z])")
+    + r"[ \t]*(?:Declaration|Decl\.?|Dec\.(?![ \t]*\d))(?![A-Za-z])")
 
 
 # Descriptor words that precede "Declaration" without naming the declarant —
