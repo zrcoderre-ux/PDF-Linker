@@ -101,3 +101,16 @@ def test_work_weight_prices_ocr_pages_over_bytes(tmp_path):
     bad = tmp_path / "bad.pdf"
     bad.write_text("not a pdf")
     assert P._pdf_work_weight(bad) is None
+
+
+def test_eta_rate_round_trips_and_seeds_estimate(monkeypatch, tmp_path):
+    # The remembered throughput lets a re-run project a finish time immediately.
+    monkeypatch.setattr(P, "_eta_rate_path", lambda: tmp_path / "rate.txt")
+    assert P._load_eta_rate() is None            # nothing saved yet
+    P._save_eta_rate(2.5)                         # work-units per second
+    assert P._load_eta_rate() == 2.5
+    # a non-positive / garbage value never seeds a bogus estimate
+    P._save_eta_rate(0)
+    assert P._load_eta_rate() == 2.5             # unchanged (0 not written)
+    (tmp_path / "rate.txt").write_text("garbage")
+    assert P._load_eta_rate() is None

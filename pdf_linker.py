@@ -10832,6 +10832,34 @@ def _pdf_work_weight(pdf):
         return None
 
 
+# Remembered processing throughput (work-units per second) from the last run,
+# stored next to the config. It lets a re-run show a projected finish time
+# IMMEDIATELY — before the first file lands — instead of sitting on
+# "(estimating...)" while a large case's first file is processed. Refined live
+# each file and re-saved at the end, so it self-calibrates to this machine.
+_ETA_RATE_FILE = "pdf_linker_eta_rate.txt"
+
+
+def _eta_rate_path():
+    return _config_path().with_name(_ETA_RATE_FILE)
+
+
+def _load_eta_rate():
+    try:
+        v = float(_eta_rate_path().read_text(encoding="utf-8").strip())
+        return v if v > 0 else None
+    except Exception:
+        return None
+
+
+def _save_eta_rate(rate):
+    try:
+        if rate and rate > 0:
+            _eta_rate_path().write_text(f"{rate:.6f}", encoding="utf-8")
+    except Exception:
+        pass
+
+
 # ── One-click re-run launcher ────────────────────────────────────────────────
 # After a run, drop a double-clickable file in the folder that re-runs the tool
 # on THIS same folder — the fast path for applying the Fix? decisions saved in
@@ -11210,6 +11238,14 @@ def main():
             w = _pdf_work_weight(p)
             weights[p] = w if w is not None else max(1.0, sizes[p] / 50000.0)
         total_work = sum(weights.values()) or 1.0
+        # Seed an immediate projected finish from the last run's throughput, so a
+        # large re-run shows a time right away instead of "(estimating...)" until
+        # the first file lands. Refined live below.
+        _seed_rate = _load_eta_rate()
+        if _seed_rate:
+            finish = datetime.datetime.now() + datetime.timedelta(
+                seconds=total_work / _seed_rate)
+            _write_eta_marker(folder, f"~{_fmt_clock(finish)} (estimating)")
 
     if pseudonymizer is not None and pdfs:
         corpus = _pn_prescan_folder(pdfs, pseudonymizer, log)
@@ -11254,6 +11290,11 @@ def main():
                          f"({done_work * 100 / total_work:.0f}% of work); "
                          f"estimated finish ~{clock}")
     if show_eta:
+        # Remember this run's throughput so the NEXT run can show a finish time
+        # immediately instead of estimating from scratch.
+        _elapsed = time.monotonic() - proc_start
+        if _elapsed > 0 and done_work > 0:
+            _save_eta_rate(done_work / _elapsed)
         _write_done_marker(folder)   # clean finish stamps 'DONE <finish time>'
 
     # One key file for the whole folder maps every real value to its fake.
