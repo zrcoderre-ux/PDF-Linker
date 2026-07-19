@@ -1306,3 +1306,36 @@ def test_stray_char_document_words_still_procedural(mangled):
 ])
 def test_stray_char_normalization_keeps_real_names(name):
     assert P._pn_is_procedural_phrase(name) is False
+
+
+# ─── A stray char inside the DECLARATION reference word is tolerated ──────────
+# "Smith Dec.laration" reads as a declaration cite; the name scrubs and the
+# (mangled) reference word is preserved. The word is validated letters-only.
+
+@pytest.mark.parametrize("text,want", [
+    ("Alarcón Dec.laration", "Alarcón"),
+    ("Smith Dec.laration, ¶ 3", "Smith"),
+    ("Smith Decl.aration", "Smith"),
+    ("Smith Declara.tion", "Smith"),
+    ("(SmithDecl.)", "Smith"),
+])
+def test_mangled_reference_word_is_tolerated(text, want):
+    names = P._pn_declarant_ref_names(text)
+    assert names and names[0] == want, names
+
+
+@pytest.mark.parametrize("text", [
+    "In Dec. 2024 he signed", "Meeting on Dec. 5, 2024", "the Reply Declaration",
+    "Declan filed it", "David Decker met", "See December filings", "Donald Trump",
+])
+def test_mangled_reference_word_guards(text):
+    assert P._pn_declarant_ref_names(text) == []
+
+
+def test_unknown_declarant_with_mangled_ref_is_autoscrubbed():
+    z = _pz_blank()
+    doc = "Smith Dec.laration, ¶ 3. Later Smith testified."
+    z.register_declarant_refs(doc)
+    out = z.apply(doc)
+    assert "Smith" not in out, out
+    assert "Dec.laration" in out          # the mangled reference word is kept
