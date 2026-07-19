@@ -1287,3 +1287,22 @@ def test_only_leaking_files_are_quarantined():
     assert c not in z.files_to_quarantine({"Ford Motor Company", "sometoken"})
     # nothing blocking -> nothing quarantined
     assert z.files_to_quarantine(set()) == []
+
+
+# ─── Stray interior characters are ignored (OCR dropped a mark into a word) ────
+# "Def.endant" reads as "Defendant"; comparison is on the letters only.
+
+@pytest.mark.parametrize("mangled", [
+    "Def.endant", "Opp.osition", "Mot.ion", "Decl.aration", "Plaint-iff",
+    "Sep.arate State.ment", "Def.endant’s Opp.osition to Mot.ion",
+])
+def test_stray_char_document_words_still_procedural(mangled):
+    assert P._pn_is_procedural_phrase(mangled) is True
+
+
+@pytest.mark.parametrize("name", [
+    "Sotomayor", "Bennett", "O’Brien", "D.E. Shaw", "Alarcón", "Ford",
+    "Smith Opp.osition",   # a real surname next to a mangled doc word is kept
+])
+def test_stray_char_normalization_keeps_real_names(name):
+    assert P._pn_is_procedural_phrase(name) is False

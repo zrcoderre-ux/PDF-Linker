@@ -6919,19 +6919,21 @@ def _pn_token_is_procedural(base):
     """True when `base` (lower-cased) is a document/role/descriptor/boilerplate
     word OR an OCR-welded run of them ("oppositiontomotion", "expertwitness").
     Segmentation requires every piece to be >=2 chars and at least one to be a
-    substantive document word, so a surname doesn't fragment into connectors."""
+    substantive document word, so a surname doesn't fragment into connectors.
+
+    Comparison is on the LETTERS ONLY, so a stray character OCR dropped into a
+    word ("Def.endant", "Opp-osition", "Mot1on") still reads as the document
+    word. Accented letters are kept (str.isalpha covers them)."""
     substantive, seg_vocab = _pn_proc_seg_vocab()
-    if (base in _PN_PLEADING_WORDS or base in _PN_COMMON_WORDS
-            or base in _PN_REVIEW_NAME_STOP or base in _PN_PARTY_ROLE_WORDS
-            or base in _PN_DECL_DESCRIPTOR or _pn_is_entity_keep(base)):
+    letters = "".join(c for c in base if c.isalpha()).lower()
+    if (letters in _PN_PLEADING_WORDS or letters in _PN_COMMON_WORDS
+            or letters in _PN_REVIEW_NAME_STOP or letters in _PN_PARTY_ROLE_WORDS
+            or letters in _PN_DECL_DESCRIPTOR or _pn_is_entity_keep(base)):
         return True
-    # Drop interior possessives / dots that OCR carries into a welded run
-    # ("Plaintiff'sOppositiontoMot." -> "plaintiffsoppositiontomot").
-    base = re.sub(r"['’.]", "", base)
-    n = len(base)
-    if n < 6 or n > 40 or not base.isalpha():
+    n = len(letters)
+    if n < 6 or n > 40:
         return False
-    # DP: can `base` be split entirely into vocab words, using >=1 document word?
+    # DP: can `letters` be split entirely into vocab words, using >=1 doc word?
     reach = [False] * (n + 1)
     doc = [False] * (n + 1)
     reach[0] = True
@@ -6939,7 +6941,7 @@ def _pn_token_is_procedural(base):
         if not reach[i]:
             continue
         for j in range(i + 2, min(n, i + 16) + 1):
-            piece = base[i:j]
+            piece = letters[i:j]
             if piece in seg_vocab:
                 reach[j] = True
                 if doc[i] or piece in substantive:
