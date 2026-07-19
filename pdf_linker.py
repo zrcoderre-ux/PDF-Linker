@@ -11054,6 +11054,19 @@ def main():
         format="%(asctime)s [%(levelname)s] %(message)s",
         filemode="a",
     )
+    # Also stream progress to the console WHEN ONE EXISTS. Logging went only to
+    # the file, so the re-run launcher's window showed nothing and read as an
+    # "empty terminal". The normal mail-merge launch is pythonw.exe, which has no
+    # console (sys.stdout is None) — guard on it so that path is unaffected.
+    _console = getattr(sys, "stdout", None)
+    if _console is not None:
+        try:
+            _ch = logging.StreamHandler(_console)
+            _ch.setLevel(logging.INFO)
+            _ch.setFormatter(logging.Formatter("%(message)s"))
+            logging.getLogger().addHandler(_ch)
+        except Exception:
+            pass
     log = logging.getLogger("pdf_linker")
     log.info("=" * 60)
     log.info(f"Run started for folder: {folder} (provider={args.provider})")
