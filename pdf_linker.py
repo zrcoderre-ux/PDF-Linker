@@ -7621,16 +7621,19 @@ _PN_DECL_SELF_RE = re.compile(
 #
 # The separator before the reference word is [ \t]* (not +), so a dropped space
 # still resolves: OCR that welds "Smith Decl." into "SmithDecl." leaves the name
-# rewritable, and the greedy name group backtracks to the capital-D reference
-# word ("Smith" + "Decl."). The reference word stays case-sensitive with a
-# trailing (?![A-Za-z]), so it anchors to a real "Decl"/"Dec."/"Declaration"
-# and can't bite into a name that merely starts that way ("Declan").
+# rewritable, and the greedy name group backtracks to the reference word.
+#
+# The reference word is captured LOOSELY — a D-word that may carry OCR stray
+# marks — and validated letters-only against _PN_DECL_REF_WORDS, so "Dec.laration"
+# / "Decl.aration" still read as "Declaration". It must start with a capital D
+# and end at a non-letter (?![A-Za-z]), so it can't bite into a name that merely
+# begins that way ("Declan"); a bare "Dec"/"Decl"/"Declaration" that letters out
+# to something else ("December", "Decker", "Donald") is dropped by the validator.
+_PN_DECL_REF_WORDS = frozenset({"dec", "decl", "declaration"})
 _PN_DECL_REF_RE = re.compile(
     r"(?<![A-Za-z])(?P<n>" + _PN_DECL_NAME_WORD
     + r"(?:[ \t]+" + _PN_DECL_NAME_WORD + r"){0,2}?)"
-    # "Dec." only when NOT a date ("Dec. 5, 2024") — a following digit means the
-    # month, not a declaration short cite ("Yu Dec., ¶ 4").
-    + r"[ \t]*(?:Declaration|Decl\.?|Dec\.(?![ \t]*\d))(?![A-Za-z])")
+    + r"[ \t]*(?P<ref>D[A-Za-z.'’\-]*)(?![A-Za-z])")
 
 
 # Descriptor words that precede "Declaration" without naming the declarant —
@@ -7652,7 +7655,16 @@ def _pn_declarant_ref_names(text):
     ("Reply Declaration") or descriptive ("Supporting Declaration") is dropped.
     The Declaration word itself is NEVER part of a returned name."""
     out, seen = [], set()
-    for m in _PN_DECL_REF_RE.finditer(_NFKC(text)):
+    nfkc = _NFKC(text)
+    for m in _PN_DECL_REF_RE.finditer(nfkc):
+        # Validate the reference word letters-only ("Dec.laration" -> declaration).
+        refletters = "".join(c for c in m.group("ref") if c.isalpha()).lower()
+        if refletters not in _PN_DECL_REF_WORDS:
+            continue
+        # A bare "Dec." followed by a number is a date ("Dec. 5, 2024"), not a
+        # declaration short cite.
+        if refletters == "dec" and re.match(r"[ \t]*\d", nfkc[m.end():]):
+            continue
         toks = m.group("n").split()
         # Drop leading words that aren't the declarant ("See"/"The"/"Plaintiff").
         while toks and (_pn_word_base(toks[0]) in _PN_COMMON_WORDS
