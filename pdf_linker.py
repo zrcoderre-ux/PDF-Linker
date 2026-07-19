@@ -10318,10 +10318,35 @@ def _pn_prescan_folder(pdfs, pseudonymizer, log):
     return full
 
 
+# Metadata stamp written into a linked PDF's `keywords`, so a re-run can tell a
+# file it already linked and skip the (expensive) re-detect + re-save pass,
+# regenerating only the .txt. `--relink` forces the full pass anyway. Existing
+# keywords are preserved; the sentinel is just appended.
+_PDF_LINK_STAMP = "PDF-Linker-linked"
+
+
+def _pdf_is_stamped(doc):
+    try:
+        return _PDF_LINK_STAMP in ((doc.metadata or {}).get("keywords") or "")
+    except Exception:
+        return False
+
+
+def _pdf_stamp_linked(doc):
+    try:
+        md = dict(doc.metadata or {})
+        kw = md.get("keywords") or ""
+        if _PDF_LINK_STAMP not in kw:
+            md["keywords"] = (kw + "; " if kw else "") + _PDF_LINK_STAMP
+            doc.set_metadata(md)
+    except Exception:
+        pass
+
+
 def process_pdf(pdf_path: Path, log: logging.Logger,
                 provider: str = "lexis", extract_text: bool = True,
                 pseudonymizer=None, text_subdir="Text Files",
-                original_subdir=None) -> bool:
+                original_subdir=None, relink: bool = False) -> bool:
     """Process one PDF. Returns True on success."""
     try:
         import fitz
@@ -10388,6 +10413,16 @@ def process_pdf(pdf_path: Path, log: logging.Logger,
                                 original_subdir)
         except Exception as e:
             log.warning(f"  Text export failed (non-fatal): {e}")
+
+    # Fast path for a re-run: this PDF was already linked (metadata stamp), so
+    # the citation links, bookmarks and blue underlines are already in it.
+    # Skip the whole detect + re-save pass — the .txt above was already
+    # regenerated (the usual reason to re-run) — unless --relink forces it.
+    if _pdf_is_stamped(doc) and not relink:
+        log.info(f"  Already linked; skipped the link/save pass, regenerated "
+                 f".txt only (use --relink to force): {pdf_path.name}")
+        doc.close()
+        return True
 
     # Skip link insertion for declarations and separate statements: they
     # rarely contain citation-worthy material in Zachary's workflow, and
@@ -10614,6 +10649,9 @@ def process_pdf(pdf_path: Path, log: logging.Logger,
                    toc_page_range=toc_page_range)
 
     try:
+        # Stamp it as linked so a later re-run can skip this pass (regenerating
+        # only the .txt) unless --relink is given.
+        _pdf_stamp_linked(doc)
         # Save to temp file first
         doc.save(str(temp_path), garbage=3, deflate=True)
         log.info(f"  Saved to temp: {temp_path.name}")
@@ -10998,6 +11036,12 @@ def main():
              "exit. No folder needed.",
     )
     parser.add_argument(
+        "--relink", action="store_true",
+        help="Re-run the citation-linking pass on PDFs already linked in a prior "
+             "run. By default a re-run skips linking an already-linked PDF (only "
+             "its .txt is regenerated); use this to pick up linking changes.",
+    )
+    parser.add_argument(
         "--provider",
         choices=("westlaw", "lexis"),
         default="lexis",
@@ -11264,7 +11308,8 @@ def main():
                            extract_text=args.extract_text,
                            pseudonymizer=pseudonymizer,
                            text_subdir=text_subdir,
-                           original_subdir=original_subdir):
+                           original_subdir=original_subdir,
+                           relink=args.relink):
                 success += 1
             else:
                 failed += 1
