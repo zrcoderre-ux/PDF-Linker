@@ -5734,6 +5734,33 @@ def _pn_strip_entity_descriptor(name):
     return head, True
 
 
+# A state (or DC) name is geography, not identity: it names no one and reads the
+# same for every business incorporated or located there, so it is kept VERBATIM
+# inside a company/entity party name and only the other words are faked
+# ("California Pizza Kitchen" -> keep "California", fake the rest). Scoped to the
+# ENTITY path on purpose: a state word that is part of a PERSON's name — the
+# surname "Washington", the first name "Georgia" — is still an identifier and is
+# faked, so it never leaks. Multi-word states ("New York") are kept as a unit.
+_PN_STATE_SINGLE = frozenset(s for s in _PN_JURIS_STATES if " " not in s)
+_PN_STATE_MULTI = tuple(tuple(s.split()) for s in _PN_JURIS_STATES if " " in s)
+
+
+def _pn_state_keep_flags(bases):
+    """Per-token bool over lower-cased word bases: True where the token is part
+    of a US state / DC name (single- or multi-word), so the entity faker keeps
+    it verbatim. Multi-word matches guard the ambiguous leading word ("new" is
+    kept only inside "new york"/"new jersey"/..., never on its own)."""
+    n = len(bases)
+    keep = [b in _PN_STATE_SINGLE for b in bases]
+    for phrase in _PN_STATE_MULTI:
+        L = len(phrase)
+        for i in range(n - L + 1):
+            if tuple(bases[i:i + L]) == phrase:
+                for j in range(i, i + L):
+                    keep[j] = True
+    return keep
+
+
 # ── Party-role labels (never pseudonymized) ─────────────────────────────────
 # "Plaintiff", "Defendant", "Cross-Complainant", etc. are procedural roles, not
 # identities: they occur on nearly every line of a pleading and are public, so
@@ -6086,10 +6113,15 @@ def _pn_fake_entity_parts(name, registry, prefer=None):
     would render its dba with the fake belonging to a different Smith."""
     out, mapping = [], {}
     prefer = prefer or {}
-    for tok in name.split():
+    toks = name.split()
+    # A state / DC name is geography, not identity — keep it verbatim and fake
+    # only the other words ("California Pizza Kitchen" -> "California <fake>").
+    state_keep = _pn_state_keep_flags([_pn_word_affixes(t)[1].lower() for t in toks])
+    for idx, tok in enumerate(toks):
         pre, core, post = _pn_word_affixes(tok)
         base = core.lower()
-        if not core or _pn_is_entity_keep(base) or not re.search(r"[A-Za-z]", core):
+        if (not core or _pn_is_entity_keep(base) or state_keep[idx]
+                or not re.search(r"[A-Za-z]", core)):
             out.append(tok)
             continue
         fake = prefer.get(base) or registry.token(base, _PN_ENTITY_WORDS, "enttok")
