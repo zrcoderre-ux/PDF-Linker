@@ -208,9 +208,12 @@ def _normalize_reporter(reporter: str) -> str:
     """Strip internal whitespace from a matched reporter and map California
     Style Manual compact forms (C3d, CA4th, CR3d, …) to the canonical
     reporter so citation keys and provider search URLs are consistent
-    regardless of which form the brief used."""
+    regardless of which form the brief used. The appellate-department
+    "Supp." suffix keeps its separating space — "Cal.App.4th Supp." glued
+    to "Cal.App.4thSupp." is a citation form no provider recognizes."""
     compact = re.sub(r"\s+", "", reporter)
-    return _REPORTER_NORMALIZE.get(compact, compact)
+    compact = _REPORTER_NORMALIZE.get(compact, compact)
+    return re.sub(r"(?<=[^\s])Supp\.", " Supp.", compact)
 
 # ────────────────────────────────────────────────────────────────────────────
 # Statute code recognition
@@ -308,7 +311,9 @@ STATUTE_CODES = [
     # 1170", "CCP § 1005"). Dots and spacing are optional so "C.C.P." and
     # "C. C. P." also match. Like the other bare forms it only fires in
     # citation position — a following section number is required.
-    (r"C\.?\s*C\.?\s*P\.?", "CCP"),
+    # (?<![A-Za-z]\.) keeps the "C.C.P." inside "J.C.C.P. 5237" (a Judicial
+    # Council coordination number) from reading as a CCP statute cite.
+    (r"(?<![A-Za-z]\.)C\.?\s*C\.?\s*P\.?", "CCP"),
 ]
 STATUTE_CODES_SORTED = sorted(STATUTE_CODES, key=lambda x: len(x[0]), reverse=True)
 
@@ -735,7 +740,11 @@ def _short_name(plaintiff: str) -> str:
     # Strip non-v. case-name prefixes ("In re", "Estate of",
     # "Guardianship of", etc.) plus "Ex parte" and "People v." so the
     # short name is the distinguishing subject ("Bowles", not "Estate").
-    p = re.sub(rf"^(?:(?:{_NONV_PREFIX})\s+|Ex parte\s+|People v\.\s+)",
+    # The prefix group REPEATS ("+") because prefixes nest: "In re Marriage
+    # of Smith" is "In re" + "Marriage of" + "Smith" — a single strip left
+    # "Marriage of Smith", whose first word made every Marriage-of case share
+    # the short name "Marriage" and never match its supra cites.
+    p = re.sub(rf"^(?:(?:{_NONV_PREFIX})\s+|Ex parte\s+|People v\.\s+)+",
                "", p, flags=re.IGNORECASE)
     parts = p.split()
     return parts[0].rstrip(",.;:") if parts else p
@@ -978,7 +987,16 @@ def find_case_citations(text: str):
             continue
         plaintiff = text[plaintiff_start:v_start].strip()
 
-        rest = text[v_end:]
+        # Restrict tail to within ~80 chars of v. - cite shouldn't span far.
+        # With newline normalization, a single citation comfortably fits in
+        # this window; anything farther is almost certainly a different case.
+        max_dist = 80
+        # Search a BOUNDED window, not the whole remaining document: a tail
+        # must START within max_dist and a real tail is well under 400 chars,
+        # but searching all of `rest` made every "v." anchor pay a full-
+        # document scan per tail pattern — O(n²) overall, seconds on a TOA-
+        # heavy brief and hang-grade on pathological input.
+        rest = text[v_end: v_end + max_dist + 400]
 
         # Strategy: find first occurrence of any tail in `rest`, then pick
         # whichever appears earliest. This handles CSM, Bluebook, Westlaw-only,
@@ -988,11 +1006,6 @@ def find_case_citations(text: str):
         wl_search    = WL_TAIL.search(rest)
         lexis_search = LEXIS_TAIL.search(rest)
         flat_search  = FLAT_TAIL.search(rest)
-
-        # Restrict tail to within ~80 chars of v. - cite shouldn't span far.
-        # With newline normalization, a single citation comfortably fits in
-        # this window; anything farther is almost certainly a different case.
-        max_dist = 80
 
         candidates = []
         if csm_search and csm_search.start() <= max_dist:
@@ -1184,14 +1197,34 @@ def find_statute_citations(text: str):
         # "sections A and B". The first section grabs the code-name
         # context; subsequent sections inherit the same abbreviation
         # without needing to repeat the code name.
+        #
+        # Guarded — the continuation used to accept ANY following number, so
+        # ordinary prose after a cite became a statute link ("section 1005 and
+        # 16 court days" -> a spurious CCP § 16 over "and 16"; "section 998
+        # and 1998 amendments" -> CCP § 1998). A continuation now needs:
+        #   * a PLURAL marker on the cite ("§§"/"sections"/"secs.") plus a
+        #     section passing the usual distinctiveness test; or
+        #   * under a singular/absent marker, a STRICTLY distinctive section
+        #     (decimal part, letter suffix, or subdivision — "128.7", "437c",
+        #     "1005(b)"), so "section 128.5 and 128.7" still chains while a
+        #     bare prose number never does.
+        marker = (m.group("mk") or "").lower().rstrip(".")
+        plural = marker in ("§§", "sections", "secs")
         scan_pos = m.end()
         while True:
             cont = ADDL_SEC_RE.match(text, scan_pos)
             if not cont:
                 break
+            sec = cont.group("sec")
+            if plural:
+                ok = _section_is_distinctive(sec)
+            else:
+                ok = bool(re.search(r"\.\d|[a-z]|\(", sec, re.IGNORECASE))
+            if not ok:
+                break
             results.append({
                 "kind": "statute",
-                "key": f"{abbrev} § {cont.group('sec')}",
+                "key": f"{abbrev} § {sec}",
                 "span": cont.span(),
                 "match_text": text[cont.start():cont.end()].lstrip(),
             })
@@ -1241,20 +1274,27 @@ def find_supra_citations(text: str, full_cites_in_order):
     seen = {}
     for c in full_cites_in_order:
         if c["kind"] == "case" and c.get("short"):
-            seen.setdefault(c["short"], c["key"])
+            seen.setdefault(c["short"], c)
 
     results = []
     for m in SUPRA_RE.finditer(text):
         cite_text = m.group(1)
         sname = _short_name(cite_text)
         if sname in seen:
+            full = seen[sname]
             results.append({
                 "kind": "case",
-                "key": seen[sname],
+                "key": full["key"],
                 "span": m.span(),
                 "match_text": m.group(0),
                 "short": sname,
                 "is_supra": True,
+                # Provider routing must FOLLOW the full cite: a WL-only key
+                # resolved through the default provider built a Lexis URL for
+                # a database number Lexis doesn't carry (and vice versa).
+                "wl_only": full.get("wl_only", False),
+                "lexis_only": full.get("lexis_only", False),
+                "slip_only": full.get("slip_only", False),
             })
     return results
 
@@ -1670,8 +1710,13 @@ def _text_looks_garbled(text: str) -> bool:
         return True
     if text.count("�") >= max(8, 0.03 * non_space):
         return True
-    letters = sum(1 for c in text if c.isalpha())
-    if letters / non_space < 0.35:
+    # Letters AND digits both count as meaningful extraction: a damages table
+    # or repair invoice is digit-dominated yet perfectly well extracted, and
+    # the letters-only ratio sent those pages into destructive re-OCR (all
+    # real text redacted, replaced by 300-dpi OCR guesses) and gave them the
+    # 40x OCR ETA weight. Symbol soup from a broken encoding is low on BOTH.
+    meaningful = sum(1 for c in text if c.isalpha() or c.isdigit())
+    if meaningful / non_space < 0.35:
         return True  # dominated by symbols/punctuation
     tokens = re.findall(r"[A-Za-z]{2,}", text)
     if len(tokens) < 30:
@@ -2552,7 +2597,11 @@ def _link_short_form_cases(doc, full_cites,
     # full citations. We extract plaintiff/defendant from the case key
     # ("Plaintiff v. Defendant (year) ..." or "... 2023 WL ...").
     registry = {}  # (plaintiff_norm, defendant_norm) -> (key, url, full_match)
-    case_key_re = re.compile(r"^(.+?)\s+v\.\s+(.+?)\s+(?:\(\d{4}\)|\d{4}\s+WL)\b")
+    # NB: the word boundary belongs INSIDE the WL branch only. Written after
+    # the alternation ("…|\d{4}\s+WL)\b"), it also applied to the "(year)"
+    # branch — and ")" followed by a space has no \b, so no published-reporter
+    # key ever matched and short-form linking silently ran for WL cites alone.
+    case_key_re = re.compile(r"^(.+?)\s+v\.\s+(.+?)\s+(?:\(\d{4}\)|\d{4}\s+WL\b)")
     for c in full_cites:
         if c.get("kind") != "case":
             continue
@@ -2596,8 +2645,14 @@ def _link_short_form_cases(doc, full_cites,
             if (p_norm, d_norm) in registry:
                 _, url, _full = registry[(p_norm, d_norm)]
             else:
+                # Prefix match on WORD boundaries: short "ford" matches
+                # registered "ford motor co", but "jones" must not match
+                # "jonesboro" (a char-level prefix did).
                 for (rp, rd), (_k, ru, _ft) in registry.items():
-                    if rp == p_norm and (rd.startswith(d_norm) or d_norm.startswith(rd)):
+                    if rp == p_norm and (
+                            rd == d_norm
+                            or rd.startswith(d_norm + " ")
+                            or d_norm.startswith(rd + " ")):
                         url = ru
                         break
             if not url:
@@ -9658,8 +9713,22 @@ def _page_lined_rows(page):
     anchors = _detect_line_anchors(page)
     if not anchors:
         return None
-    rows = [(a["line_num"], a["segments"])
-            for a in sorted(anchors, key=lambda a: a["y_mid"])]
+
+    def _strip_markers(rows):
+        """Drop legacy right-margin markers from row segments. The flowing-
+        text export path strips them via _MARKER_DETECT_RE, but the pleading-
+        rows path bypassed that, so a PDF stamped by an older tool version
+        exported "[Smith|p3:7¶4]" verbatim — garbage that also carries the
+        party short name into a pseudonymized .txt."""
+        out = []
+        for num, segs in rows:
+            cleaned = [(x0, _MARKER_DETECT_RE.sub("", t)) for x0, t in segs]
+            out.append((num, [(x0, t) for x0, t in cleaned if t.strip()]
+                        or cleaned[:1]))
+        return out
+
+    rows = _strip_markers([(a["line_num"], a["segments"])
+                           for a in sorted(anchors, key=lambda a: a["y_mid"])])
     # Normalize before detect: when the ordinary extraction shows splice
     # corruption, retry from character geometry — a welded span splits at its
     # column jumps and the party name comes out contiguous, so the ordinary
@@ -9672,8 +9741,8 @@ def _page_lined_rows(page):
         except Exception:
             cured = None
         if cured:
-            crows = [(a["line_num"], a["segments"])
-                     for a in sorted(cured, key=lambda a: a["y_mid"])]
+            crows = _strip_markers([(a["line_num"], a["segments"])
+                                    for a in sorted(cured, key=lambda a: a["y_mid"])])
             if not _page_looks_spliced(crows):
                 return crows
     return rows
@@ -9723,6 +9792,14 @@ def _page_looks_spliced(rows):
             return True
         if _PN_SPLICE_UPPERRUN_RE.search(tok):
             return True
+        # A surname particle before an all-caps body is a NAME, not a splice:
+        # all-caps captions legitimately print "SEAN McDONALD" and "DiGIORNO
+        # FOODS" — the case flip is the particle's own convention. Without
+        # this every such page drew a "column-spliced, verify by hand" warning
+        # and an unnecessary welded-scrub pass.
+        if re.match(r"(?:Mc|Mac|Di|De|Da|La|Le|Lo|Fitz|Van|Von|St\.?|"
+                    r"O['’]|D['’])[A-Z][A-Za-z'’.,-]*$", tok):
+            continue
         # A lower->upper flip inside a token that isn't ordinary CamelCase
         # (needs an upper run of >=3, e.g. "...JOPLIN", not "McKay").
         for m in _PN_SPLICE_CASEFLIP_RE.finditer(tok):
@@ -9994,20 +10071,12 @@ def _page_detect_text(page):
     return "\n".join(out)
 
 
-def _pseudonymized_txt_path(out_dir: Path, pdf_path: Path, pseudonymizer, log):
-    """Return the .txt output path (inside `out_dir`) with the source PDF's stem
-    pseudonymized, so
-    a party/attorney name in the filename doesn't ride along on the shareable
-    text file. Separators (_ / -) are normalized to spaces so name tokens are
-    word-bounded, the stem is run through the same pseudonymizer, then joined
-    back with underscores. If a tracked real value still survives in the
-    resulting name, fall back to a neutral, non-revealing name
-    (<fake-case-no> <hash> or document <hash>).
-
-    Words are separated by SPACES. The scrubbed stem used to be rejoined with
-    underscores, which contradicts the document-naming convention every other
-    artifact in this workflow follows."""
-    stem = pdf_path.stem
+def _pn_scrubbed_stem(stem: str, pseudonymizer, log):
+    """`stem` pseudonymized for use as a shareable filename. Separators
+    (_ / -) are normalized to spaces so name tokens are word-bounded, the stem
+    is run through the pseudonymizer, and if a tracked real value still
+    survives the result falls back to a neutral, non-revealing name
+    (<fake-case-no> <hash> or document <hash>)."""
     spaced = re.sub(r"[_\-]+", " ", stem).strip()
     faked = pseudonymizer.apply(spaced)
     digest = _pn_hashlib.sha256(stem.encode("utf-8")).hexdigest()[:6]
@@ -10018,6 +10087,32 @@ def _pseudonymized_txt_path(out_dir: Path, pdf_path: Path, pseudonymizer, log):
                  f"neutral name {safe}.txt")
     else:
         safe = re.sub(r"\s+", " ", faked).strip() or f"document {digest}"
+    return safe
+
+
+def _pseudonymized_txt_path(out_dir: Path, pdf_path: Path, pseudonymizer, log):
+    """Return the .txt output path (inside `out_dir`) with the source PDF's
+    stem pseudonymized (see _pn_scrubbed_stem), so a party/attorney name in
+    the filename doesn't ride along on the shareable text file.
+
+    COLLISION-SAFE: two different sources can scrub to one name ("Smith
+    Decl.pdf" and "Smith_Decl.pdf" both -> "Bennett Decl"), and the second
+    export used to silently overwrite the first. A per-run registry on the
+    pseudonymizer maps each claimed name to its source stem; a different
+    source claiming a taken name gets its (deterministic, per-source) digest
+    appended instead."""
+    stem = pdf_path.stem
+    safe = _pn_scrubbed_stem(stem, pseudonymizer, log)
+    names = getattr(pseudonymizer, "_export_names", None)
+    if names is None:
+        names = pseudonymizer._export_names = {}
+    owner = names.setdefault(safe.lower(), stem)
+    if owner != stem:
+        digest = _pn_hashlib.sha256(stem.encode("utf-8")).hexdigest()[:6]
+        safe = f"{safe} {digest}"
+        names.setdefault(safe.lower(), stem)
+        log.info(f"  Export name collision with '{owner}'; using "
+                 f"{safe}.txt for {stem}")
     return out_dir / (safe + ".txt")
 
 
@@ -10403,10 +10498,16 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
     # Remove any earlier .txt for this PDF that isn't the file we're about to
     # write: the old case-root location (pre-subfolder / non-pseudonymized runs)
     # and the default-named one in the subfolder — so a stale (possibly
-    # real-named) copy can't linger beside the current output.
+    # real-named) copy can't linger beside the current output. ONLY a file this
+    # tool plausibly wrote is removed — every export carries the "====== Page"
+    # header, so a same-stem file WITHOUT it is the user's own (notes beside
+    # the PDF) and used to be silently destroyed here.
     for stale in {pdf_path.with_suffix(".txt"), out_dir / (pdf_path.stem + ".txt")}:
         if stale != txt_path and stale.exists():
             try:
+                head = stale.read_text(encoding="utf-8", errors="ignore")[:4000]
+                if "====== Page" not in head:
+                    continue                     # not ours — leave it alone
                 stale.unlink()
             except OSError:
                 pass
@@ -10513,6 +10614,48 @@ def _pdf_is_stamped(doc):
         return False
 
 
+# The splice PyMuPDF's insert_link writes into a URI that itself contains
+# "/Link": ".../Link/NM(fitz-L0)/Document/..." (see the repair call in
+# process_pdf). The NM name is always "fitz-L<n>".
+_PN_BAD_NM_RE = re.compile(r"/NM\(fitz-L\d+\)")
+
+
+def _repair_link_uris(doc):
+    """Remove the '/NM(fitz-Ln)' fragment PyMuPDF splices into a link URI that
+    contains '/Link' (every Westlaw FullText URL). Works via xref surgery on
+    each page's Annots array: freshly inserted links are invisible to
+    page.get_links() until the doc is saved, and going back through
+    update_link would re-run the same buggy string replace. Best-effort."""
+    for page in doc:
+        try:
+            kind, val = doc.xref_get_key(page.xref, "Annots")
+        except Exception:
+            continue
+        if kind == "xref":               # indirect array: resolve it
+            try:
+                m = re.match(r"(\d+)", val)
+                kind, val = doc.xref_get_key(int(m.group(1)), "")
+            except Exception:
+                continue
+        if kind != "array" or not val:
+            continue
+        for xs in re.findall(r"(\d+)\s+0\s+R", val):
+            xref = int(xs)
+            try:
+                ktype, uri = doc.xref_get_key(xref, "A/URI")
+            except Exception:
+                continue
+            if ktype != "string" or "/NM(fitz-L" not in (uri or ""):
+                continue
+            fixed = _PN_BAD_NM_RE.sub("", uri)
+            escaped = fixed.replace("\\", r"\\").replace("(", r"\(") \
+                           .replace(")", r"\)")
+            try:
+                doc.xref_set_key(xref, "A/URI", f"({escaped})")
+            except Exception:
+                pass
+
+
 def _pdf_stamp_linked(doc):
     try:
         md = dict(doc.metadata or {})
@@ -10540,8 +10683,17 @@ def process_pdf(pdf_path: Path, log: logging.Logger,
     out_path = pdf_path  # Output will overwrite the original (after we're done with it)
     temp_path = pdf_path.with_name(pdf_path.stem + "_temp.pdf")
     if temp_path.exists():
-        log.info(f"  Skipping - {temp_path.name} already exists (temp file)")
-        return True
+        # A leftover temp is debris from a run that crashed between save and
+        # replace. Skipping (and reporting success!) made the file permanently
+        # unprocessed — every later run hit the same temp and skipped again.
+        # Remove it and process normally; the save below rewrites it anyway.
+        try:
+            temp_path.unlink()
+            log.warning(f"  Removed stale temp from an interrupted run: "
+                        f"{temp_path.name}")
+        except OSError as e:
+            log.error(f"  Could not remove stale temp {temp_path.name}: {e}")
+            return False
 
     try:
         doc = fitz.open(str(pdf_path))
@@ -10565,8 +10717,9 @@ def process_pdf(pdf_path: Path, log: logging.Logger,
     # encoding, unmapped glyphs): rebuild them from a clean OCR pass so every
     # downstream step - the text-export decision, citation extraction, linking
     # - reads accurate text. Only clearly-garbled pages are touched. Non-fatal.
+    ocr_changed = False
     try:
-        _reocr_garbled_pages(doc, log)
+        ocr_changed = bool(_reocr_garbled_pages(doc, log))
     except Exception as e:
         log.warning(f"  Garbled-text re-OCR failed (non-fatal): {e}")
 
@@ -10583,7 +10736,7 @@ def process_pdf(pdf_path: Path, log: logging.Logger,
         else:
             log.info(f"  {textless_count} page(s) lack text - running OCR "
                      f"on those page(s)")
-        _ocr_pdf(doc, log)
+        ocr_changed = bool(_ocr_pdf(doc, log)) or ocr_changed
 
     # Export the text version now (after OCR fills any minority scanned pages,
     # before marker injection pollutes the text). Non-fatal and independent of
@@ -10599,7 +10752,10 @@ def process_pdf(pdf_path: Path, log: logging.Logger,
     # the citation links, bookmarks and blue underlines are already in it.
     # Skip the whole detect + re-save pass — the .txt above was already
     # regenerated (the usual reason to re-run) — unless --relink forces it.
-    if _pdf_is_stamped(doc) and not relink:
+    # When OCR actually MODIFIED the doc this run (a page gained its text
+    # layer), fall through instead: skipping would discard the OCR and re-pay
+    # the 300-dpi render on every subsequent run without ever persisting it.
+    if _pdf_is_stamped(doc) and not relink and not ocr_changed:
         log.info(f"  Already linked; skipped the link/save pass, regenerated "
                  f".txt only (use --relink to force): {pdf_path.name}")
         doc.close()
@@ -10823,13 +10979,23 @@ def process_pdf(pdf_path: Path, log: logging.Logger,
     # three passes above collected. set_toc replaces atomically, so this
     # is idempotent across re-runs and discards any pre-existing outline
     # the source PDF came with. Failure is non-fatal.
-    _set_bookmarks(doc, toc_entries, exhibit_cover_map,
-                   paragraph_anchors, log, cause_entries=cause_entries,
-                   document_entries=document_entries,
-                   section_entries=section_entries,
-                   toc_page_range=toc_page_range)
+    try:
+        _set_bookmarks(doc, toc_entries, exhibit_cover_map,
+                       paragraph_anchors, log, cause_entries=cause_entries,
+                       document_entries=document_entries,
+                       section_entries=section_entries,
+                       toc_page_range=toc_page_range)
+    except Exception as e:
+        log.warning(f"  Bookmark build failed (non-fatal): {e}")
 
     try:
+        # Undo PyMuPDF's annotation-naming splice: insert_link names each link
+        # by str-replacing the FIRST "/Link" in the annot source with
+        # "/Link/NM(fitz-Ln)" — and a Westlaw URL contains "/Link/", so every
+        # westlaw deep link saved as ".../Link/NM(fitz-L0)/Document/..." (a
+        # 404). Strip the splice from any URI carrying it; this also heals
+        # links a prior run corrupted.
+        _repair_link_uris(doc)
         # Stamp it as linked so a later re-run can skip this pass (regenerating
         # only the .txt) unless --relink is given.
         _pdf_stamp_linked(doc)
@@ -10838,7 +11004,6 @@ def process_pdf(pdf_path: Path, log: logging.Logger,
         log.info(f"  Saved to temp: {temp_path.name}")
     except Exception as e:
         log.error(f"  Could not save linked PDF: {e}")
-        doc.close()
         return False
     finally:
         doc.close()
@@ -11314,7 +11479,15 @@ def _fix_leaks_mode(folder, args, cfg, log):
         except Exception as e:
             log.warning(f"  Could not read {f.name}: {e}")
             continue
+        is_leak = f.name.endswith(".txt.LEAK")
         scrubbed = pz.apply(body)
+        if is_leak:
+            # A quarantined file may have been held for a WELDED leak the
+            # whole-word patterns can't see ("FORDMOTORCOMPANYDEFENDANT" on a
+            # spliced caption). Cure it the way the full run cures a flagged
+            # page — quarantine already marks the file as human-review, the
+            # precondition scrub_welded requires.
+            scrubbed = pz.scrub_welded(scrubbed)
         # Compare against the NFKC form: apply() normalizes unconditionally, so
         # a file whose only difference is normalization has no actual fix in it
         # and is left untouched (not rewritten, not counted as changed).
@@ -11325,6 +11498,11 @@ def _fix_leaks_mode(folder, args, cfg, log):
             except Exception as e:
                 log.warning(f"  Could not write {f.name}: {e}")
         survivors = set(pz.surviving_reals(scrubbed))
+        if is_leak:
+            # ...and gate the un-quarantine on the reduced scan too, so a
+            # welded survivor the cure couldn't fix keeps the file held
+            # instead of being delivered as "clean".
+            survivors |= set(pz.surviving_reals_reduced(scrubbed))
         pz.written.append(f)
         if survivors:
             pz.leaked_by_file[f] = {s.lower() for s in survivors}
@@ -11336,11 +11514,31 @@ def _fix_leaks_mode(folder, args, cfg, log):
                      "where": _pn_locate(parsed, real)})
 
     # Un-quarantine every *.LEAK that no longer carries a party-name leak.
-    offenders = set(pz.files_to_quarantine(pz.primary_leaks()))
+    # Parity with the main gate: a value the reviewer marked "no fix" never
+    # blocks delivery here either.
+    gating = {v for v in pz.primary_leaks()
+              if str(v).lower() not in pz.suppressed}
+    offenders = set(pz.files_to_quarantine(gating))
     unq = 0
     for f in files:
         if f.name.endswith(".txt.LEAK") and f not in offenders and f.exists():
-            dest = f.with_name(f.name[: -len(".LEAK")])
+            # The delivered file's NAME must be scrubbed too: the full run
+            # pseudonymizes export names, but a quarantined file kept the name
+            # it was written under — un-quarantining "Yu Decl.txt.LEAK" as
+            # "Yu Decl.txt" shipped the declarant's name in the filename.
+            base_stem = f.name[: -len(".txt.LEAK")]
+            safe = _pn_scrubbed_stem(base_stem, pz, log)
+            dest = f.with_name(safe + ".txt")
+            if dest.exists():
+                # A newer full run already wrote this export; the .LEAK is a
+                # stale leftover — keep the newer file, drop the stale one.
+                try:
+                    f.unlink()
+                    log.info(f"  Dropped stale quarantine {f.name}; "
+                             f"{dest.name} from a later run supersedes it.")
+                except OSError as e:
+                    log.warning(f"  Could not remove stale {f.name}: {e}")
+                continue
             try:
                 f.replace(dest)
                 unq += 1
