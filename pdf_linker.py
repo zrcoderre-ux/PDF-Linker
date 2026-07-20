@@ -8888,6 +8888,14 @@ class Pseudonymizer:
             # mailer like "Notifications <no-reply@…>" is left alone).
             if _pn_is_party_role(name) or not any(_pn_is_name_token(w) for w in words):
                 continue
+            # A name we ourselves already faked (a prior run's fake now sitting
+            # beside its already-faked e-mail) must not be re-faked — otherwise
+            # each re-run mints a fresh generation off the last, growing the key
+            # and the reversal chain by one every time. Same guard as
+            # _detector_cands; without it the empty-detector fix-leaks path,
+            # which exists precisely to stop re-faking, was bypassed here.
+            if name.lower().rstrip(" .,;:") in self._own_fakes:
+                continue
             rk = ("display-name", name.lower())
             rec = self.records.get(rk)
             if rec is None:
@@ -8896,6 +8904,9 @@ class Pseudonymizer:
                        "source": "regex", "count": 0,
                        "pattern": re.escape(_NFKC(name)), "flags": 0}
                 self.records[rk] = rec
+                # Register the mint as an own-fake (as _detector_record does), so
+                # it is recognised and skipped on the next pass and re-run.
+                self._own_fakes.add(rec["fake"].lower().rstrip(" .,;:"))
             out.append((2, start + offset, m.end("name") + offset, rec))
         return out
 
