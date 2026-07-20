@@ -8092,7 +8092,7 @@ class Pseudonymizer:
             self.records[k] = {
                 "category": t.category, "real": t.real, "fake": t.fake,
                 "source": t.source, "count": 0, "pattern": t.pattern,
-                "flags": t.flags}
+                "flags": t.flags, "loaded": getattr(t, "loaded", False)}
             added = True
         if added:
             # Keep terms ordered biggest/most-specific first for apply()'s
@@ -9165,7 +9165,11 @@ class Pseudonymizer:
             return
 
         def _reversible(r):
-            return (r["count"] > 0
+            # A row that matched this run (count>0) OR one loaded from a reused
+            # key (preserve it even if it didn't re-match — in fix-leaks mode the
+            # text is already scrubbed, so loaded party names never re-match yet
+            # must stay in the key for the reversal macro).
+            return ((r["count"] > 0 or r.get("loaded"))
                     and "\n" not in str(r["real"]) and "\n" not in str(r["fake"]))
         keyrows = [r for r in self.records.values() if _reversible(r)]
 
@@ -11015,6 +11019,157 @@ def _dump_protected_terms(out=None):
     return text
 
 
+# ── Leak-fix launcher (companion to the re-run launcher) ─────────────────────
+def _fix_launcher_spec(exe, script, windows, frozen=False):
+    """(filename, content, make_executable) for the 'Apply Leak Fixes' launcher —
+    a double-clickable file that runs --fix-leaks on this folder."""
+    prog = f'"{exe}"' if frozen else f'"{exe}" "{script}"'
+    if windows:
+        content = (
+            "@echo off\r\n"
+            "REM PDF-Linker - apply the Fix? decisions saved in\r\n"
+            "REM pdf_linker_leaks.xlsx to the .txt/.LEAK exports (no PDFs touched).\r\n"
+            "echo Applying leak fixes to this folder...\r\n"
+            "echo.\r\n"
+            f'{prog} "%~dp0." --fix-leaks --key "%~dp0pseudonym_key.xlsx"\r\n'
+            "echo.\r\n"
+            "echo Finished - exit code %ERRORLEVEL%. You can close this window.\r\n"
+            "pause\r\n")
+        return "Apply Leak Fixes.bat", content, False
+    content = (
+        "#!/bin/sh\n"
+        "# PDF-Linker - apply pdf_linker_leaks.xlsx Fix? decisions to the exports.\n"
+        'echo "Applying leak fixes to this folder..."\n'
+        f'{prog} "$(dirname "$0")" --fix-leaks '
+        '--key "$(dirname "$0")/pseudonym_key.xlsx"\n'
+        'echo "Finished - exit code $?."\n')
+    return "Apply Leak Fixes.command", content, True
+
+
+def _write_fix_launcher(folder, log):
+    """Write/refresh the double-click 'Apply Leak Fixes' launcher. Best-effort."""
+    exe = Path(sys.executable)
+    frozen = bool(getattr(sys, "frozen", False))
+    if os.name == "nt" and not frozen and exe.stem.lower().startswith("pythonw"):
+        cand = exe.with_name(exe.name.lower().replace("pythonw", "python", 1))
+        exe = cand if cand.exists() else Path("python.exe")
+    script = Path(__file__).resolve()
+    name, content, make_exec = _fix_launcher_spec(
+        str(exe), str(script), os.name == "nt", frozen)
+    try:
+        path = folder / name
+        path.write_text(content, encoding="utf-8", newline="")
+        if make_exec:
+            os.chmod(path, 0o755)
+        log.info(f"  Wrote leak-fix launcher: {name}")
+    except OSError as e:
+        log.warning(f"  Could not write leak-fix launcher: {e}")
+
+
+def _fix_leaks_mode(folder, args, cfg, log):
+    """Apply the leak-worksheet Fix?=yes decisions DIRECTLY to the already-
+    written .txt / .LEAK exports — no PDFs reopened — then un-quarantine files
+    that no longer carry a party-name leak. The fast follow-up to a full run.
+
+    Reuses the hardened core (key load, registry, apply() with citation
+    protection, the per-file leak gate), so a fix is the same deterministic,
+    reversible fake the tool would have written and never corrupts a citation.
+    Returns a process exit code."""
+    text_subdir = cfg.get("text_subfolder", "").strip() or "Text Files"
+    text_dir = folder / text_subdir
+    if not text_dir.is_dir():
+        text_dir = folder            # older single-folder layout
+
+    def _warn(msg):
+        log.warning(msg)
+        print(msg, file=sys.stderr)
+
+    key_path = Path(args.key) if args.key else (folder / "pseudonym_key.xlsx")
+    if not (key_path.is_file() and _pn_key_looks_like_ours(key_path)):
+        _warn("--fix-leaks needs this tool's pseudonym_key.xlsx beside the "
+              "exports so the fixes stay consistent and reversible; none found "
+              f"at {key_path}.")
+        return 1
+
+    registry = _PnFakeRegistry()
+    try:
+        terms = _pn_load_key(key_path, registry, log)
+    except RuntimeError as e:
+        _warn(f"--fix-leaks: could not read key {key_path.name}: {e}")
+        return 1
+
+    decisions = _pn_read_leak_decisions(folder)
+    fix_terms = [d["value"] for d in decisions.values() if d["fix"] == "yes"]
+    suppressed = {vl for vl, d in decisions.items() if d["fix"] == "no"}
+    if not fix_terms:
+        msg = ("--fix-leaks: no Fix?=yes rows in pdf_linker_leaks.xlsx — nothing "
+               "to apply. Mark the leaks you want scrubbed and double-click again.")
+        log.info(f"  {msg}")
+        print(msg)
+        return 0
+
+    terms += _pn_build_terms([], [], list(args.term or []) + fix_terms, registry)
+    # No PII detectors: the exports were already scrubbed on the full run, so a
+    # detector meeting a fake here could re-fake it. Only the term-based scrub
+    # (party names + the flagged values) is wanted.
+    pz = Pseudonymizer(terms, [], registry)
+    pz.suppressed = suppressed
+    for r in pz.records.values():
+        pz._own_fakes.add(str(r["fake"]).lower().rstrip(" .,;:"))
+
+    files = sorted(p for p in text_dir.iterdir()
+                   if p.is_file() and (p.suffix == ".txt"
+                                       or p.name.endswith(".txt.LEAK")))
+    changed = 0
+    for f in files:
+        try:
+            body = f.read_text(encoding="utf-8")
+        except Exception as e:
+            log.warning(f"  Could not read {f.name}: {e}")
+            continue
+        scrubbed = pz.apply(body)
+        if scrubbed != body:
+            try:
+                f.write_text(scrubbed, encoding="utf-8", newline="\n")
+                changed += 1
+            except Exception as e:
+                log.warning(f"  Could not write {f.name}: {e}")
+        survivors = set(pz.surviving_reals(scrubbed))
+        pz.written.append(f)
+        if survivors:
+            pz.leaked_by_file[f] = {s.lower() for s in survivors}
+            pz.note_leaks(survivors)
+            parsed = _pn_body_lines(scrubbed)
+            for real in sorted(survivors):
+                pz.leak_report.append(
+                    {"file": f.name, "type": "LEAK", "value": real,
+                     "where": _pn_locate(parsed, real)})
+
+    # Un-quarantine every *.LEAK that no longer carries a party-name leak.
+    offenders = set(pz.files_to_quarantine(pz.primary_leaks()))
+    unq = 0
+    for f in files:
+        if f.name.endswith(".txt.LEAK") and f not in offenders and f.exists():
+            dest = f.with_name(f.name[: -len(".LEAK")])
+            try:
+                f.replace(dest)
+                unq += 1
+            except OSError as e:
+                log.warning(f"  Could not un-quarantine {f.name}: {e}")
+
+    pz.write_key(key_path, log)                    # loaded rows preserved
+    _pn_write_leak_report(folder, pz.leak_report, log, decisions=decisions)
+
+    still = len(offenders)
+    msg = (f"--fix-leaks: applied {len(fix_terms)} fix(es) to {changed} file(s); "
+           f"{unq} export(s) un-quarantined (*.LEAK -> .txt)"
+           + (f"; {still} file(s) still carry a party-name leak — review "
+              f"pdf_linker_leaks.xlsx." if still else "."))
+    log.info(f"  {msg}")
+    print(msg)
+    return 2 if still else 0
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # Entry point
 # ────────────────────────────────────────────────────────────────────────────
@@ -11040,6 +11195,13 @@ def main():
         help="Re-run the citation-linking pass on PDFs already linked in a prior "
              "run. By default a re-run skips linking an already-linked PDF (only "
              "its .txt is regenerated); use this to pick up linking changes.",
+    )
+    parser.add_argument(
+        "--fix-leaks", action="store_true",
+        help="Apply the Fix?=yes decisions from pdf_linker_leaks.xlsx directly to "
+             "the .txt/.LEAK exports (no PDFs reopened) and un-quarantine files "
+             "that are now clean. Fast follow-up to a full run; needs the "
+             "folder's pseudonym_key.xlsx.",
     )
     parser.add_argument(
         "--provider",
@@ -11161,6 +11323,13 @@ def main():
     # --no-pseudonymize flag wins; otherwise the pdf_linker.config file next to
     # the script; otherwise default ON.
     cfg = _read_config(log)
+
+    # Leak-fix mode: apply the worksheet Fix? decisions to the .txt/.LEAK exports
+    # directly and exit — no PDFs reopened, no linking. Fast follow-up path.
+    if args.fix_leaks:
+        log.info(f"--fix-leaks on folder: {folder}")
+        sys.exit(_fix_leaks_mode(folder, args, cfg, log))
+
     if args.pseudonymize is None:
         args.pseudonymize = _config_bool(cfg, "pseudonymize", True)
         log.info(f"Pseudonymization {'ON' if args.pseudonymize else 'OFF'} "
@@ -11394,6 +11563,10 @@ def main():
         want_key = (pseudonymizer is not None
                     and (folder / "pseudonym_key.xlsx").is_file())
         _write_rerun_launcher(folder, args.provider, want_key, log)
+        # Companion launcher: apply the worksheet Fix? decisions to the exports
+        # directly (no PDFs reopened) — the fast path after triaging leaks.
+        if want_key:
+            _write_fix_launcher(folder, log)
 
     # Leak gate, TIERED (config `leak_gate`): the pseudonymization is a
     # precaution against casual recognition of a public filing, so only a
