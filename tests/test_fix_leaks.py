@@ -1,0 +1,90 @@
+"""
+--fix-leaks applies the worksheet Fix?=yes decisions to the .txt/.LEAK exports
+directly (no PDFs), un-quarantines files that are now clean, and preserves +
+extends the key. A companion 'Apply Leak Fixes' launcher runs it on the folder.
+
+Run:  cd PDF-Linker && python3 -m pytest tests/test_fix_leaks.py -v
+"""
+import logging
+from pathlib import Path
+
+import openpyxl
+import pytest
+
+import pdf_linker as P
+
+log = logging.getLogger("test")
+
+
+def _setup(folder):
+    tdir = folder / "Text Files"
+    tdir.mkdir()
+    reg = P._PnFakeRegistry()
+    terms = P._pn_build_terms(["Ford Motor Company"], ["24STCV24253"], [],
+                              registry=reg)
+    pz = P.Pseudonymizer(terms, {}, registry=reg)
+    pz.apply("Ford Motor Company")
+    pz.write_key(folder / "pseudonym_key.xlsx", log)
+    (tdir / "Opposition.txt.LEAK").write_text(
+        "====== Page 1 ======\n(Yu Decl.) Gregory Yu testified.\n",
+        encoding="utf-8")
+    (tdir / "Motion.txt").write_text(
+        "====== Page 1 ======\nGregory Yu appeared.\n", encoding="utf-8")
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["File", "Type", "Value", "Where", "Fix? (yes/no)", "Notes"])
+    ws.append(["Opposition.txt.LEAK", "LEAK", "Gregory Yu", "p.1:2", "yes", ""])
+    wb.save(folder / "pdf_linker_leaks.xlsx")
+    return tdir
+
+
+class _Args:
+    key = None
+    term = None
+
+
+def test_fix_leaks_scrubs_unquarantines_and_extends_key(tmp_path):
+    tdir = _setup(tmp_path)
+    args = _Args()
+    args.key = str(tmp_path / "pseudonym_key.xlsx")
+    code = P._fix_leaks_mode(tmp_path, args, {}, log)
+    assert code == 0                                   # no primary leaks left
+
+    # .LEAK un-quarantined; the flagged name scrubbed in BOTH files
+    assert (tdir / "Opposition.txt").exists()
+    assert not (tdir / "Opposition.txt.LEAK").exists()
+    opp = (tdir / "Opposition.txt").read_text()
+    assert "Gregory Yu" not in opp and "Yu Decl." not in opp
+    assert "Yu" not in (tdir / "Motion.txt").read_text()
+
+    # key preserved the party AND added the fixed name
+    reals = [r[1] for r in openpyxl.load_workbook(
+        tmp_path / "pseudonym_key.xlsx")["Pseudonym Key"].iter_rows(
+        min_row=2, values_only=True)]
+    assert "Ford Motor Company" in reals and "Gregory Yu" in reals
+
+
+def test_fix_leaks_needs_a_real_key(tmp_path):
+    (tmp_path / "Text Files").mkdir()
+    args = _Args()
+    assert P._fix_leaks_mode(tmp_path, args, {}, log) == 1   # no key -> refuse
+
+
+def test_fix_leaks_noop_without_yes_decisions(tmp_path):
+    tdir = _setup(tmp_path)
+    # flip the only decision to "no"
+    wb = openpyxl.load_workbook(tmp_path / "pdf_linker_leaks.xlsx")
+    wb.active["E2"] = "no"
+    wb.save(tmp_path / "pdf_linker_leaks.xlsx")
+    args = _Args()
+    args.key = str(tmp_path / "pseudonym_key.xlsx")
+    assert P._fix_leaks_mode(tmp_path, args, {}, log) == 0
+    assert (tdir / "Opposition.txt.LEAK").exists()          # untouched
+
+
+def test_fix_launcher_spec_windows_and_frozen():
+    n, c, _ = P._fix_launcher_spec(r"C:\Py\python.exe", r"C:\T\pdf_linker.py", True)
+    assert n == "Apply Leak Fixes.bat"
+    assert "--fix-leaks" in c and '"%~dp0."' in c and c.endswith("pause\r\n")
+    _n, cf, _e = P._fix_launcher_spec(r"C:\App\app.exe", r"C:\x.py", True, frozen=True)
+    assert "x.py" not in cf and "--fix-leaks" in cf       # no script arg when frozen
