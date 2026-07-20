@@ -7847,11 +7847,11 @@ def _pn_label_names(text):
 
 
 # ── Court personnel: presiding judge, court staff, department number ─────────
-# A judicial title — the cue that lets a BARE surname be faked ("Judge Mackenzie"
+# A judicial title — the cue that lets a BARE surname be faked ("Judge Whitaker"
 # -> "Judge <fake>"). "hon/honorable/justice/commissioner/referee" are never
 # verbs so they match case-insensitively; "Judge" must be capitalized so a
 # lowercase verb ("the jury must judge Smith's credibility") is not a title. An
-# optional middle initial ("Judge A. Mackenzie") is allowed between title and
+# optional middle initial ("Judge D. Whitaker") is allowed between title and
 # surname.
 _PN_JUDICIAL_TITLE = (
     r"(?:(?i:(?:the\s+)?hon(?:orable)?|justice|commissioner|referee)\.?"
@@ -7873,8 +7873,8 @@ _PN_DEPT_RE = re.compile(
     r"\b(?:dept|department)\.?[ \t]*(?:no\.?|number|#)?[ \t]*:?[ \t]*"
     r"(\d{1,3}[A-Z]?)(?!\w)", re.IGNORECASE)
 
-# The judge is DISCOVERED from the document via a title ("Hon. Alison Mackenzie",
-# "Judge Mackenzie") — no name is hard-coded. A title + 2-3 words is a full name
+# The judge is DISCOVERED from the document via a title ("Hon. Dana Whitaker",
+# "Judge Whitaker") — no name is hard-coded. A title + 2-3 words is a full name
 # (faked wherever it appears together); a title + one word is a bare surname
 # (faked only behind a title). Up to three name words are captured, then trimmed
 # of trailing non-name words.
@@ -8515,9 +8515,9 @@ class Pseudonymizer:
         DISCOVERED from the document (no name is hard-coded):
 
           * the presiding JUDGE, found via a judicial title. A full name behind
-            the title ("Hon. Alison Mackenzie") is faked wherever it appears
+            the title ("Hon. Dana Whitaker") is faked wherever it appears
             TOGETHER; the bare surname is faked ONLY behind a title ("Judge
-            Mackenzie" -> "Judge <fake>"), never on its own. The surname's fake is
+            Whitaker" -> "Judge <fake>"), never on its own. The surname's fake is
             the same in both places.
           * COURT STAFF, by role label ("Judicial Assistant: Jane Doe") — the
             full name only;
@@ -8546,7 +8546,7 @@ class Pseudonymizer:
             """The capture reduced to the leading run of plausible NAME words —
             CUT at the first stop/vocabulary word, so a heading's sentence can't
             ride in ("JUDGE SMITH ORDERED THE PARTIES…" -> ["SMITH"]). A trailing
-            possessive is stripped from each word ("Mackenzie's" -> "Mackenzie"),
+            possessive is stripped from each word ("Whitaker's" -> "Whitaker"),
             so the possessive form shares the base surname's fake."""
             raw = re.sub(r"\s+", " ", name).strip().strip(".,;:").split()
             words = []
@@ -8581,7 +8581,7 @@ class Pseudonymizer:
         # Fake "<title> <surname>" wherever it appears, keeping the title and
         # faking only the surname; a bare surname elsewhere is left alone. The
         # trailing lookahead is (?!\w) — NOT (?!['’]) — so a possessive is left
-        # in place and keeps its base surname's fake ("Judge Mackenzie's" ->
+        # in place and keeps its base surname's fake ("Judge Whitaker's" ->
         # "Judge Ashford's", the same "Ashford" as the full name).
         for surname_l, fake in judge_surnames.items():
             rx = re.compile(r"(" + _PN_TITLE_LEAD + r")(" + re.escape(surname_l)
