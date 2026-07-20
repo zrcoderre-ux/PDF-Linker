@@ -88,3 +88,42 @@ def test_fix_launcher_spec_windows_and_frozen():
     assert "--fix-leaks" in c and '"%~dp0."' in c and c.endswith("pause\r\n")
     _n, cf, _e = P._fix_launcher_spec(r"C:\App\app.exe", r"C:\x.py", True, frozen=True)
     assert "x.py" not in cf and "--fix-leaks" in cf       # no script arg when frozen
+
+
+# ─── Bug fixes: tool artifacts in fallback layout; NFKC-only no-op ────────────
+
+def test_fallback_layout_ignores_tool_artifacts(tmp_path):
+    # Old single-folder layout: the worksheet's .txt companion legitimately
+    # CONTAINS real leaked values and must not be scanned as an export (it made
+    # the run report a phantom leak and exit 2); run markers stay untouched.
+    reg = P._PnFakeRegistry()
+    terms = P._pn_build_terms(["Ford Motor Company"], ["24STCV24253"], [],
+                              registry=reg)
+    pz = P.Pseudonymizer(terms, {}, registry=reg)
+    pz.apply("Ford Motor Company")
+    pz.write_key(tmp_path / "pseudonym_key.xlsx", log)
+    (tmp_path / "Brief.txt").write_text("Gregory Yu appeared.", encoding="utf-8")
+    (tmp_path / "pdf_linker_leaks.txt").write_text(
+        "LEAK  Ford Motor Company  p.1:2", encoding="utf-8")
+    (tmp_path / "DONE 4.25PM.txt").write_text("", encoding="utf-8")
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["File", "Type", "Value", "Where", "Fix? (yes/no)", "Notes"])
+    ws.append(["Brief.txt", "LEAK", "Gregory Yu", "p.1:1", "yes", ""])
+    wb.save(tmp_path / "pdf_linker_leaks.xlsx")
+    args = _Args()
+    args.key = str(tmp_path / "pseudonym_key.xlsx")
+    assert P._fix_leaks_mode(tmp_path, args, {}, log) == 0   # no phantom leak
+    assert "Yu" not in (tmp_path / "Brief.txt").read_text()
+    marker = tmp_path / "DONE 4.25PM.txt"
+    assert marker.exists() and marker.stat().st_size == 0
+
+
+def test_nfkc_only_difference_is_not_rewritten(tmp_path):
+    tdir = _setup(tmp_path)
+    lig = tdir / "Clean.txt"
+    lig.write_text("The ﬁnding was aﬃrmed.", encoding="utf-8")  # ligatures only
+    args = _Args()
+    args.key = str(tmp_path / "pseudonym_key.xlsx")
+    P._fix_leaks_mode(tmp_path, args, {}, log)
+    assert lig.read_text() == "The ﬁnding was aﬃrmed."          # untouched

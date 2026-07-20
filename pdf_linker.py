@@ -7485,6 +7485,15 @@ def _pn_load_key(path, registry, log):
                 registry._domain_reals.setdefault(rh, fh)
                 registry._used.add(fh.lower())
 
+        # A person-token row DERIVED from the judge's (or a staff member's)
+        # full name exists for the reversal macro only. Loading it as a match
+        # term would fake the judge's BARE surname everywhere on a key-reuse
+        # run — which the first run deliberately does not do (bare surname only
+        # behind a judicial title). The registry memo above still carries the
+        # binding, so re-derived fakes stay consistent; just no term.
+        if cat == "person-token" and source in ("judge", "court-staff"):
+            continue
+
         if cat in _PN_KEY_DETECTOR_CATS:
             priority, whole, csens = 4, True, False
         elif cat in _PN_KEY_TOKEN_CATS:
@@ -7873,11 +7882,22 @@ _PN_JUDGE_CAPTURE_RE = re.compile(
     _PN_JUDICIAL_TITLE + r"[ \t]+(?:[A-Z]\.[ \t]+)?"
     r"(?P<n>[A-Z][A-Za-z.'’-]+(?:[ \t]+[A-Z][A-Za-z.'’-]+){0,2})")
 # Words that follow a title but do not name the judge ("Presiding", "of the
-# Superior Court", "pro tem"), so a capture made only of these is dropped.
+# Superior Court", "pro tem"), so the capture is CUT at the first one. Includes
+# the ruling verbs that follow a judge's name in an ALL-CAPS heading ("JUDGE
+# SMITH ORDERED THE PARTIES…") — without them the verb was swallowed into the
+# "full name" ("SMITH ORDERED") and that phrase was then faked in ordinary
+# prose ("Smith ordered lunch").
 _PN_JUDGE_STOP = frozenset({
     "presiding", "court", "department", "dept", "division", "superior",
     "honorable", "pro", "tem", "sitting", "assigned", "designate", "designated",
     "judge", "justice", "of", "the", "for", "all", "purposes",
+    "ordered", "orders", "overruled", "overrules", "sustained", "sustains",
+    "ruled", "rules", "held", "holds", "found", "finds", "granted", "grants",
+    "denied", "denies", "issued", "issues", "entered", "enters", "signed",
+    "stated", "states", "noted", "notes", "hereby", "presided", "presides",
+    "ret", "retired", "wrote", "writes", "declared", "declares", "concluded",
+    "concludes", "determined", "determines", "adopted", "adopts", "vacated",
+    "continued", "set", "scheduled",
 })
 
 
@@ -8509,23 +8529,35 @@ class Pseudonymizer:
         text = _NFKC(text)
         new = []
 
-        def _clean_name(name):
-            words = re.sub(r"\s+", " ", name).strip().strip(".,;:").split()
-            while words and _pn_word_base(words[-1]) in _PN_JUDGE_STOP:
-                words.pop()
-            while words and _pn_word_base(words[0]) in _PN_JUDGE_STOP:
-                words.pop(0)
-            return words
+        def _name_word_ok(w):
+            """True when `w` can be part of a court person's name: a name-shaped
+            token that is neither a stop/role word nor ordinary vocabulary. The
+            gazetteer check matters in ALL-CAPS headings, where casing can't
+            separate a name from the sentence continuing after it."""
+            base = _pn_word_base(w)
+            return (_pn_is_name_token(w)
+                    and base not in _PN_JUDGE_STOP
+                    and base not in _PN_NON_NAME_WORDS
+                    and base not in _PN_REVIEW_NAME_STOP
+                    and not _pn_is_role_token(w)
+                    and not _pn_is_generic_token(base))
 
-        def _valid_name(words):
-            return (bool(words)
-                    and not _pn_is_protected_locality(" ".join(words))
-                    and all(_pn_is_name_token(w) for w in words)
-                    and not any(_pn_word_base(w) in _PN_NON_NAME_WORDS
-                                or _pn_is_role_token(w)
-                                or _pn_word_base(w) in _PN_REVIEW_NAME_STOP
-                                or _pn_word_base(w) in _PN_JUDGE_STOP
-                                for w in words))
+        def _clean_name(name):
+            """The capture reduced to the leading run of plausible NAME words —
+            CUT at the first stop/vocabulary word, so a heading's sentence can't
+            ride in ("JUDGE SMITH ORDERED THE PARTIES…" -> ["SMITH"]). A trailing
+            possessive is stripped from each word ("Mackenzie's" -> "Mackenzie"),
+            so the possessive form shares the base surname's fake."""
+            raw = re.sub(r"\s+", " ", name).strip().strip(".,;:").split()
+            words = []
+            for w in raw:
+                w = re.sub(r"['’][sS]$", "", w)
+                if not w or not _name_word_ok(w):
+                    break
+                words.append(w)
+            if words and _pn_is_protected_locality(" ".join(words)):
+                return []
+            return words
 
         # Discover judge name(s) behind a judicial title. A full name (2-3 words)
         # is faked wherever it appears together; every surname seen behind a title
@@ -8534,11 +8566,9 @@ class Pseudonymizer:
         judge_surnames = {}
         for m in _PN_JUDGE_CAPTURE_RE.finditer(text):
             words = _clean_name(m.group("n"))
-            if not _valid_name(words):
+            if not words:
                 continue
             surname = words[-1]
-            if _pn_is_generic_token(_pn_word_base(surname)):
-                continue
             judge_surnames.setdefault(
                 surname.lower(), _pn_fake_name_token(surname, self.registry))
             if len(words) >= 2:
@@ -8549,10 +8579,13 @@ class Pseudonymizer:
                                        whole_word=False, case_sensitive=False,
                                        priority=3, source="judge"))
         # Fake "<title> <surname>" wherever it appears, keeping the title and
-        # faking only the surname; a bare surname elsewhere is left alone.
+        # faking only the surname; a bare surname elsewhere is left alone. The
+        # trailing lookahead is (?!\w) — NOT (?!['’]) — so a possessive is left
+        # in place and keeps its base surname's fake ("Judge Mackenzie's" ->
+        # "Judge Ashford's", the same "Ashford" as the full name).
         for surname_l, fake in judge_surnames.items():
             rx = re.compile(r"(" + _PN_TITLE_LEAD + r")(" + re.escape(surname_l)
-                            + r")(?![\w'’])", re.IGNORECASE)
+                            + r")(?!\w)", re.IGNORECASE)
             for m in rx.finditer(text):
                 whole = re.sub(r"\s+", " ", m.group(0))
                 if ("court-title", whole.lower()) in self.records:
@@ -8567,7 +8600,7 @@ class Pseudonymizer:
         for m in _PN_COURT_STAFF_RE.finditer(text):
             words = _clean_name(_pn_trim_declarant(m.group("n")))
             raw = " ".join(words)
-            if len(words) < 2 or not _valid_name(words) or raw.lower() in seen_staff:
+            if len(words) < 2 or raw.lower() in seen_staff:
                 continue
             seen_staff.add(raw.lower())
             if ("person", raw.lower()) in self.records:
@@ -11224,9 +11257,9 @@ def _fix_leaks_mode(folder, args, cfg, log):
     if not text_dir.is_dir():
         text_dir = folder            # older single-folder layout
 
-    def _warn(msg):
-        log.warning(msg)
-        print(msg, file=sys.stderr)
+    # log-only: the console log handler (attached in main) already echoes these
+    # to the terminal — an extra print doubled every message in the window.
+    _warn = log.warning
 
     key_path = Path(args.key) if args.key else (folder / "pseudonym_key.xlsx")
     if not (key_path.is_file() and _pn_key_looks_like_ours(key_path)):
@@ -11246,10 +11279,9 @@ def _fix_leaks_mode(folder, args, cfg, log):
     fix_terms = [d["value"] for d in decisions.values() if d["fix"] == "yes"]
     suppressed = {vl for vl, d in decisions.items() if d["fix"] == "no"}
     if not fix_terms:
-        msg = ("--fix-leaks: no Fix?=yes rows in pdf_linker_leaks.xlsx — nothing "
-               "to apply. Mark the leaks you want scrubbed and double-click again.")
-        log.info(f"  {msg}")
-        print(msg)
+        log.info("--fix-leaks: no Fix?=yes rows in pdf_linker_leaks.xlsx — "
+                 "nothing to apply. Mark the leaks you want scrubbed and "
+                 "double-click again.")
         return 0
 
     terms += _pn_build_terms([], [], list(args.term or []) + fix_terms, registry)
@@ -11261,9 +11293,20 @@ def _fix_leaks_mode(folder, args, cfg, log):
     for r in pz.records.values():
         pz._own_fakes.add(str(r["fake"]).lower().rstrip(" .,;:"))
 
+    def _is_tool_artifact(p):
+        """The tool's OWN .txt files in the folder — the worksheet's text
+        companion and the ETA/DONE run markers — are not exports and must not
+        be scrubbed or tracked (only reachable in the old single-folder layout,
+        where text_dir falls back to the case folder itself)."""
+        return (p.name == "pdf_linker_leaks.txt"
+                or ((p.name.startswith(_ETA_MARKER_PREFIX + " ")
+                     or p.name.startswith(_DONE_MARKER_PREFIX + " "))
+                    and p.stat().st_size == 0))
+
     files = sorted(p for p in text_dir.iterdir()
                    if p.is_file() and (p.suffix == ".txt"
-                                       or p.name.endswith(".txt.LEAK")))
+                                       or p.name.endswith(".txt.LEAK"))
+                   and not _is_tool_artifact(p))
     changed = 0
     for f in files:
         try:
@@ -11272,7 +11315,10 @@ def _fix_leaks_mode(folder, args, cfg, log):
             log.warning(f"  Could not read {f.name}: {e}")
             continue
         scrubbed = pz.apply(body)
-        if scrubbed != body:
+        # Compare against the NFKC form: apply() normalizes unconditionally, so
+        # a file whose only difference is normalization has no actual fix in it
+        # and is left untouched (not rewritten, not counted as changed).
+        if scrubbed != _NFKC(body):
             try:
                 f.write_text(scrubbed, encoding="utf-8", newline="\n")
                 changed += 1
@@ -11305,12 +11351,10 @@ def _fix_leaks_mode(folder, args, cfg, log):
     _pn_write_leak_report(folder, pz.leak_report, log, decisions=decisions)
 
     still = len(offenders)
-    msg = (f"--fix-leaks: applied {len(fix_terms)} fix(es) to {changed} file(s); "
-           f"{unq} export(s) un-quarantined (*.LEAK -> .txt)"
-           + (f"; {still} file(s) still carry a party-name leak — review "
-              f"pdf_linker_leaks.xlsx." if still else "."))
-    log.info(f"  {msg}")
-    print(msg)
+    log.info(f"--fix-leaks: applied {len(fix_terms)} fix(es) to {changed} "
+             f"file(s); {unq} export(s) un-quarantined (*.LEAK -> .txt)"
+             + (f"; {still} file(s) still carry a party-name leak — review "
+                f"pdf_linker_leaks.xlsx." if still else "."))
     return 2 if still else 0
 
 
