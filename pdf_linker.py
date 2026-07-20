@@ -7837,6 +7837,50 @@ def _pn_label_names(text):
     return out
 
 
+# ── Court personnel: presiding judge, court staff, department number ─────────
+# A judicial title — the cue that lets a BARE surname be faked ("Judge Mackenzie"
+# -> "Judge <fake>"). "hon/honorable/justice/commissioner/referee" are never
+# verbs so they match case-insensitively; "Judge" must be capitalized so a
+# lowercase verb ("the jury must judge Smith's credibility") is not a title. An
+# optional middle initial ("Judge A. Mackenzie") is allowed between title and
+# surname.
+_PN_JUDICIAL_TITLE = (
+    r"(?:(?i:(?:the\s+)?hon(?:orable)?|justice|commissioner|referee)\.?"
+    r"|(?:The\s+)?(?:Judge|JUDGE))")
+_PN_TITLE_LEAD = _PN_JUDICIAL_TITLE + r"[ \t]+(?:[A-Z]\.[ \t]+)?"
+
+# Court staff, anchored on a role label ("Judicial Assistant: Jane Doe",
+# "Courtroom Clerk: ...", "Court Reporter: ...").
+_PN_COURT_STAFF_RE = re.compile(
+    r"(?i:judicial\s+assistant|courtroom\s+assistant|court(?:room)?\s+clerk|"
+    r"deputy\s+clerk|clerk\s+of\s+(?:the\s+)?court|court\s+reporter|bailiff|"
+    r"court\s+attendant|research\s+attorney|law\s+clerk)"
+    r"[ \t]*:?" + _PN_LABEL_GAP + r"(?P<n>" + _PN_LABEL_NAME + r")")
+
+# A department / courtroom number ("Department 515", "Dept. 515", "Dept 72",
+# "Department No. 515"). Only the LABELED number is faked, keeping the label
+# word — a bare "515" elsewhere (a page, a dollar amount) is left alone.
+_PN_DEPT_RE = re.compile(
+    r"\b(?:dept|department)\.?[ \t]*(?:no\.?|number|#)?[ \t]*:?[ \t]*"
+    r"(\d{1,3}[A-Z]?)(?!\w)", re.IGNORECASE)
+
+# The judge is DISCOVERED from the document via a title ("Hon. Alison Mackenzie",
+# "Judge Mackenzie") — no name is hard-coded. A title + 2-3 words is a full name
+# (faked wherever it appears together); a title + one word is a bare surname
+# (faked only behind a title). Up to three name words are captured, then trimmed
+# of trailing non-name words.
+_PN_JUDGE_CAPTURE_RE = re.compile(
+    _PN_JUDICIAL_TITLE + r"[ \t]+(?:[A-Z]\.[ \t]+)?"
+    r"(?P<n>[A-Z][A-Za-z.'’-]+(?:[ \t]+[A-Z][A-Za-z.'’-]+){0,2})")
+# Words that follow a title but do not name the judge ("Presiding", "of the
+# Superior Court", "pro tem"), so a capture made only of these is dropped.
+_PN_JUDGE_STOP = frozenset({
+    "presiding", "court", "department", "dept", "division", "superior",
+    "honorable", "pro", "tem", "sitting", "assigned", "designate", "designated",
+    "judge", "justice", "of", "the", "for", "all", "purposes",
+})
+
+
 # A display name in front of an e-mail address: "Tommy Purscelley
 # <tpurscelley@x.com>". The address is scrubbed by the e-mail detector, but the
 # name beside it used to survive, re-identifying the party the address hid.
@@ -8444,6 +8488,104 @@ class Pseudonymizer:
                     and not _pn_is_generic_token(_pn_word_base(rt))
                     # Hard guard: the Declaration word never becomes a term.
                     and _pn_word_base(rt) not in {"declaration", "decl", "dec"}]
+        self._add_terms(new)
+
+    def register_court_names(self, text):
+        """Precautionary scrub of the venue's court personnel and courtroom, all
+        DISCOVERED from the document (no name is hard-coded):
+
+          * the presiding JUDGE, found via a judicial title. A full name behind
+            the title ("Hon. Alison Mackenzie") is faked wherever it appears
+            TOGETHER; the bare surname is faked ONLY behind a title ("Judge
+            Mackenzie" -> "Judge <fake>"), never on its own. The surname's fake is
+            the same in both places.
+          * COURT STAFF, by role label ("Judicial Assistant: Jane Doe") — the
+            full name only;
+          * the DEPARTMENT NUMBER, faked digit-for-digit within its label and
+            consistently across the run ("Department 515" -> "Department 372"),
+            so a bare number is untouched.
+
+        Idempotent; call before apply()."""
+        text = _NFKC(text)
+        new = []
+
+        def _clean_name(name):
+            words = re.sub(r"\s+", " ", name).strip().strip(".,;:").split()
+            while words and _pn_word_base(words[-1]) in _PN_JUDGE_STOP:
+                words.pop()
+            while words and _pn_word_base(words[0]) in _PN_JUDGE_STOP:
+                words.pop(0)
+            return words
+
+        def _valid_name(words):
+            return (bool(words)
+                    and not _pn_is_protected_locality(" ".join(words))
+                    and all(_pn_is_name_token(w) for w in words)
+                    and not any(_pn_word_base(w) in _PN_NON_NAME_WORDS
+                                or _pn_is_role_token(w)
+                                or _pn_word_base(w) in _PN_REVIEW_NAME_STOP
+                                or _pn_word_base(w) in _PN_JUDGE_STOP
+                                for w in words))
+
+        # Discover judge name(s) behind a judicial title. A full name (2-3 words)
+        # is faked wherever it appears together; every surname seen behind a title
+        # is faked behind a title. Both use the same registry token, so the
+        # surname's fake matches across the full name and the titled forms.
+        judge_surnames = {}
+        for m in _PN_JUDGE_CAPTURE_RE.finditer(text):
+            words = _clean_name(m.group("n"))
+            if not _valid_name(words):
+                continue
+            surname = words[-1]
+            if _pn_is_generic_token(_pn_word_base(surname)):
+                continue
+            judge_surnames.setdefault(
+                surname.lower(), _pn_fake_name_token(surname, self.registry))
+            if len(words) >= 2:
+                full = " ".join(words)
+                if ("person", full.lower()) not in self.records:
+                    fake_full, _b = _pn_fake_person(full, self.registry)
+                    new.append(_PnTerm("person", full, fake_full,
+                                       whole_word=False, case_sensitive=False,
+                                       priority=3, source="judge"))
+        # Fake "<title> <surname>" wherever it appears, keeping the title and
+        # faking only the surname; a bare surname elsewhere is left alone.
+        for surname_l, fake in judge_surnames.items():
+            rx = re.compile(r"(" + _PN_TITLE_LEAD + r")(" + re.escape(surname_l)
+                            + r")(?![\w'’])", re.IGNORECASE)
+            for m in rx.finditer(text):
+                whole = re.sub(r"\s+", " ", m.group(0))
+                if ("court-title", whole.lower()) in self.records:
+                    continue
+                lead = re.sub(r"\s+", " ", m.group(1))
+                new.append(_PnTerm("court-title", whole, lead + fake,
+                                   whole_word=True, case_sensitive=False,
+                                   priority=3, source="judge"))
+
+        # Court staff, by role label — full name only, no free-standing tokens.
+        seen_staff = set()
+        for m in _PN_COURT_STAFF_RE.finditer(text):
+            words = _clean_name(_pn_trim_declarant(m.group("n")))
+            raw = " ".join(words)
+            if len(words) < 2 or not _valid_name(words) or raw.lower() in seen_staff:
+                continue
+            seen_staff.add(raw.lower())
+            if ("person", raw.lower()) in self.records:
+                continue
+            fake_full, _bare = _pn_fake_person(raw, self.registry)
+            new.append(_PnTerm("person", raw, fake_full, whole_word=False,
+                               case_sensitive=False, priority=2,
+                               source="court-staff"))
+
+        # Department number: fake the LABELED digits only, keeping the label.
+        for m in _PN_DEPT_RE.finditer(text):
+            num, whole = m.group(1), m.group(0)
+            if ("department", whole.lower()) in self.records:
+                continue
+            fake = whole[: m.start(1) - m.start()] + self.registry.digits(
+                num, "department")
+            new.append(_PnTerm("department", whole, fake, whole_word=True,
+                               case_sensitive=False, priority=2, source="court"))
         self._add_terms(new)
 
     def _detector_record(self, cat, real, faker):
@@ -10094,6 +10236,7 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
     if pseudonymizer is not None:
         pseudonymizer.register_declarant_names(detect_full)
         pseudonymizer.register_declarant_refs(detect_full)
+        pseudonymizer.register_court_names(detect_full)
         pseudonymizer.register_dba_names(detect_full)
         pseudonymizer.register_firm_names(detect_full)
         pseudonymizer.register_label_names(detect_full)
@@ -10297,6 +10440,7 @@ def _pn_prescan_folder(pdfs, pseudonymizer, log):
         corpus.append(text)
         pseudonymizer.register_declarant_names(text)
         pseudonymizer.register_declarant_refs(text)
+        pseudonymizer.register_court_names(text)
         # The FILENAME often names a declarant ("Yu Declaration ISO Opp.pdf")
         # whose name may appear nowhere in the body — scan it too, so both the
         # body and the pseudonymized output filename scrub that name.
