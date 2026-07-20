@@ -1634,6 +1634,56 @@ def _find_tesseract():
     return None
 
 
+def _suppress_child_error_dialogs():
+    """Windows: stop child processes from showing the system error dialog when
+    they fail to start (e.g. a broken tesseract.exe dying with 0xc0000142).
+    The error mode is inherited by children, so a per-page OCR loop over a
+    corrupted install degrades to log lines instead of one popup PER PAGE.
+    No-op elsewhere; best-effort."""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        SEM = 0x0001 | 0x0002 | 0x8000   # FAILCRITICALERRORS | NOGPFAULTERRORBOX
+        ctypes.windll.kernel32.SetErrorMode(         # | NOOPENFILEERRORBOX
+            ctypes.windll.kernel32.SetErrorMode(0) | SEM)
+    except Exception:
+        pass
+
+
+# Probe result per tesseract path, so a BROKEN install (present on disk but
+# unable to start — DLL init failure 0xc0000142, wrong bitness, missing VC++
+# runtime) is detected ONCE per run instead of failing per page.
+_TESS_PROBE = {}
+
+
+def _tesseract_usable(tess, log):
+    """True when `tess` actually RUNS (`tesseract --version` exits 0). A
+    corrupted install used to be discovered one page at a time — every page
+    spawned a tesseract.exe that died with a Windows error popup. Probed once
+    and cached for the run; on failure OCR is disabled with one log line."""
+    cached = _TESS_PROBE.get(tess)
+    if cached is not None:
+        return cached
+    _suppress_child_error_dialogs()
+    import subprocess
+    try:
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+        r = subprocess.run([tess, "--version"], capture_output=True,
+                           timeout=20, creationflags=flags)
+        ok = r.returncode == 0
+    except Exception:
+        ok = False
+    _TESS_PROBE[tess] = ok
+    if not ok:
+        log.warning(
+            f"Tesseract is installed but cannot start ({tess}) — skipping OCR "
+            f"for this run. This is usually a corrupted install or a missing "
+            f"Visual C++ runtime (Windows error 0xc0000142); reinstall from "
+            f"https://github.com/UB-Mannheim/tesseract/wiki")
+    return ok
+
+
 def _ocr_pdf(doc, log):
     """OCR pages of a PyMuPDF doc that have no text. Adds an invisible text
     layer using the recognised text. Modifies doc in place."""
@@ -1648,6 +1698,8 @@ def _ocr_pdf(doc, log):
     if not tess:
         log.warning("Tesseract not found - skipping OCR. Install from "
                     "https://github.com/UB-Mannheim/tesseract/wiki")
+        return False
+    if not _tesseract_usable(tess, log):
         return False
     pytesseract.pytesseract.tesseract_cmd = tess
 
@@ -1762,6 +1814,8 @@ def _reocr_garbled_pages(doc, log):
     if not tess:
         log.warning(f"  {len(garbled)} page(s) look garbled but Tesseract "
                     f"isn't installed - leaving text as-is")
+        return 0
+    if not _tesseract_usable(tess, log):
         return 0
     pytesseract.pytesseract.tesseract_cmd = tess
     keep_img = getattr(fitz, "PDF_REDACT_IMAGE_NONE", 0)
@@ -11667,6 +11721,10 @@ def main():
              "<folder>/pseudonym_key.xlsx).",
     )
     args = parser.parse_args()
+
+    # Child processes (tesseract per OCR page) must fail into the log, never
+    # into a Windows error dialog per page.
+    _suppress_child_error_dialogs()
 
     # `--dump-terms` is an inspection command: print the protected vocabulary
     # and exit, no folder required.
