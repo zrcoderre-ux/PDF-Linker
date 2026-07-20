@@ -7177,6 +7177,10 @@ claims defense defenses
 warranty warranties warrant legal name names customer customers relation
 relations practice practices standard standards consumer consumers repair
 repairs vehicle vehicles motor motors strategic
+allege alleges alleged alleging allegation allegations liability liabilities
+based assign assigns assigned assigning purpose purposes case cases supporting
+supported supports our supreme unlimited limited jurisdiction jurisdictions
+jurisdictional delaware venue venued
 january february march april may june july august september october november
 december monday tuesday wednesday thursday friday saturday sunday
 """.split())
