@@ -70,3 +70,52 @@ def test_court_staff_by_role_label():
     out = z.apply(doc)
     for name in ("Maria Sandoval", "Robert Ng", "David Whitfield"):
         assert name not in out
+
+
+# ─── Bug fixes: verb-swallowing, key-reuse surname rule, possessive ───────────
+
+def test_allcaps_ruling_verb_is_not_part_of_the_name():
+    # "JUDGE SMITH ORDERED THE PARTIES…" must register NO person ("SMITH
+    # ORDERED" was being faked in ordinary prose); the titled surname still
+    # scrubs inside the heading.
+    for heading in ("JUDGE SMITH ORDERED THE PARTIES TO MEET",
+                    "JUDGE SMITH OVERRULED THE OBJECTION",
+                    "The Judge Mackenzie Ruled Yesterday"):
+        z = _pz()
+        z.register_court_names(heading)
+        assert not [r for (c, _k), r in z.records.items() if c == "person"], heading
+        out = z.apply(heading)
+        assert "SMITH" not in out and "Mackenzie" not in out, out
+        prose = z.apply("Smith ordered lunch. Smith overruled it.")
+        assert "Smith ordered lunch" in prose and "Smith overruled it" in prose
+
+
+def test_bare_surname_stays_bare_after_key_reuse(tmp_path):
+    # The derived person-token key row must NOT become an unconditional term on
+    # key reuse — first run and re-run must treat the bare surname identically.
+    import logging
+    log = logging.getLogger("test")
+    z = _pz()
+    doc = ("Hon. Alison Mackenzie presiding. Judge Mackenzie ruled. "
+           "Before Mackenzie, counsel argued.")
+    z.register_court_names(doc)
+    first = z.apply(doc)
+    assert "Before Mackenzie" in first
+    z.write_key(tmp_path / "pseudonym_key.xlsx", log)
+    reg2 = P._PnFakeRegistry()
+    terms2 = P._pn_load_key(tmp_path / "pseudonym_key.xlsx", reg2, log)
+    z2 = P.Pseudonymizer(terms2, {}, registry=reg2)
+    reused = z2.apply(doc)
+    assert reused == first                      # identical, incl. bare surname
+    assert "Before Mackenzie" in reused
+
+
+def test_possessive_titled_form_keeps_apostrophe_and_shares_fake():
+    z = _pz()
+    doc = "Judge Mackenzie’s ruling. Hon. Alison Mackenzie."
+    z.register_court_names(doc)
+    out = z.apply(doc)
+    m = re.search(r"Judge (\w+)’s ruling\. Hon\. \w+ (\w+)\.", out)
+    assert m, out
+    assert m.group(1) == m.group(2)             # same surname fake both places
+    assert "Mackenzie" not in out
