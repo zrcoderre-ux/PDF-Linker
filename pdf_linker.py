@@ -5671,6 +5671,69 @@ def _pn_looks_like_entity(name):
     return bool(re.search(r"\b(city|county|people|state) of\b", low))
 
 
+# The state-of-organization descriptor a caption appends to an entity party:
+# "Acme Widgets, Inc., a Delaware corporation", "Sunrise Motors, LLC, a
+# California limited liability company", "Doe Holdings, an Illinois limited
+# partnership". It names the STATE of incorporation and the LEGAL FORM — stock
+# boilerplate that identifies no one and reads identically for thousands of
+# companies, so it must stay verbatim and NEVER be faked, even though it sits
+# inside the party's name. Only the distinctive name in front of it is a term.
+_PN_JURIS_STATES = (
+    "alabama", "alaska", "arizona", "arkansas", "california", "colorado",
+    "connecticut", "delaware", "florida", "georgia", "hawaii", "idaho",
+    "illinois", "indiana", "iowa", "kansas", "kentucky", "louisiana", "maine",
+    "maryland", "massachusetts", "michigan", "minnesota", "mississippi",
+    "missouri", "montana", "nebraska", "nevada", "ohio", "oklahoma", "oregon",
+    "pennsylvania", "tennessee", "texas", "utah", "vermont", "virginia",
+    "washington", "wisconsin", "wyoming",
+    "new hampshire", "new jersey", "new mexico", "new york", "north carolina",
+    "north dakota", "rhode island", "south carolina", "south dakota",
+    "west virginia", "district of columbia",
+)
+# Adjectives that qualify the legal form ("a California PROFESSIONAL corporation",
+# "a NONPROFIT PUBLIC BENEFIT corporation", "a FOREIGN limited partnership").
+_PN_JURIS_QUALIFIERS = (
+    "professional", "nonprofit", "non-profit", "public", "benefit", "mutual",
+    "general", "limited", "domestic", "foreign", "close", "closely", "held",
+    "unincorporated", "incorporated", "registered", "statutory", "charitable",
+    "religious", "family", "business",
+)
+_PN_ENTITY_FORM_NOUN = (
+    r"(?:corporations?|corp|compan(?:y|ies)|"
+    r"limited\s+liability\s+(?:compan(?:y|ies)|partnerships?)|"
+    r"limited\s+partnerships?|general\s+partnerships?|partnerships?|"
+    r"joint\s+venture|unincorporated\s+association|associations?|"
+    r"business\s+trust|trust|cooperative|"
+    r"l\.?\s*l\.?\s*c|l\.?\s*l\.?\s*p|l\.?\s*p|p\.?\s*l\.?\s*l\.?\s*c|"
+    r"p\.?\s*c|p\.?\s*a)")
+_PN_DESCRIPTOR_BODY = (
+    r"(?:(?:" + "|".join(_PN_JURIS_STATES) + r"|"
+    + "|".join(_PN_JURIS_QUALIFIERS) + r")\s+){0,4}?"  # state / qualifier words
+    + _PN_ENTITY_FORM_NOUN + r"\.?")
+_PN_ENTITY_DESCRIPTOR_RE = re.compile(
+    r",?\s+an?\s+" + _PN_DESCRIPTOR_BODY + r"\s*$", re.IGNORECASE)
+# A value that is NOTHING but a descriptor ("a California corporation") names no
+# party at all — it must not become a term (and so must never be faked).
+_PN_ONLY_DESCRIPTOR_RE = re.compile(
+    r"^\s*an?\s+" + _PN_DESCRIPTOR_BODY + r"\s*$", re.IGNORECASE)
+
+
+def _pn_strip_entity_descriptor(name):
+    """(name_without_descriptor, had_descriptor). Removes a trailing
+    "..., a <State> <legal-form>" clause so the registered term is just the
+    distinctive name — the descriptor then stays verbatim in the document and is
+    never faked. Only strips when a distinctive name remains in front of it, so a
+    value that is nothing but the descriptor is left as-is for the caller to
+    reject elsewhere."""
+    m = _PN_ENTITY_DESCRIPTOR_RE.search(name)
+    if not m or m.start() == 0:
+        return name, False
+    head = name[:m.start()].rstrip(" ,")
+    if not re.search(r"[A-Za-z]", head):
+        return name, False
+    return head, True
+
+
 # ── Party-role labels (never pseudonymized) ─────────────────────────────────
 # "Plaintiff", "Defendant", "Cross-Complainant", etc. are procedural roles, not
 # identities: they occur on nearly every line of a pleading and are public, so
@@ -6187,8 +6250,15 @@ def _pn_append_name_terms(terms, raw, source, registry):
         for alias in aliases:
             parts = _pn_split_dba(alias)
             head, dbas = parts[0], parts[1:]
-            if _pn_is_party_role(head) or not re.search(r"[A-Za-z]", head):
+            if (_pn_is_party_role(head) or not re.search(r"[A-Za-z]", head)
+                    or _PN_ONLY_DESCRIPTOR_RE.match(head)):
                 continue
+            # Drop a trailing state-of-organization descriptor ("Acme, Inc., a
+            # Delaware corporation" -> "Acme, Inc."). The descriptor names no
+            # one, so it stays verbatim in the document; only the distinctive
+            # name in front of it becomes a term. A descriptor is a decisive
+            # entity signal, so its presence forces the entity path.
+            head, had_descriptor = _pn_strip_entity_descriptor(head)
             # A SHORT candidate made entirely of generic words is a header
             # cell or a harvested label ("Name", "Customer Relations",
             # "Warranty Complaints"), never a party — registering one rewrites
@@ -6208,7 +6278,7 @@ def _pn_append_name_terms(terms, raw, source, registry):
             if _pn_is_public_entity(head):
                 continue
             if head_is_entity is None:
-                head_is_entity = _pn_looks_like_entity(head)
+                head_is_entity = had_descriptor or _pn_looks_like_entity(head)
             if head_is_entity:
                 prefer.update(_pn_append_entity_terms(terms, head, source,
                                                       registry, prefer))
