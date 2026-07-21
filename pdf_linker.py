@@ -8600,6 +8600,12 @@ class Pseudonymizer:
                                  # already-fake text never re-fakes them
         # (category, real_lower) -> record dict {category, real, fake, source,
         # count, pattern, flags}
+        # Compiled-regex cache keyed by (pattern, flags). Python's own re cache
+        # holds only 512 entries, so a case with >512 terms recompiled every
+        # term's pattern on every page (regex COMPILATION was ~75% of the
+        # pseudonymize+scan runtime). This cache is unbounded, so each pattern
+        # compiles once for the whole run.
+        self._rx_cache = {}
         self.records = {}
         for t in terms:
             # Never install a self-identical mapping (fake == real): it is a
@@ -8695,7 +8701,7 @@ class Pseudonymizer:
             fake_words = str(t.fake).split()
             parent_words = {_pn_word_base(w) for w in real_words}
             try:
-                rx = re.compile(t.pattern + paren, t.flags)
+                rx = self._compiled(t.pattern + paren, t.flags)
             except re.error:
                 continue
             for m in rx.finditer(text):
@@ -8749,7 +8755,7 @@ class Pseudonymizer:
                                           "entity-token", "short-name")):
                 continue
             try:
-                ms = list(re.finditer(t.pattern, text, t.flags))
+                ms = list(self._compiled(t.pattern, t.flags).finditer(text))
             except re.error:
                 continue
             if ms and all(any(m.start() < e and s < m.end() for s, e in spans)
@@ -9247,10 +9253,21 @@ class Pseudonymizer:
         fake9 = self.registry.unique(digits, "ssn", _pn_ssn_digits)
         return _pn_reapply_digits(fake9, real)
 
+    def _compiled(self, pattern, flags):
+        """A cached compiled regex for (pattern, flags), so a term's pattern is
+        compiled once for the whole run instead of on every page (Python's own
+        re cache evicts past 512 entries, which a large case blows through)."""
+        key = (pattern, flags)
+        rx = self._rx_cache.get(key)
+        if rx is None:
+            rx = re.compile(pattern, flags)
+            self._rx_cache[key] = rx
+        return rx
+
     def _term_cands(self, text):
         out = []
         for t in self.terms:
-            for m in re.finditer(t.pattern, text, t.flags):
+            for m in self._compiled(t.pattern, t.flags).finditer(text):
                 if m.start() != m.end():
                     out.append((t.priority, m.start(), m.end(),
                                 self.records[(t.category, t.real.lower())]))
@@ -9522,7 +9539,7 @@ class Pseudonymizer:
         out = []
         for rec in self.records.values():
             try:
-                if re.search(rec["pattern"], text, rec["flags"]):
+                if self._compiled(rec["pattern"], rec["flags"]).search(text):
                     out.append(rec["real"])
             except re.error:
                 pass
