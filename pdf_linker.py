@@ -3083,7 +3083,14 @@ _PAGE_STAMP_RE = re.compile(
     ^
     \s*
     (?:Page\s+|-\s*|—\s*)?
-    (?P<num>\d{1,4} | [ivxlcdm]{1,6} | [IVXLCDM]{1,6})
+    # Roman labels must be GRAMMATICALLY valid numerals, not just roman
+    # letters: "CIVIL" is five roman letters, so a court form's footer word
+    # was read as a page-number stamp ("p.CIVIL" in the leak report's Where
+    # column, and a wrong printed-page map for TOC links).
+    (?P<num>\d{1,4}
+        | (?=[ivxlcdm]) m{0,3}(?:cm|cd|d?c{0,3})(?:xc|xl|l?x{0,3})(?:ix|iv|v?i{0,3})
+        | (?=[IVXLCDM]) M{0,3}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3})
+    )
     \s*
     (?:\s*-|\s*—|\.|\s+of\s+\d+)?
     \s*
@@ -7042,6 +7049,15 @@ def _pn_url_host(real):
 
 def _pn_url_whitelisted(real):
     host = _pn_url_host(real)
+    # A government host names an agency, not a party — faking it protects no
+    # one, and flagging it buries the real findings. This must cover the
+    # whitelisted hosts' PUBLIC PARENTS too: a line-wrapped court URL leaves a
+    # bare "ca.gov" tail on its own line, which the child-only whitelist
+    # missed — the detector minted a domain record for it, and that record
+    # then "survived" inside every deliberately-kept courts.ca.gov citation
+    # link, a LEAK row per file across the whole folder.
+    if host in ("gov", "mil") or host.endswith((".gov", ".mil")):
+        return True
     return any(host == w or host.endswith("." + w) for w in _PN_URL_WHITELIST)
 
 
@@ -7375,6 +7391,10 @@ _PN_REVIEW_NAME_STOP = frozenset({
     "corporation", "avenue", "street", "boulevard", "road", "drive", "suite",
     "california", "angeles", "america", "united", "district", "division",
     "clerk", "judge", "honorable", "hon", "plaintiff", "defendant", "attorney",
+    # E-filing form-field vocabulary: an LASC-generated notice prints stamps
+    # like "NEW QUALIFIER" in the caption area, which is name-shaped to the
+    # scanner ("New" + one distinctive word) but is a form label, not a person.
+    "qualifier",
 })
 
 # Document-type / procedural vocabulary — the canonical pleading names and their
@@ -8396,6 +8416,17 @@ _PN_COURT_STAFF_RE = re.compile(
     r"court\s+attendant|research\s+attorney|law\s+clerk)"
     r"[ \t]*:?" + _PN_LABEL_GAP + r"(?P<n>" + _PN_LABEL_NAME + r")")
 
+# The same staff roles with the NAME FIRST — how a clerk actually signs a
+# court-generated notice ("By: N. Lachikian, Deputy Clerk"). The label-first
+# rule above cannot see this shape, so the clerk's name was never registered
+# as court personnel; it rode into the review sheet as a "possible person
+# name" on every notice of appeal instead of being scrubbed.
+_PN_COURT_STAFF_NAME_FIRST_RE = re.compile(
+    r"(?P<n>" + _PN_LABEL_NAME + r")[ \t]*,[ \t]*"
+    r"(?i:judicial\s+assistant|courtroom\s+assistant|court(?:room)?\s+clerk|"
+    r"deputy\s+clerk|court\s+reporter|bailiff|court\s+attendant|"
+    r"research\s+attorney|law\s+clerk)(?![\w])")
+
 # A department / courtroom number ("Department 515", "Dept. 515", "Dept 72",
 # "Department No. 515"). Only the LABELED number is faked, keeping the label
 # word — a bare "515" elsewhere (a page, a dollar amount) is left alone.
@@ -9143,20 +9174,46 @@ class Pseudonymizer:
                                    whole_word=True, case_sensitive=False,
                                    priority=3, source="judge"))
 
-        # Court staff, by role label — full name only, no free-standing tokens.
+        def _clean_tail(name):
+            """The TRAILING run of plausible name words — for the name-first
+            staff shape, where the capture reaches back into lead-in words
+            ("By N. Lachikian") that _clean_name's cut-at-first-bad-word rule
+            would reject whole."""
+            raw = re.sub(r"\s+", " ", name).strip().strip(".,;:").split()
+            words = []
+            for w in reversed(raw):
+                w = re.sub(r"['’][sS]$", "", w)
+                # A bare initial is part of the name even when its letter
+                # spells a word ("A." reduced to base "a" failed the
+                # vocabulary gate, so "A. Latchinian" lost its initial and
+                # the whole signature was skipped).
+                if not w or not (re.fullmatch(r"[A-Z]\.?", w)
+                                 or _name_word_ok(w)):
+                    break
+                words.append(w)
+            words.reverse()
+            if words and _pn_is_protected_locality(" ".join(words)):
+                return []
+            return words
+
+        # Court staff — full name only, no free-standing tokens. Two shapes:
+        # role label first ("Deputy Clerk: Jane Doe"), and name first, the way
+        # a clerk signs a generated notice ("By: N. Lachikian, Deputy Clerk").
         seen_staff = set()
-        for m in _PN_COURT_STAFF_RE.finditer(text):
-            words = _clean_name(_pn_trim_declarant(m.group("n")))
-            raw = " ".join(words)
-            if len(words) < 2 or raw.lower() in seen_staff:
-                continue
-            seen_staff.add(raw.lower())
-            if ("person", raw.lower()) in self.records:
-                continue
-            fake_full, _bare = _pn_fake_person(raw, self.registry)
-            new.append(_PnTerm("person", raw, fake_full, whole_word=False,
-                               case_sensitive=False, priority=2,
-                               source="court-staff"))
+        for rx, cleaner in ((_PN_COURT_STAFF_RE, _clean_name),
+                            (_PN_COURT_STAFF_NAME_FIRST_RE, _clean_tail)):
+            for m in rx.finditer(text):
+                words = cleaner(_pn_trim_declarant(m.group("n")))
+                raw = " ".join(words)
+                if len(words) < 2 or raw.lower() in seen_staff:
+                    continue
+                seen_staff.add(raw.lower())
+                if ("person", raw.lower()) in self.records:
+                    continue
+                fake_full, _bare = _pn_fake_person(raw, self.registry)
+                new.append(_PnTerm("person", raw, fake_full, whole_word=False,
+                                   case_sensitive=False, priority=2,
+                                   source="court-staff"))
 
         # Department number: fake the LABELED digits only, keeping the label.
         for m in _PN_DEPT_RE.finditer(text):
@@ -9767,8 +9824,25 @@ class Pseudonymizer:
                    if cat in ("entity", "person")]
         if not parties:
             return []
+
+        def _defined_here(real_words, window):
+            """True when the party whose initials matched is actually NAMED in
+            the text leading into the parenthetical. A definition defines what
+            it follows; matching a tracked party's initials against a form
+            defined ANYWHERE let every coincidental collision through — a
+            minor's court-approved initials, a defined term ("MM") that merely
+            shares two initials with some party — and each one was a review
+            row the operator had to clear by hand."""
+            return any(len(b) >= 3 and b not in _PN_COMMON_WORDS
+                       and not _pn_is_entity_keep(b)
+                       and re.search(r"(?<!\w)" + re.escape(b) + r"(?!\w)",
+                                     window)
+                       for b in (_pn_word_base(w) for w in real_words))
+
         findings, local = [], set()
-        for m in re.finditer(r"\(([^()]{0,120})\)", _NFKC(source)):
+        src = _NFKC(source)
+        for m in re.finditer(r"\(([^()]{0,120})\)", src):
+            window = src[max(0, m.start() - 160):m.start()].lower()
             for form in _pn_paren_short_forms(m.group(1)):
                 low = form.lower()
                 if len(form.split()) != 1 or low in local:
@@ -9780,7 +9854,9 @@ class Pseudonymizer:
                     continue
                 if not re.search(r"(?<!\w)" + re.escape(form) + r"(?!\w)", output):
                     continue          # already scrubbed / absent — fine
-                if any(_pn_initialism_fake(form, rw, fw) for rw, fw in parties):
+                if any(_pn_initialism_fake(form, rw, fw)
+                       and _defined_here(rw, window)
+                       for rw, fw in parties):
                     local.add(low)
                     findings.append(("party acronym", form))
         seen = {(c, s.lower()) for c, s in self.review}

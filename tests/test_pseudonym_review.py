@@ -1339,3 +1339,54 @@ def test_unknown_declarant_with_mangled_ref_is_autoscrubbed():
     out = z.apply(doc)
     assert "Smith" not in out, out
     assert "Dec.laration" in out          # the mangled reference word is kept
+
+
+# ── 2026-07-21 review: false-positive classes from a delivered leak sheet ────
+# Nine of fourteen rows were "ca.gov" LEAKs (a government host minted as a
+# domain record, then "surviving" inside every kept citation link); the rest
+# were a defined term sharing a tracked party's two initials, a court form
+# stamp read as a person, and unregistered clerk signatures (see
+# test_court_names for those).
+
+def test_government_domain_is_never_minted_or_leak_flagged():
+    z = _pz()
+    out = z.apply("File at appellate.courts.ca.gov; forms wrapped to\n"
+                  "ca.gov today.")
+    assert "ca.gov" in out                       # kept verbatim
+    assert not any(r["category"] == "url" for r in z.records.values())
+    assert not z.surviving_reals(out)
+
+
+def test_private_domain_is_still_faked():
+    z = _pz()
+    out = z.apply("Our site is estradalegal.com for intake.")
+    assert "estradalegal.com" not in out
+
+
+def test_gov_url_not_reported_for_review():
+    findings = P._pn_review_findings("visit selfhelp.courts.ca.gov and ca.gov")
+    assert not [f for f in findings if f[0] == "url/domain"]
+
+
+def test_acronym_backstop_needs_the_party_at_the_definition_site():
+    # "MM" defined for something else entirely (a master agreement, a minor's
+    # court-approved initials) must not be reported just because SOME tracked
+    # party shares those two initials.
+    z = _pz06764(names=["Mendoza Motors, Inc."])
+    src = ('This master agreement ("MM") governs the work. '
+           'Mendoza Motors, Inc. is a party to it.')
+    out = 'This master agreement ("MM") governs the work. MM remains defined.'
+    assert not z.review_definition_survivors(src, out)
+
+
+def test_acronym_backstop_still_fires_at_the_definition_site():
+    z = _pz06764(names=["Mendoza Motors, Inc."])
+    src = 'MENDOZA MOTORS, INC. ("MM") appeared at the hearing.'
+    out = 'Kestrel Automotive, Inc. ("MM") appeared at the hearing. MM breached.'
+    assert ("party acronym", "MM") in z.review_definition_survivors(src, out)
+
+
+def test_form_stamp_words_are_not_a_person():
+    # "NEW QUALIFIER" is an e-filing form stamp: name-shaped to the scanner
+    # (leading "New" + one distinctive word) but a form label, not a person.
+    assert not P._pn_person_review_findings("By: NEW QUALIFIER")
