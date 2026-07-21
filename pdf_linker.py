@@ -1981,17 +1981,65 @@ def _reocr_garbled_pages(doc, log):
     pytesseract.pytesseract.tesseract_cmd = tess
     keep_img = getattr(fitz, "PDF_REDACT_IMAGE_NONE", 0)
     keep_art = getattr(fitz, "PDF_REDACT_LINE_ART_NONE", 0)
+
+    # Phase 1 — render + OCR every garbled page, in parallel across workers. This
+    # is the heavy step (448 pages was ~15 min single-threaded). Rendering stays
+    # on the main thread (PyMuPDF is not thread-safe); only Tesseract runs in the
+    # pool. Rendering BEFORE any redaction is required — the visible glyphs are
+    # correct until we strip the bad text in phase 2, and a redaction on one page
+    # never affects another page's already-captured image. Stalled pages grind
+    # down afterwards, so nothing is skipped.
+    pages = [doc[n] for n in garbled]
+    workers = _ocr_workers()
+    ocr_by_page = {}
+    if workers <= 1 or len(pages) <= 1:
+        for page in pages:
+            b = _ocr_page_to_pdf(page, pytesseract, Image, io, log, "Re-OCR")
+            if b is not None:
+                ocr_by_page[page.number] = b
+    else:
+        from concurrent.futures import ThreadPoolExecutor
+        os.environ.setdefault("OMP_THREAD_LIMIT", "1")
+        timeout = _ocr_page_timeout()
+        log.info(f"  Re-OCR: {len(pages)} page(s) across {workers} workers")
+        stalled = []
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            for chunk in _chunked(pages, workers):
+                rendered = []
+                for page in chunk:
+                    try:
+                        pix = _ocr_pixmap(page)
+                        img = Image.open(io.BytesIO(pix.tobytes("png")))
+                    except Exception as e:
+                        log.warning(f"  Re-OCR render failed on page {page.number}: {e}")
+                        continue
+                    rendered.append((page, img))
+                futs = [(page, ex.submit(
+                            pytesseract.image_to_pdf_or_hocr, img,
+                            extension="pdf", timeout=timeout))
+                        for page, img in rendered]
+                for page, fut in futs:
+                    try:
+                        ocr_by_page[page.number] = fut.result()
+                    except Exception as e:
+                        log.warning(f"  Re-OCR did not finish on page {page.number} "
+                                    f"at full resolution ({e}); will grind it down")
+                        stalled.append(page)
+        for page in stalled:
+            b = _ocr_page_to_pdf(page, pytesseract, Image, io, log, "Re-OCR", start=1)
+            if b is not None:
+                ocr_by_page[page.number] = b
+
+    # Phase 2 — strip the garbled text and overlay the fresh OCR (serial; mutates
+    # the doc, which PyMuPDF requires single-threaded).
     done = 0
     for pno in garbled:
-        page = doc[pno]
-        # 1) Render + OCR BEFORE touching the page: the visible glyphs are
-        #    correct even though they extract as garbage. Grinds down through
-        #    lower resolutions rather than skipping if Tesseract stalls.
-        ocr_bytes = _ocr_page_to_pdf(page, pytesseract, Image, io, log, "Re-OCR")
+        ocr_bytes = ocr_by_page.get(pno)
         if ocr_bytes is None:
             continue
-        # 2) Strip the garbled text (text only; keep images and line art, no
-        #    fill) so get_text no longer returns the gibberish.
+        page = doc[pno]
+        # Strip the garbled text (text only; keep images and line art, no fill)
+        # so get_text no longer returns the gibberish.
         try:
             page.add_redact_annot(page.rect, fill=False)
             try:
@@ -2001,7 +2049,7 @@ def _reocr_garbled_pages(doc, log):
         except Exception as e:
             log.warning(f"  Could not remove garbled text on page {pno}: {e}")
             continue
-        # 3) Overlay the fresh OCR render (rendered image + clean invisible text).
+        # Overlay the fresh OCR render (rendered image + clean invisible text).
         try:
             ocr_doc = fitz.open(stream=ocr_bytes, filetype="pdf")
             page.show_pdf_page(page.rect, ocr_doc, 0, overlay=True)
