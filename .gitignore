@@ -1,3 +1,15 @@
 __pycache__/
 *.pyc
 pdf_linker.config
+
+# Runtime artifacts the tool writes next to the script or into a case folder —
+# never source. Committing pdf_linker_eta_rate.txt once already broke a user's
+# git pull (untracked local copy vs. tracked incoming), so keep these ignored.
+pdf_linker_eta_rate.txt
+pdf_linker.log
+pdf_linker_leaks.xlsx
+pseudonym_key.xlsx
+ETA *.txt
+DONE *.txt
+Re-run PDF-Linker.*
+Apply Leak Fixes.bat
