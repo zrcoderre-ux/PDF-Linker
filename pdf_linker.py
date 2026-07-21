@@ -12068,26 +12068,31 @@ def main():
         log.info(f"Pseudonymizing .txt exports: {len(terms)} term(s), "
                  f"detectors={detectors or 'none'}")
 
-    # Collect PDFs excluding _linked and _temp files, then sort by file size (smallest first)
+    # Collect PDFs excluding _linked and _temp files.
     pdfs = [p for p in folder.glob("*.pdf")
             if not p.stem.endswith("_linked") and not p.stem.endswith("_temp")]
     sizes = {p: p.stat().st_size for p in pdfs}
-    pdfs = sorted(pdfs, key=lambda p: sizes[p])
-    log.info(f"Found {len(pdfs)} PDF(s) to process (sorted by size)")
+    # Weight each file by processing cost — OCR pages dominate runtime, so this
+    # is far truer than bytes (a big native-text brief is cheap; a small scanned
+    # exhibit is not). Cheap metadata pass, reused for the ETA below. Process the
+    # HEAVIEST first: the big scanned evidence files carry the vast majority of
+    # the work, so front-loading them runs the slow OCR while you're watching and
+    # finishes on a tail of quick files — instead of grinding through many small
+    # files and only reaching a monster at the very end (where a stall would cost
+    # a whole night). Ties break on size, so order is deterministic.
+    weights = {}
+    for p in pdfs:
+        w = _pdf_work_weight(p)
+        weights[p] = w if w is not None else max(1.0, sizes[p] / 50000.0)
+    pdfs = sorted(pdfs, key=lambda p: (-weights[p], -sizes[p], p.name))
+    log.info(f"Found {len(pdfs)} PDF(s) to process (heaviest first)")
 
     # Estimated-finish marker: worth it only for a multi-file batch (a single
     # file has no throughput to project from until it is already done).
     show_eta = len(pdfs) >= 2
-    weights, total_work = {}, 1.0
+    total_work = sum(weights.values()) or 1.0
     if show_eta:
         _write_eta_marker(folder, "(estimating...)")
-        # Weight each file by processing cost (OCR pages dominate runtime), not
-        # bytes, so the scanned declaration's cost is priced in from the start
-        # and the estimate stops lurching when it comes up. Cheap metadata pass.
-        for p in pdfs:
-            w = _pdf_work_weight(p)
-            weights[p] = w if w is not None else max(1.0, sizes[p] / 50000.0)
-        total_work = sum(weights.values()) or 1.0
         # Seed an immediate projected finish from the last run's throughput, so a
         # large re-run shows a time right away instead of "(estimating...)" until
         # the first file lands. Refined live below.
@@ -12096,6 +12101,18 @@ def main():
             finish = datetime.datetime.now() + datetime.timedelta(
                 seconds=total_work / _seed_rate)
             _write_eta_marker(folder, f"~{_fmt_clock(finish)} (estimating)")
+
+    # Write the one-click re-run launcher UP FRONT, so an interrupted or hung run
+    # still leaves a clickable re-run instead of nothing (it is refreshed at the
+    # end too). --key is pinned only if the folder key already exists; on a first
+    # run it does not yet, so the re-run re-discovers the key and the
+    # deterministic fakes reproduce the same pseudonyms.
+    if pdfs:
+        _want_key = (pseudonymizer is not None
+                     and (folder / "pseudonym_key.xlsx").is_file())
+        _write_rerun_launcher(folder, args.provider, _want_key, log)
+        if _want_key:
+            _write_fix_launcher(folder, log)
 
     if pseudonymizer is not None and pdfs:
         corpus = _pn_prescan_folder(pdfs, pseudonymizer, log)
