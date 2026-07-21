@@ -25,11 +25,11 @@ log = logging.getLogger("test")
 def test_ocr_timeout_default_and_env(monkeypatch):
     monkeypatch.setattr(P, "_OCR_PAGE_TIMEOUT", None)
     monkeypatch.delenv("PDF_LINKER_OCR_TIMEOUT", raising=False)
-    assert P._ocr_page_timeout() == 1800                # generous grind budget
+    assert P._ocr_page_timeout() == 600                 # 10-minute grind budget
 
     monkeypatch.setattr(P, "_OCR_PAGE_TIMEOUT", None)
-    monkeypatch.setenv("PDF_LINKER_OCR_TIMEOUT", "600")
-    assert P._ocr_page_timeout() == 600                 # overridable
+    monkeypatch.setenv("PDF_LINKER_OCR_TIMEOUT", "900")
+    assert P._ocr_page_timeout() == 900                 # overridable
 
     monkeypatch.setattr(P, "_OCR_PAGE_TIMEOUT", None)
     monkeypatch.setenv("PDF_LINKER_OCR_TIMEOUT", "5")
@@ -37,7 +37,7 @@ def test_ocr_timeout_default_and_env(monkeypatch):
 
     monkeypatch.setattr(P, "_OCR_PAGE_TIMEOUT", None)
     monkeypatch.setenv("PDF_LINKER_OCR_TIMEOUT", "not-a-number")
-    assert P._ocr_page_timeout() == 1800                # garbage -> default
+    assert P._ocr_page_timeout() == 600                 # garbage -> default
 
 
 def test_ocr_pixmap_leaves_a_normal_page_at_300_dpi():

@@ -1690,8 +1690,9 @@ def _tesseract_usable(tess, log):
 # finishes. We bound each ATTEMPT (so a stall is escapable) but never skip the
 # page: on timeout we re-render it at a lower resolution and try again, grinding
 # down until Tesseract completes, so every page still gets a text layer. The
-# per-attempt budget is generous (a genuinely slow page finishes at full
-# resolution); override with PDF_LINKER_OCR_TIMEOUT (seconds).
+# per-attempt budget (10 min) comfortably covers a genuinely slow page at full
+# resolution while a real stall gives up and grinds down without pausing its
+# batch too long; override with PDF_LINKER_OCR_TIMEOUT (seconds).
 _OCR_PAGE_TIMEOUT = None
 
 
@@ -1700,9 +1701,9 @@ def _ocr_page_timeout():
     if _OCR_PAGE_TIMEOUT is None:
         try:
             _OCR_PAGE_TIMEOUT = max(
-                30, int(os.environ.get("PDF_LINKER_OCR_TIMEOUT", "1800")))
+                30, int(os.environ.get("PDF_LINKER_OCR_TIMEOUT", "600")))
         except (ValueError, TypeError):
-            _OCR_PAGE_TIMEOUT = 1800
+            _OCR_PAGE_TIMEOUT = 600
     return _OCR_PAGE_TIMEOUT
 
 
