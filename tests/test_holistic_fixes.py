@@ -167,7 +167,7 @@ def _sheet(folder, rows):
     ws.append(["File", "Type", "Value", "Where", "Fix? (yes/no)", "Notes"])
     for r in rows:
         ws.append(r)
-    wb.save(folder / "pdf_linker_leaks.xlsx")
+    wb.save(folder / "LEAKS.xlsx")
 
 
 class _Args:

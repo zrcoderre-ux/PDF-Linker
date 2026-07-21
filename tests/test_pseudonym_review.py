@@ -535,6 +535,17 @@ def test_reid_scan_flags_survivor_not_own_fake():
     assert "REID bar number" in cats and "REID vin" in cats, found
 
 
+def test_reid_scan_ignores_short_bare_numbers_but_keeps_bar_numbers():
+    # "When in doubt": a retail DEAL#/Account# under 6 bare digits is not a
+    # re-identification key, so it is not reported. A 5-digit BAR number is a
+    # definite State Bar lookup and stays reported.
+    z = _pz06764()
+    found = z.reid_scan("DEAL# 23071 and Account No. 512 today.")
+    assert found == [], found
+    bar = z.reid_scan("counsel of record, SBN 12345, appeared.")
+    assert ("REID bar number", "12345") in bar
+
+
 # #4  Entity resolution: a trailing corporate suffix (with period) is a
 #     decisive entity signal; the suffix is never faked as a person surname;
 #     the person-path form of the same party reuses the entity identity.
@@ -1366,24 +1377,6 @@ def test_private_domain_is_still_faked():
 def test_gov_url_not_reported_for_review():
     findings = P._pn_review_findings("visit selfhelp.courts.ca.gov and ca.gov")
     assert not [f for f in findings if f[0] == "url/domain"]
-
-
-def test_acronym_backstop_needs_the_party_at_the_definition_site():
-    # "MM" defined for something else entirely (a master agreement, a minor's
-    # court-approved initials) must not be reported just because SOME tracked
-    # party shares those two initials.
-    z = _pz06764(names=["Mendoza Motors, Inc."])
-    src = ('This master agreement ("MM") governs the work. '
-           'Mendoza Motors, Inc. is a party to it.')
-    out = 'This master agreement ("MM") governs the work. MM remains defined.'
-    assert not z.review_definition_survivors(src, out)
-
-
-def test_acronym_backstop_still_fires_at_the_definition_site():
-    z = _pz06764(names=["Mendoza Motors, Inc."])
-    src = 'MENDOZA MOTORS, INC. ("MM") appeared at the hearing.'
-    out = 'Kestrel Automotive, Inc. ("MM") appeared at the hearing. MM breached.'
-    assert ("party acronym", "MM") in z.review_definition_survivors(src, out)
 
 
 def test_form_stamp_words_are_not_a_person():

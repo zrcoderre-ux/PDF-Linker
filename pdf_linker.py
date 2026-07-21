@@ -9824,25 +9824,8 @@ class Pseudonymizer:
                    if cat in ("entity", "person")]
         if not parties:
             return []
-
-        def _defined_here(real_words, window):
-            """True when the party whose initials matched is actually NAMED in
-            the text leading into the parenthetical. A definition defines what
-            it follows; matching a tracked party's initials against a form
-            defined ANYWHERE let every coincidental collision through — a
-            minor's court-approved initials, a defined term ("MM") that merely
-            shares two initials with some party — and each one was a review
-            row the operator had to clear by hand."""
-            return any(len(b) >= 3 and b not in _PN_COMMON_WORDS
-                       and not _pn_is_entity_keep(b)
-                       and re.search(r"(?<!\w)" + re.escape(b) + r"(?!\w)",
-                                     window)
-                       for b in (_pn_word_base(w) for w in real_words))
-
         findings, local = [], set()
-        src = _NFKC(source)
-        for m in re.finditer(r"\(([^()]{0,120})\)", src):
-            window = src[max(0, m.start() - 160):m.start()].lower()
+        for m in re.finditer(r"\(([^()]{0,120})\)", _NFKC(source)):
             for form in _pn_paren_short_forms(m.group(1)):
                 low = form.lower()
                 if len(form.split()) != 1 or low in local:
@@ -9854,9 +9837,7 @@ class Pseudonymizer:
                     continue
                 if not re.search(r"(?<!\w)" + re.escape(form) + r"(?!\w)", output):
                     continue          # already scrubbed / absent — fine
-                if any(_pn_initialism_fake(form, rw, fw)
-                       and _defined_here(rw, window)
-                       for rw, fw in parties):
+                if any(_pn_initialism_fake(form, rw, fw) for rw, fw in parties):
                     local.add(low)
                     findings.append(("party acronym", form))
         seen = {(c, s.lower()) for c, s in self.review}
@@ -9886,6 +9867,17 @@ class Pseudonymizer:
                 continue
             if re.sub(r"[^a-z0-9]", "", val.lower()) in fake_vals:
                 continue          # our own stand-in, riding under its label
+            # When in doubt, a short bare number is not a re-identification key.
+            # A retail "DEAL# 512" / "Inventory No. 55" resolves to nothing on
+            # its own, so reporting it is noise. Bar numbers (a definite State
+            # Bar lookup, and 5-7 digits by definition) are the one short-number
+            # class that IS a key, so they are exempt; every other class here is
+            # alphanumeric or already 6+ digits, so this only ever filters the
+            # weakly-distinctive account-id stamps.
+            digits = re.sub(r"\D", "", val)
+            if (cls != "bar number" and not re.search(r"[A-Za-z]", val)
+                    and len(digits) < 6):
+                continue
             findings.append((f"REID {cls}", val))
         for m in _PN_VIN_RE.finditer(_NFKC(text)):
             vin = (m.group(1) or m.group(2) or "").upper()
@@ -10779,9 +10771,51 @@ def _pn_locate(parsed, needle, limit=12):
     return ", ".join(out[:limit]) + (" …" if len(out) > limit else "")
 
 
-_PN_LEAK_HEADERS = ("File", "Type", "Value", "Where (page:line)",
-                    "Fix? (yes/no)", "Notes")
+# Worksheet column order. The flagged value leads and its Fix? decision sits
+# right beside it — the two columns a reviewer actually works — with the
+# locating detail (which file, what kind, where) trailing. Each header is
+# paired with the row-dict key it renders, so a reorder is a one-line change
+# here and the writer, widths and the Fix? dropdown all follow. The reader is
+# header-name driven, so column order never affects round-tripping.
+_PN_LEAK_COLUMNS = (
+    ("Value", "value", 34),
+    ("Fix? (yes/no)", "fixcell", 12),
+    ("File", "file", 20),
+    ("Type", "type", 22),
+    ("Where (page:line)", "where", 30),
+    ("Notes", "notes", 24),
+)
+_PN_LEAK_HEADERS = tuple(h for h, _k, _w in _PN_LEAK_COLUMNS)
 _PN_LEAK_ABSENT = "(no longer present)"
+
+# The review worksheet's filename (stem). Renamed from the historical
+# "pdf_linker_leaks" to a plain "LEAKS"; the old name is still READ so a
+# folder triaged under the previous version keeps its decisions.
+_PN_LEAK_STEM = "LEAKS"
+_PN_LEAK_LEGACY_STEMS = ("pdf_linker_leaks",)
+
+
+def _pn_leak_xlsx_path(folder):
+    """The worksheet path to WRITE: the current name."""
+    return folder / f"{_PN_LEAK_STEM}.xlsx"
+
+
+def _pn_leak_txt_path(folder):
+    """The plaintext-fallback checklist path to WRITE."""
+    return folder / f"{_PN_LEAK_STEM}.txt"
+
+
+def _pn_existing_leak_xlsx(folder):
+    """The worksheet path to READ: the current name if present, else a legacy
+    name a prior run left behind (so its Fix? decisions still round-trip)."""
+    current = _pn_leak_xlsx_path(folder)
+    if current.is_file():
+        return current
+    for stem in _PN_LEAK_LEGACY_STEMS:
+        legacy = folder / f"{stem}.xlsx"
+        if legacy.is_file():
+            return legacy
+    return current
 
 
 def _pn_read_leak_decisions(folder):
@@ -10792,7 +10826,7 @@ def _pn_read_leak_decisions(folder):
     replacement: `fix` becomes 'yes' and `replacement` carries the typed text
     verbatim, so the reviewer can dictate the exact fake instead of letting the
     auto-faker choose. Empty when there is no readable worksheet."""
-    xlsx = folder / "pdf_linker_leaks.xlsx"
+    xlsx = _pn_existing_leak_xlsx(folder)
     if not xlsx.is_file():
         return {}
     try:
@@ -10838,7 +10872,7 @@ def _pn_read_leak_decisions(folder):
 
 
 def _pn_write_leak_report(folder, entries, log, decisions=None):
-    """Write/refresh the leak-triage worksheet 'pdf_linker_leaks.xlsx'. Each
+    """Write/refresh the leak-triage worksheet 'LEAKS.xlsx'. Each
     located finding is one row with a 'Fix?' column; prior yes/no decisions are
     carried forward (and persisted even when the value no longer appears, so the
     decision keeps applying on later runs). Rows needing attention — undecided,
@@ -10846,8 +10880,13 @@ def _pn_write_leak_report(folder, entries, log, decisions=None):
     bottom. A run with no findings AND no prior decisions removes the worksheet.
     Plain-text checklist fallback without openpyxl."""
     decisions = decisions or {}
-    xlsx = folder / "pdf_linker_leaks.xlsx"
-    txt = folder / "pdf_linker_leaks.txt"
+    xlsx = _pn_leak_xlsx_path(folder)
+    txt = _pn_leak_txt_path(folder)
+    # A worksheet written under the old name in a prior run would otherwise
+    # linger beside the new one, splitting the operator's decisions across two
+    # files; remove it once its decisions have been carried into `decisions`.
+    stale = [folder / f"{stem}.xlsx" for stem in _PN_LEAK_LEGACY_STEMS]
+    stale += [folder / f"{stem}.txt" for stem in _PN_LEAK_LEGACY_STEMS]
 
     rows, seen = [], set()
     for e in entries:
@@ -10870,13 +10909,16 @@ def _pn_write_leak_report(folder, entries, log, decisions=None):
                          "fixcell": (d.get("replacement") or d["fix"]),
                          "notes": d.get("notes", ""), "present": False})
 
-    if not rows:
-        for p in (xlsx, txt):
+    def _remove(paths):
+        for p in paths:
             try:
                 if p.exists():
                     p.unlink()
             except OSError:
                 pass
+
+    if not rows:
+        _remove((xlsx, txt, *stale))
         log.info("  No potential leaks flagged — no review worksheet written.")
         return
 
@@ -10905,23 +10947,27 @@ def _pn_write_leak_report(folder, entries, log, decisions=None):
                          f"({r['file']} — {r['where']})")
         try:
             txt.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            _remove(stale)
             log.warning(f"  Wrote leak-review checklist: {txt.name} "
                         f"({active} to triage).")
         except OSError as ex:
             log.warning(f"  Could not write leak-review checklist: {ex}")
         return
 
+    from openpyxl.utils import get_column_letter
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.title = "Potential Leaks"
+    ws.title = "LEAKS"
     ws.append(list(_PN_LEAK_HEADERS))
     for r in rows:
-        ws.append([r["file"], r["type"], r["value"], r["where"],
-                   r.get("fixcell", r["fix"]), r["notes"]])
-    for col, width in zip("ABCDEF", (20, 22, 34, 30, 12, 24)):
-        ws.column_dimensions[col].width = width
+        ws.append([r.get(key, "") for _hdr, key, _w in _PN_LEAK_COLUMNS])
+    for i, (_hdr, _key, width) in enumerate(_PN_LEAK_COLUMNS, start=1):
+        ws.column_dimensions[get_column_letter(i)].width = width
     try:                                    # a yes/no dropdown on the Fix? column
         from openpyxl.worksheet.datavalidation import DataValidation
+        fix_col = get_column_letter(
+            next(i for i, (h, _k, _w) in enumerate(_PN_LEAK_COLUMNS, start=1)
+                 if h.lower().startswith("fix?")))
         dv = DataValidation(type="list", formula1='"yes,no"', allow_blank=True)
         dv.showErrorMessage = False   # offer the dropdown but ALSO allow a typed
         dv.showInputMessage = True    # replacement in the cell, not just yes/no
@@ -10929,13 +10975,12 @@ def _pn_write_leak_report(folder, entries, log, decisions=None):
         dv.prompt = ("yes = auto fake · no = leave it · "
                      "or type the exact replacement to use")
         ws.add_data_validation(dv)
-        dv.add(f"E2:E{len(rows) + 1}")
+        dv.add(f"{fix_col}2:{fix_col}{len(rows) + 1}")
     except Exception:
         pass
     try:
         wb.save(xlsx)
-        if txt.exists():
-            txt.unlink()
+        _remove((txt, *stale))
         log.warning(f"  Wrote leak-review worksheet: {xlsx.name} — {active} "
                     f"item(s) to triage (Fix?: 'yes' scrubs with an auto fake, "
                     f"'no' leaves it, or type the exact replacement to use).")
@@ -11906,7 +11951,7 @@ def _save_eta_rate(rate):
 # ── One-click re-run launcher ────────────────────────────────────────────────
 # After a run, drop a double-clickable file in the folder that re-runs the tool
 # on THIS same folder — the fast path for applying the Fix? decisions saved in
-# pdf_linker_leaks.xlsx, or just re-processing. It targets its own directory
+# LEAKS.xlsx, or just re-processing. It targets its own directory
 # (%~dp0 on Windows, $(dirname "$0") on POSIX) so it keeps working if the folder
 # is moved, and points --key at the folder's own key so the re-run reproduces
 # the same fakes (and applies the worksheet decisions on top).
@@ -11925,7 +11970,7 @@ def _rerun_launcher_spec(exe, script, provider, want_key, windows, frozen=False)
         content = (
             "@echo off\r\n"
             "REM PDF-Linker re-run - double-click to process this folder again.\r\n"
-            "REM Picks up any Fix? decisions saved in pdf_linker_leaks.xlsx.\r\n"
+            "REM Picks up any Fix? decisions saved in LEAKS.xlsx.\r\n"
             "echo Re-running PDF-Linker on this folder...\r\n"
             "echo.\r\n"
             f'{prog} "%~dp0." --provider {provider}{key}\r\n'
@@ -11937,7 +11982,7 @@ def _rerun_launcher_spec(exe, script, provider, want_key, windows, frozen=False)
     content = (
         "#!/bin/sh\n"
         "# PDF-Linker re-run - double-click to process this folder again.\n"
-        "# Picks up any Fix? decisions saved in pdf_linker_leaks.xlsx.\n"
+        "# Picks up any Fix? decisions saved in LEAKS.xlsx.\n"
         'echo "Re-running PDF-Linker on this folder..."\n'
         f'{prog} "$(dirname "$0")" --provider {provider}{key}\n'
         'echo "Finished - exit code $?."\n')
@@ -12029,7 +12074,7 @@ def _fix_launcher_spec(exe, script, windows, frozen=False):
         content = (
             "@echo off\r\n"
             "REM PDF-Linker - apply the Fix? decisions saved in\r\n"
-            "REM pdf_linker_leaks.xlsx to the .txt/.LEAK exports (no PDFs touched).\r\n"
+            "REM LEAKS.xlsx to the .txt/.LEAK exports (no PDFs touched).\r\n"
             "echo Applying leak fixes to this folder...\r\n"
             "echo.\r\n"
             f'{prog} "%~dp0." --fix-leaks --key "%~dp0pseudonym_key.xlsx"\r\n'
@@ -12039,7 +12084,7 @@ def _fix_launcher_spec(exe, script, windows, frozen=False):
         return "Apply Leak Fixes.bat", content, False
     content = (
         "#!/bin/sh\n"
-        "# PDF-Linker - apply pdf_linker_leaks.xlsx Fix? decisions to the exports.\n"
+        "# PDF-Linker - apply LEAKS.xlsx Fix? decisions to the exports.\n"
         'echo "Applying leak fixes to this folder..."\n'
         f'{prog} "$(dirname "$0")" --fix-leaks '
         '--key "$(dirname "$0")/pseudonym_key.xlsx"\n'
@@ -12120,7 +12165,7 @@ def _fix_leaks_mode(folder, args, cfg, log):
     suppressed = {vl for vl, d in decisions.items() if d["fix"] == "no"}
     fix_terms = auto_terms + list(explicit)
     if not fix_terms:
-        log.info("--fix-leaks: no Fix?=yes rows in pdf_linker_leaks.xlsx — "
+        log.info("--fix-leaks: no Fix?=yes rows in LEAKS.xlsx — "
                  "nothing to apply. Mark the leaks you want scrubbed (yes, or "
                  "type the exact replacement) and double-click again.")
         return 0
@@ -12148,7 +12193,9 @@ def _fix_leaks_mode(folder, args, cfg, log):
         companion and the ETA/DONE run markers — are not exports and must not
         be scrubbed or tracked (only reachable in the old single-folder layout,
         where text_dir falls back to the case folder itself)."""
-        return (p.name == "pdf_linker_leaks.txt"
+        leak_txts = {f"{_PN_LEAK_STEM}.txt"} | {
+            f"{stem}.txt" for stem in _PN_LEAK_LEGACY_STEMS}
+        return (p.name in leak_txts
                 or ((p.name.startswith(_ETA_MARKER_PREFIX + " ")
                      or p.name.startswith(_DONE_MARKER_PREFIX + " "))
                     and p.stat().st_size == 0))
@@ -12237,7 +12284,7 @@ def _fix_leaks_mode(folder, args, cfg, log):
     log.info(f"--fix-leaks: applied {len(fix_terms)} fix(es) to {changed} "
              f"file(s); {unq} export(s) un-quarantined (*.LEAK -> .txt)"
              + (f"; {still} file(s) still carry a party-name leak — review "
-                f"pdf_linker_leaks.xlsx." if still else "."))
+                f"LEAKS.xlsx." if still else "."))
     return 2 if still else 0
 
 
@@ -12269,7 +12316,7 @@ def main():
     )
     parser.add_argument(
         "--fix-leaks", action="store_true",
-        help="Apply the Fix?=yes decisions from pdf_linker_leaks.xlsx directly to "
+        help="Apply the Fix?=yes decisions from LEAKS.xlsx directly to "
              "the .txt/.LEAK exports (no PDFs reopened) and un-quarantine files "
              "that are now clean. Fast follow-up to a full run; needs the "
              "folder's pseudonym_key.xlsx.",

@@ -51,9 +51,16 @@ written to the key.
   highest-priority longest-non-overlapping wins.
 - **Two-tier leak detection**: `surviving_reals` (a tracked real still present)
   and the high-recall REVIEW scans (`review_scan`, `unknown_name_scan`,
-  `reid_scan`) surface anything name-shaped for human triage in
-  `pdf_linker_leaks.xlsx`. The **Fix?** column round-trips: `yes`=auto-fake,
-  `no`=leave, **any other text = an explicit operator-typed replacement**.
+  `reid_scan`) surface anything name-shaped for human triage in `LEAKS.xlsx`
+  (worksheet tab `LEAKS`; the old `pdf_linker_leaks.xlsx` name is still READ so
+  a folder triaged under a prior version keeps its decisions). Columns lead
+  with the flagged **Value** then its **Fix?** decision, with File/Type/Where/
+  Notes trailing — the order driven by `_PN_LEAK_COLUMNS`. The **Fix?** column
+  round-trips: `yes`=auto-fake, `no`=leave, **any other text = an explicit
+  operator-typed replacement**. Government hosts (`*.gov`/`*.mil`) are public
+  infrastructure — never faked or flagged. When in doubt a **bare number under
+  6 digits** is not a re-identification key (`reid_scan` filters it; bar
+  numbers, a definite State Bar lookup, are exempt).
 - **Column-spliced captions**: a two-column caption interleaves in extraction,
   welding party names to neighbours. Extraction is column-aware up front: a
   page-level column band needs multi-row support (`_COLUMN_BAND_MIN_ROWS`,
