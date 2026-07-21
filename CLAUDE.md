@@ -55,7 +55,12 @@ written to the key.
   `pdf_linker_leaks.xlsx`. The **Fix?** column round-trips: `yes`=auto-fake,
   `no`=leave, **any other text = an explicit operator-typed replacement**.
 - **Column-spliced captions**: a two-column caption interleaves in extraction,
-  welding party names to neighbours. `surviving_reals_reduced` / `scrub_welded`
+  welding party names to neighbours. Extraction is column-aware up front: a
+  page-level column band needs multi-row support (`_COLUMN_BAND_MIN_ROWS`,
+  scaled down on sparse pages), so a caption's label-value tab gap
+  ("Department:&nbsp;&nbsp;&nbsp;55") stays one segment instead of splitting into a
+  phantom column that hides the value from its label-anchored detector.
+  Post-hoc, `surviving_reals_reduced` / `scrub_welded`
   recover welded party names via an alphanumeric-reduced substring match —
   restricted to NAME-type records only (`_PN_WELD_CORE_CATS`), never structured
   identifiers (a domain core nests inside the party it belongs to). Such pages

@@ -9,6 +9,7 @@ one gutter number owns two or three physical rows.
 Run with: pytest tests/test_line_anchors.py
 """
 import importlib.util
+import re
 from pathlib import Path
 
 import fitz
@@ -90,9 +91,13 @@ class TestReadingOrder:
         assert body.index("AZUL") < body.index("NOTICE")
 
     def test_segments_stay_per_column(self):
+        # The right column needs _COLUMN_BAND_MIN_ROWS rows of support to be a
+        # page column at all (as any real caption column has).
         page = _page([
             (LEFT_X, FIRST_Y + 7 * LEAD, "ROXANE ESTRADA,"),
             (RIGHT_X, FIRST_Y + 7 * LEAD, "Case No.: 25STCV37838"),
+            (RIGHT_X, FIRST_Y + 8 * LEAD, "NOTICE OF MOTION AND"),
+            (RIGHT_X, FIRST_Y + 9 * LEAD, "MOTION TO STRIKE"),
         ])
         anchor = [a for a in pl._detect_line_anchors(page) if a["line_num"] == 8][0]
         assert [t for _x, t in anchor["segments"]] == [
@@ -271,6 +276,67 @@ class TestDenseLetterheadDoesNotCollapse:
         rows = _rows(self._letterhead_page())
         assert rows[0] == (1, "Paul Green, Esq. (SBN 237707)")
         assert rows[1] == (None, "LAW OFFICE OF PAUL GREEN")
+
+
+class TestLabelValueGapsAreNotColumns:
+    """Column-splice-aware banding: a wide gap inside a caption's right column
+    ("Trial Date:   November 16, 2026", "Department:   55") is a tab, not a
+    page column — only an x where several distinct rows break is a column.
+    Cutting those pairs into separate column streams hid the value from its
+    label-anchored detector, so the REAL department number rode along into
+    the export."""
+
+    def _caption_page(self):
+        y = FIRST_Y + 10 * LEAD
+        return _page([
+            # Letterhead above the caption, as on a real filing's page 1.
+            (LEFT_X, FIRST_Y, "Parth Shah (SBN 304347)"),
+            (LEFT_X, FIRST_Y + LEAD, "DORIOTT, POSTAJIAN & SHAH"),
+            (LEFT_X, FIRST_Y + 2 * LEAD, "1310 Westwood Blvd."),
+            (LEFT_X, FIRST_Y + 3 * LEAD, "Los Angeles, CA 90024"),
+            (LEFT_X, FIRST_Y + 4 * LEAD, "(424) 248-0595"),
+            (LEFT_X, FIRST_Y + 5 * LEAD, "Attorneys for Plaintiff"),
+            (LEFT_X, FIRST_Y + 7 * LEAD, "SUPERIOR COURT OF CALIFORNIA"),
+            (LEFT_X, FIRST_Y + 8 * LEAD, "COUNTY OF LOS ANGELES"),
+            # Left column: the party block (well-supported band).
+            (LEFT_X, y, "JOSEPH PALLADINO (an individual),"),
+            (LEFT_X, y + LEAD, "vs."),
+            (LEFT_X, y + 2 * LEAD, "RTX CORPORATION (a Delaware"),
+            (LEFT_X, y + 3 * LEAD, "corporation); and DOES 1 to 100,"),
+            # Right column: the caption block (well-supported band) with
+            # label-value tab gaps that must NOT band on their own.
+            (RIGHT_X, y, "Case No.: 23STCV31247"),
+            (RIGHT_X, y + LEAD, "Trial Date:"),
+            (RIGHT_X + 95, y + LEAD, "November 16, 2026"),
+            (RIGHT_X, y + 2 * LEAD, "Department:"),
+            (RIGHT_X + 95, y + 2 * LEAD, "55"),
+        ])
+
+    def test_label_and_value_stay_in_one_segment(self):
+        rows = {a["line_num"]: [t for _x, t in a["segments"]]
+                for a in pl._detect_line_anchors(self._caption_page())}
+        assert rows[12] == ["vs.", "Trial Date: November 16, 2026"]
+        assert rows[13] == ["RTX CORPORATION (a Delaware", "Department: 55"]
+
+    def test_supported_columns_still_split(self):
+        rows = {a["line_num"]: [t for _x, t in a["segments"]]
+                for a in pl._detect_line_anchors(self._caption_page())}
+        assert rows[11] == ["JOSEPH PALLADINO (an individual),",
+                            "Case No.: 23STCV31247"]
+
+    def test_detect_text_keeps_the_pair_on_one_line(self):
+        text = pl._page_detect_text(self._caption_page())
+        assert "Department: 55" in text.splitlines()
+
+    def test_department_number_is_faked_from_a_caption(self):
+        """End to end: the label-anchored department detector sees the pair
+        the extraction hands it, so the real number is registered and faked."""
+        z = pl.Pseudonymizer([], {}, registry=pl._PnFakeRegistry())
+        z.register_court_names(pl._page_detect_text(self._caption_page()))
+        rows = pl._page_lined_rows(self._caption_page())
+        bodies = "\n".join(pl._pn_apply_page_rows(z, rows))
+        assert "Department: 55" not in bodies
+        assert re.search(r"Department: \d+", bodies)
 
 
 class TestDespliceGeometry:

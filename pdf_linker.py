@@ -2132,6 +2132,11 @@ _GUTTER_MATCH_TOL = 24.0    # pt; hard ceiling on how far a row may sit from its
                             # line number (the effective tolerance is half the
                             # page's own median lead — see _detect_line_anchors)
 _COLUMN_GAP_MIN = 20.0      # pt; a horizontal gap this wide separates columns
+_COLUMN_BAND_MIN_ROWS = 3   # distinct physical rows that must break at an x
+                            # before it counts as a page column (fewer is a
+                            # within-column tab/leader gap, not a column). On a
+                            # sparse page the floor scales down (rows // 4) so a
+                            # short two-column block is still two columns.
 _FOOTER_MASK_PT = 50.0      # pt; bottom band holding running footers, printed
                             # page numbers and Bates stamps. Rows whose baseline
                             # falls below it are page furniture and are never
@@ -2385,14 +2390,37 @@ def _detect_line_anchors(page, desplice=False):
             rows_by_num[best["num"]].append(row)
 
     # Step 5: page-level column bands, seeded from every row's own column split.
-    # A band start is a segment x0 further than _COLUMN_GAP_MIN from any other.
+    # A band start is a segment x0 further than _COLUMN_GAP_MIN from any other —
+    # but a seed only becomes a band when enough DISTINCT rows break at it
+    # (_COLUMN_BAND_MIN_ROWS). A caption's true columns run down many rows; a
+    # label-value tab gap breaks only its own row or two ("Trial Date:   Nov-
+    # ember 16, 2026", "Department:   55"). Treating every wide gap as a page
+    # column — the old behaviour — cut those pairs into separate column
+    # streams, so the label's stream read "Department:" while the number sat
+    # in a phantom band of its own, and the label-anchored department detector
+    # never saw the pair in one piece: the REAL department number rode along
+    # into the export. An under-supported seed folds into the band on its
+    # left and its text re-joins its row with an ordinary space.
+    seed_rows = defaultdict(set)          # band-start x -> ids of rows breaking there
     band_starts = []
     for num in rows_by_num:
         for row in rows_by_num[num]:
             for x, _t in _split_row_columns(row["spans"]):
-                if not any(abs(x - bx) <= _COLUMN_GAP_MIN for bx in band_starts):
+                for bx in band_starts:
+                    if abs(x - bx) <= _COLUMN_GAP_MIN:
+                        seed_rows[bx].add(id(row))
+                        break
+                else:
                     band_starts.append(x)
-    band_starts.sort()
+                    seed_rows[x].add(id(row))
+    # The floor scales with the page: a wild caption page carries 15-25 body
+    # rows (floor 3); a sparse page — a near-empty cover, a signature block —
+    # keeps every seed, since "several rows break here" is not evidence a
+    # 3-row page can offer.
+    n_rows = sum(len(v) for v in rows_by_num.values())
+    min_support = min(_COLUMN_BAND_MIN_ROWS, max(1, n_rows // 4))
+    band_starts = sorted(bx for bx in band_starts
+                         if len(seed_rows[bx]) >= min_support)
 
     def _band_of(x):
         idx = 0
