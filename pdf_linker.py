@@ -1687,9 +1687,11 @@ def _tesseract_usable(tess, log):
 # A really large scanned page can make Tesseract stall indefinitely. pytesseract
 # defaults to timeout=0 (wait forever), so a single stuck page hangs the WHOLE
 # run — the process sits in subprocess.communicate() at ~0% CPU and never
-# finishes. Bound each page: on timeout pytesseract kills Tesseract and raises,
-# the per-page try/except logs it and moves on, so one bad page costs a skip
-# instead of the entire job. Override with PDF_LINKER_OCR_TIMEOUT (seconds).
+# finishes. We bound each ATTEMPT (so a stall is escapable) but never skip the
+# page: on timeout we re-render it at a lower resolution and try again, grinding
+# down until Tesseract completes, so every page still gets a text layer. The
+# per-attempt budget is generous (a genuinely slow page finishes at full
+# resolution); override with PDF_LINKER_OCR_TIMEOUT (seconds).
 _OCR_PAGE_TIMEOUT = None
 
 
@@ -1698,9 +1700,9 @@ def _ocr_page_timeout():
     if _OCR_PAGE_TIMEOUT is None:
         try:
             _OCR_PAGE_TIMEOUT = max(
-                30, int(os.environ.get("PDF_LINKER_OCR_TIMEOUT", "300")))
+                30, int(os.environ.get("PDF_LINKER_OCR_TIMEOUT", "1800")))
         except (ValueError, TypeError):
-            _OCR_PAGE_TIMEOUT = 300
+            _OCR_PAGE_TIMEOUT = 1800
     return _OCR_PAGE_TIMEOUT
 
 
@@ -1711,17 +1713,58 @@ def _ocr_page_timeout():
 _OCR_MAX_PIXELS = 30_000_000
 
 
-def _ocr_pixmap(page):
-    """Render `page` for OCR at 300 dpi, dropping the dpi only when that would
-    blow past the pixel cap, so a very large page stays within a size Tesseract
-    can process in bounded time (and within memory)."""
+def _ocr_base_dpi(page):
+    """The starting OCR resolution for `page`: 300 dpi, reduced only when that
+    would blow past the pixel cap so a very large page still starts within a size
+    Tesseract can handle (and within memory)."""
     dpi = 300
     rect = page.rect
     scale = dpi / 72.0
     px = (rect.width * scale) * (rect.height * scale)
     if px > _OCR_MAX_PIXELS:
         dpi = max(72, int(dpi * (_OCR_MAX_PIXELS / px) ** 0.5))
-    return page.get_pixmap(dpi=dpi)
+    return dpi
+
+
+def _ocr_pixmap(page):
+    """Render `page` for OCR at its base resolution (see `_ocr_base_dpi`)."""
+    return page.get_pixmap(dpi=_ocr_base_dpi(page))
+
+
+# Resolution ladder for the grind-don't-skip retry: each attempt renders the page
+# at this fraction of its base dpi. A stall usually tracks image size/complexity,
+# so a smaller render escapes it while still producing a text layer; the floor
+# keeps even the last attempt legible enough to be useful.
+_OCR_RETRY_FACTORS = (1.0, 0.66, 0.5, 0.33, 0.24)
+_OCR_MIN_DPI = 60
+
+
+def _ocr_page_to_pdf(page, pytesseract, Image, io, log, label):
+    """OCR one page to overlay-PDF bytes, GRINDING rather than skipping. Try at
+    full resolution; if Tesseract times out (a stall or a pathological page),
+    re-render at successively lower resolution and try again. Only the render
+    resolution drops — the page always gets a text layer. Returns the overlay
+    PDF bytes, or None only if even the lowest resolution fails (effectively
+    never, and logged loudly if so)."""
+    base = _ocr_base_dpi(page)
+    timeout = _ocr_page_timeout()
+    last = len(_OCR_RETRY_FACTORS) - 1
+    for i, factor in enumerate(_OCR_RETRY_FACTORS):
+        dpi = max(_OCR_MIN_DPI, int(base * factor))
+        try:
+            pix = page.get_pixmap(dpi=dpi)
+            img = Image.open(io.BytesIO(pix.tobytes("png")))
+            return pytesseract.image_to_pdf_or_hocr(
+                img, extension="pdf", timeout=timeout)
+        except Exception as e:
+            if i < last:
+                nxt = max(_OCR_MIN_DPI, int(base * _OCR_RETRY_FACTORS[i + 1]))
+                log.warning(
+                    f"  {label} page {page.number} did not finish within "
+                    f"{timeout}s at {dpi} dpi ({e}); retrying at {nxt} dpi")
+                continue
+            log.warning(f"  {label} ultimately failed on page {page.number}: {e}")
+            return None
 
 
 def _ocr_pdf(doc, log):
@@ -1750,16 +1793,10 @@ def _ocr_pdf(doc, log):
         # Only OCR if page has no text
         if page.get_text("text").strip():
             continue
-        # Render page to image
-        pix = _ocr_pixmap(page)
-        img = Image.open(io.BytesIO(pix.tobytes("png")))
-        # OCR to hOCR for positioning. A per-page timeout so a stalled Tesseract
-        # can't hang the whole run — on timeout it raises here and we skip on.
-        try:
-            hocr = pytesseract.image_to_pdf_or_hocr(
-                img, extension="pdf", timeout=_ocr_page_timeout())
-        except Exception as e:
-            log.warning(f"  OCR failed on page {page.number}: {e}")
+        # Render + OCR, grinding down through lower resolutions rather than
+        # skipping the page if Tesseract stalls at full resolution.
+        hocr = _ocr_page_to_pdf(page, pytesseract, Image, io, log, "OCR")
+        if hocr is None:
             continue
         # Overlay OCR'd PDF page on top to add text layer
         try:
@@ -1866,14 +1903,10 @@ def _reocr_garbled_pages(doc, log):
     for pno in garbled:
         page = doc[pno]
         # 1) Render + OCR BEFORE touching the page: the visible glyphs are
-        #    correct even though they extract as garbage.
-        try:
-            pix = _ocr_pixmap(page)
-            img = Image.open(io.BytesIO(pix.tobytes("png")))
-            ocr_bytes = pytesseract.image_to_pdf_or_hocr(
-                img, extension="pdf", timeout=_ocr_page_timeout())
-        except Exception as e:
-            log.warning(f"  Re-OCR render/recognise failed on page {pno}: {e}")
+        #    correct even though they extract as garbage. Grinds down through
+        #    lower resolutions rather than skipping if Tesseract stalls.
+        ocr_bytes = _ocr_page_to_pdf(page, pytesseract, Image, io, log, "Re-OCR")
+        if ocr_bytes is None:
             continue
         # 2) Strip the garbled text (text only; keep images and line art, no
         #    fill) so get_text no longer returns the gibberish.
