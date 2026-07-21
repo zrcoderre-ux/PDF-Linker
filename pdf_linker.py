@@ -6073,6 +6073,60 @@ def _pn_name_variants(word):
             if v.lower() != low and len(v) >= 4 and _pn_is_name_token(v)}
 
 
+_PN_INITIAL_POOL = tuple("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+
+
+def _pn_norm_map(s):
+    """Comparison form for a real/fake pair: NFKC-folded, whitespace-collapsed,
+    trailing punctuation stripped, case-folded — so a value and a would-be fake
+    that differ only in spacing, a trailing dot or case are recognised as the
+    SAME string (a self-map that never scrubs)."""
+    return re.sub(r"\s+", " ", _NFKC(str(s))).strip().strip(" .,;:").casefold()
+
+
+def _pn_fake_initials_name(real, registry):
+    """A distinct, reversible fake for a name made ENTIRELY of single-letter
+    tokens plus punctuation — "M & M", "J&J", "A. B." — which the per-token
+    person faker leaves byte-for-byte identical (every initial is kept verbatim),
+    a self-map that both ships the real value and makes --fix-leaks loop forever.
+
+    Map each real letter to a fake letter (repeats and separators preserved, so
+    "M & M" -> "Q & Q" and "A & B" -> "Q & R"), each drawn through the registry
+    so it is deterministic, globally unique and reversible. The pool excludes the
+    real letter, so the result can never equal the input."""
+    out = []
+    for ch in real:
+        if ch.isalpha():
+            pool = [c for c in _PN_INITIAL_POOL if c != ch.upper()]
+            fake = registry.token(ch.lower(), pool, "initial")
+            out.append(fake.upper() if ch.isupper() else fake.lower())
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def _pn_guard_distinct_fake(real, fake, registry, log=None):
+    """Guarantee a term's fake differs from its real value under normalization.
+    A self-identical mapping is a no-op scrub: it ships the real name in a
+    "clean" export AND makes the post-scrub survivor scan re-flag the value on
+    every --fix-leaks pass (a non-terminating loop). Returns the given fake when
+    already distinct, else a re-mint; None only if no distinct fake can be made
+    (the caller drops the term — a drop flags the value once, an installed no-op
+    never resolves)."""
+    if _pn_norm_map(fake) != _pn_norm_map(real):
+        return fake
+    remint = _pn_fake_initials_name(real, registry)
+    if _pn_norm_map(remint) != _pn_norm_map(real):
+        if log:
+            log.info(f"  Pseudonymize: re-minted self-mapped value {real!r} -> "
+                     f"{remint!r} (a fake equal to the real value never scrubs)")
+        return remint
+    if log:
+        log.warning(f"  Pseudonymize: dropping {real!r} — no distinct fake could "
+                    f"be minted; add an explicit replacement in the key.")
+    return None
+
+
 def _pn_fake_person(name, registry):
     """(fake_full_name, [(bare_real, bare_fake, is_surname), ...]) — composed
     token-by-token so a bare surname resolves to the same fake used here. A
@@ -6095,6 +6149,11 @@ def _pn_fake_person(name, registry):
                 or w.strip(".,").lower() in _PN_DOC_ABBREV)
     mappable = [m for m in words
                 if not _keep(m.group(0)) and m.start() != trail_at]
+    # An all-initials name ("M & M", "J&J", "A. B.") has no mappable token, so
+    # the loop below would keep every character verbatim and return the input —
+    # a self-map that never scrubs. Fake the initials distinctly instead.
+    if not mappable and re.search(r"[A-Za-z]", name):
+        return _pn_fake_initials_name(name, registry), []
     surname_at = None
     if mappable:
         if "," in name:
@@ -7838,6 +7897,16 @@ def _pn_load_key(path, registry, log):
         if (cat, real.lower()) in seen:
             continue
         seen.add((cat, real.lower()))
+        # Self-heal a key written before the self-map guard existed: a row whose
+        # replacement equals its real value ("M & M" -> "M & M") never scrubs and
+        # loops --fix-leaks. Re-mint a distinct fake; the next write_key persists
+        # the correction. Seed the registry (below) from the CORRECTED fake.
+        if _pn_norm_map(fake) == _pn_norm_map(real):
+            remint = _pn_fake_initials_name(real, registry)
+            if _pn_norm_map(remint) != _pn_norm_map(real):
+                log.info(f"  Pseudonymize: repaired self-mapped key row {real!r} "
+                         f"-> {remint!r}")
+                fake = remint
         source = (cell("source") or "spreadsheet").strip() or "spreadsheet"
         try:
             occ = int(cell("occurrences") or 0)
@@ -8485,8 +8554,14 @@ class Pseudonymizer:
         # count, pattern, flags}
         self.records = {}
         for t in terms:
+            # Never install a self-identical mapping (fake == real): it is a
+            # no-op scrub that ships the real value and loops --fix-leaks.
+            fake = _pn_guard_distinct_fake(t.real, t.fake, self.registry)
+            if fake is None:
+                continue
+            t.fake = fake
             self.records[(t.category, t.real.lower())] = {
-                "category": t.category, "real": t.real, "fake": t.fake,
+                "category": t.category, "real": t.real, "fake": fake,
                 "source": t.source, "count": t.count, "pattern": t.pattern,
                 "flags": t.flags}
         # Real values pre-bound from a reused key: authoritative, so the
@@ -8525,9 +8600,15 @@ class Pseudonymizer:
                 continue
             if t.real.lower() in getattr(self, "_pruned_reals", ()):
                 continue
+            # Never install a self-identical mapping (fake == real): a no-op
+            # scrub that ships the real value and loops --fix-leaks.
+            fake = _pn_guard_distinct_fake(t.real, t.fake, self.registry)
+            if fake is None:
+                continue
+            t.fake = fake
             self.terms.append(t)
             self.records[k] = {
-                "category": t.category, "real": t.real, "fake": t.fake,
+                "category": t.category, "real": t.real, "fake": fake,
                 "source": t.source, "count": 0, "pattern": t.pattern,
                 "flags": t.flags, "loaded": getattr(t, "loaded", False)}
             added = True
