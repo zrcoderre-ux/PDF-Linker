@@ -34,7 +34,7 @@ def _setup(folder):
     ws = wb.active
     ws.append(["File", "Type", "Value", "Where", "Fix? (yes/no)", "Notes"])
     ws.append(["Opposition.txt.LEAK", "LEAK", "Gregory Yu", "p.1:2", "yes", ""])
-    wb.save(folder / "pdf_linker_leaks.xlsx")
+    wb.save(folder / "LEAKS.xlsx")
     return tdir
 
 
@@ -73,9 +73,9 @@ def test_fix_leaks_needs_a_real_key(tmp_path):
 def test_fix_leaks_noop_without_yes_decisions(tmp_path):
     tdir = _setup(tmp_path)
     # flip the only decision to "no"
-    wb = openpyxl.load_workbook(tmp_path / "pdf_linker_leaks.xlsx")
+    wb = openpyxl.load_workbook(tmp_path / "LEAKS.xlsx")
     wb.active["E2"] = "no"
-    wb.save(tmp_path / "pdf_linker_leaks.xlsx")
+    wb.save(tmp_path / "LEAKS.xlsx")
     args = _Args()
     args.key = str(tmp_path / "pseudonym_key.xlsx")
     assert P._fix_leaks_mode(tmp_path, args, {}, log) == 0
@@ -103,14 +103,14 @@ def test_fallback_layout_ignores_tool_artifacts(tmp_path):
     pz.apply("Ford Motor Company")
     pz.write_key(tmp_path / "pseudonym_key.xlsx", log)
     (tmp_path / "Brief.txt").write_text("Gregory Yu appeared.", encoding="utf-8")
-    (tmp_path / "pdf_linker_leaks.txt").write_text(
+    (tmp_path / "LEAKS.txt").write_text(
         "LEAK  Ford Motor Company  p.1:2", encoding="utf-8")
     (tmp_path / "DONE 4.25PM.txt").write_text("", encoding="utf-8")
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.append(["File", "Type", "Value", "Where", "Fix? (yes/no)", "Notes"])
     ws.append(["Brief.txt", "LEAK", "Gregory Yu", "p.1:1", "yes", ""])
-    wb.save(tmp_path / "pdf_linker_leaks.xlsx")
+    wb.save(tmp_path / "LEAKS.xlsx")
     args = _Args()
     args.key = str(tmp_path / "pseudonym_key.xlsx")
     assert P._fix_leaks_mode(tmp_path, args, {}, log) == 0   # no phantom leak

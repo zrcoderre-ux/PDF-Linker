@@ -76,4 +76,5 @@ def test_writer_creates_launcher_without_clobbering_other_markers(tmp_path):
         assert os.access(f, os.X_OK)
     # doesn't create an ETA marker or leaks file
     assert not list(tmp_path.glob("ETA *.txt"))
+    assert not list(tmp_path.glob("LEAKS.*"))
     assert not list(tmp_path.glob("pdf_linker_leaks.*"))

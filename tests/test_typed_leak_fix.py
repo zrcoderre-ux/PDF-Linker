@@ -35,7 +35,7 @@ def _worksheet(folder, fix_cell):
     ws.append(["File", "Type", "Value", "Where (page:line)",
                "Fix? (yes/no)", "Notes"])
     ws.append(["Motion.txt.LEAK", "LEAK", "M & M", "p.1", fix_cell, ""])
-    wb.save(folder / "pdf_linker_leaks.xlsx")
+    wb.save(folder / "LEAKS.xlsx")
 
 
 def _setup(folder, fix_cell):
@@ -57,11 +57,11 @@ def _key_rows(folder):
 
 
 def _fix_cell(folder):
-    ws = openpyxl.load_workbook(folder / "pdf_linker_leaks.xlsx",
+    ws = openpyxl.load_workbook(folder / "LEAKS.xlsx",
                                 data_only=True).active
     for r in ws.iter_rows(values_only=True):
-        if r and str(r[2]).strip() == "M & M":
-            return str(r[4] or "")
+        if r and str(r[0]).strip() == "M & M":     # Value leads, Fix? is next
+            return str(r[1] or "")
     return None
 
 
@@ -126,7 +126,7 @@ def test_plain_yes_still_auto_fakes(tmp_path):
     ws = _worksheet2.active
     ws.append(["File", "Type", "Value", "Where", "Fix? (yes/no)", "Notes"])
     ws.append(["Opp.txt.LEAK", "LEAK", "Gregory Yu", "p.1", "yes", ""])
-    _worksheet2.save(folder / "pdf_linker_leaks.xlsx")
+    _worksheet2.save(folder / "LEAKS.xlsx")
     rc = P._fix_leaks_mode(folder, _args(folder), {}, log)
     assert rc == 0
     body = (td / "Opp.txt").read_text()

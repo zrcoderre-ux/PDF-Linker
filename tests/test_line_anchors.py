@@ -402,3 +402,20 @@ class TestDespliceGeometry:
         monkeypatch.setattr(pl, "_detect_line_anchors", fake_detect)
         rows = pl._page_lined_rows(object())
         assert rows == [(1, [(110.0, "CULTUREEDITservice of process")])]
+
+
+class TestPageStampGrammar:
+    """_PAGE_STAMP_RE: a roman page label must be a grammatically VALID
+    numeral, not just roman letters — "CIVIL" is five roman letters and no
+    number, and a court form's footer word read as a page stamp fed
+    "p.CIVIL" into the leak report's Where column and mis-mapped TOC
+    targets."""
+
+    def test_valid_labels_still_match(self):
+        for s in ("1", "23", "Page 3", "i", "ii", "iii.", "iv", "ix", "xii",
+                  "IV", "XVIII", "- 7 -"):
+            assert pl._PAGE_STAMP_RE.match(s), s
+
+    def test_roman_lettered_words_do_not_match(self):
+        for s in ("CIVIL", "civil", "DIM", "MILD", "LIVID", "DID"):
+            assert not pl._PAGE_STAMP_RE.match(s), s

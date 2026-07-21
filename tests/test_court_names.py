@@ -119,3 +119,23 @@ def test_possessive_titled_form_keeps_apostrophe_and_shares_fake():
     assert m, out
     assert m.group(1) == m.group(2)             # same surname fake both places
     assert "Whitaker" not in out
+
+
+def test_court_staff_name_before_role():
+    # An LASC-generated notice signs "By: N. Lachikian, Deputy Clerk" — the
+    # name BEFORE the role. The clerk is court personnel and must scrub like
+    # the label-first shapes instead of riding into the review sheet as a
+    # "possible person name" on every notice of appeal.
+    z = _pz()
+    doc = "By: N. Lachikian, Deputy Clerk\nBy: A. Latchinian, Deputy Clerk"
+    z.register_court_names(doc)
+    out = z.apply(doc)
+    assert "Lachikian" not in out and "Latchinian" not in out
+    assert "Deputy Clerk" in out                 # the role label is kept
+
+
+def test_name_first_staff_shape_never_harvests_an_institution():
+    z = _pz()
+    doc = "Superior Court, Deputy Clerk of the County of Los Angeles"
+    z.register_court_names(doc)
+    assert z.apply(doc) == doc

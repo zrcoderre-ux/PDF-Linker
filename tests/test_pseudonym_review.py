@@ -535,6 +535,17 @@ def test_reid_scan_flags_survivor_not_own_fake():
     assert "REID bar number" in cats and "REID vin" in cats, found
 
 
+def test_reid_scan_ignores_short_bare_numbers_but_keeps_bar_numbers():
+    # "When in doubt": a retail DEAL#/Account# under 6 bare digits is not a
+    # re-identification key, so it is not reported. A 5-digit BAR number is a
+    # definite State Bar lookup and stays reported.
+    z = _pz06764()
+    found = z.reid_scan("DEAL# 23071 and Account No. 512 today.")
+    assert found == [], found
+    bar = z.reid_scan("counsel of record, SBN 12345, appeared.")
+    assert ("REID bar number", "12345") in bar
+
+
 # #4  Entity resolution: a trailing corporate suffix (with period) is a
 #     decisive entity signal; the suffix is never faked as a person surname;
 #     the person-path form of the same party reuses the entity identity.
@@ -1339,3 +1350,36 @@ def test_unknown_declarant_with_mangled_ref_is_autoscrubbed():
     out = z.apply(doc)
     assert "Smith" not in out, out
     assert "Dec.laration" in out          # the mangled reference word is kept
+
+
+# ── 2026-07-21 review: false-positive classes from a delivered leak sheet ────
+# Nine of fourteen rows were "ca.gov" LEAKs (a government host minted as a
+# domain record, then "surviving" inside every kept citation link); the rest
+# were a defined term sharing a tracked party's two initials, a court form
+# stamp read as a person, and unregistered clerk signatures (see
+# test_court_names for those).
+
+def test_government_domain_is_never_minted_or_leak_flagged():
+    z = _pz()
+    out = z.apply("File at appellate.courts.ca.gov; forms wrapped to\n"
+                  "ca.gov today.")
+    assert "ca.gov" in out                       # kept verbatim
+    assert not any(r["category"] == "url" for r in z.records.values())
+    assert not z.surviving_reals(out)
+
+
+def test_private_domain_is_still_faked():
+    z = _pz()
+    out = z.apply("Our site is estradalegal.com for intake.")
+    assert "estradalegal.com" not in out
+
+
+def test_gov_url_not_reported_for_review():
+    findings = P._pn_review_findings("visit selfhelp.courts.ca.gov and ca.gov")
+    assert not [f for f in findings if f[0] == "url/domain"]
+
+
+def test_form_stamp_words_are_not_a_person():
+    # "NEW QUALIFIER" is an e-filing form stamp: name-shaped to the scanner
+    # (leading "New" + one distinctive word) but a form label, not a person.
+    assert not P._pn_person_review_findings("By: NEW QUALIFIER")
