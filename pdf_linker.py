@@ -9787,6 +9787,23 @@ class Pseudonymizer:
             groups.setdefault(given, {}).setdefault(surname, rec["real"])
         return [sorted(d.values()) for d in groups.values() if len(d) > 1]
 
+    def override_fixes(self, explicit):
+        """Force operator-typed replacements (from the leak worksheet's Fix?
+        column) to win over any auto-derived fake, under WHATEVER category the
+        value was recorded. Marks each overridden row authoritative so write_key
+        persists it and a later run reuses the typed fake instead of re-deriving
+        one. `explicit` is {real_value: replacement}; a replacement equal to its
+        own value is skipped (a self-map never scrubs)."""
+        want = {str(k).lower(): str(v) for k, v in (explicit or {}).items()
+                if v and str(v).strip().lower() != str(k).strip().lower()}
+        if not want:
+            return
+        for (_cat, rl), rec in self.records.items():
+            if rl in want:
+                rec["fake"] = want[rl]
+                rec["loaded"] = True
+                rec["source"] = "leak-fix"
+
     def write_key(self, path, log):
         """Write the REVERSAL key the Word macro consumes. Only rows that
         actually matched (Occurrences > 0) and contain no newline are written,
@@ -10583,9 +10600,13 @@ _PN_LEAK_ABSENT = "(no longer present)"
 
 
 def _pn_read_leak_decisions(folder):
-    """{value_lower: {value, type, fix, notes}} read back from a leak worksheet
-    the reviewer annotated on a prior run. `fix` is normalised to 'yes'/'no'/''.
-    Empty when there is no readable worksheet — the round-trip is a no-op then."""
+    """{value_lower: {value, type, fix, replacement, notes}} read back from a
+    leak worksheet the reviewer annotated on a prior run. `fix` is normalised to
+    'yes'/'no'/''. Any Fix? entry that is NOT a reserved control word ('yes'/'no'
+    and the bare y/n dropdown shorthands) is an explicit operator-typed
+    replacement: `fix` becomes 'yes' and `replacement` carries the typed text
+    verbatim, so the reviewer can dictate the exact fake instead of letting the
+    auto-faker choose. Empty when there is no readable worksheet."""
     xlsx = folder / "pdf_linker_leaks.xlsx"
     if not xlsx.is_file():
         return {}
@@ -10612,10 +10633,22 @@ def _pn_read_leak_decisions(folder):
         if val in (None, ""):
             continue
         val = str(val)
-        raw = str(cell("fix? (yes/no)") or "").strip().lower()
-        fix = "yes" if raw.startswith("y") else "no" if raw.startswith("n") else ""
+        raw = str(cell("fix? (yes/no)") or "").strip()
+        low = raw.lower()
+        # Reserved control words are ONLY 'yes'/'no' (with the historical bare
+        # y/n dropdown shorthands). ANYTHING else non-empty is an explicit
+        # operator-typed replacement, applied verbatim, bypassing the auto-faker.
+        if low in ("yes", "y"):
+            fix, replacement = "yes", None
+        elif low in ("no", "n"):
+            fix, replacement = "no", None
+        elif low == "":
+            fix, replacement = "", None
+        else:
+            fix, replacement = "yes", raw
         out[val.lower()] = {"value": val, "type": str(cell("type") or "").strip(),
-                            "fix": fix, "notes": str(cell("notes") or "").strip()}
+                            "fix": fix, "replacement": replacement,
+                            "notes": str(cell("notes") or "").strip()}
     return out
 
 
@@ -10636,16 +10669,21 @@ def _pn_write_leak_report(folder, entries, log, decisions=None):
         vl = e["value"].lower()
         seen.add(vl)
         d = decisions.get(vl, {})
-        rows.append({**e, "fix": d.get("fix", ""), "notes": d.get("notes", ""),
-                     "present": True})
+        # `fixcell` is what the Fix? cell shows: an operator-typed replacement is
+        # carried back verbatim (NOT collapsed to "yes"), so a re-run re-reads
+        # the typed value instead of re-deriving an auto fake.
+        rows.append({**e, "fix": d.get("fix", ""),
+                     "fixcell": (d.get("replacement") or d.get("fix", "")),
+                     "notes": d.get("notes", ""), "present": True})
     # Persist a decision whose value didn't recur this run, so a Fix?=yes term
     # keeps being applied and a Fix?=no stays suppressed on future runs.
     for vl, d in decisions.items():
         if vl not in seen and d.get("fix") in ("yes", "no"):
             rows.append({"file": "—", "type": d.get("type") or "(decided)",
                          "value": d["value"], "where": _PN_LEAK_ABSENT,
-                         "fix": d["fix"], "notes": d.get("notes", ""),
-                         "present": False})
+                         "fix": d["fix"],
+                         "fixcell": (d.get("replacement") or d["fix"]),
+                         "notes": d.get("notes", ""), "present": False})
 
     if not rows:
         for p in (xlsx, txt):
@@ -10674,8 +10712,8 @@ def _pn_write_leak_report(folder, entries, log, decisions=None):
     try:
         import openpyxl
     except ImportError:
-        lines = ["Potential leaks — mark each Fix? yes or no (yes = scrub it "
-                 "next run; no = leave it, stop flagging)", ""]
+        lines = ["Potential leaks — set Fix? to yes (auto fake), no (leave it), "
+                 "or type the exact replacement to use", ""]
         for r in rows:
             mark = {"yes": "[x]", "no": "[-]"}.get(r["fix"], "[ ]")
             lines.append(f"{mark} {r['type']}: {r['value']}  "
@@ -10694,12 +10732,17 @@ def _pn_write_leak_report(folder, entries, log, decisions=None):
     ws.append(list(_PN_LEAK_HEADERS))
     for r in rows:
         ws.append([r["file"], r["type"], r["value"], r["where"],
-                   r["fix"], r["notes"]])
+                   r.get("fixcell", r["fix"]), r["notes"]])
     for col, width in zip("ABCDEF", (20, 22, 34, 30, 12, 24)):
         ws.column_dimensions[col].width = width
     try:                                    # a yes/no dropdown on the Fix? column
         from openpyxl.worksheet.datavalidation import DataValidation
         dv = DataValidation(type="list", formula1='"yes,no"', allow_blank=True)
+        dv.showErrorMessage = False   # offer the dropdown but ALSO allow a typed
+        dv.showInputMessage = True    # replacement in the cell, not just yes/no
+        dv.promptTitle = "Fix?"
+        dv.prompt = ("yes = auto fake · no = leave it · "
+                     "or type the exact replacement to use")
         ws.add_data_validation(dv)
         dv.add(f"E2:E{len(rows) + 1}")
     except Exception:
@@ -10709,8 +10752,8 @@ def _pn_write_leak_report(folder, entries, log, decisions=None):
         if txt.exists():
             txt.unlink()
         log.warning(f"  Wrote leak-review worksheet: {xlsx.name} — {active} "
-                    f"item(s) to triage (set Fix?: yes scrubs it next run, "
-                    f"no leaves it and stops flagging).")
+                    f"item(s) to triage (Fix?: 'yes' scrubs with an auto fake, "
+                    f"'no' leaves it, or type the exact replacement to use).")
     except OSError as ex:
         log.warning(f"  Could not write leak-review worksheet: {ex}")
 
@@ -11851,20 +11894,46 @@ def _fix_leaks_mode(folder, args, cfg, log):
         return 1
 
     decisions = _pn_read_leak_decisions(folder)
-    fix_terms = [d["value"] for d in decisions.values() if d["fix"] == "yes"]
+    # Two kinds of "yes": AUTO (let the tool mint a fake) and EXPLICIT (the
+    # operator typed the exact replacement into the Fix? cell). An explicit fix
+    # bypasses the faker entirely — the operator's deliberate choice of a
+    # specific fake, and the cure for anything the faker would handle poorly.
+    auto_terms, explicit = [], {}
+    for d in decisions.values():
+        if d["fix"] != "yes":
+            continue
+        repl = (d.get("replacement") or "").strip()
+        if repl and repl.lower() != d["value"].strip().lower():
+            explicit[d["value"]] = repl
+        elif repl:
+            log.warning(f"  --fix-leaks: typed replacement for {d['value']!r} "
+                        f"equals the value itself — ignoring (a self-map never "
+                        f"scrubs). Type a DIFFERENT replacement.")
+        else:
+            auto_terms.append(d["value"])
     suppressed = {vl for vl, d in decisions.items() if d["fix"] == "no"}
+    fix_terms = auto_terms + list(explicit)
     if not fix_terms:
         log.info("--fix-leaks: no Fix?=yes rows in pdf_linker_leaks.xlsx — "
-                 "nothing to apply. Mark the leaks you want scrubbed and "
-                 "double-click again.")
+                 "nothing to apply. Mark the leaks you want scrubbed (yes, or "
+                 "type the exact replacement) and double-click again.")
         return 0
 
-    terms += _pn_build_terms([], [], list(args.term or []) + fix_terms, registry)
+    terms += _pn_build_terms([], [], list(args.term or []) + auto_terms, registry)
+    # Operator-typed replacements: authoritative, reversible, never re-derived.
+    # Appended LAST so they win Pseudonymizer.__init__'s last-write-wins records
+    # map over any binding loaded from the key or rebuilt here.
+    for real, fake in explicit.items():
+        t = _PnTerm("person", real, fake, whole_word=False,
+                    case_sensitive=False, priority=3, source="leak-fix")
+        t.loaded = True          # persist into the key so it survives re-runs
+        terms.append(t)
     # No PII detectors: the exports were already scrubbed on the full run, so a
     # detector meeting a fake here could re-fake it. Only the term-based scrub
     # (party names + the flagged values) is wanted.
     pz = Pseudonymizer(terms, [], registry)
     pz.suppressed = suppressed
+    pz.override_fixes(explicit)   # typed fake beats any other record for a value
     for r in pz.records.values():
         pz._own_fakes.add(str(r["fake"]).lower().rstrip(" .,;:"))
 
