@@ -11235,6 +11235,17 @@ def process_pdf(pdf_path: Path, log: logging.Logger,
         full_text = "\n\f\n".join(page_texts)
         all_cites = find_all_citations(full_text)
         log.info(f"  Found {len(all_cites)} citations")
+        # Page-start offsets in full_text, so a citation whose match text occurs
+        # exactly once can be linked on its OWN page instead of searched across
+        # every page. The all-pages scan is O(citations x pages) — ~180k page
+        # searches on a 448-page OCR'd exhibit with 401 citations, which is why
+        # linking crawled. A once-only match lives on a single page (provably),
+        # so mapping its span to a page and searching only there is exact and
+        # fast; repeated text keeps the full scan.
+        _cite_page_starts, _acc = [], 0
+        for _pt in page_texts:
+            _cite_page_starts.append(_acc)
+            _acc += len(_pt) + len("\n\f\n")
 
     # For each citation, locate occurrences on each page using PyMuPDF's
     # search_for, and add (1) a clickable link annotation and (2) a blue
@@ -11284,13 +11295,23 @@ def process_pdf(pdf_path: Path, log: logging.Logger,
     def _record_linked(page_num: int, rect) -> None:
         linked_rects.setdefault(page_num, []).append(rect)
 
+    import bisect
     for cite in all_cites:
         url = resolve_url(cite, provider)
         if not url:
             continue
         match_text = cite["match_text"]
+        # If this exact text appears once in the whole document, it is on ONE
+        # page — link it there and skip the other N-1 pages. Otherwise (repeated
+        # text) keep the full scan so every occurrence is still linked.
+        if full_text.count(match_text) == 1:
+            hp = bisect.bisect_right(_cite_page_starts, cite["span"][0]) - 1
+            hp = max(0, min(hp, len(doc) - 1))
+            pages_iter = (doc[hp],)
+        else:
+            pages_iter = doc
         found_anywhere = False
-        for page in doc:
+        for page in pages_iter:
             quads = _safe_search_for_citation(page, match_text, cite)
             if not quads:
                 continue
