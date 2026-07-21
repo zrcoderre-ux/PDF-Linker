@@ -1706,6 +1706,36 @@ def _ocr_page_timeout():
     return _OCR_PAGE_TIMEOUT
 
 
+# OCR is the dominant cost on a scanned set, and Tesseract runs as a subprocess
+# (the calling thread blocks in a C wait that releases the GIL), so N worker
+# threads run N Tesseract processes across N cores for a near-linear speedup at
+# NO quality cost — the alternative, lowering dpi, would degrade the exhibit
+# image itself. Rendering stays on the main thread (PyMuPDF is not thread-safe);
+# only the Tesseract call is parallel. Default to cores-1, capped so RAM (one
+# rendered page per worker) and process oversubscription stay sane; override with
+# PDF_LINKER_OCR_WORKERS. 1 disables parallelism entirely.
+_OCR_WORKERS = None
+
+
+def _ocr_workers():
+    global _OCR_WORKERS
+    if _OCR_WORKERS is None:
+        env = os.environ.get("PDF_LINKER_OCR_WORKERS")
+        if env:
+            try:
+                _OCR_WORKERS = max(1, int(env))
+            except (ValueError, TypeError):
+                _OCR_WORKERS = 1
+        else:
+            _OCR_WORKERS = min(6, max(1, (os.cpu_count() or 2) - 1))
+    return _OCR_WORKERS
+
+
+def _chunked(seq, n):
+    for i in range(0, len(seq), n):
+        yield seq[i:i + n]
+
+
 # Cap the rasterised image so a pathologically large page (a big scanned exhibit,
 # an engineering drawing, a mis-sized page) doesn't produce a 100+ megapixel
 # bitmap that makes Tesseract crawl or stall. 30 MP is ~ a US-letter page at
@@ -1739,17 +1769,20 @@ _OCR_RETRY_FACTORS = (1.0, 0.66, 0.5, 0.33, 0.24)
 _OCR_MIN_DPI = 60
 
 
-def _ocr_page_to_pdf(page, pytesseract, Image, io, log, label):
+def _ocr_page_to_pdf(page, pytesseract, Image, io, log, label, start=0):
     """OCR one page to overlay-PDF bytes, GRINDING rather than skipping. Try at
     full resolution; if Tesseract times out (a stall or a pathological page),
     re-render at successively lower resolution and try again. Only the render
     resolution drops — the page always gets a text layer. Returns the overlay
     PDF bytes, or None only if even the lowest resolution fails (effectively
-    never, and logged loudly if so)."""
+    never, and logged loudly if so). `start` skips the first rungs (a page that
+    already stalled at full resolution in the parallel pass resumes lower)."""
     base = _ocr_base_dpi(page)
     timeout = _ocr_page_timeout()
     last = len(_OCR_RETRY_FACTORS) - 1
     for i, factor in enumerate(_OCR_RETRY_FACTORS):
+        if i < start:
+            continue
         dpi = max(_OCR_MIN_DPI, int(base * factor))
         try:
             pix = page.get_pixmap(dpi=dpi)
@@ -1787,26 +1820,72 @@ def _ocr_pdf(doc, log):
     pytesseract.pytesseract.tesseract_cmd = tess
 
     import io
+    import fitz
+
+    pages = [p for p in doc if not p.get_text("text").strip()]
+    if not pages:
+        return False
 
     ocr_count = 0
-    for page in doc:
-        # Only OCR if page has no text
-        if page.get_text("text").strip():
-            continue
-        # Render + OCR, grinding down through lower resolutions rather than
-        # skipping the page if Tesseract stalls at full resolution.
-        hocr = _ocr_page_to_pdf(page, pytesseract, Image, io, log, "OCR")
-        if hocr is None:
-            continue
-        # Overlay OCR'd PDF page on top to add text layer
+
+    def _overlay(page, pdf_bytes):
+        nonlocal ocr_count
         try:
-            import fitz
-            ocr_doc = fitz.open(stream=hocr, filetype="pdf")
+            ocr_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
             page.show_pdf_page(page.rect, ocr_doc, 0, overlay=True)
             ocr_doc.close()
             ocr_count += 1
         except Exception as e:
             log.warning(f"  Could not overlay OCR text on page {page.number}: {e}")
+
+    workers = _ocr_workers()
+    if workers <= 1 or len(pages) <= 1:
+        # Sequential: render + OCR + grind, one page at a time.
+        for page in pages:
+            hocr = _ocr_page_to_pdf(page, pytesseract, Image, io, log, "OCR")
+            if hocr is not None:
+                _overlay(page, hocr)
+    else:
+        # Parallel: RENDER on the main thread (PyMuPDF is not thread-safe), OCR
+        # in a thread pool (each Tesseract subprocess runs on its own core, GIL
+        # released while it works), OVERLAY back on the main thread. Pages that
+        # stall at full resolution are collected and ground down sequentially
+        # afterwards, so grind-don't-skip is preserved.
+        from concurrent.futures import ThreadPoolExecutor
+        # One thread per worker keeps each Tesseract single-threaded, so N
+        # workers cleanly use N cores instead of oversubscribing.
+        os.environ.setdefault("OMP_THREAD_LIMIT", "1")
+        timeout = _ocr_page_timeout()
+        log.info(f"  OCR: {len(pages)} page(s) across {workers} workers")
+        stalled = []
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            for chunk in _chunked(pages, workers):
+                rendered = []
+                for page in chunk:
+                    try:
+                        pix = _ocr_pixmap(page)
+                        img = Image.open(io.BytesIO(pix.tobytes("png")))
+                    except Exception as e:
+                        log.warning(f"  OCR render failed on page {page.number}: {e}")
+                        continue
+                    rendered.append((page, img))
+                futs = [(page, ex.submit(
+                            pytesseract.image_to_pdf_or_hocr, img,
+                            extension="pdf", timeout=timeout))
+                        for page, img in rendered]
+                for page, fut in futs:
+                    try:
+                        _overlay(page, fut.result())
+                    except Exception as e:
+                        log.warning(f"  OCR did not finish on page {page.number} at "
+                                    f"full resolution ({e}); will grind it down")
+                        stalled.append(page)
+        # Grind the stragglers on the main thread, resuming below the resolution
+        # that already stalled.
+        for page in stalled:
+            hocr = _ocr_page_to_pdf(page, pytesseract, Image, io, log, "OCR", start=1)
+            if hocr is not None:
+                _overlay(page, hocr)
 
     if ocr_count:
         log.info(f"  OCR'd {ocr_count} page(s)")
