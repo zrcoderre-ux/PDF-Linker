@@ -7893,6 +7893,18 @@ _PN_KEY_DETECTOR_CATS = frozenset({"email", "phone", "address", "url", "ssn"})
 _PN_KEY_TOKEN_CATS = frozenset({"person-token", "entity-token", "short-name",
                                 "address_fragment"})
 
+# Categories whose ALPHANUMERIC core is a genuine welded PARTY NAME worth
+# recovering from a column-spliced caption (the reduced-substring passes below).
+# A structured identifier — a domain/email/address/phone — must NOT take part:
+# its core is a substring of the very party it belongs to, so "raytheon.com"
+# (core "raytheoncom") nests inside "RAYTHEON COMPANY" (reduced "raytheoncompany")
+# and, being LONGER than the party core "raytheon", wins the longest-first pass
+# and splices a domain fake into the party name ("POSTBOX.ORGPANY").
+_PN_WELD_CORE_CATS = frozenset({
+    "person", "entity", "person-token", "entity-token", "short-name",
+    "display-name",
+})
+
 
 def _pn_key_looks_like_ours(path):
     """True when `path` is a key THIS tool wrote (header row = _PN_KEY_HEADERS),
@@ -9557,6 +9569,8 @@ class Pseudonymizer:
         red = re.sub(r"[^a-z0-9]", "", _pn_ascii_fold(masked).lower())
         out = []
         for rec in self.records.values():
+            if rec["category"] not in _PN_WELD_CORE_CATS:
+                continue
             core = _pn_alnum_core(rec["real"])
             if len(core) >= 8 and core in red:
                 out.append(rec["real"])
@@ -9597,6 +9611,8 @@ class Pseudonymizer:
         protected = self._protected_citation_spans(src)
         cands = []
         for rec in self.records.values():
+            if rec["category"] not in _PN_WELD_CORE_CATS:
+                continue
             core = _pn_alnum_core(rec["real"])
             if len(core) >= 8:
                 cands.append((core, _pn_fake_core_display(rec["fake"]), rec))
