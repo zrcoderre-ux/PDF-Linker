@@ -58,7 +58,22 @@ def test_ocr_workers_default_and_env(monkeypatch):
     assert P._ocr_workers() == 1
     monkeypatch.setattr(P, "_OCR_WORKERS", None)
     monkeypatch.delenv("PDF_LINKER_OCR_WORKERS", raising=False)
-    assert 1 <= P._ocr_workers() <= 6                 # cores-1, capped
+    assert 1 <= P._ocr_workers() <= P._OCR_WORKER_CAP   # cores-1, capped at 10
+
+
+@pytest.mark.parametrize("cores,want", [
+    (12, 10),      # cores-1 = 11, capped at 10
+    (8, 7),        # cores-1, under the cap
+    (4, 3),
+    (2, 1),
+    (1, 1),        # never below 1
+    (64, 10),      # a many-core box is still capped
+])
+def test_default_workers_is_cores_minus_one_capped(monkeypatch, cores, want):
+    monkeypatch.setattr(P, "_OCR_WORKERS", None)
+    monkeypatch.delenv("PDF_LINKER_OCR_WORKERS", raising=False)
+    monkeypatch.setattr(P.os, "cpu_count", lambda: cores)
+    assert P._ocr_workers() == want
 
 
 def test_parallel_every_page_gets_its_text_layer(monkeypatch):

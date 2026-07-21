@@ -1711,10 +1711,12 @@ def _ocr_page_timeout():
 # threads run N Tesseract processes across N cores for a near-linear speedup at
 # NO quality cost — the alternative, lowering dpi, would degrade the exhibit
 # image itself. Rendering stays on the main thread (PyMuPDF is not thread-safe);
-# only the Tesseract call is parallel. Default to cores-1, capped so RAM (one
-# rendered page per worker) and process oversubscription stay sane; override with
-# PDF_LINKER_OCR_WORKERS. 1 disables parallelism entirely.
+# only the Tesseract call is parallel. Default to cores-1 (leaving one core for
+# the main-thread render/overlay and the OS), capped at 10 so RAM (one rendered
+# page per worker) and process oversubscription stay sane on a many-core box;
+# override with PDF_LINKER_OCR_WORKERS. 1 disables parallelism entirely.
 _OCR_WORKERS = None
+_OCR_WORKER_CAP = 10
 
 
 def _ocr_workers():
@@ -1727,7 +1729,7 @@ def _ocr_workers():
             except (ValueError, TypeError):
                 _OCR_WORKERS = 1
         else:
-            _OCR_WORKERS = min(6, max(1, (os.cpu_count() or 2) - 1))
+            _OCR_WORKERS = min(_OCR_WORKER_CAP, max(1, (os.cpu_count() or 2) - 1))
     return _OCR_WORKERS
 
 
