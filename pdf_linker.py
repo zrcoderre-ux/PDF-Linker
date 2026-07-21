@@ -1684,6 +1684,46 @@ def _tesseract_usable(tess, log):
     return ok
 
 
+# A really large scanned page can make Tesseract stall indefinitely. pytesseract
+# defaults to timeout=0 (wait forever), so a single stuck page hangs the WHOLE
+# run — the process sits in subprocess.communicate() at ~0% CPU and never
+# finishes. Bound each page: on timeout pytesseract kills Tesseract and raises,
+# the per-page try/except logs it and moves on, so one bad page costs a skip
+# instead of the entire job. Override with PDF_LINKER_OCR_TIMEOUT (seconds).
+_OCR_PAGE_TIMEOUT = None
+
+
+def _ocr_page_timeout():
+    global _OCR_PAGE_TIMEOUT
+    if _OCR_PAGE_TIMEOUT is None:
+        try:
+            _OCR_PAGE_TIMEOUT = max(
+                30, int(os.environ.get("PDF_LINKER_OCR_TIMEOUT", "300")))
+        except (ValueError, TypeError):
+            _OCR_PAGE_TIMEOUT = 300
+    return _OCR_PAGE_TIMEOUT
+
+
+# Cap the rasterised image so a pathologically large page (a big scanned exhibit,
+# an engineering drawing, a mis-sized page) doesn't produce a 100+ megapixel
+# bitmap that makes Tesseract crawl or stall. 30 MP is ~ a US-letter page at
+# 470 dpi — well above the 300 dpi we target, so a normal page is unaffected.
+_OCR_MAX_PIXELS = 30_000_000
+
+
+def _ocr_pixmap(page):
+    """Render `page` for OCR at 300 dpi, dropping the dpi only when that would
+    blow past the pixel cap, so a very large page stays within a size Tesseract
+    can process in bounded time (and within memory)."""
+    dpi = 300
+    rect = page.rect
+    scale = dpi / 72.0
+    px = (rect.width * scale) * (rect.height * scale)
+    if px > _OCR_MAX_PIXELS:
+        dpi = max(72, int(dpi * (_OCR_MAX_PIXELS / px) ** 0.5))
+    return page.get_pixmap(dpi=dpi)
+
+
 def _ocr_pdf(doc, log):
     """OCR pages of a PyMuPDF doc that have no text. Adds an invisible text
     layer using the recognised text. Modifies doc in place."""
@@ -1711,11 +1751,13 @@ def _ocr_pdf(doc, log):
         if page.get_text("text").strip():
             continue
         # Render page to image
-        pix = page.get_pixmap(dpi=300)
+        pix = _ocr_pixmap(page)
         img = Image.open(io.BytesIO(pix.tobytes("png")))
-        # OCR to hOCR for positioning
+        # OCR to hOCR for positioning. A per-page timeout so a stalled Tesseract
+        # can't hang the whole run — on timeout it raises here and we skip on.
         try:
-            hocr = pytesseract.image_to_pdf_or_hocr(img, extension="pdf")
+            hocr = pytesseract.image_to_pdf_or_hocr(
+                img, extension="pdf", timeout=_ocr_page_timeout())
         except Exception as e:
             log.warning(f"  OCR failed on page {page.number}: {e}")
             continue
@@ -1826,9 +1868,10 @@ def _reocr_garbled_pages(doc, log):
         # 1) Render + OCR BEFORE touching the page: the visible glyphs are
         #    correct even though they extract as garbage.
         try:
-            pix = page.get_pixmap(dpi=300)
+            pix = _ocr_pixmap(page)
             img = Image.open(io.BytesIO(pix.tobytes("png")))
-            ocr_bytes = pytesseract.image_to_pdf_or_hocr(img, extension="pdf")
+            ocr_bytes = pytesseract.image_to_pdf_or_hocr(
+                img, extension="pdf", timeout=_ocr_page_timeout())
         except Exception as e:
             log.warning(f"  Re-OCR render/recognise failed on page {pno}: {e}")
             continue
