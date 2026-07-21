@@ -10871,14 +10871,39 @@ def _pn_read_leak_decisions(folder):
     return out
 
 
+def _leak_sev(t):
+    """Row severity for sorting AND for picking a merged row's type: a real
+    LEAK outranks a map-inverting REID, which outranks ordinary review."""
+    return 0 if t == "LEAK" else 1 if str(t).startswith("REID") else 2
+
+
+def _pn_merge_where(wheres):
+    """Union the per-file location strings (each a ", "-joined list from
+    `_pn_locate`) into one deduped list. A real location wins over a sentinel
+    ("(not located)"), and the list is capped so a value found on dozens of
+    pages doesn't blow out the cell."""
+    toks = []
+    for w in wheres:
+        for t in str(w).split(", "):
+            t = t.strip()
+            if t and t not in toks:
+                toks.append(t)
+    real = [t for t in toks if not t.startswith("(")]
+    toks = real or toks
+    return ", ".join(toks[:12]) + (" …" if len(toks) > 12 else "")
+
+
 def _pn_write_leak_report(folder, entries, log, decisions=None):
-    """Write/refresh the leak-triage worksheet 'LEAKS.xlsx'. Each
-    located finding is one row with a 'Fix?' column; prior yes/no decisions are
-    carried forward (and persisted even when the value no longer appears, so the
-    decision keeps applying on later runs). Rows needing attention — undecided,
-    or marked-yes-but-still-present — sort to the top; resolved ones sink to the
-    bottom. A run with no findings AND no prior decisions removes the worksheet.
-    Plain-text checklist fallback without openpyxl."""
+    """Write/refresh the leak-triage worksheet 'LEAKS.xlsx'. Each DISTINCT
+    flagged value is ONE row with a 'Fix?' column — the files and page:line
+    locations it was found in are aggregated into that row, so a name that
+    leaked across nine files is decided once, not nine times. Prior yes/no
+    decisions are carried forward (and persisted even when the value no longer
+    appears, so the decision keeps applying on later runs). Rows needing
+    attention — undecided, or marked-yes-but-still-present — sort to the top;
+    resolved ones sink to the bottom. A run with no findings AND no prior
+    decisions removes the worksheet. Plain-text checklist fallback without
+    openpyxl."""
     decisions = decisions or {}
     xlsx = _pn_leak_xlsx_path(folder)
     txt = _pn_leak_txt_path(folder)
@@ -10888,15 +10913,35 @@ def _pn_write_leak_report(folder, entries, log, decisions=None):
     stale = [folder / f"{stem}.xlsx" for stem in _PN_LEAK_LEGACY_STEMS]
     stale += [folder / f"{stem}.txt" for stem in _PN_LEAK_LEGACY_STEMS]
 
-    rows, seen = [], set()
+    # Group findings by value (case-insensitive): one row per name, with its
+    # files and locations aggregated, so the operator marks a repeated leak
+    # once. Same value seen with different types keeps the most severe.
+    grouped, seen = {}, set()
     for e in entries:
         vl = e["value"].lower()
         seen.add(vl)
+        g = grouped.get(vl)
+        if g is None:
+            grouped[vl] = {"value": e["value"], "type": e["type"],
+                           "files": [e["file"]], "wheres": [e["where"]]}
+            continue
+        if _leak_sev(e["type"]) < _leak_sev(g["type"]):
+            g["type"] = e["type"]
+        if e["file"] not in g["files"]:
+            g["files"].append(e["file"])
+        g["wheres"].append(e["where"])
+
+    rows = []
+    for vl, g in grouped.items():
         d = decisions.get(vl, {})
+        files = g["files"]
+        file_cell = ", ".join(files) if len(files) <= 3 else f"{len(files)} files"
         # `fixcell` is what the Fix? cell shows: an operator-typed replacement is
         # carried back verbatim (NOT collapsed to "yes"), so a re-run re-reads
         # the typed value instead of re-deriving an auto fake.
-        rows.append({**e, "fix": d.get("fix", ""),
+        rows.append({"file": file_cell, "type": g["type"], "value": g["value"],
+                     "where": _pn_merge_where(g["wheres"]),
+                     "fix": d.get("fix", ""),
                      "fixcell": (d.get("replacement") or d.get("fix", "")),
                      "notes": d.get("notes", ""), "present": True})
     # Persist a decision whose value didn't recur this run, so a Fix?=yes term
@@ -10929,11 +10974,8 @@ def _pn_write_leak_report(folder, entries, log, decisions=None):
             return 0          # marked to fix but STILL present — the fix missed
         return 2
 
-    def _sev(r):
-        t = r["type"]
-        return 0 if t == "LEAK" else 1 if str(t).startswith("REID") else 2
-    rows.sort(key=lambda r: (_attention(r), _sev(r), str(r["file"]),
-                             r["value"].lower()))
+    rows.sort(key=lambda r: (_attention(r), _leak_sev(r["type"]),
+                             str(r["file"]), r["value"].lower()))
     active = sum(1 for r in rows if _attention(r) == 0)
 
     try:
