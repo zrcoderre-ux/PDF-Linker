@@ -55,9 +55,11 @@ written to the key.
   (worksheet tab `LEAKS`; the old `pdf_linker_leaks.xlsx` name is still READ so
   a folder triaged under a prior version keeps its decisions). Columns lead
   with the flagged **Value** then its **Fix?** decision, with File/Type/Where/
-  Notes trailing — the order driven by `_PN_LEAK_COLUMNS`. The **Fix?** column
-  round-trips: `yes`=auto-fake, `no`=leave, **any other text = an explicit
-  operator-typed replacement**. Government hosts (`*.gov`/`*.mil`) are public
+  Notes trailing — the order driven by `_PN_LEAK_COLUMNS`. **One row per
+  distinct value**: a name that leaks across many files is aggregated into a
+  single row (files + locations merged) so the operator decides it once, not
+  once per file. The **Fix?** column round-trips: `yes`=auto-fake, `no`=leave,
+  **any other text = an explicit operator-typed replacement**. Government hosts (`*.gov`/`*.mil`) are public
   infrastructure — never faked or flagged. When in doubt a **bare number under
   6 digits** is not a re-identification key (`reid_scan` filters it; bar
   numbers, a definite State Bar lookup, are exempt).

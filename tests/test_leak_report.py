@@ -131,6 +131,61 @@ def test_roundtrip_persists_yes_suppresses_no_and_surfaces_new(tmp_path):
     assert order.index("New Corp") < order.index("Travelers")
 
 
+def test_same_value_across_files_is_one_row(tmp_path):
+    # A name that leaks in several files must appear ONCE — the operator
+    # decides it a single time, not per file. Files and locations aggregate.
+    entries = [
+        {"file": "Complaint.pdf", "type": "LEAK", "value": "ca.gov",
+         "where": "p.1, p.appendix"},
+        {"file": "Motion.pdf", "type": "LEAK", "value": "ca.gov",
+         "where": "p.appendix"},
+        {"file": "Opposition.pdf", "type": "LEAK", "value": "ca.gov",
+         "where": "p.C"},
+        {"file": "RJN.pdf", "type": "LEAK", "value": "ca.gov", "where": "p.2"},
+    ]
+    P._pn_write_leak_report(tmp_path, entries, log)
+    rows = list(openpyxl.load_workbook(tmp_path / "LEAKS.xlsx")
+                .active.iter_rows(values_only=True))
+    body = rows[1:]
+    assert len(body) == 1                       # one row for the four files
+    value, fix, file_cell, typ, where, _notes = body[0]
+    assert value == "ca.gov"
+    assert file_cell == "4 files"               # aggregated (>3 → a count)
+    for loc in ("p.1", "p.appendix", "p.C", "p.2"):
+        assert loc in where                     # every location preserved
+
+
+def test_merged_row_keeps_the_most_severe_type(tmp_path):
+    entries = [
+        {"file": "A.pdf", "type": "possible person name", "value": "M M",
+         "where": "p.1"},
+        {"file": "B.pdf", "type": "LEAK", "value": "M M", "where": "p.2"},
+    ]
+    P._pn_write_leak_report(tmp_path, entries, log)
+    rows = list(openpyxl.load_workbook(tmp_path / "LEAKS.xlsx")
+                .active.iter_rows(values_only=True))
+    assert len(rows[1:]) == 1
+    assert rows[1][0] == "M M" and rows[1][3] == "LEAK"
+    assert rows[1][2] == "A.pdf, B.pdf"         # <=3 files listed by name
+
+
+def test_one_decision_covers_every_occurrence(tmp_path):
+    # Mark the single merged row 'yes' once; on the next run the decision
+    # applies to the value regardless of how many files carry it.
+    entries = [{"file": f"F{i}.pdf", "type": "LEAK", "value": "ca.gov",
+                "where": "p.1"} for i in range(5)]
+    P._pn_write_leak_report(tmp_path, entries, log)
+    xp = tmp_path / "LEAKS.xlsx"
+    wb = openpyxl.load_workbook(xp)
+    ws = wb.active
+    body = list(ws.iter_rows(min_row=2))
+    assert len(body) == 1
+    body[0][1].value = "yes"                    # Fix? is column B
+    wb.save(xp)
+    dec = P._pn_read_leak_decisions(tmp_path)
+    assert dec["ca.gov"]["fix"] == "yes"
+
+
 def test_legacy_worksheet_name_is_still_read(tmp_path):
     # A folder triaged under the old name keeps its decisions: the reader
     # falls back to pdf_linker_leaks.xlsx when LEAKS.xlsx is absent.
