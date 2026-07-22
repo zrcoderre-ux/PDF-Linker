@@ -6743,6 +6743,20 @@ def _pn_fake_caseno(real, registry):
     return registry.digits(real, "caseno", keep_prefix=keep)
 
 
+# Court FORM identifiers and field labels that are public boilerplate, never a
+# party or a real case number: a Judicial Council form number ("CIV-100"), the
+# "CASE NUMBER" field label, the "Default Only" checkbox. Faking one corrupts
+# the form (and a form number faked as a case number is a nonsense stamp), so
+# these are never registered as terms and never flagged for review. Compared on
+# an alphanumeric-only, case-folded reduction, so spacing/dash variants
+# ("CIV 100", "Case Number") all match. Extend as more form boilerplate turns up.
+_PN_NEVER_FAKE = frozenset({"casenumber", "civ100", "defaultonly"})
+
+
+def _pn_is_never_fake(value):
+    return re.sub(r"[^a-z0-9]", "", str(value).lower()) in _PN_NEVER_FAKE
+
+
 def _pn_reapply_digits(fake_digits, real):
     """Lay `fake_digits` back into `real`'s exact template: each real DIGIT
     position takes the next fake digit; every separator, bracket and letter is
@@ -7688,6 +7702,8 @@ def _pn_person_review_findings(text, known_fakes=()):
     for rx in _PN_REVIEW_PERSON_RES:
         for m in rx.finditer(text):
             name = re.sub(r"\s+", " ", m.group("n")).strip()
+            if _pn_is_never_fake(name):
+                continue      # court-form boilerplate ("Default Only") — leave it
             words = [w.strip(".,").lower() for w in name.split()]
             if any(w in _PN_REVIEW_NAME_STOP for w in words):
                 continue
@@ -7807,6 +7823,8 @@ def _pn_unknown_name_findings(text, neutral_words):
     for m in anchor.finditer(text):
         name = re.sub(r"\s+", " ", m.group("n")).strip(" .,;:")
         if not name or name.lower() in seen:
+            continue
+        if _pn_is_never_fake(name):        # court-form boilerplate — leave it
             continue
         if _pn_is_public_entity(name) or _pn_is_protected_locality(name):
             continue
@@ -8187,6 +8205,9 @@ def _pn_load_key(path, registry, log):
         if not cat or real in (None, "") or fake in (None, ""):
             continue
         real, fake = str(real), str(fake)
+        if _pn_is_never_fake(real):
+            continue                      # court-form boilerplate — drop any
+                                          # stale binding so it is never re-faked
         if (cat, real.lower()) in seen:
             continue
         seen.add((cat, real.lower()))
@@ -8264,15 +8285,21 @@ def _pn_build_terms(names, casenos, extra_terms, registry=None):
     terms = []
     for raw in names:
         raw, is_short = raw if isinstance(raw, tuple) else (raw, False)
+        if _pn_is_never_fake(raw):
+            continue                      # court-form boilerplate — never faked
         if is_short:
             _pn_append_shortname_term(terms, raw, "spreadsheet", registry)
         else:
             _pn_append_name_terms(terms, raw, "spreadsheet", registry)
     for raw in casenos:
+        if _pn_is_never_fake(raw):        # a form number is not a case number
+            continue
         terms.append(_PnTerm("case_number", raw, _pn_fake_caseno(raw, registry),
                              whole_word=True, case_sensitive=False, priority=2,
                              source="spreadsheet"))
     for raw in extra_terms or []:
+        if _pn_is_never_fake(raw):
+            continue
         if re.search(r"\d", raw) and not re.search(r"[A-Za-z]{2}", raw):
             terms.append(_PnTerm("case_number", raw, _pn_fake_caseno(raw, registry),
                                  whole_word=False, case_sensitive=False,
@@ -12379,6 +12406,10 @@ def _dump_protected_terms(out=None):
     buf.write("\nHard never-fake reference words (3)\n"
               "  the declaration reference word itself is never a term:\n"
               "   dec, decl, declaration\n")
+    buf.write("\nCourt-form boilerplate  [_PN_NEVER_FAKE]\n"
+              "  a form number / field label is never faked or flagged (matched\n"
+              "  on an alphanumeric, case-folded reduction):\n"
+              "   CASE NUMBER, CIV-100, Default Only\n")
     buf.write("\nCitation shapes protected from party-name rewriting "
               "(regex families, not word lists):\n"
               "   In re <Name> ... Litig.             [_PN_INRE_LITIG_RE]\n"

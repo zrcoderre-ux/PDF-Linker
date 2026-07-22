@@ -5,6 +5,7 @@ PDF fixtures are needed — the module is imported and its `_pn_*` internals are
 called directly. Each test names the hardening task it guards (see the
 handoff). Run with: pytest tests/test_pseudonymize.py
 """
+import logging
 import importlib.util
 import re
 from pathlib import Path
@@ -849,3 +850,47 @@ class TestDocAbbreviationsNeverScrubbed:
         pz.register_declarant_names("DECLARATION OF JOHN SMITH ISO MOTION")
         out = pz.apply("DECLARATION OF JOHN SMITH ISO MOTION")
         assert "JOHN SMITH" not in out and "ISO" in out and "MOTION" in out
+
+
+# ── Court-form boilerplate is never faked or flagged (_PN_NEVER_FAKE) ─────────
+class TestNeverFakeFormBoilerplate:
+    """A Judicial Council form number ("CIV-100"), the "CASE NUMBER" field
+    label, and the "Default Only" checkbox are public form boilerplate — faking
+    one corrupts the form (a form number is not a case number). They are never
+    registered as terms and never flagged for review."""
+
+    def test_predicate_matches_spacing_and_dash_variants(self):
+        for v in ("CIV-100", "CIV 100", "civ100", "CASE NUMBER", "Case Number",
+                  "Default Only", "DEFAULT ONLY"):
+            assert pl._pn_is_never_fake(v), v
+        for v in ("23STCV31247", "CIV-101", "Raytheon"):
+            assert not pl._pn_is_never_fake(v), v
+
+    def test_form_number_from_the_case_number_column_is_not_faked(self):
+        # A "Case Number" cell that actually holds a form number must not fake it.
+        pz, _reg = _pz(casenos=["CIV-100", "23STCV31247"])
+        out = pz.apply("Form CIV-100. CASE NUMBER: 23STCV31247.")
+        assert "CIV-100" in out                      # form number untouched
+        assert "23STCV31247" not in out              # the real case number faked
+
+    def test_labels_survive_even_as_explicit_terms(self):
+        pz, _reg = _pz(names=["CASE NUMBER"], terms=["Default Only"])
+        out = pz.apply("CASE NUMBER field, Default Only box.")
+        assert "CASE NUMBER" in out and "Default Only" in out
+
+    def test_boilerplate_is_not_flagged_for_review(self):
+        assert pl._pn_person_review_findings("By: Default Only", set()) == []
+        assert pl._pn_unknown_name_findings(
+            "Defendant Default Only moved for judgment.", set()) == []
+
+    def test_a_key_binding_for_boilerplate_is_dropped_on_load(self, tmp_path):
+        import openpyxl
+        wb = openpyxl.Workbook(); ws = wb.active; ws.title = "Pseudonym Key"
+        ws.append(["Category", "Real Value", "Replacement", "Status",
+                   "Source", "Occurrences"])
+        ws.append(["case_number", "CIV-100", "CIV-472", "replaced", "--term", "3"])
+        wb.save(tmp_path / "pseudonym_key.xlsx")
+        reg = pl._PnFakeRegistry()
+        terms = pl._pn_load_key(tmp_path / "pseudonym_key.xlsx", reg,
+                                logging.getLogger("t"))
+        assert not any(t.real == "CIV-100" for t in terms)   # stale binding dropped
