@@ -5499,6 +5499,33 @@ _PN_NAME_WORDS = [
     "Lorne", "Mabry", "Nolan", "Ondine", "Pruett", "Renwick", "Sterling",
     "Tolliver", "Ursin", "Verity", "Waverly", "Alden", "Beaumont", "Carrow",
     "Delane",
+    # The pool is drawn without replacement per case; a real filing carries far
+    # more than the original 64 distinct name tokens (parties, counsel, staff,
+    # every declarant and e-mail display name), so it was exhausting and minting
+    # ugly numbered stand-ins ("Ashford2", "Corwin Vance3", and in body text
+    # "HENDRY2 CORPORATIOLORNE10"). These keep the pool ahead of a large case.
+    "Abernathy", "Alcott", "Amberly", "Ashcombe", "Atwater", "Balfour",
+    "Bancroft", "Barlowe", "Bexley", "Blackwood", "Braddock", "Brimley",
+    "Cadwell", "Calloway", "Carden", "Cartwright", "Chadwick", "Chamberlin",
+    "Chetwood", "Clarendon", "Cleary", "Cranston", "Cresswell", "Darrow",
+    "Davenport", "Deverell", "Doran", "Dunhill", "Eastwick", "Edgerton",
+    "Ellsworth", "Fairbank", "Fallon", "Farraday", "Fenmore", "Finnegan",
+    "Gaskell", "Gearhart", "Goddard", "Hadley", "Halstead", "Hargrove",
+    "Hartwell", "Hawkridge", "Hemsley", "Hollis", "Huxley", "Ingersoll",
+    "Jarrow", "Kimball", "Kinsley", "Larkin", "Ledbetter", "Linford",
+    "Lockwood", "Ludlow", "Mallory", "Mansfield", "Marsden", "Mayhew",
+    "Milburn", "Montrose", "Mowbray", "Oakley", "Ormsby", "Paget",
+    "Parrish", "Pemberton", "Penrose", "Prentiss", "Quenby", "Ramsey",
+    "Rathbone", "Redmond", "Ridley", "Rockwell", "Rutherford", "Sackett",
+    "Selwyn", "Sheridan", "Sinclair", "Stanhope", "Stockton", "Swinton",
+    "Thorpe", "Trafford", "Tremaine", "Underhill", "Vickers", "Wadsworth",
+    "Waldron", "Warwick", "Wescott", "Wexford", "Whitby", "Winslow",
+    "Wolcott", "Wycliffe", "Yates", "Yorke", "Ainsworth", "Braxton",
+    "Denholm", "Harrell", "Kimbrell", "Lassiter", "Mercer", "Northcott",
+    "Ravenscar", "Stroud", "Thackeray", "Weatherby", "Aldous", "Birkett",
+    "Crandall", "Eldridge", "Fanshawe", "Grimwood", "Harkness", "Loxley",
+    "Merton", "Pennington", "Rushton", "Sedgwick", "Tennant", "Waverley",
+    "Wharton", "Yeardley",
 ]
 _PN_ENTITY_WORDS = [
     "Aldrin", "Brightwater", "Cascadia", "Dunmore", "Everline", "Foxglen",
@@ -5508,6 +5535,23 @@ _PN_ENTITY_WORDS = [
     "Ambrose", "Beacon", "Cobalt", "Drayton", "Emberly", "Falcon", "Gladstone",
     "Harborview", "Ivory", "Jetstream", "Kaldor", "Larkspur", "Monarch",
     "Nimbus", "Orion", "Pembroke",
+    # Enlarged for the same reason as _PN_NAME_WORDS: a case with many entity
+    # parties, affiliates and firm names outran 40 words and minted
+    # "POSTBOX4.ORGPANY"-class numbered fakes.
+    "Arclight", "Brookstone", "Cairnwood", "Clearspring", "Crestline",
+    "Dovewood", "Eastmark", "Eldergrove", "Ferncliff", "Fieldstone",
+    "Foxbridge", "Glenrock", "Goldcrest", "Graystone", "Highpoint",
+    "Hollowmere", "Ironwood", "Kirkwall", "Lakemont", "Lanternwood",
+    "Ledgewood", "Marbury", "Millbrook", "Moorland", "Oakspire", "Overland",
+    "Parkhurst", "Pinehurst", "Ravenwood", "Riverton", "Rockhaven",
+    "Sablewood", "Sandpiper", "Shorewood", "Silvergate", "Solstice",
+    "Springvale", "Starling", "Stonehaven", "Thornfield", "Timberline",
+    "Wexmoor", "Whitfield", "Wildmere", "Windermere", "Ashcroft",
+    "Brightmoor", "Coppervale", "Dawnfield", "Emberton", "Frostgate",
+    "Greenhollow", "Hartland", "Ironclad", "Keystone", "Lightwell",
+    "Meadowgate", "Northwind", "Opalridge", "Pinecrest", "Quillmark",
+    "Rosemont", "Stormont", "Truenorth", "Umberwood", "Vanguard",
+    "Wellspring", "Yarrowvale",
 ]
 _PN_ENTITY_SUFFIXES = {
     "llc", "l.l.c.", "inc", "inc.", "incorporated", "corp", "corp.",
@@ -5661,6 +5705,48 @@ def _pn_titlecase_like(fake, original):
     return fake
 
 
+# The shortest name token that folds an OCR/typo near-variant (see
+# `_PnFakeRegistry.token`). Shorter tokens (Ng, Yu, Vang, Choi) are left to
+# mint their own fakes, since at 4 chars two genuinely different surnames sit
+# an edit apart too often to fold safely.
+_PN_NAME_FOLD_MIN = 5
+
+# Letter-only visual confusables for deriving a substitution typo of a fake —
+# the result must stay a name-shaped token, so a glyph never maps to a digit.
+_PN_CONFUSABLES = {
+    "i": "l", "l": "i", "o": "a", "a": "o", "m": "n", "n": "m", "u": "v",
+    "v": "u", "e": "c", "c": "e", "s": "z", "z": "s", "b": "h", "h": "b",
+    "g": "q", "q": "g", "t": "f", "f": "t", "r": "n", "d": "b", "w": "v",
+    "y": "v",
+}
+
+
+def _pn_typo_variants(fake, op, seed):
+    """Yield typo'd forms of `fake` — the fake a near-variant real folds onto, so
+    a real OCR typo reads as a typo of the fake rather than a brand-new name.
+    `op` mirrors the real's own deviation so lengths track: 'ins' duplicates a
+    letter (real gained one), 'del' drops one, 'sub' swaps one for a visual
+    confusable. Interior positions are tried in a per-variant deterministic
+    order; the caller takes the first form no other real has been given."""
+    rng = _pn_rng("nametypo", op, seed)
+    idxs = list(range(1, len(fake)))          # never touch the leading capital
+    rng.shuffle(idxs)
+    for i in idxs:
+        ch = fake[i]
+        if op == "ins":
+            yield fake[:i] + ch + fake[i:]                 # duplicate a letter
+        elif op == "del":
+            if len(fake) > 3:
+                yield fake[:i] + fake[i + 1:]              # drop a letter
+        else:  # sub
+            repl = _PN_CONFUSABLES.get(ch.lower())
+            if repl is None:
+                continue
+            repl = repl.upper() if ch.isupper() else repl
+            if repl != ch:
+                yield fake[:i] + repl + fake[i + 1:]
+
+
 def _pn_case_word_like(fake, original):
     """`fake` re-cased to match how `original` was written.
 
@@ -5743,9 +5829,28 @@ class _PnFakeRegistry:
         order, skipping any already taken; if the whole pool is exhausted a
         numeric suffix keeps it unique. Person and entity token pools share one
         memo slot per word (see `_NAME_ENTITY_TAGS`)."""
-        key = (self._memo_tag(seed_tag), real.lower())
+        tag = self._memo_tag(seed_tag)
+        key = (tag, real.lower())
         if key in self._memo:
             return self._memo[key]
+        low = real.lower()
+        # Fold an OCR/typo near-variant (edit distance 1) onto a TYPO of the
+        # base token's fake, so "Palladina"/"Pallading" read as typos of the
+        # same "Keswick" the canonical "Palladino" got, instead of three
+        # unrelated stand-ins. Each still keeps its OWN fake (a distinct typo),
+        # so the key round-trips one-to-one.
+        if len(low) >= _PN_NAME_FOLD_MIN:
+            for (t, prev), prev_fake in self._memo.items():
+                if (t != tag or prev == low or len(prev) < _PN_NAME_FOLD_MIN
+                        or not _pn_edit_distance_le1(prev, low,
+                                                     min_len=_PN_NAME_FOLD_MIN)):
+                    continue
+                op = ("ins" if len(low) > len(prev)
+                      else "del" if len(low) < len(prev) else "sub")
+                for cand in _pn_typo_variants(prev_fake, op, low):
+                    if cand.lower() not in self._used:
+                        return self._take(key, cand)
+                break     # a near-variant was found but yielded no free typo
         rng = _pn_rng(seed_tag, real.lower())
         order = list(words)
         rng.shuffle(order)
@@ -7079,11 +7184,13 @@ _PN_PUBLIC_EMAIL_DOMAINS = frozenset({
 _PN_DOMAIN_REGISTRY = _PnFakeRegistry()
 
 
-def _pn_edit_distance_le1(a, b):
+def _pn_edit_distance_le1(a, b, min_len=8):
     """True when `a` and `b` differ by at most one insertion, deletion, or
-    substitution (an OCR typo like autolegalgrouo vs autolegalgroup). Only for
-    strings of length >= 8 so two genuinely different short hosts aren't folded."""
-    if a == b or abs(len(a) - len(b)) > 1 or min(len(a), len(b)) < 8:
+    substitution (an OCR typo like autolegalgrouo vs autolegalgroup). Requires
+    both strings be at least `min_len` long so two genuinely different SHORT
+    values aren't folded — `min_len` is 8 for hosts (the default) and lower for
+    name tokens, which are shorter but still want their OCR variants folded."""
+    if a == b or abs(len(a) - len(b)) > 1 or min(len(a), len(b)) < min_len:
         return a == b
     if len(a) == len(b):
         return sum(x != y for x, y in zip(a, b)) == 1
@@ -7349,6 +7456,19 @@ def _pn_identifier_values(text):
         for m in rx.finditer(text):
             val = m.group(1).strip()
             if not re.search(r"\d", val):
+                continue
+            # A bare 1-3 digit "account number" carries no distinguishing
+            # entropy and collides with ubiquitous document numbers: a separate
+            # statement's "Response No. 101" / "Material Fact No. 110", a page,
+            # an exhibit, a statute section. Registering it faked "101"
+            # everywhere it could — corrupting those references — and left it in
+            # cleartext everywhere it couldn't (citation-protected spans), so
+            # the real number "leaked" on page after page as pure review noise.
+            # Don't track it. A 4+ digit deal/customer stamp ("DEAL# 23071") is
+            # distinctive enough to keep scrubbing, and an alphanumeric id keeps
+            # its letters, so both still register.
+            if (cls == "account id" and not re.search(r"[A-Za-z]", val)
+                    and len(re.sub(r"\D", "", val)) < 4):
                 continue
             if val.lower() in seen:
                 continue

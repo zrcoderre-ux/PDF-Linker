@@ -1072,14 +1072,17 @@ def _write_and_read_key(z, tmp_path):
 
 def test_key_carries_first_and_last_name_rows(tmp_path):
     # Even when only the FULL name appears, the key gets a row per first/last
-    # token so a token-level reversal macro can undo either alone.
+    # token so a token-level reversal macro can undo either alone. The exact
+    # fake is pool-dependent (and so must not be hard-coded); the invariant is
+    # that the full-name fake is exactly its two token fakes joined.
     z = _pzR(names=["Gregory Yu"])
     z.apply("Gregory Yu signed the declaration.")   # full name only
     rows = _write_and_read_key(z, tmp_path)
-    pairs = {(r[0], r[1], r[2]) for r in rows}
-    assert ("person", "Gregory Yu", "Ivers Kessler") in pairs
-    assert ("person-token", "Gregory", "Ivers") in pairs
-    assert ("person-token", "Yu", "Kessler") in pairs
+    full = {r[1]: r[2] for r in rows if r[0] == "person"}
+    tok = {r[1]: r[2] for r in rows if r[0] == "person-token"}
+    assert "Gregory Yu" in full
+    assert "Gregory" in tok and "Yu" in tok
+    assert full["Gregory Yu"] == f"{tok['Gregory']} {tok['Yu']}"
 
 
 def test_key_orders_people_before_other_categories(tmp_path):
@@ -1383,3 +1386,67 @@ def test_form_stamp_words_are_not_a_person():
     # "NEW QUALIFIER" is an e-filing form stamp: name-shaped to the scanner
     # (leading "New" + one distinctive word) but a form label, not a person.
     assert not P._pn_person_review_findings("By: NEW QUALIFIER")
+
+
+# ── 2026-07-22 review: pool exhaustion, typo folding, bare-number noise ──────
+# From a 6-file Palladino set whose key showed numbered-mint fakes
+# ("Corwin Vance3", "HENDRY2 CORPORATIOLORNE10"), OCR name variants each given
+# an unrelated fake ("Joe Palladina"->"Corwin Vance3" vs "Joe Palladino"->
+# "Corwin Keswick"), and 300+ leak rows dominated by bare 3-digit account ids
+# (101/110/120/130/214/342) recurring across every file.
+
+def test_name_pools_are_large_and_valid():
+    # The pool must stay well ahead of a real case's distinct name tokens
+    # (parties + counsel + staff + declarants + e-mail display names).
+    assert len(P._PN_NAME_WORDS) >= 150
+    assert len(P._PN_ENTITY_WORDS) >= 90
+    # No duplicates, and every surname is a valid bare name token.
+    assert len({w.lower() for w in P._PN_NAME_WORDS}) == len(P._PN_NAME_WORDS)
+    assert len({w.lower() for w in P._PN_ENTITY_WORDS}) == len(P._PN_ENTITY_WORDS)
+    for w in P._PN_NAME_WORDS:
+        assert P._pn_is_name_token(w), w
+
+
+def test_ocr_name_variant_folds_onto_a_typo_of_the_base_fake():
+    # "Palladino" and its OCR variants must read as typos of ONE fake, each
+    # keeping its own distinct (reversible) stand-in.
+    reg = P._PnFakeRegistry()
+    base = reg.token("palladino", P._PN_NAME_WORDS, "nametok")
+    v1 = reg.token("palladina", P._PN_NAME_WORDS, "nametok")   # substitution
+    v2 = reg.token("pallading", P._PN_NAME_WORDS, "nametok")   # substitution
+    v3 = reg.token("palladinos", P._PN_NAME_WORDS, "nametok")  # insertion
+    fam = [base, v1, v2, v3]
+    assert len(set(f.lower() for f in fam)) == 4               # all distinct
+    for v in (v1, v2, v3):
+        assert P._pn_edit_distance_le1(base.lower(), v.lower(), min_len=3), \
+            f"{v} is not a typo-neighbour of {base}"
+
+
+def test_length_tracks_the_real_deviation():
+    reg = P._PnFakeRegistry()
+    base = reg.token("manav", P._PN_NAME_WORDS, "nametok")
+    longer = reg.token("manavi", P._PN_NAME_WORDS, "nametok")  # real gained a char
+    assert len(longer) == len(base) + 1                        # so did the fake
+
+
+def test_distinct_short_names_do_not_fold():
+    # Below the fold floor, two genuinely different short surnames keep their
+    # own independent fakes (no accidental typo-linking of "Vang"/"Vong").
+    reg = P._PnFakeRegistry()
+    a = reg.token("vang", P._PN_NAME_WORDS, "nametok")
+    b = reg.token("vong", P._PN_NAME_WORDS, "nametok")
+    assert not P._pn_edit_distance_le1(a.lower(), b.lower(), min_len=3)
+
+
+def test_bare_short_account_number_is_not_tracked():
+    # A 1-3 digit "account number" is a document number, not a key — never
+    # registered, so it never leaks as review noise.
+    for label in ("Response No. 101", "Account No. 110", "DEAL# 214"):
+        vals = {v for _c, v in P._pn_identifier_values(label)}
+        assert "101" not in vals and "110" not in vals and "214" not in vals
+
+
+def test_distinctive_account_number_is_still_tracked():
+    got = {v for _c, v in P._pn_identifier_values(
+        "DEAL# 23071 and Cust# 4433221 and Acct #: A203")}
+    assert "23071" in got and "4433221" in got and "A203" in got
