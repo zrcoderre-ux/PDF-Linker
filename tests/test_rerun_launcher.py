@@ -26,13 +26,26 @@ def test_windows_bat_targets_own_folder_with_key():
     assert '"%~dp0."' in content
     assert "--provider lexis" in content
     assert '--key "%~dp0pseudonym_key.xlsx"' in content
-    assert content.endswith("pause\r\n")          # window stays to show result
     assert "\r\n" in content                       # CRLF for cmd
     # A visible banner so the window is never blank, even under a windowless
     # interpreter that prints nothing of its own.
     assert "echo Re-running PDF-Linker" in content
     # Non-frozen: the interpreter needs the script path.
     assert r'"C:\Tools\pdf_linker.py"' in content
+
+
+def test_windows_bat_runs_detached_in_the_background():
+    _n, content, _e = P._rerun_launcher_spec(
+        r"C:\Py\pythonw.exe", r"C:\Tools\pdf_linker.py", "lexis",
+        want_key=True, windows=True)
+    # Detached: launched via `start` so the launcher returns immediately …
+    assert 'start "PDF-Linker re-run" "C:\\Py\\pythonw.exe"' in content
+    # … and never blocks on a pause.
+    assert "pause" not in content
+    # The command (interpreter + script + folder + flags) is the started target.
+    assert '"C:\\Tools\\pdf_linker.py" "%~dp0." --provider lexis' in content
+    # Tells the operator where the durable progress/finish signals are.
+    assert "pdf_linker.log" in content and "DONE" in content
 
 
 def test_windows_bat_frozen_omits_script_path():
