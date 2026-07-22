@@ -59,7 +59,12 @@ written to the key.
 - **Invariants that keep biting if broken** — a fake must never equal its real
   value (`_pn_guard_distinct_fake`, the `M & M` self-map loop); a state name is
   never faked inside a company name; a state-of-incorporation descriptor ("a
-  Delaware corporation") stays verbatim; legal boilerplate is never a "name".
+  Delaware corporation") stays verbatim; legal boilerplate is never a "name";
+  court-form boilerplate (`_PN_NEVER_FAKE`: a Judicial Council form number
+  "CIV-100", the "CASE NUMBER" field label, the "Default Only" checkbox) is
+  never registered as a term and never flagged — matched on an alphanumeric,
+  case-folded reduction so spacing/dash variants all catch. Extend the set as
+  more form boilerplate appears.
 - **Detectors** (`_PN_DETECTORS`: ssn/email/phone/address/url) run as regex over
   the text in `apply()`; `_detector_cands`/`_term_cands` produce candidates,
   highest-priority longest-non-overlapping wins.

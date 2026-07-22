@@ -21,6 +21,9 @@ def test_dump_covers_every_protected_set():
     for token in ("declaration", "decl", "dec",
                   "_PN_INRE_LITIG_RE", "_PN_CASES_RUN_RE", "_PN_WL_RUN_RE"):
         assert token in text
+    # court-form boilerplate that is never faked
+    for token in ("_PN_NEVER_FAKE", "CIV-100", "CASE NUMBER", "Default Only"):
+        assert token in text
 
 
 def test_dump_writes_to_the_given_stream():
