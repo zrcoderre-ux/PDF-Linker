@@ -1503,3 +1503,48 @@ def test_unknown_name_scan_still_flags_a_real_entity():
     got = [s for _c, s in P._pn_unknown_name_findings(
         "Defendant Travelers Insurance moved", _KNOWN)]
     assert got == ["Travelers Insurance"]
+
+
+# ── 2026-07-22 review: argument-heading phrases flagged as names ─────────────
+# A separate statement / brief sets its argument headings in title case
+# ("Defendant Cannot Establish...", "For Age Discrimination", "Voluntarily
+# Resigned"), which the role-anchored unknown-name scan read as party names.
+# The gazetteer (its stated design: high-frequency English + motion-practice
+# vocabulary) now covers them. A real name in the same slot still flags.
+
+_ARG_SALAD = [
+    "Cannot Establish the Elements Of A", "Cannot Show He Experienced Intolerable",
+    "Has No Direct Evidence of Discrimination", "Has Not Established Pretext",
+    "For Age Discrimination", "For Failure To Prevent", "For Retaliation",
+    "For Wrongful Termination In Violation", "Voluntarily Resigned",
+    "Was Financially Motivated", "Requested and Was Approved", "Made A Rational",
+    "Employees Grow Irate", "Board of Directors", "Employee Relations",
+    "Disputed", "Undisputed", "Evidence", "Days", "Complains Again In January",
+    "Admits He Was Accommodated", "For FEHA Retaliation",
+]
+
+
+def test_argument_headings_are_not_flagged_as_names():
+    for phrase in _ARG_SALAD:
+        got = P._pn_unknown_name_findings(
+            f"Defendant {phrase} moved for judgment.", set())
+        assert got == [], f"{phrase!r} flagged: {got}"
+
+
+def test_real_names_after_a_role_anchor_still_flag():
+    for name in ("Travelers Insurance", "Sunrise Motors Group", "Aileen Neitzert"):
+        got = [s for _c, s in P._pn_unknown_name_findings(
+            f"Defendant {name} moved for judgment.", set())]
+        assert any(name.split()[0] in s for s in got), f"{name!r} not flagged"
+
+
+def test_gazetteer_did_not_swallow_a_leaked_surname():
+    # "Green", "Smart", "Raven", "Moore" leaked as real names in the case that
+    # prompted this fix — none may become a neutral common word.
+    for surname in ("green", "smart", "raven", "moore"):
+        assert surname not in P._PN_COMMON_WORDS
+
+
+def test_no_fake_pool_word_is_a_gazetteer_word():
+    pool = {w.lower() for w in P._PN_NAME_WORDS} | {w.lower() for w in P._PN_ENTITY_WORDS}
+    assert not (pool & P._PN_COMMON_WORDS)
