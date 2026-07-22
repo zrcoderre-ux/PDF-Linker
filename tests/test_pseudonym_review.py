@@ -1450,3 +1450,56 @@ def test_distinctive_account_number_is_still_tracked():
     got = {v for _c, v in P._pn_identifier_values(
         "DEAL# 23071 and Cust# 4433221 and Acct #: A203")}
     assert "23071" in got and "4433221" in got and "A203" in got
+
+
+# ── 2026-07-22 review: REVIEW scans flagged already-faked content ────────────
+# The delivered leak sheet flagged the run's OWN fakes as unscrubbed names
+# whenever a fake sat next to a non-fake word: "ASIC Pruett Keswick",
+# "Nolan Relations", "Operations Calder", the welded "HENDRY2 CORPORATIOLORNE10"
+# and "POSTBOX4.ORGPANY". Known = the fake tokens those phrases are built from.
+_KNOWN = {"keswick", "radley", "nolan", "pruett", "calder", "corwin",
+          "hendry2", "lorne10", "postbox4", "colfax2"}
+
+
+def test_welded_fake_is_recognised_as_own_fake():
+    assert P._pn_word_is_own_fake("CORPORATIOLORNE10", _KNOWN)   # Lorne10 welded
+    assert P._pn_word_is_own_fake("POSTBOX4.ORGPANY", _KNOWN)    # Postbox4 welded
+    assert P._pn_word_is_own_fake("Keswick", _KNOWN)             # bare fake
+    assert not P._pn_word_is_own_fake("Travelers", _KNOWN)       # a real survivor
+
+
+def test_declarant_scan_ignores_a_fake_dragged_by_a_prefix():
+    for ctx in ["ASIC Pruett Keswick Decl.", "CBA. Radley Decl.",
+                "PDT Keswick Decl.", "Nolan Relations. Radley Decl.",
+                "Keswick's January Radley Decl.", "See Radley Decl."]:
+        assert P._pn_declarant_ref_findings(ctx, _KNOWN) == [], ctx
+
+
+def test_declarant_scan_still_flags_a_real_declarant_leak():
+    got = [s for _c, s in P._pn_declarant_ref_findings(
+        "See Marisol Vandergriff Decl.", _KNOWN)]
+    assert got and "Vandergriff" in got[0]
+
+
+def test_person_scan_ignores_a_fake_beside_a_nonname_word():
+    for ctx in ["By: Nolan Relations", "By: Operations Calder",
+                "cc: Corwin Palladine"]:
+        assert P._pn_person_review_findings(ctx, _KNOWN) == [], ctx
+
+
+def test_person_scan_still_flags_a_real_person_leak():
+    got = [s for _c, s in P._pn_person_review_findings("By: Aileen Neitzert", _KNOWN)]
+    assert got == ["Aileen Neitzert"]
+
+
+def test_unknown_name_scan_ignores_welded_fakes():
+    for ctx in ["Against Defendant HENDRY2 Corporation",
+                "Defendant HENDRY2 CORPORATIOLORNE10 moved",
+                "Defendant POSTBOX4.ORGPANY responded"]:
+        assert P._pn_unknown_name_findings(ctx, _KNOWN) == [], ctx
+
+
+def test_unknown_name_scan_still_flags_a_real_entity():
+    got = [s for _c, s in P._pn_unknown_name_findings(
+        "Defendant Travelers Insurance moved", _KNOWN)]
+    assert got == ["Travelers Insurance"]

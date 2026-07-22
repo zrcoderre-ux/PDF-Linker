@@ -7650,6 +7650,35 @@ def _pn_dealer_review_findings(text, known_fakes=()):
     return out
 
 
+def _pn_word_is_own_fake(word, known):
+    """True when `word` is one of this run's own stand-ins — so a REVIEW scan
+    doesn't report already-faked content as an unscrubbed name. Covers the bare
+    fake ("Keswick"), and a WELDED fake where a column splice glued the fake to
+    its neighbour ("CORPORATIOLORNE10" carries "lorne10"; "POSTBOX4.ORGPANY"
+    carries "postbox4"): the fake survives as a substring of the welded token,
+    so a token containing a known fake (length >= 5, to avoid a coincidental
+    short match) is treated as already-scrubbed too."""
+    base = _pn_word_base(word)
+    if base in known:
+        return True
+    return any(k in base for k in known if len(k) >= 5)
+
+
+def _pn_review_is_neutral(word, known):
+    """True when `word` cannot be a fresh unscrubbed name: one of our own fakes
+    (bare or welded), a common/procedural/role/connector word, a corporate
+    suffix, or a short all-caps acronym prefix ("ASIC", "CBA", "PDT", "ADP")
+    that a splice glued onto a name. Only such words remaining means the
+    distinctive name was our own fake and the finding is noise."""
+    base = _pn_word_base(word)
+    return (_pn_word_is_own_fake(word, known)
+            or len(base) < 3
+            or base in _PN_COMMON_WORDS or base in _PN_PLEADING_WORDS
+            or base in _PN_DECL_DESCRIPTOR or base in _PN_REVIEW_NAME_STOP
+            or _pn_is_role_token(word) or _pn_is_entity_keep(base)
+            or (word.isupper() and len(base) <= 4))
+
+
 def _pn_person_review_findings(text, known_fakes=()):
     """[("possible person name", sample), ...] — capitalised names the scrubber
     never saw. `known_fakes` holds the lower-cased words this run minted, so the
@@ -7662,7 +7691,18 @@ def _pn_person_review_findings(text, known_fakes=()):
             words = [w.strip(".,").lower() for w in name.split()]
             if any(w in _PN_REVIEW_NAME_STOP for w in words):
                 continue
-            if all(w in known for w in words):
+            # A phrase polluted by our OWN fakes is not a fresh survivor: when a
+            # fake stands beside a non-name word (a splice's "ASIC Pruett
+            # Keswick", a department fragment "Nolan Relations", "Operations
+            # Calder"), the strict all-fake test failed on that one word and the
+            # fake got re-reported. Suppress unless a real 2-word name still
+            # stands after the fakes and neutral words are removed.
+            if any(_pn_word_is_own_fake(w, known) for w in name.split()):
+                core = [w for w in name.split()
+                        if not _pn_review_is_neutral(w, known)]
+                if len(core) < 2:
+                    continue
+            elif all(w in known for w in words):
                 continue      # a fake we minted, not a survivor
             if _pn_is_procedural_phrase(name):
                 continue      # a document type, not a person ("Reply Brief")
@@ -7752,7 +7792,12 @@ def _pn_unknown_name_findings(text, neutral_words):
             continue
         def _neutral(w):
             base = _pn_word_base(w)
-            return (len(base) < 3 or base in neutral
+            # A token that CONTAINS a known fake is a welded stand-in ("HENDRY2
+            # CORPORATIOLORNE10", "POSTBOX4.ORGPANY") — already scrubbed, so
+            # neutral. `neutral` here is the set of minted fake words.
+            if _pn_word_is_own_fake(w, neutral):
+                return True
+            return (len(base) < 3
                     or base in _PN_COMMON_WORDS or _pn_is_entity_keep(base)
                     or _pn_is_role_token(w)
                     or base in _PN_REVIEW_NAME_STOP)
@@ -8373,8 +8418,16 @@ def _pn_declarant_ref_findings(text, known_fakes=()):
     known = {w.lower() for w in known_fakes}
     out = []
     for name in _pn_declarant_ref_names(text):
-        if all(_pn_word_base(w) in known for w in name.split()):
+        toks = name.split()
+        if all(_pn_word_is_own_fake(w, known) for w in toks):
             continue                       # already scrubbed to our fake
+        # A fake dragged along by a non-name prefix ("ASIC Pruett Keswick",
+        # "CBA. Radley", "Keswick's January Radley") is already scrubbed too:
+        # once the fakes are removed, what remains is not a declarant name.
+        if any(_pn_word_is_own_fake(w, known) for w in toks):
+            rest = [w for w in toks if not _pn_word_is_own_fake(w, known)]
+            if not _pn_is_personlike_declarant(" ".join(rest)):
+                continue
         out.append(("unscrubbed declarant name?", name))
     return out
 
