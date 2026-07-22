@@ -89,9 +89,12 @@ def test_typed_replacement_persists_in_key(tmp_path):
 def test_typed_replacement_is_idempotent(tmp_path):
     _setup(tmp_path, "FOXGLEN & FOXGLEN")
     assert P._fix_leaks_mode(tmp_path, _args(tmp_path), {}, log) == 0
-    # The typed value must be carried back into the worksheet, not collapsed
-    # to "yes" (which would re-derive a different fake and drop the binding).
-    assert _fix_cell(tmp_path) == "FOXGLEN & FOXGLEN"
+    # The leak is resolved, so the worksheet is auto-removed (nothing left to
+    # triage). The typed fake is persisted in the KEY, not re-derived, so a
+    # second run still converges and the binding is unchanged.
+    assert not (tmp_path / "LEAKS.xlsx").exists()
+    rows = _key_rows(tmp_path)
+    assert rows and rows[0][2] == "FOXGLEN & FOXGLEN"
     assert P._fix_leaks_mode(tmp_path, _args(tmp_path), {}, log) == 0
     rows = _key_rows(tmp_path)
     assert rows and rows[0][2] == "FOXGLEN & FOXGLEN"   # binding still present
@@ -223,12 +226,22 @@ def test_partial_keep_fakes_only_the_unbracketed_part(tmp_path):
 
 
 def test_partial_keep_roundtrips_the_bracket_spec(tmp_path):
-    _setup_partial(tmp_path, "Raytheon Technologies", "[Technologies]",
-                   "Raytheon Technologies opposed the motion.")
-    P._fix_leaks_mode(tmp_path, _args(tmp_path), {}, log)
-    # The bracket instruction survives back into the worksheet, not collapsed to
-    # "yes" (which would fake the whole phrase, including the kept words).
-    ws = openpyxl.load_workbook(tmp_path / "LEAKS.xlsx", data_only=True).active
-    cell = next((str(r[1] or "") for r in ws.iter_rows(values_only=True)
-                 if r and str(r[0]).strip() == "Raytheon Technologies"), None)
+    # While a value is still tracked (the writer keeps the sheet when it has
+    # rows), a bracket keep-spec survives back into the worksheet verbatim, not
+    # collapsed to "yes" (which would fake the whole phrase, kept words and all).
+    wb = openpyxl.Workbook(); ws = wb.active; ws.title = "Potential Leaks"
+    ws.append(["File", "Type", "Value", "Where (page:line)",
+               "Fix? (yes/no)", "Notes"])
+    ws.append(["A.pdf", "LEAK", "Raytheon Technologies", "p.1",
+               "[Technologies]", ""])
+    wb.save(tmp_path / "LEAKS.xlsx")
+    dec = P._pn_read_leak_decisions(tmp_path)
+    P._pn_write_leak_report(
+        tmp_path,
+        [{"file": "A.pdf", "type": "LEAK",
+          "value": "Raytheon Technologies", "where": "p.1"}],
+        log, decisions=dec)
+    ws2 = openpyxl.load_workbook(tmp_path / "LEAKS.xlsx", data_only=True).active
+    cell = next(str(r[1] or "") for r in ws2.iter_rows(values_only=True)
+                if r and str(r[0]).strip() == "Raytheon Technologies")
     assert cell == "[Technologies]"

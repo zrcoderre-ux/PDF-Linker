@@ -127,3 +127,62 @@ def test_nfkc_only_difference_is_not_rewritten(tmp_path):
     args.key = str(tmp_path / "pseudonym_key.xlsx")
     P._fix_leaks_mode(tmp_path, args, {}, log)
     assert lig.read_text() == "The ﬁnding was aﬃrmed."          # untouched
+
+
+# ── Auto-cleanup: once every LEAK file is fixed, remove the workflow files ────
+def _fixable_folder(tmp_path):
+    """A folder with one quarantined export and a key+worksheet that resolve it,
+    plus a stand-in Apply-Leak-Fixes launcher."""
+    td = tmp_path / "Text Files"
+    td.mkdir()
+    (td / "Brief.txt.LEAK").write_text(
+        "====== Page 1 ======\nRaytheon Technologies opposed.\n", encoding="utf-8")
+    wb = openpyxl.Workbook(); ws = wb.active; ws.title = "Pseudonym Key"
+    ws.append(["Category", "Real Value", "Replacement", "Status",
+               "Source", "Occurrences"])
+    ws.append(["person", "Filler Party", "Fake Party", "replaced", "--term", "1"])
+    wb.save(tmp_path / "pseudonym_key.xlsx")
+    wb2 = openpyxl.Workbook(); w2 = wb2.active; w2.title = "Potential Leaks"
+    w2.append(["File", "Type", "Value", "Where (page:line)", "Fix? (yes/no)", "Notes"])
+    w2.append(["Brief.txt.LEAK", "LEAK", "Raytheon Technologies", "p.1", "yes", ""])
+    wb2.save(tmp_path / "LEAKS.xlsx")
+    (tmp_path / "Apply Leak Fixes.command").write_text("#!/bin/sh\n", encoding="utf-8")
+    return td
+
+
+def _fl_args(folder):
+    import types
+    return types.SimpleNamespace(term=[], key=str(folder / "pseudonym_key.xlsx"))
+
+
+def test_resolved_run_deletes_worksheet_and_launcher(tmp_path):
+    td = _fixable_folder(tmp_path)
+    rc = P._fix_leaks_mode(tmp_path, _fl_args(tmp_path), {}, log)
+    assert rc == 0
+    assert not (td / "Brief.txt.LEAK").exists()          # un-quarantined
+    assert not (tmp_path / "LEAKS.xlsx").exists()         # worksheet removed
+    assert not (tmp_path / "Apply Leak Fixes.command").exists()   # launcher removed
+
+
+def test_unresolved_run_keeps_worksheet_and_launcher(tmp_path):
+    # A leak the key can't resolve (no matching term) keeps the file
+    # quarantined, so the worksheet and launcher must stay.
+    td = tmp_path / "Text Files"; td.mkdir()
+    (td / "Brief.txt.LEAK").write_text(
+        "====== Page 1 ======\nOmega Dynamics opposed.\n", encoding="utf-8")
+    wb = openpyxl.Workbook(); ws = wb.active; ws.title = "Pseudonym Key"
+    ws.append(["Category", "Real Value", "Replacement", "Status",
+               "Source", "Occurrences"])
+    ws.append(["person", "Filler Party", "Fake Party", "replaced", "--term", "1"])
+    wb.save(tmp_path / "pseudonym_key.xlsx")
+    wb2 = openpyxl.Workbook(); w2 = wb2.active; w2.title = "Potential Leaks"
+    w2.append(["File", "Type", "Value", "Where (page:line)", "Fix? (yes/no)", "Notes"])
+    # A typed replacement equal to the value is rejected — nothing gets fixed.
+    w2.append(["Brief.txt.LEAK", "LEAK", "Omega Dynamics", "p.1",
+               "Omega Dynamics", ""])
+    wb2.save(tmp_path / "LEAKS.xlsx")
+    (tmp_path / "Apply Leak Fixes.command").write_text("#!/bin/sh\n", encoding="utf-8")
+    P._fix_leaks_mode(tmp_path, _fl_args(tmp_path), {}, log)
+    assert (td / "Brief.txt.LEAK").exists()               # still quarantined
+    assert (tmp_path / "LEAKS.xlsx").exists()             # worksheet kept
+    assert (tmp_path / "Apply Leak Fixes.command").exists()
