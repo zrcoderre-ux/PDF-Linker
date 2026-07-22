@@ -11011,14 +11011,47 @@ def _pn_existing_leak_xlsx(folder):
     return current
 
 
+def _pn_bracket_keep(value, cell):
+    """Parse a Fix? cell that BRACKETS the part(s) of `value` to KEEP verbatim,
+    faking only the rest — the operator's way of saying "this fragment isn't a
+    name, but the remainder is". `[Human Resources] Information` on the leak
+    "Raytheon's Human Resources Information" keeps "Human Resources" and auto-
+    fakes the rest.
+
+    Returns the list of value fragments that DO need faking (the value with each
+    bracketed keep-part cut out), or None when the cell is not a bracket spec or
+    a bracketed part is not actually a substring of the value (so the caller
+    falls back to treating the whole cell as an explicit replacement). An empty
+    list means the operator bracketed the entire value — keep all of it."""
+    keeps = [k.strip() for k in re.findall(r"\[([^\[\]]*)\]", cell)]
+    keeps = [k for k in keeps if k]
+    if not keeps:
+        return None                       # no brackets — not this rule
+    work = value
+    for k in keeps:
+        i = work.lower().find(k.lower())
+        if i < 0:
+            return None                   # bracketed text isn't part of the value
+        work = work[:i] + "\x00" + work[i + len(k):]
+    frags = [f.strip(" \t,.;:'’\"-–—") for f in work.split("\x00")]
+    return [f for f in frags if re.search(r"[A-Za-z0-9]", f)]
+
+
 def _pn_read_leak_decisions(folder):
-    """{value_lower: {value, type, fix, replacement, notes}} read back from a
-    leak worksheet the reviewer annotated on a prior run. `fix` is normalised to
-    'yes'/'no'/''. Any Fix? entry that is NOT a reserved control word ('yes'/'no'
-    and the bare y/n dropdown shorthands) is an explicit operator-typed
-    replacement: `fix` becomes 'yes' and `replacement` carries the typed text
-    verbatim, so the reviewer can dictate the exact fake instead of letting the
-    auto-faker choose. Empty when there is no readable worksheet."""
+    """{value_lower: {value, type, fix, replacement, fake_values, fixcell,
+    notes}} read back from a leak worksheet the reviewer annotated on a prior
+    run. `fix` is normalised to 'yes'/'no'/''. A Fix? entry that is NOT a
+    reserved control word ('yes'/'no' and the bare y/n dropdown shorthands) is
+    read as one of two operator instructions:
+
+      * BRACKETED text that is part of the flagged value — the operator keeps
+        the bracketed part verbatim and auto-fakes the rest (`fake_values` holds
+        the fragment(s) to fake); or
+      * anything else — an explicit typed replacement (`replacement` carries the
+        text verbatim), dictating the exact fake instead of the auto-faker's.
+
+    `fixcell` is the exact string to write back so the annotation round-trips.
+    Empty when there is no readable worksheet."""
     xlsx = _pn_existing_leak_xlsx(folder)
     if not xlsx.is_file():
         return {}
@@ -11048,8 +11081,10 @@ def _pn_read_leak_decisions(folder):
         raw = str(cell("fix? (yes/no)") or "").strip()
         low = raw.lower()
         # Reserved control words are ONLY 'yes'/'no' (with the historical bare
-        # y/n dropdown shorthands). ANYTHING else non-empty is an explicit
-        # operator-typed replacement, applied verbatim, bypassing the auto-faker.
+        # y/n dropdown shorthands). A bracketed fragment of the value is a
+        # partial-keep instruction; anything else non-empty is an explicit
+        # operator-typed replacement. Both bypass or steer the auto-faker.
+        replacement, fake_values, fixcell = None, None, None
         if low in ("yes", "y"):
             fix, replacement = "yes", None
         elif low in ("no", "n"):
@@ -11057,9 +11092,17 @@ def _pn_read_leak_decisions(folder):
         elif low == "":
             fix, replacement = "", None
         else:
-            fix, replacement = "yes", raw
+            frags = _pn_bracket_keep(val, raw)
+            fixcell = raw                 # echo the operator's text back verbatim
+            if frags is None:
+                fix, replacement = "yes", raw           # explicit replacement
+            elif frags:
+                fix, fake_values = "yes", frags          # keep bracketed, fake rest
+            else:
+                fix = "no"                # whole value bracketed -> keep all of it
         out[val.lower()] = {"value": val, "type": str(cell("type") or "").strip(),
                             "fix": fix, "replacement": replacement,
+                            "fake_values": fake_values, "fixcell": fixcell,
                             "notes": str(cell("notes") or "").strip()}
     return out
 
@@ -11129,13 +11172,15 @@ def _pn_write_leak_report(folder, entries, log, decisions=None):
         d = decisions.get(vl, {})
         files = g["files"]
         file_cell = ", ".join(files) if len(files) <= 3 else f"{len(files)} files"
-        # `fixcell` is what the Fix? cell shows: an operator-typed replacement is
-        # carried back verbatim (NOT collapsed to "yes"), so a re-run re-reads
-        # the typed value instead of re-deriving an auto fake.
+        # `fixcell` is what the Fix? cell shows: an operator-typed replacement
+        # or a bracketed keep-spec is carried back verbatim (NOT collapsed to
+        # "yes"), so a re-run re-reads the exact instruction instead of
+        # re-deriving an auto fake.
         rows.append({"file": file_cell, "type": g["type"], "value": g["value"],
                      "where": _pn_merge_where(g["wheres"]),
                      "fix": d.get("fix", ""),
-                     "fixcell": (d.get("replacement") or d.get("fix", "")),
+                     "fixcell": (d.get("fixcell") or d.get("replacement")
+                                 or d.get("fix", "")),
                      "notes": d.get("notes", ""), "present": True})
     # Persist a decision whose value didn't recur this run, so a Fix?=yes term
     # keeps being applied and a Fix?=no stays suppressed on future runs.
@@ -11144,7 +11189,8 @@ def _pn_write_leak_report(folder, entries, log, decisions=None):
             rows.append({"file": "—", "type": d.get("type") or "(decided)",
                          "value": d["value"], "where": _PN_LEAK_ABSENT,
                          "fix": d["fix"],
-                         "fixcell": (d.get("replacement") or d["fix"]),
+                         "fixcell": (d.get("fixcell") or d.get("replacement")
+                                     or d["fix"]),
                          "notes": d.get("notes", ""), "present": False})
 
     def _remove(paths):
@@ -11175,7 +11221,8 @@ def _pn_write_leak_report(folder, entries, log, decisions=None):
         import openpyxl
     except ImportError:
         lines = ["Potential leaks — set Fix? to yes (auto fake), no (leave it), "
-                 "or type the exact replacement to use", ""]
+                 "type the exact replacement, or [bracket] the part to KEEP "
+                 "(the rest is faked)", ""]
         for r in rows:
             mark = {"yes": "[x]", "no": "[-]"}.get(r["fix"], "[ ]")
             lines.append(f"{mark} {r['type']}: {r['value']}  "
@@ -11207,8 +11254,9 @@ def _pn_write_leak_report(folder, entries, log, decisions=None):
         dv.showErrorMessage = False   # offer the dropdown but ALSO allow a typed
         dv.showInputMessage = True    # replacement in the cell, not just yes/no
         dv.promptTitle = "Fix?"
-        dv.prompt = ("yes = auto fake · no = leave it · "
-                     "or type the exact replacement to use")
+        dv.prompt = ("yes = auto fake · no = leave it · type the exact "
+                     "replacement to use · or [bracket] the part to KEEP and "
+                     "the rest is faked")
         ws.add_data_validation(dv)
         dv.add(f"{fix_col}2:{fix_col}{len(rows) + 1}")
     except Exception:
@@ -12401,6 +12449,11 @@ def _fix_leaks_mode(folder, args, cfg, log):
     for d in decisions.values():
         if d["fix"] != "yes":
             continue
+        # Bracketed keep-spec: auto-fake only the non-bracketed fragment(s); the
+        # bracketed part is left verbatim (never registered, so never touched).
+        if d.get("fake_values") is not None:
+            auto_terms.extend(d["fake_values"])
+            continue
         repl = (d.get("replacement") or "").strip()
         if repl and repl.lower() != d["value"].strip().lower():
             explicit[d["value"]] = repl
@@ -12757,8 +12810,14 @@ def main():
         # marked "no" are remembered so they never quarantine and drop out of
         # the active review list. Decisions persist in the worksheet itself.
         leak_decisions = _pn_read_leak_decisions(folder)
-        fix_terms = [d["value"] for d in leak_decisions.values()
-                     if d["fix"] == "yes"]
+        # A bracketed keep-spec auto-fakes only its non-bracketed fragment(s);
+        # every other Fix?=yes scrubs the whole flagged value.
+        fix_terms = []
+        for d in leak_decisions.values():
+            if d["fix"] != "yes":
+                continue
+            fv = d.get("fake_values")
+            fix_terms.extend(fv if fv is not None else [d["value"]])
         suppressed = {vl for vl, d in leak_decisions.items() if d["fix"] == "no"}
         extra_terms = list(args.term or []) + fix_terms
         if fix_terms:
