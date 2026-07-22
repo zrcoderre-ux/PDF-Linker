@@ -86,7 +86,10 @@ written to the key.
   distinct value**: a name that leaks across many files is aggregated into a
   single row (files + locations merged) so the operator decides it once, not
   once per file. The **Fix?** column round-trips: `yes`=auto-fake, `no`=leave,
-  **any other text = an explicit operator-typed replacement**. Government hosts (`*.gov`/`*.mil`) are public
+  **any other text = an explicit operator-typed replacement**, and
+  **`[bracketed]` text naming part of the value = keep that part verbatim and
+  auto-fake the rest** (`_pn_bracket_keep`; "Raytheon's [Human Resources]" fakes
+  the name, keeps the department words). Government hosts (`*.gov`/`*.mil`) are public
   infrastructure — never faked or flagged. When in doubt a **bare number under
   6 digits** is not a re-identification key (`reid_scan` filters it; bar
   numbers, a definite State Bar lookup, are exempt). A **bare 1-3 digit account

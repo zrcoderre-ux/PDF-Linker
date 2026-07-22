@@ -154,3 +154,81 @@ def test_decisions_parse_typed_value(tmp_path):
     assert P._pn_read_leak_decisions(folder)["m & m"]["replacement"] is None
     _worksheet(folder, "no")
     assert P._pn_read_leak_decisions(folder)["m & m"]["fix"] == "no"
+
+
+# ── Bracket rule: keep the bracketed PART of a leak, auto-fake the rest ───────
+# A Fix? cell that brackets part of the flagged value means "keep that fragment
+# verbatim; fake the remainder" — e.g. "[Human Resources]" on the leak
+# "Raytheon's Human Resources" keeps the department words and fakes the name.
+
+def test_bracket_keep_parser():
+    f = P._pn_bracket_keep
+    assert f("Raytheon's Human Resources", "[Human Resources]") == ["Raytheon's"]
+    assert f("RESPONSE TO RAYTEHEON", "[RESPONSE TO]") == ["RAYTEHEON"]
+    assert f("Board of Raytheon Directors", "[Board of] [Directors]") == ["Raytheon"]
+    assert f("Foo Corp", "[Foo Corp]") == []        # whole value bracketed
+    assert f("Foo Corp", "[Acme]") is None          # not a substring of the value
+    assert f("Foo Corp", "yes") is None             # no brackets -> not this rule
+
+
+def test_bracket_cell_reads_as_partial_keep(tmp_path):
+    wb = openpyxl.Workbook(); ws = wb.active; ws.title = "Potential Leaks"
+    ws.append(["File", "Type", "Value", "Where (page:line)",
+               "Fix? (yes/no)", "Notes"])
+    ws.append(["A.pdf", "LEAK", "Raytheon Technologies", "p.1",
+               "[Technologies]", ""])
+    wb.save(tmp_path / "LEAKS.xlsx")
+    d = P._pn_read_leak_decisions(tmp_path)["raytheon technologies"]
+    assert d["fix"] == "yes" and d["replacement"] is None
+    assert d["fake_values"] == ["Raytheon"]         # only the non-kept part
+    assert d["fixcell"] == "[Technologies]"         # round-trips verbatim
+
+
+def test_whole_value_bracketed_keeps_everything(tmp_path):
+    wb = openpyxl.Workbook(); ws = wb.active; ws.title = "Potential Leaks"
+    ws.append(["File", "Type", "Value", "Where (page:line)",
+               "Fix? (yes/no)", "Notes"])
+    ws.append(["A.pdf", "LEAK", "Superior Court", "p.1", "[Superior Court]", ""])
+    wb.save(tmp_path / "LEAKS.xlsx")
+    d = P._pn_read_leak_decisions(tmp_path)["superior court"]
+    assert d["fix"] == "no" and d["fake_values"] is None
+
+
+def _setup_partial(folder, value, fix_cell, line):
+    tdir = folder / "Text Files"
+    tdir.mkdir()
+    (tdir / "Brief.txt.LEAK").write_text(
+        f"====== Page 1 ======\n{line}\n", encoding="utf-8")
+    wb = openpyxl.Workbook(); ws = wb.active; ws.title = "Pseudonym Key"
+    ws.append(["Category", "Real Value", "Replacement", "Status",
+               "Source", "Occurrences"])
+    ws.append(["person", "Unrelated Party", "Fake Party", "replaced", "--term", "1"])
+    wb.save(folder / "pseudonym_key.xlsx")
+    wb2 = openpyxl.Workbook(); w2 = wb2.active; w2.title = "Potential Leaks"
+    w2.append(["File", "Type", "Value", "Where (page:line)",
+               "Fix? (yes/no)", "Notes"])
+    w2.append(["Brief.txt.LEAK", "LEAK", value, "p.1", fix_cell, ""])
+    wb2.save(folder / "LEAKS.xlsx")
+    return tdir
+
+
+def test_partial_keep_fakes_only_the_unbracketed_part(tmp_path):
+    tdir = _setup_partial(tmp_path, "Raytheon Technologies", "[Technologies]",
+                          "Raytheon Technologies opposed the motion.")
+    rc = P._fix_leaks_mode(tmp_path, _args(tmp_path), {}, log)
+    assert rc == 0                                   # leak cleared, un-quarantined
+    body = (tdir / "Brief.txt").read_text()
+    assert "Raytheon" not in body                    # the name was faked
+    assert "Technologies" in body                    # the bracketed part kept
+
+
+def test_partial_keep_roundtrips_the_bracket_spec(tmp_path):
+    _setup_partial(tmp_path, "Raytheon Technologies", "[Technologies]",
+                   "Raytheon Technologies opposed the motion.")
+    P._fix_leaks_mode(tmp_path, _args(tmp_path), {}, log)
+    # The bracket instruction survives back into the worksheet, not collapsed to
+    # "yes" (which would fake the whole phrase, including the kept words).
+    ws = openpyxl.load_workbook(tmp_path / "LEAKS.xlsx", data_only=True).active
+    cell = next((str(r[1] or "") for r in ws.iter_rows(values_only=True)
+                 if r and str(r[0]).strip() == "Raytheon Technologies"), None)
+    assert cell == "[Technologies]"
