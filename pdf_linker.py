@@ -12388,6 +12388,32 @@ def _fix_launcher_spec(exe, script, windows, frozen=False):
     return "Apply Leak Fixes.command", content, True
 
 
+def _pn_fix_launcher_paths(folder):
+    """Both possible 'Apply Leak Fixes' launcher paths — a folder synced across
+    OSes may carry either the .command or the .bat."""
+    return [folder / "Apply Leak Fixes.command", folder / "Apply Leak Fixes.bat"]
+
+
+def _pn_remove_leak_workflow(folder, log):
+    """Delete the leak-triage worksheet (under every name it has used) and the
+    Apply-Leak-Fixes launcher. Called once no quarantined *.LEAK export remains:
+    the leak workflow is resolved, so its own files must not linger and imply
+    there is still something to triage. Best-effort; returns the names removed."""
+    victims = [_pn_leak_xlsx_path(folder), _pn_leak_txt_path(folder)]
+    victims += [folder / f"{stem}.xlsx" for stem in _PN_LEAK_LEGACY_STEMS]
+    victims += [folder / f"{stem}.txt" for stem in _PN_LEAK_LEGACY_STEMS]
+    victims += _pn_fix_launcher_paths(folder)
+    removed = []
+    for p in victims:
+        try:
+            if p.exists():
+                p.unlink()
+                removed.append(p.name)
+        except OSError:
+            pass
+    return removed
+
+
 def _write_fix_launcher(folder, log):
     """Write/refresh the double-click 'Apply Leak Fixes' launcher. Best-effort."""
     exe = Path(sys.executable)
@@ -12466,6 +12492,16 @@ def _fix_leaks_mode(folder, args, cfg, log):
     suppressed = {vl for vl, d in decisions.items() if d["fix"] == "no"}
     fix_terms = auto_terms + list(explicit)
     if not fix_terms:
+        # Nothing to apply. If no quarantined *.LEAK export remains either, the
+        # workflow is already resolved — clean up its worksheet and launcher so
+        # a done folder doesn't keep both around.
+        if not any(p.name.endswith(".txt.LEAK") for p in text_dir.iterdir()
+                   if p.is_file()):
+            removed = _pn_remove_leak_workflow(folder, log)
+            if removed:
+                log.info("  --fix-leaks: nothing left to fix — removed "
+                         + ", ".join(removed) + ".")
+                return 0
         log.info("--fix-leaks: no Fix?=yes rows in LEAKS.xlsx — "
                  "nothing to apply. Mark the leaks you want scrubbed (yes, or "
                  "type the exact replacement) and double-click again.")
@@ -12579,9 +12615,18 @@ def _fix_leaks_mode(folder, args, cfg, log):
                 log.warning(f"  Could not un-quarantine {f.name}: {e}")
 
     pz.write_key(key_path, log)                    # loaded rows preserved
-    _pn_write_leak_report(folder, pz.leak_report, log, decisions=decisions)
-
     still = len(offenders)
+    if still:
+        _pn_write_leak_report(folder, pz.leak_report, log, decisions=decisions)
+    else:
+        # Every LEAK file is fixed: the worksheet and the Apply-Leak-Fixes
+        # launcher have done their job — remove them instead of leaving stale
+        # files that suggest there is still something to triage.
+        removed = _pn_remove_leak_workflow(folder, log)
+        if removed:
+            log.info("  --fix-leaks: all leaks resolved — removed "
+                     + ", ".join(removed) + ".")
+
     log.info(f"--fix-leaks: applied {len(fix_terms)} fix(es) to {changed} "
              f"file(s); {unq} export(s) un-quarantined (*.LEAK -> .txt)"
              + (f"; {still} file(s) still carry a party-name leak — review "
