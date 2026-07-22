@@ -35,6 +35,20 @@ written to the key.
 
 ## Pseudonymization pipeline (the privacy-critical half)
 
+- **Fake pools** (`_PN_NAME_WORDS` ~190 surnames, `_PN_ENTITY_WORDS` ~110): drawn
+  without replacement per case, so they must stay ahead of a real filing's
+  distinct name tokens (parties + counsel + staff + every declarant + e-mail
+  display name) or the registry mints ugly numbered stand-ins ("Corwin Vance3",
+  and in body text "HENDRY2 CORPORATIOLORNE10"). Keep the four pools
+  (name/entity/city/street) disjoint (`TestPoolsAreDisjoint`) and every added
+  surname a valid `_pn_is_name_token`.
+- **OCR/typo folding** (`_PnFakeRegistry.token`): a name token within edit
+  distance 1 of an already-bound token (min length `_PN_NAME_FOLD_MIN`) folds
+  onto a *typo of that token's fake* (`_pn_typo_variants`), so "Palladina"/
+  "Pallading" read as typos of the one "Keswick" the canonical "Palladino" got,
+  each still keeping its own distinct (reversible) stand-in. The op mirrors the
+  real's deviation so lengths track (insert↔duplicate, delete↔drop, sub↔visual
+  confusable). Mirrors the domain OCR-folding (`_pn_edit_distance_le1`).
 - **Registry** (`_PnFakeRegistry`): injective, deterministic real→fake fakes,
   seeded on the real value (same input → same fake across runs, no two reals
   collide onto one fake). Draw every fake through it so the used-pool stays
@@ -62,7 +76,12 @@ written to the key.
   **any other text = an explicit operator-typed replacement**. Government hosts (`*.gov`/`*.mil`) are public
   infrastructure — never faked or flagged. When in doubt a **bare number under
   6 digits** is not a re-identification key (`reid_scan` filters it; bar
-  numbers, a definite State Bar lookup, are exempt).
+  numbers, a definite State Bar lookup, are exempt). A **bare 1-3 digit account
+  number** is not even tracked (`_pn_identifier_values` drops it): "Response
+  No. 101" / "Material Fact No. 110" collide with page/exhibit/section numbers,
+  so registering them faked the number where it could and leaked it (in
+  citation-protected spans) where it couldn't — pure review noise; a 4+ digit
+  or alphanumeric stamp ("DEAL# 23071") stays distinctive and is still scrubbed.
 - **Column-spliced captions**: a two-column caption interleaves in extraction,
   welding party names to neighbours. Extraction is column-aware up front: a
   page-level column band needs multi-row support (`_COLUMN_BAND_MIN_ROWS`,
