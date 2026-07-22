@@ -7758,7 +7758,27 @@ supported supports our supreme unlimited limited jurisdiction jurisdictions
 jurisdictional delaware venue venued
 january february march april may june july august september october november
 december monday tuesday wednesday thursday friday saturday sunday
-""".split())
+establish establishes establishing established show shows showing shown
+admit admits admitted complain complains complained request requests requested
+approve approves approved articulate articulates articulated experience
+experiences experienced resign resigns resigned motivate motivates motivated
+prevent prevents prevented grow grows grew dispute disputes disputed undisputed
+accommodate accommodates accommodated cannot direct indirect legitimate
+intolerable rational irrational reasonable unreasonable financially voluntarily
+involuntarily wrongful wrongfully intentional intentionally negligent emotional
+physical mental against although age disability discrimination distress element
+elements employee employees employer employers evidence failure infliction
+information intent pretext reason reasons resource resources retaliation
+retaliate retaliated termination terminate terminated violation violate
+violated whistleblower human board directors director operation operations
+decision decisions maker makers appendix accommodation retaliatory harass
+harasses harassed harassment protected adverse discriminate discriminated
+discriminatory hostile pretextual constructive resignation whistleblowing
+deposition depo depos volume vol testified testimony declares declared
+established alleged fabricated financial articulate
+made make makes making day days irate feha dec decs grieve grievance
+undisputed disputed genuine material fact facts issue issues each every
+none no yes true false""".split())
 
 
 def _pn_unknown_name_findings(text, neutral_words):

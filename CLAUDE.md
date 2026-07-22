@@ -72,7 +72,13 @@ written to the key.
   carries "postbox4"), and a phrase is suppressed once the fake tokens are
   removed and no real name still stands — so a fake dragged by a non-name
   prefix ("ASIC Pruett Keswick", "Nolan Relations") is not reported as
-  unscrubbed. A genuinely-new real name beside a fake is still surfaced.
+  unscrubbed. A genuinely-new real name beside a fake is still surfaced. The
+  distinctness gate is the `_PN_COMMON_WORDS` gazetteer (~500 words: high-
+  frequency English plus motion-practice vocabulary), so a title-case argument
+  heading ("Defendant Cannot Establish...", "For Age Discrimination",
+  "Voluntarily Resigned") reads as boilerplate, not a party — but it must never
+  swallow a word that is also a real surname in the case (green/smart/raven/
+  moore all leaked here) or a fake-pool word.
   (worksheet tab `LEAKS`; the old `pdf_linker_leaks.xlsx` name is still READ so
   a folder triaged under a prior version keeps its decisions). Columns lead
   with the flagged **Value** then its **Fix?** decision, with File/Type/Where/
