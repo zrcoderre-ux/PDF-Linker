@@ -12202,16 +12202,26 @@ def _rerun_launcher_spec(exe, script, provider, want_key, windows, frozen=False)
     prog = f'"{exe}"' if frozen else f'"{exe}" "{script}"'
     if windows:
         key = ' --key "%~dp0pseudonym_key.xlsx"' if want_key else ""
+        # Detached background run: `start` hands the work to a separate process
+        # and the launcher returns immediately, so no console sits blocking on a
+        # `pause`. There is no blackout — the tool appends progress to
+        # pdf_linker.log throughout, and stamps a "DONE <time>.txt" file in the
+        # folder on a clean finish. The interpreter is the WINDOWLESS pythonw.exe
+        # where available (see _write_rerun_launcher), so nothing lingers on
+        # screen; a short timeout leaves the confirmation readable, then the
+        # launcher window closes on its own.
         content = (
             "@echo off\r\n"
-            "REM PDF-Linker re-run - double-click to process this folder again.\r\n"
-            "REM Picks up any Fix? decisions saved in LEAKS.xlsx.\r\n"
-            "echo Re-running PDF-Linker on this folder...\r\n"
-            "echo.\r\n"
-            f'{prog} "%~dp0." --provider {provider}{key}\r\n'
-            "echo.\r\n"
-            "echo Finished - exit code %ERRORLEVEL%. You can close this window.\r\n"
-            "pause\r\n")
+            "REM PDF-Linker re-run - double-click to process this folder in the\r\n"
+            "REM background. Picks up any Fix? decisions saved in LEAKS.xlsx.\r\n"
+            "REM Runs detached: the work continues after this window closes.\r\n"
+            'REM Progress -> pdf_linker.log; a "DONE <time>.txt" file appears\r\n'
+            "REM in this folder when the run finishes.\r\n"
+            "echo Re-running PDF-Linker in the background...\r\n"
+            "echo   Progress:  pdf_linker.log\r\n"
+            'echo   Finished:  a "DONE ....txt" file appears in this folder.\r\n'
+            f'start "PDF-Linker re-run" {prog} "%~dp0." --provider {provider}{key}\r\n'
+            "timeout /t 3 >nul 2>&1\r\n")
         return "Re-run PDF-Linker.bat", content, False
     key = ' --key "$(dirname "$0")/pseudonym_key.xlsx"' if want_key else ""
     content = (
@@ -12229,14 +12239,17 @@ def _write_rerun_launcher(folder, provider, want_key, log):
     a failure is never fatal to the run."""
     exe = Path(sys.executable)
     frozen = bool(getattr(sys, "frozen", False))
-    if os.name == "nt" and not frozen and exe.stem.lower().startswith("pythonw"):
-        # The tool is normally launched via pythonw.exe (the mail-merge macro),
-        # which has NO console — a double-clicked .bat that re-invokes it opens
-        # an EMPTY window. Re-run through the console python instead: the one
-        # beside pythonw.exe if present, else a bare "python.exe" resolved from
-        # PATH (still a console interpreter, unlike the windowless pythonw).
-        cand = exe.with_name(exe.name.lower().replace("pythonw", "python", 1))
-        exe = cand if cand.exists() else Path("python.exe")
+    if os.name == "nt" and not frozen:
+        # The re-run .bat launches the tool DETACHED (via `start`), so it wants
+        # the WINDOWLESS interpreter — pythonw.exe — or a bare console flashes
+        # for the length of the run. Prefer the pythonw beside sys.executable;
+        # if it isn't there, keep whatever we have (the detached run still works,
+        # it just shows a console). Progress goes to pdf_linker.log regardless.
+        low = exe.name.lower()
+        if low.startswith("python") and not low.startswith("pythonw"):
+            cand = exe.with_name("pythonw" + exe.name[len("python"):])
+            if cand.exists():
+                exe = cand
     script = Path(__file__).resolve()
     name, content, make_exec = _rerun_launcher_spec(
         str(exe), str(script), provider, want_key, os.name == "nt", frozen=frozen)
