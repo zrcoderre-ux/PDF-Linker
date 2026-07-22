@@ -65,7 +65,14 @@ written to the key.
   highest-priority longest-non-overlapping wins.
 - **Two-tier leak detection**: `surviving_reals` (a tracked real still present)
   and the high-recall REVIEW scans (`review_scan`, `unknown_name_scan`,
-  `reid_scan`) surface anything name-shaped for human triage in `LEAKS.xlsx`
+  `reid_scan`) surface anything name-shaped for human triage in `LEAKS.xlsx`.
+  These scans must never re-flag the run's OWN fakes: `_pn_word_is_own_fake`
+  recognises a bare fake ("Keswick") AND a welded one where a splice glued the
+  fake to a neighbour ("CORPORATIOLORNE10" carries "lorne10", "POSTBOX4.ORGPANY"
+  carries "postbox4"), and a phrase is suppressed once the fake tokens are
+  removed and no real name still stands — so a fake dragged by a non-name
+  prefix ("ASIC Pruett Keswick", "Nolan Relations") is not reported as
+  unscrubbed. A genuinely-new real name beside a fake is still surfaced.
   (worksheet tab `LEAKS`; the old `pdf_linker_leaks.xlsx` name is still READ so
   a folder triaged under a prior version keeps its decisions). Columns lead
   with the flagged **Value** then its **Fix?** decision, with File/Type/Where/
