@@ -115,8 +115,11 @@ def test_fallback_layout_ignores_tool_artifacts(tmp_path):
     args.key = str(tmp_path / "pseudonym_key.xlsx")
     assert P._fix_leaks_mode(tmp_path, args, {}, log) == 0   # no phantom leak
     assert "Yu" not in (tmp_path / "Brief.txt").read_text()
-    marker = tmp_path / "DONE 4.25PM.txt"
-    assert marker.exists() and marker.stat().st_size == 0
+    # The run stamps its own completion: the old DONE marker is replaced by a
+    # fresh 0-byte one (a marker is never scanned or scrubbed as an export).
+    dones = list(tmp_path.glob("DONE *.txt"))
+    assert len(dones) == 1 and dones[0].stat().st_size == 0
+    assert not list(tmp_path.glob("ETA *.txt"))
 
 
 def test_nfkc_only_difference_is_not_rewritten(tmp_path):
@@ -186,3 +189,21 @@ def test_unresolved_run_keeps_worksheet_and_launcher(tmp_path):
     assert (td / "Brief.txt.LEAK").exists()               # still quarantined
     assert (tmp_path / "LEAKS.xlsx").exists()             # worksheet kept
     assert (tmp_path / "Apply Leak Fixes.command").exists()
+
+
+def test_fix_leaks_writes_eta_then_done_marker(tmp_path, monkeypatch):
+    # Apply Leak Fixes projects a finish time (ETA marker) up front and replaces
+    # it with a DONE stamp when the pass completes — no ETA marker lingers.
+    seen = {}
+    real_eta = P._write_eta_marker
+    monkeypatch.setattr(P, "_write_eta_marker",
+                        lambda folder, label: seen.setdefault("eta", label)
+                        or real_eta(folder, label))
+    td = _fixable_folder(tmp_path)
+    rc = P._fix_leaks_mode(tmp_path, _fl_args(tmp_path), {}, log)
+    assert rc == 0
+    assert "applying leak fixes" in seen.get("eta", "")   # ETA was projected
+    markers = [p.name for p in tmp_path.iterdir()
+               if p.name.startswith(("ETA ", "DONE "))]
+    assert any(m.startswith("DONE ") for m in markers)     # finished stamp
+    assert not any(m.startswith("ETA ") for m in markers)  # none left behind

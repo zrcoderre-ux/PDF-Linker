@@ -12231,6 +12231,35 @@ def _save_eta_rate(rate):
         pass
 
 
+# Remembered --fix-leaks throughput (input BYTES per second), stored separately
+# from the full-run rate because the two measure different work: fix-leaks is a
+# pure text scrub (no OCR, no PDF), so its bytes/sec is far higher and would
+# skew the OCR-weighted full-run rate if they shared a file. A conservative
+# default seeds the FIRST fix-leaks run's estimate; it self-calibrates after.
+_FIX_ETA_RATE_FILE = "pdf_linker_fixleaks_rate.txt"
+_FIX_ETA_DEFAULT_RATE = 1_000_000.0     # bytes/sec, first-run seed only
+
+
+def _fix_rate_path():
+    return _config_path().with_name(_FIX_ETA_RATE_FILE)
+
+
+def _load_fix_rate():
+    try:
+        v = float(_fix_rate_path().read_text(encoding="utf-8").strip())
+        return v if v > 0 else None
+    except Exception:
+        return None
+
+
+def _save_fix_rate(rate):
+    try:
+        if rate and rate > 0:
+            _fix_rate_path().write_text(f"{rate:.6f}", encoding="utf-8")
+    except Exception:
+        pass
+
+
 # ── One-click re-run launcher ────────────────────────────────────────────────
 # After a run, drop a double-clickable file in the folder that re-runs the tool
 # on THIS same folder — the fast path for applying the Fix? decisions saved in
@@ -12541,6 +12570,24 @@ def _fix_leaks_mode(folder, args, cfg, log):
                    if p.is_file() and (p.suffix == ".txt"
                                        or p.name.endswith(".txt.LEAK"))
                    and not _is_tool_artifact(p))
+
+    # Projected-finish marker for the apply pass, same "ETA <clock>.txt" file the
+    # full run drops so the operator sees how long Apply Leak Fixes will take.
+    # The scrub is pure text (no OCR), so cost tracks input bytes; the rate
+    # self-calibrates from the last fix run (a conservative default seeds the
+    # first). Replaced by a DONE stamp when the pass finishes.
+    total_bytes = 0
+    for f in files:
+        try:
+            total_bytes += f.stat().st_size
+        except OSError:
+            pass
+    rate = _load_fix_rate() or _FIX_ETA_DEFAULT_RATE
+    finish = datetime.datetime.now() + datetime.timedelta(
+        seconds=total_bytes / rate if rate else 0)
+    _write_eta_marker(folder, f"~{_fmt_clock(finish)} (applying leak fixes)")
+    _fix_start = time.monotonic()
+
     changed = 0
     for f in files:
         try:
@@ -12615,6 +12662,14 @@ def _fix_leaks_mode(folder, args, cfg, log):
                 log.warning(f"  Could not un-quarantine {f.name}: {e}")
 
     pz.write_key(key_path, log)                    # loaded rows preserved
+
+    # Record this pass's throughput so the next run's ETA is sharper, then
+    # replace the ETA marker with a DONE stamp (the actual finish time).
+    _elapsed = time.monotonic() - _fix_start
+    if _elapsed > 0 and total_bytes > 0:
+        _save_fix_rate(total_bytes / _elapsed)
+    _write_done_marker(folder)
+
     still = len(offenders)
     if still:
         _pn_write_leak_report(folder, pz.leak_report, log, decisions=decisions)
