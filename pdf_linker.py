@@ -2505,15 +2505,18 @@ def _annotate_paragraphs(anchors):
     """
     # First pass: find candidate paragraph-start lines and strip the leading
     # "N. " prefix into a separate field. Heuristic guard: only treat N. as
-    # a paragraph start if 1 <= N <= 99 AND the next char is uppercase
-    # (filters out "7." appearing mid-sentence).
+    # a paragraph start if 1 <= N <= 999 AND the next char is uppercase
+    # (filters out "7." appearing mid-sentence). A long complaint runs well
+    # past 99 paragraphs, so the cap must reach triple digits — the earlier
+    # 99 ceiling silently dropped every paragraph from 100 on, and a page of
+    # ¶¶ 100-103 then had zero candidates and produced no bookmarks.
     candidates = []  # list of (anchor_index, paragraph_num)
     for i, a in enumerate(anchors):
         m = re.match(r"^(\d{1,3})\.\s*(.*)$", a["body_text"])
         if m:
             num = int(m.group(1))
             rest = m.group(2)
-            if 1 <= num <= 99 and rest and rest[0].isupper():
+            if 1 <= num <= 999 and rest and rest[0].isupper():
                 candidates.append((i, num, rest))
 
     # Determine whether this page qualifies as declaration-style: need 3+
