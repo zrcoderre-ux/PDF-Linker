@@ -7531,7 +7531,9 @@ requests demand demands discovery deposition depositions interrogatory
 interrogatories sanction sanctions damages relief injunction stay stays
 statement statements facts fact introduction conclusion argument arguments
 summary points authorities authority memorandum support further supplemental
-amended first second third fourth fifth proposed joint separate general
+amended first second third fourth fifth sixth seventh eighth ninth tenth
+eleventh twelfth thirteenth fourteenth fifteenth sixteenth seventeenth
+eighteenth nineteenth twentieth cause causes proposed joint separate general
 special service served serving filed filing files hereby herein hereto
 whereas therefore pursuant regarding concerning including without within
 entitled entitle avoid avoids avoided delegation clause clauses reserve
@@ -8721,8 +8723,16 @@ class Pseudonymizer:
                     if _pn_is_party_role(short):
                         continue
                     words = short.split()
-                    if words and all(_pn_word_base(w) in parent_words
-                                     for w in words):
+                    # A single-word short form that is a COMMON word ("Eighth" of
+                    # "Eighth & Broadway Investments") must never become a term:
+                    # case-insensitive, it faked every "eighth cause of action".
+                    # Businesses use common words far more than people, so a bare
+                    # common word is dropped outright rather than registered.
+                    if len(words) == 1 and _pn_is_generic_token(_pn_word_base(short)):
+                        continue
+                    is_parent_word = bool(words) and all(
+                        _pn_word_base(w) in parent_words for w in words)
+                    if is_parent_word:
                         fake = (_pn_fake_entity(short, self.registry)
                                 if t.category == "entity"
                                 else _pn_fake_person(short, self.registry)[0])
@@ -8732,9 +8742,18 @@ class Pseudonymizer:
                             continue
                     else:
                         continue
+                    # A single-word BUSINESS short form that is a WORD of the
+                    # parent name requires capitalization (case-sensitive):
+                    # businesses borrow ordinary words ("Broadway", "Summit"), so
+                    # match only the capitalised form, never a lower-case prose
+                    # occurrence. An INITIALISM ("ToFF", written TOFF/Toff) stays
+                    # case-insensitive, and a person's bare surname stays
+                    # case-insensitive (OCR can lower-case it).
+                    require_cap = (t.category == "entity" and len(words) == 1
+                                   and is_parent_word)
                     self._add_terms([_PnTerm("short-name", short, fake,
                                              whole_word=True,
-                                             case_sensitive=False,
+                                             case_sensitive=require_cap,
                                              priority=1, source="document")])
 
     def prune_citation_only_terms(self, text):
