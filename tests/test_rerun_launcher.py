@@ -46,6 +46,11 @@ def test_windows_bat_runs_detached_in_the_background():
     assert '"C:\\Tools\\pdf_linker.py" "%~dp0." --provider lexis' in content
     # Tells the operator where the durable progress/finish signals are.
     assert "pdf_linker.log" in content and "DONE" in content
+    # The DONE line must read as a FUTURE signal, not a status: the detached
+    # run is still going when this window closes, so a bare "Finished:" misled
+    # operators into thinking the (often silently-failed) run was done.
+    assert "When done" in content
+    assert "Finished:" not in content
 
 
 def test_windows_bat_frozen_omits_script_path():

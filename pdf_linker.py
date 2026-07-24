@@ -13176,9 +13176,11 @@ def _rerun_launcher_spec(exe, script, provider, want_key, windows, frozen=False)
             "REM Runs detached: the work continues after this window closes.\r\n"
             'REM Progress -> pdf_linker.log; a "DONE <time>.txt" file appears\r\n'
             "REM in this folder when the run finishes.\r\n"
-            "echo Re-running PDF-Linker in the background...\r\n"
-            "echo   Progress:  pdf_linker.log\r\n"
-            'echo   Finished:  a "DONE ....txt" file appears in this folder.\r\n'
+            "echo Re-running PDF-Linker in the background (this window closes; the\r\n"
+            "echo work keeps running)...\r\n"
+            "echo   Progress:  see pdf_linker.log in this folder\r\n"
+            'echo   When done: a "DONE ....txt" file appears here (not yet - it is\r\n'
+            "echo              still running when this window closes).\r\n"
             f'start "PDF-Linker re-run" {prog} "%~dp0." --provider {provider}{key}\r\n'
             "timeout /t 3 >nul 2>&1\r\n")
         return "Re-run PDF-Linker.bat", content, False
@@ -13837,10 +13839,25 @@ def main():
                      f"Fix?=no will be left as-is and not re-flagged.")
 
         terms, reused_key, key_decisions = [], False, {}
-        if key_path:
-            if not key_path.is_file():
+        if key_path and not key_path.is_file():
+            # The re-run launcher auto-pins the folder's OWN output key
+            # (pseudonym_key.xlsx) so a re-run reproduces the prior fakes. If it
+            # was deleted — the natural way to force FRESH pseudonyms — that is
+            # not an error: fall back to auto-discovery / a fresh mint so the
+            # (detached, windowless) re-run still regenerates the .txt instead of
+            # aborting silently before it writes anything. Any OTHER explicitly
+            # named key that is missing stays fatal, but is now also logged so a
+            # background run leaves a trace in pdf_linker.log.
+            if key_path.name == "pseudonym_key.xlsx":
+                log.info(f"  {key_path.name} not found — minting fresh fakes "
+                         f"(this is how a re-run picks up new pseudonyms). "
+                         f"Looking for an input key to draw party names from.")
+                key_path = _pn_find_downloads_key(log)
+            else:
+                log.error(f"Key spreadsheet not found: {key_path}")
                 print(f"Key spreadsheet not found: {key_path}")
                 sys.exit(1)
+        if key_path:
             try:
                 if _pn_key_looks_like_ours(key_path):
                     # A key this tool wrote: reuse its bindings so a follow-up
