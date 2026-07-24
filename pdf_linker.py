@@ -8543,6 +8543,31 @@ def _pn_build_terms(names, casenos, extra_terms, registry=None, _prewarm=True):
     return sorted(dedup.values(), key=lambda t: (-t.priority, -len(t.real)))
 
 
+def _pn_find_folder_key(folder, log):
+    """Locate a key spreadsheet sitting in the CASE FOLDER itself, so a re-run
+    resolves its own inputs with no Downloads copy and no typed --key. Order of
+    preference:
+      1. this tool's own `pseudonym_key.xlsx` — REUSE its bindings so the re-run
+         reproduces the original fakes; then
+      2. the E-Court `Order*.xlsx` input template (e.g. "Order_Template_Input") —
+         mint FRESH fakes from it, which is how a run STARTS OVER after the
+         pseudonym key was deleted.
+    Returns a Path or None. Excel lock files (~$...) are ignored."""
+    own = folder / "pseudonym_key.xlsx"
+    if own.is_file():
+        log.info("  Pseudonymize: reusing this folder's pseudonym_key.xlsx")
+        return own
+    orders = [p for p in folder.glob("*.xlsx")
+              if not p.name.startswith("~$")
+              and p.name.lower().startswith("order")]
+    if orders:
+        newest = max(orders, key=lambda p: p.stat().st_mtime)
+        log.info(f"  Pseudonymize: starting over from this folder's E-Court "
+                 f"template: {newest.name}")
+        return newest
+    return None
+
+
 def _pn_find_downloads_key(log):
     """Locate the key spreadsheet automatically: the most recently modified
     .xlsx in the user's Downloads folder. That's where the E-Court order-
@@ -13805,9 +13830,12 @@ def main():
                 sys.exit(1)
         else:
             detectors = list(_PN_DEFAULT_DETECTORS)
-        # Key spreadsheet: explicit --key, else the most recent Order*.xlsx in
-        # Downloads (where the E-Court export lands).
-        key_path = args.key if args.key else _pn_find_downloads_key(log)
+        # Key spreadsheet: explicit --key, else this folder's OWN key
+        # (pseudonym_key.xlsx to reuse, or an Order*.xlsx template to start over
+        # from), else the most recent Order*.xlsx in Downloads (where the E-Court
+        # export lands). Folder-local wins so a re-run resolves its own inputs.
+        key_path = (args.key or _pn_find_folder_key(folder, log)
+                    or _pn_find_downloads_key(log))
         registry = _PnFakeRegistry()
         # Decisions feeding this run come from two places:
         #   * this folder's LEAKS worksheet (transient genuine-leak triage), and
@@ -13849,10 +13877,11 @@ def main():
             # named key that is missing stays fatal, but is now also logged so a
             # background run leaves a trace in pdf_linker.log.
             if key_path.name == "pseudonym_key.xlsx":
-                log.info(f"  {key_path.name} not found — minting fresh fakes "
-                         f"(this is how a re-run picks up new pseudonyms). "
-                         f"Looking for an input key to draw party names from.")
-                key_path = _pn_find_downloads_key(log)
+                log.info(f"  {key_path.name} not found — starting over with fresh "
+                         f"fakes. Looking for an input key to draw party names "
+                         f"from (this folder's Order*.xlsx first, then Downloads).")
+                key_path = (_pn_find_folder_key(folder, log)
+                            or _pn_find_downloads_key(log))
             else:
                 log.error(f"Key spreadsheet not found: {key_path}")
                 print(f"Key spreadsheet not found: {key_path}")
