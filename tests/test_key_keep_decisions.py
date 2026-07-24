@@ -72,52 +72,72 @@ def test_load_key_normal_replacement_unchanged(tmp_path):
     assert any(t.real == "Jane Doe" and t.fake == "Keswick Bexley" for t in terms)
 
 
-# ── keep_values: what it protects, and what overrides it ─────────────────────
+# ── keep tiers: soft `no` vs strict [bracket], and what overrides them ───────
 
-def _apply(keep, term_srcs, text):
+def _apply(text, term_srcs=(), soft=(), strict=()):
     reg = pl._PnFakeRegistry()
-    pz = pl.Pseudonymizer(pl._pn_build_terms(term_srcs, [], [], registry=reg),
+    pz = pl.Pseudonymizer(pl._pn_build_terms(list(term_srcs), [], [], registry=reg),
                           DET, registry=reg)
-    pz.keep_values = set(keep)
+    pz.keep_soft = set(soft)
+    pz.keep_strict = set(strict)
     return pz.apply(text)
 
 
-def test_keep_protects_a_standalone_word():
-    # A kept word with no party term for it is left verbatim (a bare token /
-    # detector cannot fake it).
-    out = _apply({"Assistant"}, ["Ramona Vale"],
-                 "The Assistant emailed. Ramona Vale signed it.")
-    assert "Assistant" in out
-    assert "Ramona Vale" not in out
+def test_soft_no_protects_a_standalone_word():
+    out = _apply("The lot was Attached. Ramona Vale signed it.",
+                 term_srcs=["Ramona Vale"], soft={"Attached"})
+    assert "Attached" in out                                # standalone kept
+    assert "Ramona Vale" not in out                         # party faked
 
 
 def test_keep_matches_on_word_boundaries_only():
     # "Cal" kept must NOT keep "Cal" inside a larger word.
-    out = _apply({"Cal"}, [], "Cal went to California with Calvin.")
-    assert out.count("California") == 1 and "Calvin" in out   # untouched
+    out = _apply("Cal went to California with Calvin.", soft={"Cal"})
+    assert out.count("California") == 1 and "Calvin" in out
 
 
-def test_full_party_match_overrides_a_kept_word():
-    # The user's real example: keep "Cal", but the full entity is still faked;
-    # standalone "Cal" stays.
-    out = _apply({"Cal"}, ["CAL EQUIPMENT FE RANCH, LLC"],
-                 "Cal is fine. CAL EQUIPMENT FE RANCH, LLC sued here.")
+def test_full_party_match_overrides_a_soft_keep():
+    out = _apply("Cal is fine. CAL EQUIPMENT FE RANCH, LLC sued here.",
+                 term_srcs=["CAL EQUIPMENT FE RANCH, LLC"], soft={"Cal"})
     assert out.startswith("Cal is fine")                    # standalone kept
     assert "CAL EQUIPMENT FE RANCH" not in out              # full party faked
 
 
-def test_kept_word_inside_a_faked_phrase_is_released():
-    # "Doe" kept alone, but "John Doe" (a party) is faked whole.
-    out = _apply({"Doe"}, ["John Doe"],
-                 "John Doe testified. Later, Doe left the room.")
+def test_soft_keep_released_inside_a_detected_name_run():
+    # "Cal Equipment" is NOT a key term — just a capitalized name run. A soft
+    # `no` on "Cal" must not SHIELD that phrase: the keep span is produced for
+    # the standalone "Cal" but withheld inside the name run (so if a term ever
+    # covers it, or the review scan flags it, the keep doesn't get in the way).
+    reg = pl._PnFakeRegistry()
+    pz = pl.Pseudonymizer([], DET, registry=reg)
+    pz.keep_soft = {"Cal"}
+    text = "Cal parked outside. Cal Equipment Leasing appeared."
+    protected = [text[s:e] for s, e in pz._keep_spans(text)]
+    starts = [s for s, e in pz._keep_spans(text)]
+    assert text.index("Cal parked") in starts               # standalone protected
+    assert text.index("Cal Equipment") not in starts        # name run NOT protected
+
+
+def test_soft_keep_released_inside_John_Doe():
+    out = _apply("John Doe testified. Later, Doe left the room.",
+                 term_srcs=["John Doe"], soft={"Doe"})
     assert "John Doe" not in out                            # phrase faked
     assert "Doe left the room" in out                       # standalone kept
 
 
-def test_keep_blocks_a_detector():
+def test_strict_bracket_keep_survives_next_to_a_name():
+    # "[Plaintiff]" on "Plaintiff John Doe": Plaintiff kept even beside the name;
+    # the name fragment is faked.
+    out = _apply("Plaintiff John Doe filed. The Plaintiff appeared.",
+                 term_srcs=["John Doe"], strict={"Plaintiff"})
+    assert out.count("Plaintiff") == 2                      # kept both times
+    assert "John Doe" not in out                            # name faked
+
+
+def test_soft_keep_blocks_a_detector():
     reg = pl._PnFakeRegistry()
     pz = pl.Pseudonymizer([], DET, registry=reg)
-    pz.keep_values = {"info@acme.com"}
+    pz.keep_soft = {"info@acme.com"}
     assert "info@acme.com" in pz.apply("Contact info@acme.com for details.")
 
 

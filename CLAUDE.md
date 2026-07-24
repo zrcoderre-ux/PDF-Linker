@@ -38,14 +38,23 @@ of `pseudonym_key.xlsx` accepts the same operator control words the LEAKS `Fix?`
 column does — `no` (keep this Real Value verbatim) and a `[bracketed]` keep-spec
 (keep the bracketed part, auto-fake the rest) — so a mistake baked into the key
 that never surfaced as a leak can be fixed where it lives (`_pn_load_key` returns
-these as `key_decisions`). A KEEP value is protected by `Pseudonymizer.keep_values` (spans added to
-`_substitute`'s `protected` set; `_keep_spans` records `kept_hits`), with two
-rules that make it precise: it matches the value on **word boundaries** (`no` on
-"Cal" keeps the standalone word, never "Cal" inside "California"), and a **full
-party match wins** — a kept word that falls inside a `_PN_PARTY_OVERRIDE_CATS`
-(person/entity/case_number) term is released so the real party is still faked
-("Cal" kept alone, "CAL EQUIPMENT FE RANCH, LLC" faked whole; "Doe" kept alone,
-"John Doe" faked). Bare tokens/short-names and detectors do NOT release a keep.
+these as `key_decisions`). KEEP protection (`Pseudonymizer._keep_spans`, spans
+added to `_substitute`'s `protected` set; records `kept_hits`) comes in **two
+tiers**, both matched on **word boundaries** (never a substring, so `no` on "Cal"
+never touches "California"):
+
+- **`keep_soft`** (a `no` value) — keep the exact word ONLY where it stands
+  alone. It is released inside a multi-word capitalized **name run** (a possible
+  party like "Cal Equipment", via `_in_name_run` / `_pn_is_name_word`), and only
+  for a single-word keep (an e-mail/phrase `no` uses the full-party rule alone).
+- **`keep_strict`** (a bracketed keep-spec part) — "this fragment is never a
+  name": kept even next to names, so `[Plaintiff]` stays in "Plaintiff John Doe"
+  and `[Attached]` stays in "Jack Gerlach Attached".
+
+Both tiers still lose to a **full party match** — a kept word inside a
+`_PN_PARTY_OVERRIDE_CATS` (person/entity/case_number) term is released so the real
+party is faked ("CAL EQUIPMENT FE RANCH, LLC" faked whole, "John Doe" faked).
+Bare `*-token`/short-name terms and detectors do NOT release a keep.
 
 **The KEEP store is a SINGLE cross-folder sheet**, the `KEEP` tab of the master
 workbook (`_pn_master_path`, next to the config or `PDF_LINKER_MASTER` /

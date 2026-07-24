@@ -38,9 +38,12 @@ For each *.pdf in the folder (processed from shortest to longest by file size):
      cross-folder sheet — the KEEP tab of master_leaks.xlsx — so they are applied
      on every future run in EVERY folder (accumulating Times Seen / Cases /
      dates), letting the screening learn from real history. A KEEP matches on
-     WORD BOUNDARIES and loses to a full party name, so "no" on "Cal" keeps the
-     standalone word yet still fakes "CAL EQUIPMENT FE RANCH, LLC" whole — a keep
-     can never leave a real party in the clear.
+     WORD BOUNDARIES and loses to a full party name: "no" on "Cal" keeps the
+     standalone word yet still fakes "CAL EQUIPMENT FE RANCH, LLC" whole and is
+     released inside a detected name run like "Cal Equipment", while a
+     [bracketed] keep ("this fragment is never a name") stays even beside a name
+     ("[Plaintiff]" in "Plaintiff John Doe"). A keep never leaves a party in the
+     clear.
   1a. Writes a plain-text companion (.txt) for each PDF that has a real text
      layer into a "Text Files" subfolder of the case folder (name overridable
      via text_subfolder in pdf_linker.config), so a text-only copy can be
@@ -7699,6 +7702,22 @@ def _pn_word_is_own_fake(word, known):
     return any(k in base for k in known if len(k) >= 5)
 
 
+def _pn_is_name_word(w):
+    """True when `w` could be part of a multi-word party name — a capitalized (or
+    all-caps) alphabetic word that is not common / procedural / role / corporate-
+    suffix vocab. A soft `no` keep is RELEASED where its word sits next to one of
+    these (a possible party such as "Cal Equipment"), so only the standalone word
+    stays kept while the phrase is still faked or flagged for review."""
+    if not w or not w[:1].isalpha() or not w[:1].isupper():
+        return False
+    base = _pn_word_base(w)
+    if len(base) < 2:
+        return False
+    return not (base in _PN_COMMON_WORDS or base in _PN_PLEADING_WORDS
+                or base in _PN_DECL_DESCRIPTOR or base in _PN_REVIEW_NAME_STOP
+                or _pn_is_role_token(w) or _pn_is_suffix_token(w))
+
+
 def _pn_review_is_neutral(word, known):
     """True when `word` cannot be a fresh unscrubbed name: one of our own fakes
     (bare or welded), a common/procedural/role/connector word, a corporate
@@ -8960,12 +8979,17 @@ class Pseudonymizer:
                                  # human-triage worksheet (page:line located)
         self.suppressed = set()  # value_lowers the reviewer marked "no fix" in
                                  # the worksheet — never quarantine on these
-        self.keep_values = set() # exact strings the operator marked KEEP (a
-                                 # 'no' or the bracketed part of a keep-spec, in
-                                 # the LEAKS worksheet, the pseudonym key OR the
-                                 # cross-folder master KEEP sheet) — protected
-                                 # verbatim, never faked (see _keep_spans / apply)
-        self.kept_hits = set()   # keep_values (lowercased) that ACTUALLY matched
+        # KEEP protection comes in two tiers (from the LEAKS worksheet, the
+        # pseudonym key OR the cross-folder master KEEP sheet):
+        self.keep_soft = set()   # a `no` value — keep the EXACT word only where
+                                 # it stands alone; released inside a multi-word
+                                 # party name run (a possible party like "Cal
+                                 # Equipment"), so the phrase is still faked.
+        self.keep_strict = set() # a bracketed keep-spec part — "this fragment is
+                                 # never a name": kept verbatim even next to
+                                 # names ("[Plaintiff]" stays in "Plaintiff X").
+                                 # Both still yield to a full party-name match.
+        self.kept_hits = set()   # kept strings (lowercased) that ACTUALLY matched
                                  # text this run — so the master KEEP log can bump
                                  # only the decisions a run really used
         self._own_fakes = set()  # detector fakes we minted, so a re-scrub of
@@ -9811,9 +9835,9 @@ class Pseudonymizer:
             RELEASED so the party is still faked. So "Cal" is kept on its own but
             "CAL EQUIPMENT FE RANCH, LLC" is faked whole; "Doe" is kept alone but
             "John Doe" is faked. Bare tokens and detectors do NOT release a keep."""
-        if not self.keep_values:
+        if not self.keep_soft and not self.keep_strict:
             return []
-        # Spans of full party-name matches, which override a keep.
+        # Spans of full party-name matches, which override EITHER kind of keep.
         party = []
         for t in self.terms:
             if t.category not in _PN_PARTY_OVERRIDE_CATS:
@@ -9821,23 +9845,50 @@ class Pseudonymizer:
             for m in self._compiled(t.pattern, t.flags).finditer(text):
                 if m.start() != m.end():
                     party.append((m.start(), m.end()))
+
+        def in_party(s, e):
+            return any(s < pe and ps < e for ps, pe in party)
+
         spans = []
-        for v in sorted(self.keep_values, key=len, reverse=True):
-            if not v:
-                continue
-            hit = False
-            for m in re.finditer(r"(?<!\w)" + re.escape(v) + r"(?!\w)",
-                                 text, re.IGNORECASE):
-                s, e = m.span()
-                if s == e:
+
+        def collect(values, soft):
+            for v in sorted(values, key=len, reverse=True):
+                if not v:
                     continue
-                if any(s < pe and ps < e for ps, pe in party):
-                    continue          # inside a full party match — party fakes it
-                spans.append((s, e))
-                hit = True
-            if hit:
-                self.kept_hits.add(v.lower())
+                # The name-run release only makes sense for a single-word keep
+                # (a `no` on one word); a multi-word phrase or a structured value
+                # like an e-mail is kept on the full-party rule alone.
+                run_check = soft and bool(re.fullmatch(r"[A-Za-z][A-Za-z.'’\-]*", v))
+                hit = False
+                for m in re.finditer(r"(?<!\w)" + re.escape(v) + r"(?!\w)",
+                                     text, re.IGNORECASE):
+                    s, e = m.span()
+                    if s == e or in_party(s, e):
+                        continue      # a full party match here — party fakes it
+                    # A soft `no` keep is also released where the word sits in a
+                    # multi-word capitalized name run (a possible party), so only
+                    # the standalone word is kept. A strict bracket keep is not.
+                    if run_check and self._in_name_run(text, s, e):
+                        continue
+                    spans.append((s, e))
+                    hit = True
+                if hit:
+                    self.kept_hits.add(v.lower())
+
+        collect(self.keep_strict, soft=False)
+        collect(self.keep_soft, soft=True)
         return spans
+
+    def _in_name_run(self, text, s, e):
+        """True when the word at [s,e] is immediately adjacent to another
+        name-shaped word (part of a multi-word proper-noun phrase like "Cal
+        Equipment"), so a soft `no` keep there is released. Adjacency is a single
+        run of spaces/tabs — a comma, period or line break ends the phrase."""
+        r = re.match(r"[ \t]+([A-Za-z][A-Za-z.'’&\-]*)", text[e:])
+        if r and _pn_is_name_word(r.group(1)):
+            return True
+        l = re.search(r"([A-Za-z][A-Za-z.'’&\-]*)[ \t]+$", text[:s])
+        return bool(l and _pn_is_name_word(l.group(1)))
 
     def _mask_protected_citations(self, text):
         """`text` with every protected citation span blanked to spaces, for the
@@ -10361,7 +10412,7 @@ class Pseudonymizer:
         if not self.records:
             return
 
-        keep_low = {str(k).lower() for k in self.keep_values}
+        keep_low = {str(k).lower() for k in (self.keep_soft | self.keep_strict)}
 
         def _reversible(r):
             # A row that matched this run (count>0) OR one loaded from a reused
@@ -11288,19 +11339,23 @@ def _pn_parse_decision_rows(rows):
 
 
 def _pn_keep_values(decisions):
-    """The set of exact strings to leave verbatim, gathered from every KEEP
-    decision — the whole value for a `no`, the bracketed part(s) for a keep-spec.
-    These are matched on WORD BOUNDARIES and lose to a full party match at
-    substitution time (see Pseudonymizer._keep_spans), so a keep never leaves a
-    real party un-faked; nothing needs to be dropped here."""
-    keep = set()
+    """Return (strict, soft) sets of exact strings to leave verbatim, gathered
+    from every KEEP decision. A `no` value is a SOFT keep — the whole value, kept
+    only where the word stands alone. A bracketed keep-spec part is a STRICT keep
+    — "this fragment is never a name", kept even next to names. Both are matched
+    on WORD BOUNDARIES and both lose to a full party match (see
+    Pseudonymizer._keep_spans), so a keep never leaves a real party un-faked."""
+    strict, soft = set(), set()
     for d in decisions.values():
-        if not _pn_decision_is_keep(d):
-            continue
-        for p in _pn_decision_keep_parts(d):
-            if p:
-                keep.add(p)
-    return keep
+        if d.get("fix") == "no":
+            if d.get("value"):
+                soft.add(d["value"])
+        elif d.get("fake_values") is not None and d.get("fixcell"):
+            for k in re.findall(r"\[([^\[\]]*)\]", str(d["fixcell"])):
+                k = k.strip()
+                if k:
+                    strict.add(k)
+    return strict, soft
 
 
 def _pn_read_leak_decisions(folder):
@@ -13252,7 +13307,7 @@ def _fix_leaks_mode(folder, args, cfg, log):
     # (party names + the flagged values) is wanted.
     pz = Pseudonymizer(terms, [], registry)
     pz.suppressed = suppressed
-    pz.keep_values = _pn_keep_values(decisions)
+    pz.keep_strict, pz.keep_soft = _pn_keep_values(decisions)
     pz.override_fixes(explicit)   # typed fake beats any other record for a value
     for r in pz.records.values():
         pz._own_fakes.add(str(r["fake"]).lower().rstrip(" .,;:"))
@@ -13692,7 +13747,8 @@ def main():
         # substitution releases so the party is still scrubbed. So a keep never
         # leaves a real party in the clear, whether learned here or globally.
         local_vls = set(key_decisions) | set(folder_decisions)
-        pseudonymizer.keep_values = _pn_keep_values(leak_decisions)
+        (pseudonymizer.keep_strict,
+         pseudonymizer.keep_soft) = _pn_keep_values(leak_decisions)
         pseudonymizer._keep_decisions = {
             vl: d for vl, d in leak_decisions.items() if _pn_decision_is_keep(d)}
         pseudonymizer._keep_local = {vl for vl in pseudonymizer._keep_decisions
