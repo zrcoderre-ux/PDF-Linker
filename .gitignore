@@ -17,3 +17,5 @@ ETA *.txt
 DONE *.txt
 Re-run PDF-Linker.*
 Apply Leak Fixes.bat
+master_leaks.xlsx
+master_leaks.xlsx.tmp

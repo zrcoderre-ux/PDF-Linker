@@ -11178,7 +11178,100 @@ def _pn_merge_where(wheres):
     return ", ".join(toks[:12]) + (" …" if len(toks) > 12 else "")
 
 
-def _pn_write_leak_report(folder, entries, log, decisions=None):
+# ── Master leak log (cross-case, accumulates over time) ──────────────────────
+_PN_MASTER_HEADERS = ("Value", "Type", "Times Seen", "Cases",
+                      "First Seen", "Last Seen")
+
+
+def _pn_master_leaks_path(cfg):
+    """Path to the cross-case master leak log, or None when disabled. Lives next
+    to pdf_linker.config by default so it persists across runs and case folders;
+    relocate with `master_leaks_path`, enable with `master_leaks = on`."""
+    cfg = cfg or {}
+    override = (cfg.get("master_leaks_path") or "").strip().strip('"')
+    if not _config_bool(cfg, "master_leaks", False) and not override:
+        return None
+    if override:
+        return Path(override)
+    return _config_path().with_name("master_leaks.xlsx")
+
+
+def _pn_update_master_leaks(master_path, values, case_name, today, log):
+    """Merge this run's flagged values into the master leak log — one row per
+    distinct value, sorted alphabetically — so a value that keeps leaking across
+    matters is easy to spot. `values` is [(value, type), ...]. Times Seen counts
+    the runs a value appeared in; Cases lists the folders; First/Last Seen bound
+    the dates. Best-effort and atomic (temp + replace): a master left open in
+    Excel is warned about, not fatal, and a crash can't truncate the history."""
+    try:
+        import openpyxl
+    except ImportError:
+        return
+
+    rows = {}   # value_lower -> {value, type, times, cases:set, first, last}
+    if master_path.exists():
+        try:
+            ws = openpyxl.load_workbook(master_path).active
+            for r in list(ws.iter_rows(values_only=True))[1:]:
+                if not r or r[0] in (None, ""):
+                    continue
+                val = str(r[0])
+                times = r[2] if len(r) > 2 else 1
+                cases = r[3] if len(r) > 3 else ""
+                rows[val.lower()] = {
+                    "value": val,
+                    "type": (str(r[1]) if len(r) > 1 and r[1] else "LEAK"),
+                    "times": int(times) if str(times).isdigit() else 1,
+                    "cases": {c.strip() for c in str(cases or "").split(";")
+                              if c.strip() and "cases" not in c},
+                    "first": (str(r[4]) if len(r) > 4 and r[4] else today),
+                    "last": (str(r[5]) if len(r) > 5 and r[5] else today)}
+        except Exception as e:
+            log.warning(f"  Master leak log: could not read {master_path.name} "
+                        f"({e}); starting a fresh one.")
+            rows = {}
+
+    for value, vtype in values:
+        vl = value.lower()
+        g = rows.get(vl)
+        if g is None:
+            rows[vl] = {"value": value, "type": vtype, "times": 1,
+                        "cases": {case_name}, "first": today, "last": today}
+        else:
+            g["times"] += 1
+            g["cases"].add(case_name)
+            g["last"] = today
+            if _leak_sev(vtype) < _leak_sev(g["type"]):
+                g["type"] = vtype
+
+    ordered = sorted(rows.values(), key=lambda g: g["value"].lower())
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Master Leaks"
+    ws.append(list(_PN_MASTER_HEADERS))
+    for g in ordered:
+        cases = sorted(c for c in g["cases"] if c)
+        cell = "; ".join(cases) if len(cases) <= 8 else f"{len(cases)} cases"
+        ws.append([g["value"], g["type"], g["times"], cell, g["first"], g["last"]])
+    for col, width in zip("ABCDEF", (34, 12, 11, 44, 12, 12)):
+        ws.column_dimensions[col].width = width
+    tmp = master_path.with_name(master_path.name + ".tmp")
+    try:
+        wb.save(tmp)
+        os.replace(tmp, master_path)
+        log.info(f"  Master leak log updated: {master_path} "
+                 f"({len(ordered)} distinct value(s))")
+    except OSError as e:
+        log.warning(f"  Master leak log: could not write {master_path} ({e}) — "
+                    f"is it open in Excel? This run's values were not recorded.")
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
+
+
+def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None):
     """Write/refresh the leak-triage worksheet 'LEAKS.xlsx'. Each DISTINCT
     flagged value is ONE row with a 'Fix?' column — the files and page:line
     locations it was found in are aggregated into that row, so a name that
@@ -11215,6 +11308,14 @@ def _pn_write_leak_report(folder, entries, log, decisions=None):
         if e["file"] not in g["files"]:
             g["files"].append(e["file"])
         g["wheres"].append(e["where"])
+
+    # Accumulate this run's flagged values into the cross-case master log, so a
+    # value that keeps leaking across matters is easy to spot over time.
+    master_path = _pn_master_leaks_path(cfg)
+    if master_path is not None and grouped:
+        _pn_update_master_leaks(
+            master_path, [(g["value"], g["type"]) for g in grouped.values()],
+            folder.name, datetime.date.today().isoformat(), log)
 
     rows = []
     for vl, g in grouped.items():
@@ -12116,6 +12217,15 @@ _CONFIG_TEMPLATE = (
     "# warned about and marked in the key but the exports are delivered.\n"
     "# strict quarantines on ANY surviving value; off never quarantines.\n"
     "leak_gate = primary\n"
+    "\n"
+    "# Accumulate every flagged leak into ONE master spreadsheet across all runs\n"
+    "# and case folders, so you can spot a value that keeps leaking over time.\n"
+    "# on/off (default: off). One row per distinct value, sorted alphabetically,\n"
+    "# with a Times-Seen count, the cases it appeared in, and first/last dates.\n"
+    "master_leaks = off\n"
+    "# Where that master lives. Default: master_leaks.xlsx next to this config\n"
+    "# file. Point it anywhere stable (e.g. a OneDrive path) so it persists.\n"
+    "# master_leaks_path = C:\\Users\\you\\Documents\\Master Leaks.xlsx\n"
 )
 
 
@@ -12725,7 +12835,8 @@ def _fix_leaks_mode(folder, args, cfg, log):
 
     still = len(offenders)
     if still:
-        _pn_write_leak_report(folder, pz.leak_report, log, decisions=decisions)
+        _pn_write_leak_report(folder, pz.leak_report, log, decisions=decisions,
+                              cfg=cfg)
     else:
         # Every LEAK file is fixed: the worksheet and the Apply-Leak-Fixes
         # launcher have done their job — remove them instead of leaving stale
@@ -13116,7 +13227,7 @@ def main():
         # if the leak gate quarantines below, so the reviewer always gets it.
         # Prior yes/no decisions are carried through (yes was scrubbed above).
         _pn_write_leak_report(folder, pseudonymizer.leak_report, log,
-                              leak_decisions)
+                              leak_decisions, cfg=cfg)
         # Two addresses on one street with adjacent numbers were faked to two
         # unrelated streets — the failure that moved an ADU off its parcel.
         for w in _pn_address_adjacency(pseudonymizer.records.values()):
