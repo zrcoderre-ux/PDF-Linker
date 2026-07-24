@@ -103,7 +103,7 @@ def test_bare_surname_stays_bare_after_key_reuse(tmp_path):
     assert "Before Whitaker" in first
     z.write_key(tmp_path / "pseudonym_key.xlsx", log)
     reg2 = P._PnFakeRegistry()
-    terms2 = P._pn_load_key(tmp_path / "pseudonym_key.xlsx", reg2, log)
+    terms2, _ = P._pn_load_key(tmp_path / "pseudonym_key.xlsx", reg2, log)
     z2 = P.Pseudonymizer(terms2, {}, registry=reg2)
     reused = z2.apply(doc)
     assert reused == first                      # identical, incl. bare surname

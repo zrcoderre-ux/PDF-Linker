@@ -33,6 +33,19 @@ scrubbed. A `pseudonym_key.xlsx` round-trips real↔fake through the
 `DeAnonymize.bas` Word macro, so every minted fake must be globally unique and
 written to the key.
 
+**Correcting the key in place.** The `Replacement` column of `pseudonym_key.xlsx`
+accepts the same operator control words the LEAKS `Fix?` column does — `no`
+(keep this Real Value verbatim, do not fake it) and a `[bracketed]` keep-spec
+(keep the bracketed part, auto-fake the rest) — so a mistake baked into the key
+that never surfaced as a leak can be fixed where it lives (`_pn_load_key` returns
+these as `key_decisions`; `main`/`_fix_leaks_mode` merge them into the run's
+decisions). A KEEP value is protected verbatim by `Pseudonymizer.keep_values`
+(spans added to `_substitute`'s `protected` set, so no term OR detector fakes
+it). Persistence is macro-safe: the `no`/bracket instruction is NEVER written
+back into the key (a literal "no" in a Replacement cell would poison the reversal
+macro) — it round-trips through `LEAKS.xlsx` and the master log instead, and
+`write_key` drops any (e.g. harvested) reversal row for a kept value.
+
 ## Pseudonymization pipeline (the privacy-critical half)
 
 - **Fake pools** (`_PN_NAME_WORDS` ~190 surnames, `_PN_ENTITY_WORDS` ~110): drawn

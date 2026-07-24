@@ -30,6 +30,12 @@ For each *.pdf in the folder (processed from shortest to longest by file size):
      back to a neutral name if anything real would survive). A surviving real
      value (a per-file leak, or a spreadsheet key that matched nothing) is
      reported in the log for review — the .txt is still written, not withheld.
+     A mistake baked into the pseudonym_key.xlsx (a value it should not have
+     faked) can be corrected in place in the key's Replacement column, using the
+     same words the LEAKS worksheet's Fix? column accepts: "no" leaves that Real
+     Value verbatim, and a [bracketed] keep-spec keeps the bracketed part and
+     fakes the rest. The decision is applied on the next re-run and recorded to
+     LEAKS.xlsx (and the master leak log) so it persists.
   1a. Writes a plain-text companion (.txt) for each PDF that has a real text
      layer into a "Text Files" subfolder of the case folder (name overridable
      via text_subfolder in pdf_linker.config), so a text-only copy can be
@@ -8190,14 +8196,24 @@ def _pn_key_looks_like_ours(path):
 def _pn_load_key(path, registry, log):
     """Load a key THIS tool wrote as authoritative real->fake bindings, seeding
     `registry` so new values can't collide and re-harvested names recompose
-    identically. Returns the list of pre-bound _PnTerm objects.
+    identically. Returns `(terms, key_decisions)` — the list of pre-bound
+    _PnTerm objects, plus operator KEEP/KEEP-PART decisions typed into the
+    Replacement column (see below).
 
     Each row becomes a literal term carrying its stored fake, so the value
     reproduces verbatim however it was originally composed (a full e-mail, a
     house number + street). The registry's used-pool, name-token memo and
     domain memo are seeded from the rows so a genuinely new value drawn later
     avoids every fake already handed out and reuses a party's established
-    token/domain."""
+    token/domain.
+
+    The Replacement column also accepts the same operator instructions the LEAKS
+    worksheet's Fix? column does, so a mistake baked into the key can be fixed in
+    place: `no` (leave this Real Value verbatim — do not fake it) and a
+    `[bracketed]` keep-spec (keep the bracketed part verbatim, auto-fake the
+    rest). Such a row builds no faking term; the decision is returned in
+    `key_decisions` (value_lower -> dict shaped like a leak decision) for the
+    caller to apply and persist."""
     import openpyxl
     wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
     ws = wb.active
@@ -8206,7 +8222,7 @@ def _pn_load_key(path, registry, log):
     idx = {name: header.index(name) for name in
            ("category", "real value", "replacement", "source", "occurrences")
            if name in header}
-    terms, seen = [], set()
+    terms, seen, key_decisions = [], set(), {}
     for row in rows:
         def cell(name):
             i = idx.get(name)
@@ -8223,6 +8239,33 @@ def _pn_load_key(path, registry, log):
         if (cat, real.lower()) in seen:
             continue
         seen.add((cat, real.lower()))
+
+        # Operator control words typed into the Replacement column (same
+        # vocabulary the LEAKS Fix? column accepts). Build no faking term; hand
+        # the decision back for the caller to apply (keep-protection / fragment
+        # faking) and persist to the worksheet + master log.
+        ctrl = fake.strip()
+        if ctrl.lower() in ("no", "n"):
+            key_decisions[real.lower()] = {
+                "value": real, "type": "KEEP", "fix": "no", "replacement": None,
+                "fake_values": None, "fixcell": None, "notes": "pseudonym key"}
+            continue
+        if "[" in ctrl:
+            frags = _pn_bracket_keep(real, ctrl)
+            if frags == []:               # whole value bracketed -> keep all
+                key_decisions[real.lower()] = {
+                    "value": real, "type": "KEEP", "fix": "no",
+                    "replacement": None, "fake_values": None,
+                    "fixcell": ctrl, "notes": "pseudonym key"}
+                continue
+            if frags:                     # keep bracketed part(s), fake the rest
+                key_decisions[real.lower()] = {
+                    "value": real, "type": "KEEP-PART", "fix": "yes",
+                    "replacement": None, "fake_values": frags,
+                    "fixcell": ctrl, "notes": "pseudonym key"}
+                continue
+            # frags is None: bracketed text isn't a substring of the value — fall
+            # through and treat the cell as an ordinary explicit replacement.
         # Self-heal a key written before the self-map guard existed: a row whose
         # replacement equals its real value ("M & M" -> "M & M") never scrubs and
         # loops --fix-leaks. Re-mint a distinct fake; the next write_key persists
@@ -8284,7 +8327,13 @@ def _pn_load_key(path, registry, log):
     terms.sort(key=lambda t: (-t.priority, -len(t.real)))
     log.info(f"  Pseudonym key REUSED: loaded {len(terms)} binding(s) from "
              f"{path.name} — fakes will match the original run")
-    return terms
+    if key_decisions:
+        kept = sum(1 for d in key_decisions.values() if d["fix"] == "no")
+        part = len(key_decisions) - kept
+        log.info(f"  Pseudonym key: {kept} value(s) marked 'no' (keep verbatim)"
+                 + (f" and {part} bracketed keep-spec(s)" if part else "")
+                 + " in the Replacement column will be honored.")
+    return terms, key_decisions
 
 
 def _pn_build_terms(names, casenos, extra_terms, registry=None):
@@ -8899,6 +8948,11 @@ class Pseudonymizer:
                                  # human-triage worksheet (page:line located)
         self.suppressed = set()  # value_lowers the reviewer marked "no fix" in
                                  # the worksheet — never quarantine on these
+        self.keep_values = set() # exact strings the operator marked KEEP (a
+                                 # 'no' or the bracketed part of a keep-spec, in
+                                 # the LEAKS worksheet OR the pseudonym key) —
+                                 # protected verbatim, never faked (see
+                                 # _keep_spans / apply)
         self._own_fakes = set()  # detector fakes we minted, so a re-scrub of
                                  # already-fake text never re-fakes them
         # (category, real_lower) -> record dict {category, real, fake, source,
@@ -9727,6 +9781,24 @@ class Pseudonymizer:
                 spans.append(m.span())
         return spans
 
+    def _keep_spans(self, text):
+        """Spans of operator-KEPT values in `text` — a value marked `no` (keep
+        whole) or the bracketed part of a keep-spec, from the LEAKS worksheet or
+        the pseudonym key. A candidate overlapping one of these is dropped in
+        `_substitute`, so the kept text is left verbatim even when a term or a
+        PII detector would otherwise fake it. Case-insensitive; longest keeps
+        first so a multi-word keep wins over a shorter substring."""
+        if not self.keep_values:
+            return []
+        spans = []
+        for v in sorted(self.keep_values, key=len, reverse=True):
+            if not v:
+                continue
+            for m in re.finditer(re.escape(v), text, re.IGNORECASE):
+                if m.start() != m.end():
+                    spans.append(m.span())
+        return spans
+
     def _mask_protected_citations(self, text):
         """`text` with every protected citation span blanked to spaces, for the
         LEAK scans: a party name correctly preserved inside a cited authority
@@ -9790,8 +9862,9 @@ class Pseudonymizer:
         text = _NFKC(text)
         cands = (self._detector_cands(text) + self._term_cands(text)
                  + self._display_name_cands(text))
-        return self._substitute(text, cands, count=count,
-                                protected=self._protected_citation_spans(text))
+        return self._substitute(
+            text, cands, count=count,
+            protected=self._protected_citation_spans(text) + self._keep_spans(text))
 
     def apply_lines(self, bodies):
         """Pseudonymize a pleading page's line BODIES as one text, returning one
@@ -9815,7 +9888,8 @@ class Pseudonymizer:
             off += len(b) + 1
         out = self._substitute(
             joined, cands, reflow=True,
-            protected=self._protected_citation_spans(joined)).split("\n")
+            protected=self._protected_citation_spans(joined)
+            + self._keep_spans(joined)).split("\n")
         # _pn_reflow preserves every newline, so this holds; fall back rather
         # than ever hand back the wrong number of lines.
         return out if len(out) == len(bodies) else [self.apply(b) for b in bodies]
@@ -10247,12 +10321,18 @@ class Pseudonymizer:
         if not self.records:
             return
 
+        keep_low = {str(k).lower() for k in self.keep_values}
+
         def _reversible(r):
             # A row that matched this run (count>0) OR one loaded from a reused
             # key (preserve it even if it didn't re-match — in fix-leaks mode the
             # text is already scrubbed, so loaded party names never re-match yet
-            # must stay in the key for the reversal macro).
+            # must stay in the key for the reversal macro). A value the operator
+            # marked KEEP is left verbatim, so it has no fake to reverse — drop
+            # any (e.g. harvested) row for it so the key doesn't show a fake that
+            # was never applied.
             return ((r["count"] > 0 or r.get("loaded"))
+                    and str(r["real"]).lower() not in keep_low
                     and "\n" not in str(r["real"]) and "\n" not in str(r["fake"]))
         keyrows = [r for r in self.records.values() if _reversible(r)]
 
@@ -11091,6 +11171,19 @@ def _pn_bracket_keep(value, cell):
         work = work[:i] + "\x00" + work[i + len(k):]
     frags = [f.strip(" \t,.;:'’\"-–—") for f in work.split("\x00")]
     return [f for f in frags if re.search(r"[A-Za-z0-9]", f)]
+
+
+def _pn_decision_keep_parts(d):
+    """The substrings a KEEP/KEEP-PART decision protects verbatim: the whole
+    value for a `no`, or the bracketed part(s) for a keep-spec. Shared by the
+    LEAKS worksheet and the pseudonym key so both feed `Pseudonymizer.keep_values`
+    identically. Returns [] for any other decision (yes / explicit / blank)."""
+    if d.get("fix") == "no":
+        return [d["value"]]
+    if d.get("fake_values") is not None and d.get("fixcell"):
+        keeps = [k.strip() for k in re.findall(r"\[([^\[\]]*)\]", str(d["fixcell"]))]
+        return [k for k in keeps if k]
+    return []
 
 
 def _pn_read_leak_decisions(folder):
@@ -12867,12 +12960,17 @@ def _fix_leaks_mode(folder, args, cfg, log):
 
     registry = _PnFakeRegistry()
     try:
-        terms = _pn_load_key(key_path, registry, log)
+        terms, key_decisions = _pn_load_key(key_path, registry, log)
     except RuntimeError as e:
         _warn(f"--fix-leaks: could not read key {key_path.name}: {e}")
         return 1
 
     decisions = _pn_read_leak_decisions(folder)
+    # KEEP / KEEP-PART edits from the key's Replacement column ('no' or a
+    # [bracketed] keep-spec) are applied the same as the worksheet's: a value
+    # already triaged in the worksheet keeps that decision.
+    for vl, d in key_decisions.items():
+        decisions.setdefault(vl, d)
     # Two kinds of "yes": AUTO (let the tool mint a fake) and EXPLICIT (the
     # operator typed the exact replacement into the Fix? cell). An explicit fix
     # bypasses the faker entirely — the operator's deliberate choice of a
@@ -12927,6 +13025,10 @@ def _fix_leaks_mode(folder, args, cfg, log):
     # (party names + the flagged values) is wanted.
     pz = Pseudonymizer(terms, [], registry)
     pz.suppressed = suppressed
+    keep_parts = set()
+    for d in decisions.values():
+        keep_parts.update(_pn_decision_keep_parts(d))
+    pz.keep_values = {p for p in keep_parts if p}
     pz.override_fixes(explicit)   # typed fake beats any other record for a value
     for r in pz.records.values():
         pz._own_fakes.add(str(r["fake"]).lower().rstrip(" .,;:"))
@@ -13305,7 +13407,7 @@ def main():
             log.info(f"  Leak worksheet: {len(suppressed)} value(s) marked "
                      f"Fix?=no will be left as-is and not re-flagged.")
 
-        terms, reused_key = [], False
+        terms, reused_key, key_decisions = [], False, {}
         if key_path:
             if not key_path.is_file():
                 print(f"Key spreadsheet not found: {key_path}")
@@ -13314,7 +13416,7 @@ def main():
                 if _pn_key_looks_like_ours(key_path):
                     # A key this tool wrote: reuse its bindings so a follow-up
                     # single-file run reproduces the original run's fakes.
-                    terms = _pn_load_key(key_path, registry, log)
+                    terms, key_decisions = _pn_load_key(key_path, registry, log)
                     terms += _pn_build_terms([], [], extra_terms, registry)
                     reused_key = True
                 else:
@@ -13328,8 +13430,39 @@ def main():
                       f"Party names will NOT be pseudonymized in the .txt exports.")
         else:
             terms = _pn_build_terms([], [], extra_terms, registry)
+
+        # KEEP / KEEP-PART edits typed into the pseudonym key's Replacement
+        # column ('no' or a [bracketed] keep-spec): merge them into the run's
+        # decisions so they apply, persist to LEAKS.xlsx (round-tripping the Fix?
+        # cell) and reach the master log — the same path the worksheet uses. A
+        # value already triaged in the worksheet keeps that decision.
+        if key_decisions:
+            key_frags = []
+            for d in key_decisions.values():
+                if d.get("fake_values"):
+                    key_frags.extend(d["fake_values"])
+            if key_frags:
+                terms += _pn_build_terms([], [], key_frags, registry)
+                log.info(f"  Pseudonym key: auto-faking {len(key_frags)} "
+                         f"bracketed keep-spec fragment(s).")
+            for vl, d in key_decisions.items():
+                leak_decisions.setdefault(vl, d)
+                suppressed.add(vl)
+
         pseudonymizer = Pseudonymizer(terms, detectors, registry)
         pseudonymizer.suppressed = suppressed
+        # Values marked KEEP (worksheet OR key 'no'/[bracket]) are protected
+        # verbatim so no term or detector fakes them this run.
+        keep_parts = set()
+        for d in leak_decisions.values():
+            keep_parts.update(_pn_decision_keep_parts(d))
+        pseudonymizer.keep_values = {p for p in keep_parts if p}
+        # Surface each key KEEP decision into the triage worksheet + master log,
+        # so a mistake corrected in the key is recorded like any other decision.
+        for d in key_decisions.values():
+            pseudonymizer.leak_report.append(
+                {"file": "(pseudonym key)", "type": d["type"],
+                 "value": d["value"], "where": "(from key)"})
         if reused_key:
             # Loaded fakes are already-final strings; don't let a detector try
             # to re-fake one it meets in the new file.

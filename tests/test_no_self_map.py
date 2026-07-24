@@ -82,7 +82,7 @@ def test_load_key_self_heals_a_self_mapped_row(tmp_path):
     kp = tmp_path / "pseudonym_key.xlsx"
     _write_key(kp, [["person", "M & M", "M & M", "--term", 3]])
     reg = P._PnFakeRegistry()
-    terms = P._pn_load_key(kp, reg, log)
+    terms, _ = P._pn_load_key(kp, reg, log)
     assert len(terms) == 1
     healed = terms[0]
     assert healed.real == "M & M"

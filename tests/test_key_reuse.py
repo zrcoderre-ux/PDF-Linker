@@ -27,7 +27,7 @@ def _batch(names=("Ernest N Ramirez", "Ford Motor Company",
 
 def _reuse(key_path):
     reg = P._PnFakeRegistry()
-    terms = P._pn_load_key(key_path, reg, log)
+    terms, _ = P._pn_load_key(key_path, reg, log)
     z = P.Pseudonymizer(terms, DET, registry=reg)
     for r in z.records.values():
         z._own_fakes.add(str(r["fake"]).lower().rstrip(" .,;:"))
