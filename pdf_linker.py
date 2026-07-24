@@ -68,6 +68,14 @@ For each *.pdf in the folder (processed from shortest to longest by file size):
      Contents (TOC), Exhibits, Paragraphs, Causes of Action, and combined-
      filing sub-documents.
 
+If the folder holds a stack of Word documents (.docx/.docm) beside the PDFs —
+at least `word_doc_min` of them (default 5; see pdf_linker.config) — each is
+also bulk-converted to a scrubbed .txt export exactly as a PDF is (same
+pseudonymization, leak report and gate, name-scrubbed filename), but Word docs
+are never hyperlinked. Below that threshold a couple of Word docs beside the
+PDFs are left untouched, so the usual mostly-PDF workflow is unaffected. The
+legacy binary .doc format can't be read (re-save it as .docx).
+
 The Westlaw and Lexis search prefix tables, statute name variants, and URL
 forms here are kept in sync with the cross-opener extension's content.js
 and workups.html, which are validated against live Westlaw and Lexis+
@@ -11667,7 +11675,29 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
 # ────────────────────────────────────────────────────────────────────────────
 # Main per-PDF processing
 # ────────────────────────────────────────────────────────────────────────────
-def _pn_prescan_folder(pdfs, pseudonymizer, log):
+def _pn_learn_from_text(pseudonymizer, text, stem=None):
+    """Run every document-learning register_* pass over one document's text (and,
+    when given, its filename stem). Shared by the PDF pre-scan and the Word-doc
+    conversion so both feed the same folder-wide vocabulary."""
+    pseudonymizer.register_declarant_names(text)
+    pseudonymizer.register_declarant_refs(text)
+    pseudonymizer.register_court_names(text)
+    # The FILENAME often names a declarant ("Yu Declaration ISO Opp.pdf") whose
+    # name may appear nowhere in the body — scan it too, so both the body and the
+    # pseudonymized output filename scrub that name.
+    if stem:
+        pseudonymizer.register_declarant_refs(re.sub(r"[_\-]+", " ", stem))
+    pseudonymizer.register_dba_names(text)
+    pseudonymizer.register_firm_names(text)
+    pseudonymizer.register_label_names(text)
+    pseudonymizer.register_short_names(text)
+    pseudonymizer.register_entity_acronyms(text)
+    pseudonymizer.register_identifiers(text)
+    pseudonymizer.register_localities(text)
+    pseudonymizer.register_addresses(text)
+
+
+def _pn_prescan_folder(pdfs, pseudonymizer, log, extra_texts=()):
     """Run EVERY document-learning register_* pass over the whole folder before
     any .txt is written.
 
@@ -11676,7 +11706,11 @@ def _pn_prescan_folder(pdfs, pseudonymizer, log):
     and one filing routinely states a party's full address (teaching the city)
     while another states only the bare city, or spells out a "dba" the others
     just use. Running all passes up front removes that ordering dependency
-    completely: the folder is scrubbed only after it has been read in full."""
+    completely: the folder is scrubbed only after it has been read in full.
+
+    `extra_texts` is a list of (stem, text) pairs from non-PDF sources (Word docs
+    bulk-converted in the same run), so a name that appears only in a Word filing
+    is harvested folder-wide too."""
     import fitz
     before = len(pseudonymizer.terms)
     corpus = []
@@ -11688,24 +11722,14 @@ def _pn_prescan_folder(pdfs, pseudonymizer, log):
             log.warning(f"  Pseudonymize: could not pre-scan {pdf.name}: {e}")
             continue
         corpus.append(text)
-        pseudonymizer.register_declarant_names(text)
-        pseudonymizer.register_declarant_refs(text)
-        pseudonymizer.register_court_names(text)
-        # The FILENAME often names a declarant ("Yu Declaration ISO Opp.pdf")
-        # whose name may appear nowhere in the body — scan it too, so both the
-        # body and the pseudonymized output filename scrub that name.
-        pseudonymizer.register_declarant_refs(re.sub(r"[_\-]+", " ", pdf.stem))
-        pseudonymizer.register_dba_names(text)
-        pseudonymizer.register_firm_names(text)
-        pseudonymizer.register_label_names(text)
-        pseudonymizer.register_short_names(text)
-        pseudonymizer.register_entity_acronyms(text)
-        pseudonymizer.register_identifiers(text)
-        pseudonymizer.register_localities(text)
-        pseudonymizer.register_addresses(text)
+        _pn_learn_from_text(pseudonymizer, text, pdf.stem)
+    for stem, text in extra_texts:
+        corpus.append(text)
+        _pn_learn_from_text(pseudonymizer, text, stem)
     added = len(pseudonymizer.terms) - before
     if added:
-        log.info(f"  Pseudonymize: pre-scan of {len(pdfs)} file(s) added "
+        log.info(f"  Pseudonymize: pre-scan of "
+                 f"{len(pdfs) + len(extra_texts)} file(s) added "
                  f"{added} term(s) from names, localities and identifiers")
     full = "\n\f\n".join(corpus)
     pruned = pseudonymizer.prune_citation_only_terms(full)
@@ -11714,6 +11738,193 @@ def _pn_prescan_folder(pdfs, pseudonymizer, log):
                  f"that appear only inside case citations "
                  f"({', '.join(sorted(pruned)[:6])})")
     return full
+
+
+# ── Word-document bulk conversion ────────────────────────────────────────────
+# Some case folders carry a stack of Word filings beside the PDFs. Convert those
+# to the same scrubbed .txt exports the PDFs get (no hyperlinking — Word docs are
+# never linked), but ONLY when the folder holds enough of them to be a real
+# batch. A handful of Word docs beside a pile of PDFs is the ordinary workflow
+# and must stay untouched, so the pass is gated on a minimum count.
+_WORD_DOC_CONVERT_MIN = 5
+# Zipped OOXML Word formats we can read with the stdlib alone (a zip of XML).
+# The legacy binary .doc has no such structure and needs an external converter,
+# so it is not handled here (a warning names any that are found).
+_WORD_DOC_SUFFIXES = (".docx", ".docm")
+
+
+def _word_docs_in_folder(folder):
+    """Convertible Word documents directly in `folder` (not recursive), sorted
+    by name. Word's own '~$'-prefixed owner/lock files are skipped."""
+    docs = []
+    for p in folder.iterdir():
+        if not p.is_file() or p.name.startswith("~$"):
+            continue
+        if p.suffix.lower() in _WORD_DOC_SUFFIXES:
+            docs.append(p)
+    return sorted(docs, key=lambda p: p.name.lower())
+
+
+def _extract_docx_text(path):
+    """Extract the body text of a .docx/.docm as plain text, dependency-free
+    (a Word document is a zip of XML). Paragraphs and table cells become lines;
+    <w:tab/> becomes a tab and <w:br/>/<w:cr/> a newline. Headers, footers and
+    footnotes live in separate parts and are not included. Raises on a file that
+    isn't a readable Word document so the caller can skip and warn."""
+    import zipfile
+    from xml.etree import ElementTree as ET
+
+    with zipfile.ZipFile(path) as zf:
+        data = zf.read("word/document.xml")
+    root = ET.fromstring(data)
+
+    out = []
+
+    def walk(node):
+        # Local tag name only — the WordprocessingML namespace is verbose and
+        # irrelevant to which element this is.
+        tag = node.tag.rsplit("}", 1)[-1]
+        if tag == "t":            # a run of literal text
+            out.append(node.text or "")
+            return
+        if tag == "tab":
+            out.append("\t")
+        elif tag in ("br", "cr"):
+            out.append("\n")
+        for child in node:
+            walk(child)
+        if tag == "p":            # end of a paragraph → line break
+            out.append("\n")
+
+    walk(root)
+    text = "".join(out)
+    # Trim trailing whitespace per line and collapse runs of blank lines, the
+    # same tidy-up the PDF export does, so the two read alike.
+    text = "\n".join(ln.rstrip() for ln in text.split("\n"))
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    return text
+
+
+def _word_locate(body, needle, limit=12):
+    """Human-readable 'line N' locations of `needle` in a Word export body
+    (case-insensitive). Word text has no page/gutter structure, so findings are
+    located by line number within the export."""
+    nl = needle.lower()
+    out = []
+    for i, line in enumerate(body.split("\n"), 1):
+        if nl in line.lower():
+            loc = f"line {i}"
+            if loc not in out:
+                out.append(loc)
+    if not out:
+        return "(not located)"
+    return ", ".join(out[:limit]) + (" …" if len(out) > limit else "")
+
+
+def _write_word_text_version(src_path, text, log, pseudonymizer=None,
+                             text_subdir="Text Files", original_subdir=None):
+    """Write a plain-text export of one Word document into the `text_subdir`
+    subfolder, mirroring the PDF text pipeline: when a pseudonymizer is given the
+    text is scrubbed, leak-scanned and given a name-scrubbed filename exactly as
+    a PDF export is (the Word file itself is never modified); Word docs are never
+    hyperlinked. Returns True if written."""
+    out_dir = src_path.parent / text_subdir
+    txt_path = out_dir / (src_path.stem + ".txt")
+
+    if pseudonymizer is not None:
+        # Per-file backstop to the folder pre-scan (mirrors _write_text_version):
+        # learn any declarant / dba / firm / locality / identifier stated here.
+        _pn_learn_from_text(pseudonymizer, text, src_path.stem)
+        body = pseudonymizer.apply(text)
+
+        survivors = set(pseudonymizer.surviving_reals(body))
+        if survivors:
+            pseudonymizer.note_leaks(survivors)
+            shown = ", ".join(sorted(survivors)[:8])
+            log.warning(f"  Pseudonymization LEAK on {src_path.name}: real "
+                        f"value(s) still present in the .txt ({shown}). Review "
+                        f"before sharing; add them with --term and re-run.")
+
+        review = list(pseudonymizer.review_scan(body))
+        review += pseudonymizer.review_definition_survivors(text, body)
+        review += pseudonymizer.unknown_name_scan(body)
+        review = pseudonymizer.reid_scan(body) + review
+        if review:
+            shown = "; ".join(f"{c}: {s}" for c, s in review[:8])
+            log.warning(f"  Pseudonymization REVIEW on {src_path.name}: "
+                        f"identifier(s) to check before sharing ({shown}).")
+
+        for real in sorted(survivors):
+            if _pn_is_procedural_phrase(real):
+                continue
+            pseudonymizer.leak_report.append(
+                {"file": src_path.name, "type": "LEAK", "value": real,
+                 "where": _word_locate(body, real)})
+        for cls, sample in review:
+            if _pn_is_procedural_phrase(sample):
+                continue
+            pseudonymizer.leak_report.append(
+                {"file": src_path.name, "type": cls, "value": sample,
+                 "where": _word_locate(body, sample)})
+
+        # Scrub the output filename too — the .txt is the shared artifact, so a
+        # party/attorney name in the Word file's name must not ride along.
+        txt_path = _pseudonymized_txt_path(out_dir, src_path, pseudonymizer, log)
+    else:
+        body = text
+
+    body = body.rstrip("\n") + "\n"
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        log.warning(f"  Could not create text subfolder {out_dir}: {e}")
+        return False
+    try:
+        txt_path.write_text(body, encoding="utf-8", newline="\n")
+    except Exception as e:
+        log.warning(f"  Could not write Word text version (non-fatal): {e}")
+        return False
+
+    if pseudonymizer is not None:
+        pseudonymizer.written.append(txt_path)
+        if survivors:
+            pseudonymizer.leaked_by_file[txt_path] = {s.lower() for s in survivors}
+    log.info(f"  Wrote {'pseudonymized ' if pseudonymizer else ''}text "
+             f"version: {text_subdir}/{txt_path.name}")
+
+    # Optional UNSCRUBBED reference copy, under the real filename — same policy
+    # as the PDF path (real names by design, never gated, must not be shared).
+    if original_subdir and pseudonymizer is not None:
+        orig_dir = src_path.parent / original_subdir
+        orig_path = orig_dir / (src_path.stem + ".txt")
+        try:
+            orig_dir.mkdir(parents=True, exist_ok=True)
+            orig_path.write_text(text.rstrip("\n") + "\n",
+                                 encoding="utf-8", newline="\n")
+            log.info(f"  Wrote original text version: "
+                     f"{original_subdir}/{orig_path.name}")
+        except OSError as e:
+            log.warning(f"  Could not write original Word text version "
+                        f"(non-fatal): {e}")
+    return True
+
+
+def _convert_word_docs(word_texts, log, pseudonymizer=None,
+                       text_subdir="Text Files", original_subdir=None):
+    """Convert the already-extracted Word documents to .txt exports. `word_texts`
+    is a list of (path, text) pairs (extraction/gating done by the caller).
+    Returns the number of exports written."""
+    written = 0
+    for src_path, text in word_texts:
+        try:
+            if _write_word_text_version(src_path, text, log, pseudonymizer,
+                                        text_subdir, original_subdir):
+                written += 1
+        except Exception as e:
+            log.error(f"  Unhandled error converting Word doc "
+                      f"{src_path.name}: {e}")
+            log.error(traceback.format_exc())
+    return written
 
 
 # Metadata stamp written into a linked PDF's `keywords`, so a re-run can tell a
@@ -12192,6 +12403,14 @@ _CONFIG_TEMPLATE = (
     "# Subfolder (inside each case folder) that the .txt exports are written to.\n"
     "# Default: Text Files.\n"
     "text_subfolder = Text Files\n"
+    "\n"
+    "# Bulk-convert Word documents (.docx/.docm) in the folder to .txt exports\n"
+    "# too? They are scrubbed like the PDFs but never hyperlinked. To keep the\n"
+    "# usual 'mostly PDFs plus a couple of Word docs' workflow untouched, the\n"
+    "# conversion only kicks in when the folder holds at least this many Word\n"
+    "# docs (default: 5). Set higher to require a bigger batch, or 1 to always\n"
+    "# convert. Legacy binary .doc files can't be read (re-save them as .docx).\n"
+    "word_doc_min = 5\n"
     "\n"
     "# Also write the UNSCRUBBED text to a second folder, for QA / your own\n"
     "# reference? on/off (default: off). The pseudonymized folder above stays\n"
@@ -13143,6 +13362,40 @@ def main():
     pdfs = sorted(pdfs, key=lambda p: (-weights[p], -sizes[p], p.name))
     log.info(f"Found {len(pdfs)} PDF(s) to process (heaviest first)")
 
+    # Bulk Word→text conversion. Gated on a minimum count so the usual "mostly
+    # PDFs plus a couple of Word docs" workflow is untouched: only a real stack
+    # of Word filings (config `word_doc_min`, default _WORD_DOC_CONVERT_MIN)
+    # triggers the pass. Word docs are converted to the same scrubbed .txt
+    # exports the PDFs get, but never hyperlinked. Extracted UP FRONT so the
+    # names in them feed the folder-wide pre-scan below; the .txt is written
+    # after the PDFs so leak findings land in the same report and gate.
+    try:
+        word_min = int(cfg.get("word_doc_min", "").strip()
+                       or _WORD_DOC_CONVERT_MIN)
+    except ValueError:
+        word_min = _WORD_DOC_CONVERT_MIN
+    word_texts = []   # [(path, extracted_text)] for docs to convert this run
+    if args.extract_text:
+        word_docs = _word_docs_in_folder(folder)
+        legacy_doc = [p for p in folder.glob("*.doc")
+                      if not p.name.startswith("~$")]
+        if word_docs and len(word_docs) >= word_min:
+            log.info(f"Found {len(word_docs)} Word doc(s) (>= {word_min}); "
+                     f"bulk-converting to text (not hyperlinked)")
+            for wd in word_docs:
+                try:
+                    word_texts.append((wd, _extract_docx_text(wd)))
+                except Exception as e:
+                    log.warning(f"  Could not read Word doc {wd.name} "
+                                f"(skipped): {e}")
+        elif word_docs:
+            log.info(f"Found {len(word_docs)} Word doc(s) (< {word_min}); "
+                     f"leaving them alone (bulk Word conversion not triggered)")
+        if legacy_doc:
+            log.warning(f"  {len(legacy_doc)} legacy .doc file(s) found "
+                        f"(e.g. {legacy_doc[0].name}); the old binary .doc "
+                        f"format can't be converted — re-save as .docx.")
+
     # Estimated-finish marker: worth it only for a multi-file batch (a single
     # file has no throughput to project from until it is already done).
     show_eta = len(pdfs) >= 2
@@ -13170,8 +13423,10 @@ def main():
         if _want_key:
             _write_fix_launcher(folder, log)
 
-    if pseudonymizer is not None and pdfs:
-        corpus = _pn_prescan_folder(pdfs, pseudonymizer, log)
+    if pseudonymizer is not None and (pdfs or word_texts):
+        corpus = _pn_prescan_folder(
+            pdfs, pseudonymizer, log,
+            extra_texts=[(p.stem, t) for p, t in word_texts])
         partial = (args.partial_names if args.partial_names is not None
                    else _config_bool(cfg, "partial_names", False))
         if partial:
@@ -13220,6 +13475,13 @@ def main():
         if _elapsed > 0 and done_work > 0:
             _save_eta_rate(done_work / _elapsed)
         _write_done_marker(folder)   # clean finish stamps 'DONE <finish time>'
+
+    # Bulk Word→text conversion (gated above). Done after the PDFs so every leak
+    # finding lands in the same worksheet and the same quarantine gate below.
+    if word_texts:
+        n = _convert_word_docs(word_texts, log, pseudonymizer,
+                               text_subdir, original_subdir)
+        log.info(f"Converted {n} Word doc(s) to text")
 
     # One key file for the whole folder maps every real value to its fake.
     if pseudonymizer is not None:
