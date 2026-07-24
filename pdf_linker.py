@@ -5745,13 +5745,33 @@ _PN_CONFUSABLES = {
 }
 
 
-def _pn_typo_variants(fake, op, seed):
+def _pn_typo_variants(fake, op, seed, reps=1):
     """Yield typo'd forms of `fake` — the fake a near-variant real folds onto, so
     a real OCR typo reads as a typo of the fake rather than a brand-new name.
     `op` mirrors the real's own deviation so lengths track: 'ins' duplicates a
     letter (real gained one), 'del' drops one, 'sub' swaps one for a visual
-    confusable. Interior positions are tried in a per-variant deterministic
-    order; the caller takes the first form no other real has been given."""
+    confusable, 'trans' swaps two adjacent letters (real transposed a pair, e.g.
+    "Adler"/"Alder" -> "Darrow"/"Drarow"). `reps` applies a length-changing op
+    ('ins'/'del') that many times, so a long token with several typos gets a
+    fake whose length delta matches (real +2 chars -> fake +2). Interior
+    positions are tried in a per-variant deterministic order; the caller takes
+    the first form no other real has been given."""
+    if op in ("ins", "del") and reps > 1:
+        # Compose `reps` single-letter edits so the net length change tracks the
+        # real's. Each level branches over positions; dedup and keep only forms
+        # that actually reached the target length delta.
+        seen, frontier = set(), [fake]
+        for _ in range(reps):
+            nxt = []
+            for f in frontier:
+                nxt.extend(_pn_typo_variants(f, op, seed))
+            frontier = nxt
+        want = len(fake) + (reps if op == "ins" else -reps)
+        for v in frontier:
+            if len(v) == want and v != fake and v not in seen:
+                seen.add(v)
+                yield v
+        return
     rng = _pn_rng("nametypo", op, seed)
     idxs = list(range(1, len(fake)))          # never touch the leading capital
     rng.shuffle(idxs)
@@ -5762,6 +5782,11 @@ def _pn_typo_variants(fake, op, seed):
         elif op == "del":
             if len(fake) > 3:
                 yield fake[:i] + fake[i + 1:]              # drop a letter
+        elif op == "trans":
+            # Swap this letter with the next, mirroring the real's transposition.
+            # Skip a doubled pair (swapping "rr" changes nothing).
+            if i + 1 < len(fake) and fake[i] != fake[i + 1]:
+                yield fake[:i] + fake[i + 1] + fake[i] + fake[i + 2:]
         else:  # sub
             repl = _PN_CONFUSABLES.get(ch.lower())
             if repl is None:
@@ -5866,15 +5891,55 @@ class _PnFakeRegistry:
         if len(low) >= _PN_NAME_FOLD_MIN:
             for (t, prev), prev_fake in self._memo.items():
                 if (t != tag or prev == low or len(prev) < _PN_NAME_FOLD_MIN
-                        or not _pn_edit_distance_le1(prev, low,
-                                                     min_len=_PN_NAME_FOLD_MIN)):
+                        or not _pn_edit_distance_within(
+                            prev, low, _pn_name_fold_dist(prev, low),
+                            min_len=_PN_NAME_FOLD_MIN)):
                     continue
-                op = ("ins" if len(low) > len(prev)
-                      else "del" if len(low) < len(prev) else "sub")
-                for cand in _pn_typo_variants(prev_fake, op, low):
+                dl = len(low) - len(prev)
+                if dl > 0:
+                    op, reps = "ins", dl        # real gained dl chars -> so does fake
+                elif dl < 0:
+                    op, reps = "del", -dl        # real lost chars -> fake drops them
+                else:
+                    # Equal length: an adjacent transposition (two swapped,
+                    # side-by-side mismatches) mirrors as a swap; anything else
+                    # as a confusable substitution.
+                    mism = [i for i in range(len(low)) if low[i] != prev[i]]
+                    op = ("trans" if len(mism) == 2 and mism[1] == mism[0] + 1
+                          and low[mism[0]] == prev[mism[1]]
+                          and low[mism[1]] == prev[mism[0]] else "sub")
+                    reps = 1
+                for cand in _pn_typo_variants(prev_fake, op, low, reps):
                     if cand.lower() not in self._used:
                         return self._take(key, cand)
                 break     # a near-variant was found but yielded no free typo
+        # Fold a WELDED token — a column-splice glued two names with no space
+        # ("ADLERMICHAEL" = "ADLER" + "MICHAEL") — onto the CONCATENATION of the
+        # two fakes, so the stand-in still shows the bound party ("Darrow" +
+        # whatever "Michael" faked to) instead of an unrelated word. Guarded so
+        # an ordinary long surname is not split: the whole token must be letters
+        # and long enough to hold two full name tokens, and BOTH the bound
+        # prefix/suffix and the leftover must clear the fold floor. The leftover
+        # is faked through the registry too, so it stays unique and reversible
+        # and reuses that name's fake if it appears on its own elsewhere.
+        if len(low) >= 2 * _PN_NAME_FOLD_MIN and low.isalpha():
+            for (t, prev), prev_fake in list(self._memo.items()):
+                if t != tag or len(prev) < _PN_NAME_FOLD_MIN or prev == low:
+                    continue
+                if low.startswith(prev):
+                    rest, is_prefix = low[len(prev):], True
+                elif low.endswith(prev):
+                    rest, is_prefix = low[:-len(prev)], False
+                else:
+                    continue
+                if len(rest) < _PN_NAME_FOLD_MIN or not rest.isalpha():
+                    continue
+                rest_fake = self.token(rest, words, seed_tag)
+                cand = (prev_fake + rest_fake if is_prefix
+                        else rest_fake + prev_fake)
+                if cand.lower() not in self._used:
+                    return self._take(key, cand)
+                break     # a weld was found but the joined fake was taken
         rng = _pn_rng(seed_tag, real.lower())
         order = list(words)
         rng.shuffle(order)
@@ -7222,26 +7287,65 @@ _PN_PUBLIC_EMAIL_DOMAINS = frozenset({
 _PN_DOMAIN_REGISTRY = _PnFakeRegistry()
 
 
+def _pn_osa_distance(a, b):
+    """Optimal-string-alignment (restricted Damerau-Levenshtein) distance: the
+    fewest insertions, deletions, substitutions, and ADJACENT TRANSPOSITIONS
+    that turn `a` into `b`. A swapped pair ("adler"/"alder") costs one, not two,
+    so an OCR/keying transposition reads as a single slip. Strings are short
+    (name tokens, hosts), so the full DP is cheap."""
+    la, lb = len(a), len(b)
+    if not la:
+        return lb
+    if not lb:
+        return la
+    prev2 = None
+    prev = list(range(lb + 1))
+    for i in range(1, la + 1):
+        cur = [i] + [0] * lb
+        for j in range(1, lb + 1):
+            cost = 0 if a[i - 1] == b[j - 1] else 1
+            cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+            if (prev2 is not None and i > 1 and j > 1
+                    and a[i - 1] == b[j - 2] and a[i - 2] == b[j - 1]):
+                cur[j] = min(cur[j], prev2[j - 2] + 1)   # adjacent transposition
+        prev2, prev = prev, cur
+    return prev[lb]
+
+
+def _pn_edit_distance_within(a, b, k, min_len=8):
+    """True when `a` and `b` are within OSA edit distance `k` (see
+    `_pn_osa_distance`). Requires both strings be at least `min_len` long so two
+    genuinely different SHORT values aren't folded, and short-circuits on the
+    length gap before running the DP."""
+    if a == b:
+        return True
+    if min(len(a), len(b)) < min_len or abs(len(a) - len(b)) > k:
+        return False
+    return _pn_osa_distance(a, b) <= k
+
+
 def _pn_edit_distance_le1(a, b, min_len=8):
-    """True when `a` and `b` differ by at most one insertion, deletion, or
-    substitution (an OCR typo like autolegalgrouo vs autolegalgroup). Requires
-    both strings be at least `min_len` long so two genuinely different SHORT
-    values aren't folded — `min_len` is 8 for hosts (the default) and lower for
-    name tokens, which are shorter but still want their OCR variants folded."""
-    if a == b or abs(len(a) - len(b)) > 1 or min(len(a), len(b)) < min_len:
-        return a == b
-    if len(a) == len(b):
-        return sum(x != y for x, y in zip(a, b)) == 1
-    lo, hi = (a, b) if len(a) < len(b) else (b, a)   # hi is one longer
-    i = diff = 0
-    for j in range(len(hi)):
-        if i < len(lo) and lo[i] == hi[j]:
-            i += 1
-        else:
-            diff += 1
-            if diff > 1:
-                return False
-    return True
+    """True when `a` and `b` differ by at most one insertion, deletion,
+    substitution, or adjacent transposition — a single OCR/keying slip (e.g.
+    autolegalgrouo vs autolegalgroup, or the swapped "ADLER"/"ALDER"). Requires
+    both strings be at least `min_len` long. Thin `k == 1` wrapper over
+    `_pn_edit_distance_within`; the domain/host fold and single-typo callers use
+    it, while the name fold scales `k` up with token length."""
+    return _pn_edit_distance_within(a, b, 1, min_len)
+
+
+def _pn_name_fold_dist(a, b):
+    """The edit distance at which two NAME tokens still fold onto one fake, by
+    length: the longer a token, the more independent typos it plausibly carries,
+    and the smaller the chance two genuinely different surnames sit that close.
+    Short names stay strict (one slip) so distinct four/five-letter surnames are
+    never linked; long tokens tolerate two or three."""
+    L = min(len(a), len(b))
+    if L >= 16:
+        return 3
+    if L >= 10:
+        return 2
+    return 1
 
 
 def _pn_fake_domain(domain, registry=None):
@@ -8367,13 +8471,45 @@ def _pn_load_key(path, registry, log):
     return terms, key_decisions
 
 
-def _pn_build_terms(names, casenos, extra_terms, registry=None):
+class _PnTokenOrderRecorder(_PnFakeRegistry):
+    """A throwaway registry that ENUMERATES the bare name/entity tokens a term
+    build will mint, and the pool each is drawn from — the fakes it hands out are
+    discarded. `_pn_build_terms` runs one first, then pre-binds the real registry
+    SHORTEST-FIRST, so a welded token ("ADLERMICHAEL") always sees its base
+    ("ADLER") already bound and folds onto it whatever order the document
+    presented them in. The set of tokens minted does not depend on order, so this
+    dry run reliably names them even though its own fold order is arbitrary."""
+
+    def __init__(self):
+        super().__init__()
+        self.pool_of = {}    # real_lower -> (pool, seed_tag) of its first mint
+
+    def token(self, real, words, seed_tag):
+        if (self._memo_tag(seed_tag), real.lower()) not in self._memo:
+            self.pool_of.setdefault(real.lower(), (words, seed_tag))
+        return super().token(real, words, seed_tag)
+
+
+def _pn_build_terms(names, casenos, extra_terms, registry=None, _prewarm=True):
     """Turn raw strings into _PnTerm objects with stable fake replacements.
     A shared `registry` keeps every fake unique across the whole case; pass the
     SAME registry to the Pseudonymizer so declarant names added later can't
-    reuse a fake already assigned here."""
+    reuse a fake already assigned here.
+
+    `_prewarm` makes OCR/typo folding independent of the order names appear in.
+    An edit-distance fold is symmetric — whichever near-variant is minted first
+    becomes the canonical one and the rest fold onto it — but a WELD is strictly
+    longer than its base and can only fold once the base is bound. So a scratch
+    pass enumerates the bare tokens and they are pre-bound shortest-first, which
+    guarantees every base precedes any token that contains or extends it."""
     if registry is None:
         registry = _PnFakeRegistry()
+    if _prewarm:
+        rec = _PnTokenOrderRecorder()
+        _pn_build_terms(names, casenos, extra_terms, rec, _prewarm=False)
+        for tok in sorted(rec.pool_of, key=lambda s: (len(s), s)):
+            pool, tag = rec.pool_of[tok]
+            registry.token(tok, pool, tag)      # bases before welds/extensions
     terms = []
     for raw in names:
         raw, is_short = raw if isinstance(raw, tuple) else (raw, False)

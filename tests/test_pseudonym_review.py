@@ -1438,6 +1438,123 @@ def test_distinct_short_names_do_not_fold():
     assert not P._pn_edit_distance_le1(a.lower(), b.lower(), min_len=3)
 
 
+# ── 2026-07-24 review: transposed and welded name variants ───────────────────
+# From an "ADLER" set where the swapped "Alder" and the column-welded
+# "ADLERMICHAEL" each minted an unrelated fake instead of tracking "ADLER".
+
+def test_adjacent_transposition_is_one_edit():
+    # A swapped pair reads as one OCR/keying slip (Damerau), not two subs.
+    assert P._pn_edit_distance_le1("adler", "alder", min_len=5)
+    assert P._pn_edit_distance_le1("gunderson", "gudnerson", min_len=5)
+    # Two non-adjacent or non-swapped changes are still more than one edit.
+    assert not P._pn_edit_distance_le1("adler", "obler", min_len=5)
+
+
+def test_transposed_name_folds_onto_a_transposed_fake():
+    # "Alder" (a transposition of "Adler") must read as a typo of the SAME fake
+    # "Adler" got — a transposed stand-in — not an unrelated pool word.
+    reg = P._PnFakeRegistry()
+    base = reg.token("adler", P._PN_NAME_WORDS, "nametok")
+    swap = reg.token("alder", P._PN_NAME_WORDS, "nametok")
+    assert swap.lower() != base.lower()                        # its own stand-in
+    assert P._pn_edit_distance_le1(base.lower(), swap.lower(), min_len=5), \
+        f"{swap} is not a typo-neighbour of {base}"
+    # It is specifically a transposition of the base fake, not a substitution.
+    assert sorted(swap.lower()) == sorted(base.lower())
+
+
+def test_welded_name_folds_onto_concatenated_fakes():
+    # A column-splice glues two names ("ADLERMICHAEL"); the fake must show the
+    # bound party ("Adler"->fake) with the other name's fake appended, and reuse
+    # each part's own stand-in when it later appears alone.
+    reg = P._PnFakeRegistry()
+    adler = reg.token("adler", P._PN_NAME_WORDS, "nametok")
+    weld = reg.token("adlermichael", P._PN_NAME_WORDS, "nametok")
+    michael = reg.token("michael", P._PN_NAME_WORDS, "nametok")
+    assert weld.lower().startswith(adler.lower())              # bound party first
+    assert weld.lower() == (adler + michael).lower()           # + its neighbour
+    assert len({adler.lower(), weld.lower(), michael.lower()}) == 3   # injective
+
+
+def test_fold_distance_scales_with_length():
+    # Short names stay strict (one slip); longer tokens, which plausibly carry
+    # more independent typos, tolerate two or three.
+    assert P._pn_name_fold_dist("adler", "alder") == 1
+    assert P._pn_name_fold_dist("gunderson", "gundersen") == 1     # 9 chars
+    assert P._pn_name_fold_dist("cunningham", "cunninghom") == 2   # 10 chars
+    assert P._pn_name_fold_dist("schwarzeneger", "schwartzeneger") == 2  # 13-14
+    assert P._pn_name_fold_dist("a" * 16, "b" * 16) == 3
+
+
+def test_long_double_typo_folds_but_short_double_typo_does_not():
+    # A long token two edits from a bound one still reads as the same name;
+    # a short token two edits away is a genuinely different surname.
+    reg = P._PnFakeRegistry()
+    base = reg.token("cunningham", P._PN_NAME_WORDS, "nametok")
+    dbl = reg.token("cunninghomm", P._PN_NAME_WORDS, "nametok")   # dist 2, 10+ chars
+    assert P._pn_edit_distance_within(base.lower(), dbl.lower(), 2, min_len=5)
+
+    reg2 = P._PnFakeRegistry()
+    short = reg2.token("adler", P._PN_NAME_WORDS, "nametok")
+    other = reg2.token("obler", P._PN_NAME_WORDS, "nametok")      # dist 2, only 5 chars
+    assert not P._pn_edit_distance_within(short.lower(), other.lower(), 1, min_len=5)
+    # It got an independent stand-in, not a corruption of the bound fake.
+    assert sorted(other.lower()) != sorted(short.lower())
+
+
+def test_multi_char_insertion_tracks_fake_length():
+    # A real that gained two characters folds onto a fake that also grew by two,
+    # so the stand-in's shape still mirrors the real's deviation.
+    reg = P._PnFakeRegistry()
+    base = reg.token("washington", P._PN_NAME_WORDS, "nametok")
+    grown = reg.token("washingtonxy", P._PN_NAME_WORDS, "nametok")   # +2 chars
+    assert len(grown) == len(base) + 2
+    assert P._pn_edit_distance_within(base.lower(), grown.lower(), 2, min_len=5)
+
+
+def test_osa_counts_a_transposition_as_one():
+    assert P._pn_osa_distance("adler", "alder") == 1
+    assert P._pn_osa_distance("abc", "abc") == 0
+    assert P._pn_osa_distance("abc", "abcd") == 1
+    assert P._pn_osa_distance("kitten", "sitting") == 3
+
+
+def test_weld_folding_is_order_independent():
+    # A weld is strictly longer than its base, so it can only fold once the base
+    # is bound. The build pre-binds tokens shortest-first, so "ADLERMICHAEL"
+    # folds onto "ADLER" no matter which order the document presents them in —
+    # and the assignment is identical across orderings.
+    def fakes_for(order):
+        reg = P._PnFakeRegistry()
+        terms = P._pn_build_terms(list(order), [], [], registry=reg)
+        return {t.real.lower(): t.fake.lower()
+                for t in terms if t.category in ("person", "entity")}
+
+    orderings = [
+        ["adlermichael", "adler", "michael"],   # weld first (the old failure)
+        ["adler", "adlermichael", "michael"],
+        ["michael", "adlermichael", "adler"],
+    ]
+    results = [fakes_for(o) for o in orderings]
+    for f in results:
+        assert f["adlermichael"].startswith(f["adler"])   # weld shows the base
+        assert f["adlermichael"] == f["adler"] + f["michael"]
+    # Deterministic: every ordering yields the very same three fakes.
+    assert results[0] == results[1] == results[2]
+
+
+def test_ordinary_long_surname_is_not_split_as_a_weld():
+    # A single surname that merely starts with a bound short name must NOT be
+    # torn into two fakes: too short to hold two full name tokens (< 2x the
+    # fold floor), so it draws one ordinary pool word.
+    reg = P._PnFakeRegistry()
+    marsh = reg.token("marsh", P._PN_NAME_WORDS, "nametok")
+    marshall = reg.token("marshall", P._PN_NAME_WORDS, "nametok")
+    assert not marshall.lower().startswith(marsh.lower())      # not a weld
+    pool = {w.lower() for w in P._PN_NAME_WORDS}
+    assert marshall.lower().rstrip("0123456789") in pool       # one pool word
+
+
 def test_bare_short_account_number_is_not_tracked():
     # A 1-3 digit "account number" is a document number, not a key — never
     # registered, so it never leaks as review noise.
