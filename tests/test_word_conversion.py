@@ -1,9 +1,8 @@
 """
-Bulk Word-document conversion: when a case folder holds a real stack of Word
-filings (>= word_doc_min, default 5) beside the PDFs, each .docx/.docm is
-converted to the same scrubbed .txt export a PDF gets — pseudonymized, leak-
-reported, name-scrubbed filename — but never hyperlinked. Below the threshold a
-couple of Word docs are left alone so the usual mostly-PDF workflow is
+Bulk Word-document conversion: when a case folder holds Word filings and NO
+PDFs, each .docx/.docm is converted to the same scrubbed .txt export a PDF gets
+— pseudonymized, leak-reported, name-scrubbed filename — but never hyperlinked.
+When any PDF is present the Word docs are left alone so the usual PDF workflow is
 unaffected. These tests need neither fitz nor openpyxl.
 
 Run:  cd PDF-Linker && python3 -m pytest tests/test_word_conversion.py -v
@@ -122,7 +121,7 @@ def test_convert_off_writes_raw_text(tmp_path):
     assert out.read_text().strip() == "Ernest N Ramirez"
 
 
-# ── the 5-doc gate, exercised through main() (pseudonymize off → no fitz) ─────
+# ── the no-PDF gate, exercised through main() (pseudonymize off → no fitz) ────
 
 def _run_main(folder, monkeypatch):
     monkeypatch.setattr(sys, "argv",
@@ -130,16 +129,21 @@ def _run_main(folder, monkeypatch):
     pl.main()
 
 
-def test_gate_triggers_at_five(tmp_path, monkeypatch):
-    for i in range(5):
+def test_gate_converts_when_no_pdfs(tmp_path, monkeypatch):
+    for i in range(3):
         _docx(tmp_path / f"Filing{i}.docx", _para(f"Body {i}"))
     _run_main(tmp_path, monkeypatch)
     out = sorted(p.name for p in (tmp_path / "Text Files").glob("*.txt"))
-    assert len(out) == 5
+    assert len(out) == 3
 
 
-def test_gate_leaves_four_alone(tmp_path, monkeypatch):
-    for i in range(4):
+def test_gate_leaves_word_docs_when_a_pdf_is_present(tmp_path, monkeypatch):
+    for i in range(3):
         _docx(tmp_path / f"Filing{i}.docx", _para(f"Body {i}"))
+    # A single (even unreadable) PDF in the folder means the ordinary PDF
+    # workflow is active, so the Word docs must be left untouched.
+    (tmp_path / "Motion.pdf").write_bytes(b"%PDF-1.4 not a real pdf")
     _run_main(tmp_path, monkeypatch)
-    assert not (tmp_path / "Text Files").exists()
+    text_dir = tmp_path / "Text Files"
+    converted = list(text_dir.glob("Filing*.txt")) if text_dir.exists() else []
+    assert converted == []

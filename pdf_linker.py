@@ -68,13 +68,12 @@ For each *.pdf in the folder (processed from shortest to longest by file size):
      Contents (TOC), Exhibits, Paragraphs, Causes of Action, and combined-
      filing sub-documents.
 
-If the folder holds a stack of Word documents (.docx/.docm) beside the PDFs —
-at least `word_doc_min` of them (default 5; see pdf_linker.config) — each is
-also bulk-converted to a scrubbed .txt export exactly as a PDF is (same
+If the folder holds Word documents (.docx/.docm) and NO PDFs, each is instead
+bulk-converted to a scrubbed .txt export exactly as a PDF is (same
 pseudonymization, leak report and gate, name-scrubbed filename), but Word docs
-are never hyperlinked. Below that threshold a couple of Word docs beside the
-PDFs are left untouched, so the usual mostly-PDF workflow is unaffected. The
-legacy binary .doc format can't be read (re-save it as .docx).
+are never hyperlinked. When any PDF is present the Word docs are left untouched,
+so the usual PDF workflow is unaffected. The legacy binary .doc format can't be
+read (re-save it as .docx).
 
 The Westlaw and Lexis search prefix tables, statute name variants, and URL
 forms here are kept in sync with the cross-opener extension's content.js
@@ -11741,12 +11740,11 @@ def _pn_prescan_folder(pdfs, pseudonymizer, log, extra_texts=()):
 
 
 # ── Word-document bulk conversion ────────────────────────────────────────────
-# Some case folders carry a stack of Word filings beside the PDFs. Convert those
-# to the same scrubbed .txt exports the PDFs get (no hyperlinking — Word docs are
-# never linked), but ONLY when the folder holds enough of them to be a real
-# batch. A handful of Word docs beside a pile of PDFs is the ordinary workflow
-# and must stay untouched, so the pass is gated on a minimum count.
-_WORD_DOC_CONVERT_MIN = 5
+# Some folders hold only Word filings, with no PDFs at all. Convert those to the
+# same scrubbed .txt exports the PDFs get (no hyperlinking — Word docs are never
+# linked), but ONLY when the folder holds no PDFs. A Word doc beside a pile of
+# PDFs is the ordinary workflow and must stay untouched, so the pass is gated on
+# the folder having no PDFs (checked by the caller in main()).
 # Zipped OOXML Word formats we can read with the stdlib alone (a zip of XML).
 # The legacy binary .doc has no such structure and needs an external converter,
 # so it is not handled here (a warning names any that are found).
@@ -12404,13 +12402,10 @@ _CONFIG_TEMPLATE = (
     "# Default: Text Files.\n"
     "text_subfolder = Text Files\n"
     "\n"
-    "# Bulk-convert Word documents (.docx/.docm) in the folder to .txt exports\n"
-    "# too? They are scrubbed like the PDFs but never hyperlinked. To keep the\n"
-    "# usual 'mostly PDFs plus a couple of Word docs' workflow untouched, the\n"
-    "# conversion only kicks in when the folder holds at least this many Word\n"
-    "# docs (default: 5). Set higher to require a bigger batch, or 1 to always\n"
-    "# convert. Legacy binary .doc files can't be read (re-save them as .docx).\n"
-    "word_doc_min = 5\n"
+    "# Word documents (.docx/.docm) in a folder that has NO PDFs are bulk-\n"
+    "# converted to scrubbed .txt exports too (never hyperlinked). A Word doc\n"
+    "# beside PDFs is left alone, so the usual PDF workflow is untouched. Legacy\n"
+    "# binary .doc files can't be read (re-save them as .docx).\n"
     "\n"
     "# Also write the UNSCRUBBED text to a second folder, for QA / your own\n"
     "# reference? on/off (default: off). The pseudonymized folder above stays\n"
@@ -13362,25 +13357,19 @@ def main():
     pdfs = sorted(pdfs, key=lambda p: (-weights[p], -sizes[p], p.name))
     log.info(f"Found {len(pdfs)} PDF(s) to process (heaviest first)")
 
-    # Bulk Word→text conversion. Gated on a minimum count so the usual "mostly
-    # PDFs plus a couple of Word docs" workflow is untouched: only a real stack
-    # of Word filings (config `word_doc_min`, default _WORD_DOC_CONVERT_MIN)
-    # triggers the pass. Word docs are converted to the same scrubbed .txt
-    # exports the PDFs get, but never hyperlinked. Extracted UP FRONT so the
-    # names in them feed the folder-wide pre-scan below; the .txt is written
-    # after the PDFs so leak findings land in the same report and gate.
-    try:
-        word_min = int(cfg.get("word_doc_min", "").strip()
-                       or _WORD_DOC_CONVERT_MIN)
-    except ValueError:
-        word_min = _WORD_DOC_CONVERT_MIN
+    # Bulk Word→text conversion. Gated on the folder holding NO PDFs, so the
+    # usual PDF workflow (even one with a few Word docs mixed in) is untouched:
+    # only an all-Word folder triggers the pass. Word docs are converted to the
+    # same scrubbed .txt exports the PDFs get, but never hyperlinked. Extracted
+    # UP FRONT so the names in them feed the folder-wide pre-scan below; the .txt
+    # is written after the PDFs so leak findings land in the same report and gate.
     word_texts = []   # [(path, extracted_text)] for docs to convert this run
     if args.extract_text:
         word_docs = _word_docs_in_folder(folder)
         legacy_doc = [p for p in folder.glob("*.doc")
                       if not p.name.startswith("~$")]
-        if word_docs and len(word_docs) >= word_min:
-            log.info(f"Found {len(word_docs)} Word doc(s) (>= {word_min}); "
+        if word_docs and not pdfs:
+            log.info(f"Found {len(word_docs)} Word doc(s) and no PDFs; "
                      f"bulk-converting to text (not hyperlinked)")
             for wd in word_docs:
                 try:
@@ -13389,9 +13378,10 @@ def main():
                     log.warning(f"  Could not read Word doc {wd.name} "
                                 f"(skipped): {e}")
         elif word_docs:
-            log.info(f"Found {len(word_docs)} Word doc(s) (< {word_min}); "
-                     f"leaving them alone (bulk Word conversion not triggered)")
-        if legacy_doc:
+            log.info(f"Found {len(word_docs)} Word doc(s) beside {len(pdfs)} "
+                     f"PDF(s); leaving them alone (Word conversion runs only "
+                     f"when the folder has no PDFs)")
+        if legacy_doc and not pdfs:
             log.warning(f"  {len(legacy_doc)} legacy .doc file(s) found "
                         f"(e.g. {legacy_doc[0].name}); the old binary .doc "
                         f"format can't be converted — re-save as .docx.")
