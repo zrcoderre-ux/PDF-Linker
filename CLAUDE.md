@@ -33,6 +33,31 @@ scrubbed. A `pseudonym_key.xlsx` round-trips real↔fake through the
 `DeAnonymize.bas` Word macro, so every minted fake must be globally unique and
 written to the key.
 
+**Correcting the key in place / durable KEEP store.** The `Replacement` column
+of `pseudonym_key.xlsx` accepts the same operator control words the LEAKS `Fix?`
+column does — `no` (keep this Real Value verbatim) and a `[bracketed]` keep-spec
+(keep the bracketed part, auto-fake the rest) — so a mistake baked into the key
+that never surfaced as a leak can be fixed where it lives (`_pn_load_key` returns
+these as `key_decisions`). A KEEP value is protected verbatim by
+`Pseudonymizer.keep_values` (spans added to `_substitute`'s `protected` set, so
+no term OR detector fakes it; `_keep_spans` records `kept_hits`).
+
+**The KEEP store is a SINGLE cross-folder sheet**, the `KEEP` tab of the master
+workbook (`_pn_master_path`, next to the config or `PDF_LINKER_MASTER` /
+`master_leaks_path`; a sibling of the `Master Leaks` tally tab — both preserved
+by the multi-sheet-safe `_pn_master_load`/`_replace_sheet`/`_save` helpers). Every
+run in every folder reads it (`_pn_read_master_keep`) and applies it, and records
+its own local keeps back (`_pn_update_master_keep`, accumulating Times Seen /
+Cases / dates) so the screening can learn from real history. This — NOT the
+per-folder `LEAKS.xlsx` — is the preservation vehicle: the transient LEAKS triage
+can be auto-deleted freely without ever dropping a keep. Safety: `_pn_resolve_keeps`
+drops a GLOBAL keep that collides with a person/entity/case_number the current
+case binds to a fake (local keeps always win), so a keep learned in one matter
+can never leave a real party un-faked in another. Persistence is macro-safe: the
+`no`/bracket instruction is NEVER written into `pseudonym_key.xlsx` (a literal
+"no" in a Replacement cell would poison the reversal macro); `write_key` also
+drops any harvested reversal row for a kept value.
+
 ## Pseudonymization pipeline (the privacy-critical half)
 
 - **Fake pools** (`_PN_NAME_WORDS` ~190 surnames, `_PN_ENTITY_WORDS` ~110): drawn

@@ -30,6 +30,16 @@ For each *.pdf in the folder (processed from shortest to longest by file size):
      back to a neutral name if anything real would survive). A surviving real
      value (a per-file leak, or a spreadsheet key that matched nothing) is
      reported in the log for review — the .txt is still written, not withheld.
+     A mistake baked into the pseudonym_key.xlsx (a value it should not have
+     faked) can be corrected in place in the key's Replacement column, using the
+     same words the LEAKS worksheet's Fix? column accepts: "no" leaves that Real
+     Value verbatim, and a [bracketed] keep-spec keeps the bracketed part and
+     fakes the rest. These no/bracket KEEP decisions are recorded to a SINGLE
+     cross-folder sheet — the KEEP tab of master_leaks.xlsx — so they are applied
+     on every future run in EVERY folder (accumulating Times Seen / Cases /
+     dates), letting the screening learn from real history. A global KEEP never
+     overrides a value the current case explicitly binds to a fake, so it can
+     never leave a real party in the clear.
   1a. Writes a plain-text companion (.txt) for each PDF that has a real text
      layer into a "Text Files" subfolder of the case folder (name overridable
      via text_subfolder in pdf_linker.config), so a text-only copy can be
@@ -67,6 +77,13 @@ For each *.pdf in the folder (processed from shortest to longest by file size):
   8. Builds a PDF outline (sidebar bookmarks) from the detected structure —
      Contents (TOC), Exhibits, Paragraphs, Causes of Action, and combined-
      filing sub-documents.
+
+If the folder holds Word documents (.docx/.docm) and NO PDFs, each is instead
+bulk-converted to a scrubbed .txt export exactly as a PDF is (same
+pseudonymization, leak report and gate, name-scrubbed filename), but Word docs
+are never hyperlinked. When any PDF is present the Word docs are left untouched,
+so the usual PDF workflow is unaffected. The legacy binary .doc format can't be
+read (re-save it as .docx).
 
 The Westlaw and Lexis search prefix tables, statute name variants, and URL
 forms here are kept in sync with the cross-opener extension's content.js
@@ -8183,14 +8200,24 @@ def _pn_key_looks_like_ours(path):
 def _pn_load_key(path, registry, log):
     """Load a key THIS tool wrote as authoritative real->fake bindings, seeding
     `registry` so new values can't collide and re-harvested names recompose
-    identically. Returns the list of pre-bound _PnTerm objects.
+    identically. Returns `(terms, key_decisions)` — the list of pre-bound
+    _PnTerm objects, plus operator KEEP/KEEP-PART decisions typed into the
+    Replacement column (see below).
 
     Each row becomes a literal term carrying its stored fake, so the value
     reproduces verbatim however it was originally composed (a full e-mail, a
     house number + street). The registry's used-pool, name-token memo and
     domain memo are seeded from the rows so a genuinely new value drawn later
     avoids every fake already handed out and reuses a party's established
-    token/domain."""
+    token/domain.
+
+    The Replacement column also accepts the same operator instructions the LEAKS
+    worksheet's Fix? column does, so a mistake baked into the key can be fixed in
+    place: `no` (leave this Real Value verbatim — do not fake it) and a
+    `[bracketed]` keep-spec (keep the bracketed part verbatim, auto-fake the
+    rest). Such a row builds no faking term; the decision is returned in
+    `key_decisions` (value_lower -> dict shaped like a leak decision) for the
+    caller to apply and persist."""
     import openpyxl
     wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
     ws = wb.active
@@ -8199,7 +8226,7 @@ def _pn_load_key(path, registry, log):
     idx = {name: header.index(name) for name in
            ("category", "real value", "replacement", "source", "occurrences")
            if name in header}
-    terms, seen = [], set()
+    terms, seen, key_decisions = [], set(), {}
     for row in rows:
         def cell(name):
             i = idx.get(name)
@@ -8216,6 +8243,33 @@ def _pn_load_key(path, registry, log):
         if (cat, real.lower()) in seen:
             continue
         seen.add((cat, real.lower()))
+
+        # Operator control words typed into the Replacement column (same
+        # vocabulary the LEAKS Fix? column accepts). Build no faking term; hand
+        # the decision back for the caller to apply (keep-protection / fragment
+        # faking) and persist to the worksheet + master log.
+        ctrl = fake.strip()
+        if ctrl.lower() in ("no", "n"):
+            key_decisions[real.lower()] = {
+                "value": real, "type": "KEEP", "fix": "no", "replacement": None,
+                "fake_values": None, "fixcell": None, "notes": "pseudonym key"}
+            continue
+        if "[" in ctrl:
+            frags = _pn_bracket_keep(real, ctrl)
+            if frags == []:               # whole value bracketed -> keep all
+                key_decisions[real.lower()] = {
+                    "value": real, "type": "KEEP", "fix": "no",
+                    "replacement": None, "fake_values": None,
+                    "fixcell": ctrl, "notes": "pseudonym key"}
+                continue
+            if frags:                     # keep bracketed part(s), fake the rest
+                key_decisions[real.lower()] = {
+                    "value": real, "type": "KEEP-PART", "fix": "yes",
+                    "replacement": None, "fake_values": frags,
+                    "fixcell": ctrl, "notes": "pseudonym key"}
+                continue
+            # frags is None: bracketed text isn't a substring of the value — fall
+            # through and treat the cell as an ordinary explicit replacement.
         # Self-heal a key written before the self-map guard existed: a row whose
         # replacement equals its real value ("M & M" -> "M & M") never scrubs and
         # loops --fix-leaks. Re-mint a distinct fake; the next write_key persists
@@ -8277,7 +8331,13 @@ def _pn_load_key(path, registry, log):
     terms.sort(key=lambda t: (-t.priority, -len(t.real)))
     log.info(f"  Pseudonym key REUSED: loaded {len(terms)} binding(s) from "
              f"{path.name} — fakes will match the original run")
-    return terms
+    if key_decisions:
+        kept = sum(1 for d in key_decisions.values() if d["fix"] == "no")
+        part = len(key_decisions) - kept
+        log.info(f"  Pseudonym key: {kept} value(s) marked 'no' (keep verbatim)"
+                 + (f" and {part} bracketed keep-spec(s)" if part else "")
+                 + " in the Replacement column will be honored.")
+    return terms, key_decisions
 
 
 def _pn_build_terms(names, casenos, extra_terms, registry=None):
@@ -8892,6 +8952,14 @@ class Pseudonymizer:
                                  # human-triage worksheet (page:line located)
         self.suppressed = set()  # value_lowers the reviewer marked "no fix" in
                                  # the worksheet — never quarantine on these
+        self.keep_values = set() # exact strings the operator marked KEEP (a
+                                 # 'no' or the bracketed part of a keep-spec, in
+                                 # the LEAKS worksheet, the pseudonym key OR the
+                                 # cross-folder master KEEP sheet) — protected
+                                 # verbatim, never faked (see _keep_spans / apply)
+        self.kept_hits = set()   # keep_values (lowercased) that ACTUALLY matched
+                                 # text this run — so the master KEEP log can bump
+                                 # only the decisions a run really used
         self._own_fakes = set()  # detector fakes we minted, so a re-scrub of
                                  # already-fake text never re-fakes them
         # (category, real_lower) -> record dict {category, real, fake, source,
@@ -9720,6 +9788,28 @@ class Pseudonymizer:
                 spans.append(m.span())
         return spans
 
+    def _keep_spans(self, text):
+        """Spans of operator-KEPT values in `text` — a value marked `no` (keep
+        whole) or the bracketed part of a keep-spec, from the LEAKS worksheet or
+        the pseudonym key. A candidate overlapping one of these is dropped in
+        `_substitute`, so the kept text is left verbatim even when a term or a
+        PII detector would otherwise fake it. Case-insensitive; longest keeps
+        first so a multi-word keep wins over a shorter substring."""
+        if not self.keep_values:
+            return []
+        spans = []
+        for v in sorted(self.keep_values, key=len, reverse=True):
+            if not v:
+                continue
+            hit = False
+            for m in re.finditer(re.escape(v), text, re.IGNORECASE):
+                if m.start() != m.end():
+                    spans.append(m.span())
+                    hit = True
+            if hit:
+                self.kept_hits.add(v.lower())
+        return spans
+
     def _mask_protected_citations(self, text):
         """`text` with every protected citation span blanked to spaces, for the
         LEAK scans: a party name correctly preserved inside a cited authority
@@ -9783,8 +9873,9 @@ class Pseudonymizer:
         text = _NFKC(text)
         cands = (self._detector_cands(text) + self._term_cands(text)
                  + self._display_name_cands(text))
-        return self._substitute(text, cands, count=count,
-                                protected=self._protected_citation_spans(text))
+        return self._substitute(
+            text, cands, count=count,
+            protected=self._protected_citation_spans(text) + self._keep_spans(text))
 
     def apply_lines(self, bodies):
         """Pseudonymize a pleading page's line BODIES as one text, returning one
@@ -9808,7 +9899,8 @@ class Pseudonymizer:
             off += len(b) + 1
         out = self._substitute(
             joined, cands, reflow=True,
-            protected=self._protected_citation_spans(joined)).split("\n")
+            protected=self._protected_citation_spans(joined)
+            + self._keep_spans(joined)).split("\n")
         # _pn_reflow preserves every newline, so this holds; fall back rather
         # than ever hand back the wrong number of lines.
         return out if len(out) == len(bodies) else [self.apply(b) for b in bodies]
@@ -10240,12 +10332,18 @@ class Pseudonymizer:
         if not self.records:
             return
 
+        keep_low = {str(k).lower() for k in self.keep_values}
+
         def _reversible(r):
             # A row that matched this run (count>0) OR one loaded from a reused
             # key (preserve it even if it didn't re-match — in fix-leaks mode the
             # text is already scrubbed, so loaded party names never re-match yet
-            # must stay in the key for the reversal macro).
+            # must stay in the key for the reversal macro). A value the operator
+            # marked KEEP is left verbatim, so it has no fake to reverse — drop
+            # any (e.g. harvested) row for it so the key doesn't show a fake that
+            # was never applied.
             return ((r["count"] > 0 or r.get("loaded"))
+                    and str(r["real"]).lower() not in keep_low
                     and "\n" not in str(r["real"]) and "\n" not in str(r["fake"]))
         keyrows = [r for r in self.records.values() if _reversible(r)]
 
@@ -11030,6 +11128,9 @@ _PN_LEAK_COLUMNS = (
 _PN_LEAK_HEADERS = tuple(h for h, _k, _w in _PN_LEAK_COLUMNS)
 _PN_LEAK_ABSENT = "(no longer present)"
 
+# Sheet title of the per-folder genuine-leak triage.
+_PN_LEAK_SHEET = "LEAKS"
+
 # The review worksheet's filename (stem). Renamed from the historical
 # "pdf_linker_leaks" to a plain "LEAKS"; the old name is still READ so a
 # folder triaged under the previous version keeps its decisions.
@@ -11086,31 +11187,36 @@ def _pn_bracket_keep(value, cell):
     return [f for f in frags if re.search(r"[A-Za-z0-9]", f)]
 
 
-def _pn_read_leak_decisions(folder):
-    """{value_lower: {value, type, fix, replacement, fake_values, fixcell,
-    notes}} read back from a leak worksheet the reviewer annotated on a prior
-    run. `fix` is normalised to 'yes'/'no'/''. A Fix? entry that is NOT a
-    reserved control word ('yes'/'no' and the bare y/n dropdown shorthands) is
-    read as one of two operator instructions:
+def _pn_decision_keep_parts(d):
+    """The substrings a KEEP/KEEP-PART decision protects verbatim: the whole
+    value for a `no`, or the bracketed part(s) for a keep-spec. Shared by the
+    LEAKS worksheet and the pseudonym key so both feed `Pseudonymizer.keep_values`
+    identically. Returns [] for any other decision (yes / explicit / blank)."""
+    if d.get("fix") == "no":
+        return [d["value"]]
+    if d.get("fake_values") is not None and d.get("fixcell"):
+        keeps = [k.strip() for k in re.findall(r"\[([^\[\]]*)\]", str(d["fixcell"]))]
+        return [k for k in keeps if k]
+    return []
 
-      * BRACKETED text that is part of the flagged value — the operator keeps
-        the bracketed part verbatim and auto-fakes the rest (`fake_values` holds
-        the fragment(s) to fake); or
-      * anything else — an explicit typed replacement (`replacement` carries the
-        text verbatim), dictating the exact fake instead of the auto-faker's.
 
-    `fixcell` is the exact string to write back so the annotation round-trips.
-    Empty when there is no readable worksheet."""
-    xlsx = _pn_existing_leak_xlsx(folder)
-    if not xlsx.is_file():
-        return {}
-    try:
-        import openpyxl
-        wb = openpyxl.load_workbook(xlsx, data_only=True, read_only=True)
-        rows = list(wb.active.iter_rows(values_only=True))
-        wb.close()
-    except Exception:
-        return {}
+def _pn_decision_is_keep(d):
+    """True when a decision is a KEEP: `no` (leave verbatim) or a bracketed
+    keep-spec (fake only the non-bracketed fragment(s)). These are the durable
+    decisions that live in the worksheet's KEEP sheet and drive re-runs; every
+    other decision (yes / explicit replacement / undecided) belongs to the
+    transient genuine-leak triage."""
+    return d.get("fix") == "no" or d.get("fake_values") is not None
+
+
+def _pn_parse_decision_rows(rows):
+    """Parse the (values_only) rows of a decision sheet — LEAKS or KEEP — into
+    {value_lower: {value, type, fix, replacement, fake_values, fixcell, notes}}.
+    `fix` is normalised to 'yes'/'no'/''. A Fix? entry that is NOT a reserved
+    control word ('yes'/'no' and the bare y/n shorthands) is one of:
+      * BRACKETED text that is part of the value — keep the bracketed part
+        verbatim, auto-fake the rest (`fake_values` holds the fragment(s)); or
+      * anything else — an explicit typed replacement (`replacement`)."""
     if not rows:
         return {}
     hdr = [str(h).strip().lower() if h else "" for h in rows[0]]
@@ -11129,10 +11235,6 @@ def _pn_read_leak_decisions(folder):
         val = str(val)
         raw = str(cell("fix? (yes/no)") or "").strip()
         low = raw.lower()
-        # Reserved control words are ONLY 'yes'/'no' (with the historical bare
-        # y/n dropdown shorthands). A bracketed fragment of the value is a
-        # partial-keep instruction; anything else non-empty is an explicit
-        # operator-typed replacement. Both bypass or steer the auto-faker.
         replacement, fake_values, fixcell = None, None, None
         if low in ("yes", "y"):
             fix, replacement = "yes", None
@@ -11154,6 +11256,52 @@ def _pn_read_leak_decisions(folder):
                             "fake_values": fake_values, "fixcell": fixcell,
                             "notes": str(cell("notes") or "").strip()}
     return out
+
+
+def _pn_resolve_keeps(decisions, local_vls, records):
+    """Resolve which KEEP decisions actually protect text this run.
+
+    Returns (keep_values, dropped). `keep_values` is the set of exact strings to
+    leave verbatim (whole value for a `no`, bracketed part(s) for a keep-spec).
+    A LOCAL keep (its value_lower in `local_vls` — made in this folder's key or
+    LEAKS) always applies. A GLOBAL keep inherited from the master log is DROPPED
+    (its value collected into `dropped`) when it collides with a party this case
+    binds to a fake (a person/entity/case_number record), so a keep learned in
+    another matter can never leave a real party un-faked here."""
+    party_reals = {str(r["real"]).lower() for r in records.values()
+                   if r["category"] in ("person", "entity", "case_number")}
+    keep_values, dropped = set(), []
+    for vl, d in decisions.items():
+        if not _pn_decision_is_keep(d):
+            continue
+        if vl not in local_vls and vl in party_reals:
+            dropped.append(d["value"])
+            continue
+        for p in _pn_decision_keep_parts(d):
+            if p:
+                keep_values.add(p)
+    return keep_values, dropped
+
+
+def _pn_read_leak_decisions(folder):
+    """{value_lower: decision} read back from this folder's LEAKS worksheet the
+    reviewer annotated on a prior run — the transient, per-case genuine-leak
+    triage. (The durable `no`/bracket KEEP decisions live in the cross-folder
+    master KEEP sheet, read separately by `_pn_read_master_keep`.) Empty when
+    there is no readable worksheet.
+
+    `fixcell` is the exact string to write back so the annotation round-trips."""
+    xlsx = _pn_existing_leak_xlsx(folder)
+    if not xlsx.is_file():
+        return {}
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(xlsx, data_only=True, read_only=True)
+        rows = list(wb.active.iter_rows(values_only=True))
+        wb.close()
+    except Exception:
+        return {}
+    return _pn_parse_decision_rows(rows)
 
 
 def _leak_sev(t):
@@ -11178,58 +11326,134 @@ def _pn_merge_where(wheres):
     return ", ".join(toks[:12]) + (" …" if len(toks) > 12 else "")
 
 
-# ── Master leak log (cross-case, accumulates over time) ──────────────────────
+# ── Master workbook (cross-case, accumulates over time) ──────────────────────
+# One workbook next to pdf_linker.config holds two sheets:
+#   * "Master Leaks" — the tally of genuine leaks seen across matters (opt-in
+#      via master_leaks = on); and
+#   * "KEEP" — the DURABLE no/bracket decisions, a single persistent sheet
+#      across every folder and run. It is the preservation vehicle: a value
+#      marked "leave it alone" (or a bracketed keep-spec) is remembered here and
+#      re-applied on every future run in any folder, accumulating Times Seen /
+#      Cases / dates so the screening can be tuned from real history over time.
 _PN_MASTER_HEADERS = ("Value", "Type", "Times Seen", "Cases",
                       "First Seen", "Last Seen")
+_PN_MASTER_LEAK_SHEET = "Master Leaks"
+_PN_MASTER_KEEP_SHEET = "KEEP"
+# The KEEP sheet's Fix? column is named so _pn_parse_decision_rows can read the
+# instruction ("no" or a [bracket] spec) straight back out.
+_PN_MASTER_KEEP_HEADERS = ("Value", "Fix? (yes/no)", "Type", "Times Seen",
+                           "Cases", "First Seen", "Last Seen", "Notes")
+
+
+def _pn_master_path(cfg):
+    """The cross-case master workbook path (ALWAYS available — the KEEP sheet is
+    the preservation vehicle, not opt-in). Config `master_leaks_path` wins, then
+    the PDF_LINKER_MASTER env var (used to relocate or isolate the master), else
+    it lives next to pdf_linker.config."""
+    cfg = cfg or {}
+    override = (cfg.get("master_leaks_path") or "").strip().strip('"')
+    if override:
+        return Path(override)
+    env = (os.environ.get("PDF_LINKER_MASTER") or "").strip()
+    if env:
+        return Path(env)
+    return _config_path().with_name("master_leaks.xlsx")
 
 
 def _pn_master_leaks_path(cfg):
-    """Path to the cross-case master leak log, or None when disabled. Lives next
-    to pdf_linker.config by default so it persists across runs and case folders;
-    relocate with `master_leaks_path`, enable with `master_leaks = on`."""
+    """Path to the master workbook for the genuine-leak TALLY, or None when that
+    tally is disabled (`master_leaks = off` and no `master_leaks_path`). The KEEP
+    sheet in the same file is maintained regardless (see _pn_master_path)."""
     cfg = cfg or {}
     override = (cfg.get("master_leaks_path") or "").strip().strip('"')
     if not _config_bool(cfg, "master_leaks", False) and not override:
         return None
-    if override:
-        return Path(override)
-    return _config_path().with_name("master_leaks.xlsx")
+    return _pn_master_path(cfg)
+
+
+def _pn_master_load(master_path):
+    """Load the master workbook for update (all sheets preserved), or a fresh
+    empty one. Normal (not read-only) mode so a save keeps every OTHER sheet."""
+    import openpyxl
+    if master_path.exists():
+        try:
+            return openpyxl.load_workbook(master_path)
+        except Exception:
+            pass
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
+    return wb
+
+
+def _pn_master_sheet_rows(wb, title):
+    """(values_only) rows of the named sheet, or [] when it isn't present."""
+    for ws in wb.worksheets:
+        if ws.title.strip().lower() == title.strip().lower():
+            return list(ws.iter_rows(values_only=True))
+    return []
+
+
+def _pn_master_replace_sheet(wb, title, headers, data_rows, widths):
+    """Drop and recreate the named sheet with `headers` + `data_rows`, leaving
+    every other sheet untouched. `data_rows` is a list of value lists."""
+    for ws in list(wb.worksheets):
+        if ws.title.strip().lower() == title.strip().lower():
+            wb.remove(ws)
+    ws = wb.create_sheet(title)
+    ws.append(list(headers))
+    for row in data_rows:
+        ws.append(row)
+    from openpyxl.utils import get_column_letter
+    for i, w in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    return ws
+
+
+def _pn_master_save(wb, master_path, log, what):
+    """Atomically save the master workbook (temp + replace). Ensures at least one
+    sheet exists. Best-effort: a master open in Excel is warned about, not fatal."""
+    if not wb.worksheets:
+        wb.create_sheet(_PN_MASTER_LEAK_SHEET)
+    tmp = master_path.with_name(master_path.name + ".tmp")
+    try:
+        wb.save(tmp)
+        os.replace(tmp, master_path)
+        return True
+    except OSError as e:
+        log.warning(f"  Master {what}: could not write {master_path} ({e}) — is "
+                    f"it open in Excel? This run's values were not recorded.")
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
+        return False
 
 
 def _pn_update_master_leaks(master_path, values, case_name, today, log):
-    """Merge this run's flagged values into the master leak log — one row per
-    distinct value, sorted alphabetically — so a value that keeps leaking across
-    matters is easy to spot. `values` is [(value, type), ...]. Times Seen counts
-    the runs a value appeared in; Cases lists the folders; First/Last Seen bound
-    the dates. Best-effort and atomic (temp + replace): a master left open in
-    Excel is warned about, not fatal, and a crash can't truncate the history."""
+    """Merge this run's genuine-leak values into the master workbook's
+    'Master Leaks' sheet — one row per distinct value — WITHOUT disturbing the
+    KEEP sheet. `values` is [(value, type), ...]."""
     try:
-        import openpyxl
+        import openpyxl  # noqa: F401
     except ImportError:
         return
-
+    wb = _pn_master_load(master_path)
     rows = {}   # value_lower -> {value, type, times, cases:set, first, last}
-    if master_path.exists():
-        try:
-            ws = openpyxl.load_workbook(master_path).active
-            for r in list(ws.iter_rows(values_only=True))[1:]:
-                if not r or r[0] in (None, ""):
-                    continue
-                val = str(r[0])
-                times = r[2] if len(r) > 2 else 1
-                cases = r[3] if len(r) > 3 else ""
-                rows[val.lower()] = {
-                    "value": val,
-                    "type": (str(r[1]) if len(r) > 1 and r[1] else "LEAK"),
-                    "times": int(times) if str(times).isdigit() else 1,
-                    "cases": {c.strip() for c in str(cases or "").split(";")
-                              if c.strip() and "cases" not in c},
-                    "first": (str(r[4]) if len(r) > 4 and r[4] else today),
-                    "last": (str(r[5]) if len(r) > 5 and r[5] else today)}
-        except Exception as e:
-            log.warning(f"  Master leak log: could not read {master_path.name} "
-                        f"({e}); starting a fresh one.")
-            rows = {}
+    for r in _pn_master_sheet_rows(wb, _PN_MASTER_LEAK_SHEET)[1:]:
+        if not r or r[0] in (None, ""):
+            continue
+        val = str(r[0])
+        times = r[2] if len(r) > 2 else 1
+        cases_raw = r[3] if len(r) > 3 else ""
+        rows[val.lower()] = {
+            "value": val,
+            "type": (str(r[1]) if len(r) > 1 and r[1] else "LEAK"),
+            "times": int(times) if str(times).isdigit() else 1,
+            "cases": {c.strip() for c in str(cases_raw or "").split(";")
+                      if c.strip() and "cases" not in c},
+            "first": (str(r[4]) if len(r) > 4 and r[4] else today),
+            "last": (str(r[5]) if len(r) > 5 and r[5] else today)}
 
     for value, vtype in values:
         vl = value.lower()
@@ -11244,31 +11468,96 @@ def _pn_update_master_leaks(master_path, values, case_name, today, log):
             if _leak_sev(vtype) < _leak_sev(g["type"]):
                 g["type"] = vtype
 
-    ordered = sorted(rows.values(), key=lambda g: g["value"].lower())
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "Master Leaks"
-    ws.append(list(_PN_MASTER_HEADERS))
-    for g in ordered:
+    data = []
+    for g in sorted(rows.values(), key=lambda g: g["value"].lower()):
         cases = sorted(c for c in g["cases"] if c)
         cell = "; ".join(cases) if len(cases) <= 8 else f"{len(cases)} cases"
-        ws.append([g["value"], g["type"], g["times"], cell, g["first"], g["last"]])
-    for col, width in zip("ABCDEF", (34, 12, 11, 44, 12, 12)):
-        ws.column_dimensions[col].width = width
-    tmp = master_path.with_name(master_path.name + ".tmp")
-    try:
-        wb.save(tmp)
-        os.replace(tmp, master_path)
+        data.append([g["value"], g["type"], g["times"], cell, g["first"], g["last"]])
+    _pn_master_replace_sheet(wb, _PN_MASTER_LEAK_SHEET, _PN_MASTER_HEADERS, data,
+                             (34, 12, 11, 44, 12, 12))
+    if _pn_master_save(wb, master_path, log, "leak log"):
         log.info(f"  Master leak log updated: {master_path} "
-                 f"({len(ordered)} distinct value(s))")
-    except OSError as e:
-        log.warning(f"  Master leak log: could not write {master_path} ({e}) — "
-                    f"is it open in Excel? This run's values were not recorded.")
-        try:
-            if tmp.exists():
-                tmp.unlink()
-        except OSError:
-            pass
+                 f"({len(rows)} distinct value(s))")
+
+
+def _pn_read_master_keep(cfg):
+    """The durable cross-folder KEEP decisions {value_lower: decision} from the
+    master workbook's KEEP sheet — the `no`/bracket instructions to re-apply on
+    every run in every folder. Empty when the sheet is absent/unreadable."""
+    path = _pn_master_path(cfg)
+    if not path.exists():
+        return {}
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
+        rows = _pn_master_sheet_rows(wb, _PN_MASTER_KEEP_SHEET)
+        wb.close()
+    except Exception:
+        return {}
+    return _pn_parse_decision_rows(rows)
+
+
+def _pn_update_master_keep(cfg, record_map, case_name, today, log):
+    """Merge this run's KEEP decisions into the master workbook's KEEP sheet
+    (single persistent sheet across folders and runs), WITHOUT disturbing the
+    'Master Leaks' sheet. `record_map` is {value_lower: decision} for the keeps
+    made or re-affirmed this run; Times Seen / Cases / dates accumulate so the
+    screening can be tuned from real history. Returns the KEEP-sheet row count."""
+    if not record_map and not _pn_master_path(cfg).exists():
+        return 0
+    try:
+        import openpyxl  # noqa: F401
+    except ImportError:
+        return 0
+    master_path = _pn_master_path(cfg)
+    wb = _pn_master_load(master_path)
+
+    rows = {}   # value_lower -> {value, instruction, type, times, cases, first, last, notes}
+    for r in _pn_master_sheet_rows(wb, _PN_MASTER_KEEP_SHEET)[1:]:
+        if not r or r[0] in (None, ""):
+            continue
+        val = str(r[0])
+        times = r[3] if len(r) > 3 else 1
+        cases_raw = r[4] if len(r) > 4 else ""
+        rows[val.lower()] = {
+            "value": val,
+            "instruction": (str(r[1]) if len(r) > 1 and r[1] else "no"),
+            "type": (str(r[2]) if len(r) > 2 and r[2] else "KEEP"),
+            "times": int(times) if str(times).isdigit() else 1,
+            "cases": {c.strip() for c in str(cases_raw or "").split(";")
+                      if c.strip() and "cases" not in c},
+            "first": (str(r[5]) if len(r) > 5 and r[5] else today),
+            "last": (str(r[6]) if len(r) > 6 and r[6] else today),
+            "notes": (str(r[7]) if len(r) > 7 and r[7] else "")}
+
+    for vl, d in record_map.items():
+        instruction = d.get("fixcell") or ("no" if d.get("fix") == "no" else "no")
+        vtype = d.get("type") or ("KEEP-PART" if d.get("fake_values") else "KEEP")
+        g = rows.get(vl)
+        if g is None:
+            rows[vl] = {"value": d["value"], "instruction": instruction,
+                        "type": vtype, "times": 1, "cases": {case_name},
+                        "first": today, "last": today,
+                        "notes": d.get("notes", "")}
+        else:
+            g["times"] += 1
+            g["cases"].add(case_name)
+            g["last"] = today
+            g["instruction"] = instruction     # newest instruction wins
+            g["type"] = vtype
+
+    data = []
+    for g in sorted(rows.values(), key=lambda g: g["value"].lower()):
+        cases = sorted(c for c in g["cases"] if c)
+        cell = "; ".join(cases) if len(cases) <= 8 else f"{len(cases)} cases"
+        data.append([g["value"], g["instruction"], g["type"], g["times"],
+                     cell, g["first"], g["last"], g["notes"]])
+    _pn_master_replace_sheet(wb, _PN_MASTER_KEEP_SHEET, _PN_MASTER_KEEP_HEADERS,
+                             data, (34, 16, 11, 11, 40, 12, 12, 26))
+    if _pn_master_save(wb, master_path, log, "KEEP log") and record_map:
+        log.info(f"  Master KEEP log updated: {master_path} "
+                 f"({len(rows)} kept value(s) tracked).")
+    return len(rows)
 
 
 def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None):
@@ -11310,32 +11599,44 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None):
         g["wheres"].append(e["where"])
 
     # Accumulate this run's flagged values into the cross-case master log, so a
-    # value that keeps leaking across matters is easy to spot over time.
+    # value that keeps leaking across matters is easy to spot over time. The
+    # durable KEEP (no/bracket) decisions are NOT part of this — they live in the
+    # master KEEP sheet, maintained by _pn_update_master_keep, so a genuine-leak
+    # tally never mixes with a "leave this alone" decision.
     master_path = _pn_master_leaks_path(cfg)
     if master_path is not None and grouped:
-        _pn_update_master_leaks(
-            master_path, [(g["value"], g["type"]) for g in grouped.values()],
-            folder.name, datetime.date.today().isoformat(), log)
+        leak_only = [(g["value"], g["type"]) for vl, g in grouped.items()
+                     if not _pn_decision_is_keep(decisions.get(vl, {}))]
+        if leak_only:
+            _pn_update_master_leaks(
+                master_path, leak_only, folder.name,
+                datetime.date.today().isoformat(), log)
 
+    # The per-folder worksheet is the TRANSIENT genuine-leak triage only; the
+    # durable no/bracket KEEP decisions are excluded here (they are preserved
+    # cross-folder in the master KEEP sheet) so this file can be cleaned up
+    # freely without ever dropping a keep.
     rows = []
     for vl, g in grouped.items():
         d = decisions.get(vl, {})
+        if _pn_decision_is_keep(d):
+            continue
         files = g["files"]
         file_cell = ", ".join(files) if len(files) <= 3 else f"{len(files)} files"
-        # `fixcell` is what the Fix? cell shows: an operator-typed replacement
-        # or a bracketed keep-spec is carried back verbatim (NOT collapsed to
-        # "yes"), so a re-run re-reads the exact instruction instead of
-        # re-deriving an auto fake.
+        # `fixcell` is what the Fix? cell shows: an operator-typed replacement is
+        # carried back verbatim (NOT collapsed to "yes"), so a re-run re-reads
+        # the exact instruction instead of re-deriving an auto fake.
         rows.append({"file": file_cell, "type": g["type"], "value": g["value"],
                      "where": _pn_merge_where(g["wheres"]),
                      "fix": d.get("fix", ""),
                      "fixcell": (d.get("fixcell") or d.get("replacement")
                                  or d.get("fix", "")),
                      "notes": d.get("notes", ""), "present": True})
-    # Persist a decision whose value didn't recur this run, so a Fix?=yes term
-    # keeps being applied and a Fix?=no stays suppressed on future runs.
+    # Persist a Fix?=yes/explicit decision whose value didn't recur this run, so
+    # the fix keeps applying. (KEEP decisions are omitted — the master holds them.)
     for vl, d in decisions.items():
-        if vl not in seen and d.get("fix") in ("yes", "no"):
+        if vl not in seen and d.get("fix") in ("yes", "no") \
+                and not _pn_decision_is_keep(d):
             rows.append({"file": "—", "type": d.get("type") or "(decided)",
                          "value": d["value"], "where": _PN_LEAK_ABSENT,
                          "fix": d["fix"],
@@ -11389,7 +11690,7 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None):
     from openpyxl.utils import get_column_letter
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.title = "LEAKS"
+    ws.title = _PN_LEAK_SHEET
     ws.append(list(_PN_LEAK_HEADERS))
     for r in rows:
         ws.append([r.get(key, "") for _hdr, key, _w in _PN_LEAK_COLUMNS])
@@ -11667,7 +11968,29 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
 # ────────────────────────────────────────────────────────────────────────────
 # Main per-PDF processing
 # ────────────────────────────────────────────────────────────────────────────
-def _pn_prescan_folder(pdfs, pseudonymizer, log):
+def _pn_learn_from_text(pseudonymizer, text, stem=None):
+    """Run every document-learning register_* pass over one document's text (and,
+    when given, its filename stem). Shared by the PDF pre-scan and the Word-doc
+    conversion so both feed the same folder-wide vocabulary."""
+    pseudonymizer.register_declarant_names(text)
+    pseudonymizer.register_declarant_refs(text)
+    pseudonymizer.register_court_names(text)
+    # The FILENAME often names a declarant ("Yu Declaration ISO Opp.pdf") whose
+    # name may appear nowhere in the body — scan it too, so both the body and the
+    # pseudonymized output filename scrub that name.
+    if stem:
+        pseudonymizer.register_declarant_refs(re.sub(r"[_\-]+", " ", stem))
+    pseudonymizer.register_dba_names(text)
+    pseudonymizer.register_firm_names(text)
+    pseudonymizer.register_label_names(text)
+    pseudonymizer.register_short_names(text)
+    pseudonymizer.register_entity_acronyms(text)
+    pseudonymizer.register_identifiers(text)
+    pseudonymizer.register_localities(text)
+    pseudonymizer.register_addresses(text)
+
+
+def _pn_prescan_folder(pdfs, pseudonymizer, log, extra_texts=()):
     """Run EVERY document-learning register_* pass over the whole folder before
     any .txt is written.
 
@@ -11676,7 +11999,11 @@ def _pn_prescan_folder(pdfs, pseudonymizer, log):
     and one filing routinely states a party's full address (teaching the city)
     while another states only the bare city, or spells out a "dba" the others
     just use. Running all passes up front removes that ordering dependency
-    completely: the folder is scrubbed only after it has been read in full."""
+    completely: the folder is scrubbed only after it has been read in full.
+
+    `extra_texts` is a list of (stem, text) pairs from non-PDF sources (Word docs
+    bulk-converted in the same run), so a name that appears only in a Word filing
+    is harvested folder-wide too."""
     import fitz
     before = len(pseudonymizer.terms)
     corpus = []
@@ -11688,24 +12015,14 @@ def _pn_prescan_folder(pdfs, pseudonymizer, log):
             log.warning(f"  Pseudonymize: could not pre-scan {pdf.name}: {e}")
             continue
         corpus.append(text)
-        pseudonymizer.register_declarant_names(text)
-        pseudonymizer.register_declarant_refs(text)
-        pseudonymizer.register_court_names(text)
-        # The FILENAME often names a declarant ("Yu Declaration ISO Opp.pdf")
-        # whose name may appear nowhere in the body — scan it too, so both the
-        # body and the pseudonymized output filename scrub that name.
-        pseudonymizer.register_declarant_refs(re.sub(r"[_\-]+", " ", pdf.stem))
-        pseudonymizer.register_dba_names(text)
-        pseudonymizer.register_firm_names(text)
-        pseudonymizer.register_label_names(text)
-        pseudonymizer.register_short_names(text)
-        pseudonymizer.register_entity_acronyms(text)
-        pseudonymizer.register_identifiers(text)
-        pseudonymizer.register_localities(text)
-        pseudonymizer.register_addresses(text)
+        _pn_learn_from_text(pseudonymizer, text, pdf.stem)
+    for stem, text in extra_texts:
+        corpus.append(text)
+        _pn_learn_from_text(pseudonymizer, text, stem)
     added = len(pseudonymizer.terms) - before
     if added:
-        log.info(f"  Pseudonymize: pre-scan of {len(pdfs)} file(s) added "
+        log.info(f"  Pseudonymize: pre-scan of "
+                 f"{len(pdfs) + len(extra_texts)} file(s) added "
                  f"{added} term(s) from names, localities and identifiers")
     full = "\n\f\n".join(corpus)
     pruned = pseudonymizer.prune_citation_only_terms(full)
@@ -11714,6 +12031,192 @@ def _pn_prescan_folder(pdfs, pseudonymizer, log):
                  f"that appear only inside case citations "
                  f"({', '.join(sorted(pruned)[:6])})")
     return full
+
+
+# ── Word-document bulk conversion ────────────────────────────────────────────
+# Some folders hold only Word filings, with no PDFs at all. Convert those to the
+# same scrubbed .txt exports the PDFs get (no hyperlinking — Word docs are never
+# linked), but ONLY when the folder holds no PDFs. A Word doc beside a pile of
+# PDFs is the ordinary workflow and must stay untouched, so the pass is gated on
+# the folder having no PDFs (checked by the caller in main()).
+# Zipped OOXML Word formats we can read with the stdlib alone (a zip of XML).
+# The legacy binary .doc has no such structure and needs an external converter,
+# so it is not handled here (a warning names any that are found).
+_WORD_DOC_SUFFIXES = (".docx", ".docm")
+
+
+def _word_docs_in_folder(folder):
+    """Convertible Word documents directly in `folder` (not recursive), sorted
+    by name. Word's own '~$'-prefixed owner/lock files are skipped."""
+    docs = []
+    for p in folder.iterdir():
+        if not p.is_file() or p.name.startswith("~$"):
+            continue
+        if p.suffix.lower() in _WORD_DOC_SUFFIXES:
+            docs.append(p)
+    return sorted(docs, key=lambda p: p.name.lower())
+
+
+def _extract_docx_text(path):
+    """Extract the body text of a .docx/.docm as plain text, dependency-free
+    (a Word document is a zip of XML). Paragraphs and table cells become lines;
+    <w:tab/> becomes a tab and <w:br/>/<w:cr/> a newline. Headers, footers and
+    footnotes live in separate parts and are not included. Raises on a file that
+    isn't a readable Word document so the caller can skip and warn."""
+    import zipfile
+    from xml.etree import ElementTree as ET
+
+    with zipfile.ZipFile(path) as zf:
+        data = zf.read("word/document.xml")
+    root = ET.fromstring(data)
+
+    out = []
+
+    def walk(node):
+        # Local tag name only — the WordprocessingML namespace is verbose and
+        # irrelevant to which element this is.
+        tag = node.tag.rsplit("}", 1)[-1]
+        if tag == "t":            # a run of literal text
+            out.append(node.text or "")
+            return
+        if tag == "tab":
+            out.append("\t")
+        elif tag in ("br", "cr"):
+            out.append("\n")
+        for child in node:
+            walk(child)
+        if tag == "p":            # end of a paragraph → line break
+            out.append("\n")
+
+    walk(root)
+    text = "".join(out)
+    # Trim trailing whitespace per line and collapse runs of blank lines, the
+    # same tidy-up the PDF export does, so the two read alike.
+    text = "\n".join(ln.rstrip() for ln in text.split("\n"))
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    return text
+
+
+def _word_locate(body, needle, limit=12):
+    """Human-readable 'line N' locations of `needle` in a Word export body
+    (case-insensitive). Word text has no page/gutter structure, so findings are
+    located by line number within the export."""
+    nl = needle.lower()
+    out = []
+    for i, line in enumerate(body.split("\n"), 1):
+        if nl in line.lower():
+            loc = f"line {i}"
+            if loc not in out:
+                out.append(loc)
+    if not out:
+        return "(not located)"
+    return ", ".join(out[:limit]) + (" …" if len(out) > limit else "")
+
+
+def _write_word_text_version(src_path, text, log, pseudonymizer=None,
+                             text_subdir="Text Files", original_subdir=None):
+    """Write a plain-text export of one Word document into the `text_subdir`
+    subfolder, mirroring the PDF text pipeline: when a pseudonymizer is given the
+    text is scrubbed, leak-scanned and given a name-scrubbed filename exactly as
+    a PDF export is (the Word file itself is never modified); Word docs are never
+    hyperlinked. Returns True if written."""
+    out_dir = src_path.parent / text_subdir
+    txt_path = out_dir / (src_path.stem + ".txt")
+
+    if pseudonymizer is not None:
+        # Per-file backstop to the folder pre-scan (mirrors _write_text_version):
+        # learn any declarant / dba / firm / locality / identifier stated here.
+        _pn_learn_from_text(pseudonymizer, text, src_path.stem)
+        body = pseudonymizer.apply(text)
+
+        survivors = set(pseudonymizer.surviving_reals(body))
+        if survivors:
+            pseudonymizer.note_leaks(survivors)
+            shown = ", ".join(sorted(survivors)[:8])
+            log.warning(f"  Pseudonymization LEAK on {src_path.name}: real "
+                        f"value(s) still present in the .txt ({shown}). Review "
+                        f"before sharing; add them with --term and re-run.")
+
+        review = list(pseudonymizer.review_scan(body))
+        review += pseudonymizer.review_definition_survivors(text, body)
+        review += pseudonymizer.unknown_name_scan(body)
+        review = pseudonymizer.reid_scan(body) + review
+        if review:
+            shown = "; ".join(f"{c}: {s}" for c, s in review[:8])
+            log.warning(f"  Pseudonymization REVIEW on {src_path.name}: "
+                        f"identifier(s) to check before sharing ({shown}).")
+
+        for real in sorted(survivors):
+            if _pn_is_procedural_phrase(real):
+                continue
+            pseudonymizer.leak_report.append(
+                {"file": src_path.name, "type": "LEAK", "value": real,
+                 "where": _word_locate(body, real)})
+        for cls, sample in review:
+            if _pn_is_procedural_phrase(sample):
+                continue
+            pseudonymizer.leak_report.append(
+                {"file": src_path.name, "type": cls, "value": sample,
+                 "where": _word_locate(body, sample)})
+
+        # Scrub the output filename too — the .txt is the shared artifact, so a
+        # party/attorney name in the Word file's name must not ride along.
+        txt_path = _pseudonymized_txt_path(out_dir, src_path, pseudonymizer, log)
+    else:
+        body = text
+
+    body = body.rstrip("\n") + "\n"
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        log.warning(f"  Could not create text subfolder {out_dir}: {e}")
+        return False
+    try:
+        txt_path.write_text(body, encoding="utf-8", newline="\n")
+    except Exception as e:
+        log.warning(f"  Could not write Word text version (non-fatal): {e}")
+        return False
+
+    if pseudonymizer is not None:
+        pseudonymizer.written.append(txt_path)
+        if survivors:
+            pseudonymizer.leaked_by_file[txt_path] = {s.lower() for s in survivors}
+    log.info(f"  Wrote {'pseudonymized ' if pseudonymizer else ''}text "
+             f"version: {text_subdir}/{txt_path.name}")
+
+    # Optional UNSCRUBBED reference copy, under the real filename — same policy
+    # as the PDF path (real names by design, never gated, must not be shared).
+    if original_subdir and pseudonymizer is not None:
+        orig_dir = src_path.parent / original_subdir
+        orig_path = orig_dir / (src_path.stem + ".txt")
+        try:
+            orig_dir.mkdir(parents=True, exist_ok=True)
+            orig_path.write_text(text.rstrip("\n") + "\n",
+                                 encoding="utf-8", newline="\n")
+            log.info(f"  Wrote original text version: "
+                     f"{original_subdir}/{orig_path.name}")
+        except OSError as e:
+            log.warning(f"  Could not write original Word text version "
+                        f"(non-fatal): {e}")
+    return True
+
+
+def _convert_word_docs(word_texts, log, pseudonymizer=None,
+                       text_subdir="Text Files", original_subdir=None):
+    """Convert the already-extracted Word documents to .txt exports. `word_texts`
+    is a list of (path, text) pairs (extraction/gating done by the caller).
+    Returns the number of exports written."""
+    written = 0
+    for src_path, text in word_texts:
+        try:
+            if _write_word_text_version(src_path, text, log, pseudonymizer,
+                                        text_subdir, original_subdir):
+                written += 1
+        except Exception as e:
+            log.error(f"  Unhandled error converting Word doc "
+                      f"{src_path.name}: {e}")
+            log.error(traceback.format_exc())
+    return written
 
 
 # Metadata stamp written into a linked PDF's `keywords`, so a re-run can tell a
@@ -12193,6 +12696,11 @@ _CONFIG_TEMPLATE = (
     "# Default: Text Files.\n"
     "text_subfolder = Text Files\n"
     "\n"
+    "# Word documents (.docx/.docm) in a folder that has NO PDFs are bulk-\n"
+    "# converted to scrubbed .txt exports too (never hyperlinked). A Word doc\n"
+    "# beside PDFs is left alone, so the usual PDF workflow is untouched. Legacy\n"
+    "# binary .doc files can't be read (re-save them as .docx).\n"
+    "\n"
     "# Also write the UNSCRUBBED text to a second folder, for QA / your own\n"
     "# reference? on/off (default: off). The pseudonymized folder above stays\n"
     "# the shareable one; this second folder holds the ORIGINAL text under the\n"
@@ -12220,11 +12728,15 @@ _CONFIG_TEMPLATE = (
     "\n"
     "# Accumulate every flagged leak into ONE master spreadsheet across all runs\n"
     "# and case folders, so you can spot a value that keeps leaking over time.\n"
-    "# on/off (default: off). One row per distinct value, sorted alphabetically,\n"
-    "# with a Times-Seen count, the cases it appeared in, and first/last dates.\n"
+    "# on/off (default: off). This toggle controls the 'Master Leaks' TALLY sheet\n"
+    "# only. The 'KEEP' sheet in the SAME workbook — the durable no/[bracket]\n"
+    "# decisions, applied across every folder and run — is always maintained (it\n"
+    "# is the preservation vehicle for those decisions), so the workbook may be\n"
+    "# created for KEEP even with the tally off.\n"
     "master_leaks = off\n"
-    "# Where that master lives. Default: master_leaks.xlsx next to this config\n"
-    "# file. Point it anywhere stable (e.g. a OneDrive path) so it persists.\n"
+    "# Where that master workbook lives (both the KEEP and Master Leaks sheets).\n"
+    "# Default: master_leaks.xlsx next to this config file (or the PDF_LINKER_MASTER\n"
+    "# env var). Point it anywhere stable (e.g. a OneDrive path) so it persists.\n"
     "# master_leaks_path = C:\\Users\\you\\Documents\\Master Leaks.xlsx\n"
 )
 
@@ -12653,12 +13165,19 @@ def _fix_leaks_mode(folder, args, cfg, log):
 
     registry = _PnFakeRegistry()
     try:
-        terms = _pn_load_key(key_path, registry, log)
+        terms, key_decisions = _pn_load_key(key_path, registry, log)
     except RuntimeError as e:
         _warn(f"--fix-leaks: could not read key {key_path.name}: {e}")
         return 1
 
-    decisions = _pn_read_leak_decisions(folder)
+    master_keep = _pn_read_master_keep(cfg)
+    folder_decisions = _pn_read_leak_decisions(folder)
+    decisions = {**master_keep, **folder_decisions}
+    # KEEP / KEEP-PART edits from the key's Replacement column ('no' or a
+    # [bracketed] keep-spec) are authoritative for this run.
+    for vl, d in key_decisions.items():
+        decisions[vl] = d
+    local_vls = set(key_decisions) | set(folder_decisions)
     # Two kinds of "yes": AUTO (let the tool mint a fake) and EXPLICIT (the
     # operator typed the exact replacement into the Fix? cell). An explicit fix
     # bypasses the faker entirely — the operator's deliberate choice of a
@@ -12713,9 +13232,19 @@ def _fix_leaks_mode(folder, args, cfg, log):
     # (party names + the flagged values) is wanted.
     pz = Pseudonymizer(terms, [], registry)
     pz.suppressed = suppressed
+    keep_values, _dropped = _pn_resolve_keeps(decisions, local_vls, pz.records)
+    pz.keep_values = keep_values
     pz.override_fixes(explicit)   # typed fake beats any other record for a value
     for r in pz.records.values():
         pz._own_fakes.add(str(r["fake"]).lower().rstrip(" .,;:"))
+    # Record this run's LOCAL keep decisions into the cross-folder master KEEP
+    # sheet so a key/worksheet edit made here persists globally.
+    _keep_rec = {vl: d for vl, d in decisions.items()
+                 if _pn_decision_is_keep(d) and vl in local_vls
+                 and d["value"] not in _dropped}
+    if _keep_rec:
+        _pn_update_master_keep(cfg, _keep_rec, folder.name,
+                               datetime.date.today().isoformat(), log)
 
     def _is_tool_artifact(p):
         """The tool's OWN .txt files in the folder — the worksheet's text
@@ -13069,11 +13598,18 @@ def main():
         # Downloads (where the E-Court export lands).
         key_path = args.key if args.key else _pn_find_downloads_key(log)
         registry = _PnFakeRegistry()
-        # Round-trip the leak-triage worksheet: values the reviewer marked
-        # "yes" (needs fixing) are scrubbed as if passed via --term; values
-        # marked "no" are remembered so they never quarantine and drop out of
-        # the active review list. Decisions persist in the worksheet itself.
-        leak_decisions = _pn_read_leak_decisions(folder)
+        # Decisions feeding this run come from two places:
+        #   * this folder's LEAKS worksheet (transient genuine-leak triage), and
+        #   * the cross-folder master KEEP sheet (the durable no/bracket
+        #     decisions, remembered across every folder and run).
+        # The folder's own decisions layer ON TOP of the global keeps, so a case
+        # can locally override a global keep when it must.
+        master_keep = _pn_read_master_keep(cfg)
+        folder_decisions = _pn_read_leak_decisions(folder)
+        leak_decisions = {**master_keep, **folder_decisions}
+        if master_keep:
+            log.info(f"  Master KEEP: {len(master_keep)} durable no/bracket "
+                     f"decision(s) loaded from the cross-folder log.")
         # A bracketed keep-spec auto-fakes only its non-bracketed fragment(s);
         # every other Fix?=yes scrubs the whole flagged value.
         fix_terms = []
@@ -13091,7 +13627,7 @@ def main():
             log.info(f"  Leak worksheet: {len(suppressed)} value(s) marked "
                      f"Fix?=no will be left as-is and not re-flagged.")
 
-        terms, reused_key = [], False
+        terms, reused_key, key_decisions = [], False, {}
         if key_path:
             if not key_path.is_file():
                 print(f"Key spreadsheet not found: {key_path}")
@@ -13100,7 +13636,7 @@ def main():
                 if _pn_key_looks_like_ours(key_path):
                     # A key this tool wrote: reuse its bindings so a follow-up
                     # single-file run reproduces the original run's fakes.
-                    terms = _pn_load_key(key_path, registry, log)
+                    terms, key_decisions = _pn_load_key(key_path, registry, log)
                     terms += _pn_build_terms([], [], extra_terms, registry)
                     reused_key = True
                 else:
@@ -13114,8 +13650,43 @@ def main():
                       f"Party names will NOT be pseudonymized in the .txt exports.")
         else:
             terms = _pn_build_terms([], [], extra_terms, registry)
+
+        # KEEP / KEEP-PART edits typed into the pseudonym key's Replacement
+        # column ('no' or a [bracketed] keep-spec): a key edit is authoritative
+        # for THIS run, so it overrides an inherited decision for the same value.
+        if key_decisions:
+            key_frags = []
+            for d in key_decisions.values():
+                if d.get("fake_values"):
+                    key_frags.extend(d["fake_values"])
+            if key_frags:
+                terms += _pn_build_terms([], [], key_frags, registry)
+                log.info(f"  Pseudonym key: auto-faking {len(key_frags)} "
+                         f"bracketed keep-spec fragment(s).")
+            for vl, d in key_decisions.items():
+                leak_decisions[vl] = d
+                suppressed.add(vl)
+
         pseudonymizer = Pseudonymizer(terms, detectors, registry)
         pseudonymizer.suppressed = suppressed
+        # Resolve KEEP protection. Local keeps (this folder's key or LEAKS)
+        # always apply; a GLOBAL keep inherited from the master log is dropped
+        # where it collides with a party THIS case binds to a fake, so a keep
+        # learned elsewhere can never leave a real party in the clear here.
+        local_vls = set(key_decisions) | set(folder_decisions)
+        keep_values, dropped = _pn_resolve_keeps(
+            leak_decisions, local_vls, pseudonymizer.records)
+        pseudonymizer.keep_values = keep_values
+        pseudonymizer._keep_decisions = {
+            vl: d for vl, d in leak_decisions.items()
+            if _pn_decision_is_keep(d) and d["value"] not in dropped}
+        pseudonymizer._keep_local = {vl for vl in pseudonymizer._keep_decisions
+                                     if vl in local_vls}
+        if dropped:
+            _warn("Pseudonymize: a global KEEP from the master log matches a "
+                  f"party in THIS case ({', '.join(sorted(set(dropped))[:6])}); "
+                  "faking it here so a real party isn't left in the clear. Mark "
+                  "it in this folder's LEAKS worksheet if it must be kept here.")
         if reused_key:
             # Loaded fakes are already-final strings; don't let a detector try
             # to re-fake one it meets in the new file.
@@ -13142,6 +13713,35 @@ def main():
         weights[p] = w if w is not None else max(1.0, sizes[p] / 50000.0)
     pdfs = sorted(pdfs, key=lambda p: (-weights[p], -sizes[p], p.name))
     log.info(f"Found {len(pdfs)} PDF(s) to process (heaviest first)")
+
+    # Bulk Word→text conversion. Gated on the folder holding NO PDFs, so the
+    # usual PDF workflow (even one with a few Word docs mixed in) is untouched:
+    # only an all-Word folder triggers the pass. Word docs are converted to the
+    # same scrubbed .txt exports the PDFs get, but never hyperlinked. Extracted
+    # UP FRONT so the names in them feed the folder-wide pre-scan below; the .txt
+    # is written after the PDFs so leak findings land in the same report and gate.
+    word_texts = []   # [(path, extracted_text)] for docs to convert this run
+    if args.extract_text:
+        word_docs = _word_docs_in_folder(folder)
+        legacy_doc = [p for p in folder.glob("*.doc")
+                      if not p.name.startswith("~$")]
+        if word_docs and not pdfs:
+            log.info(f"Found {len(word_docs)} Word doc(s) and no PDFs; "
+                     f"bulk-converting to text (not hyperlinked)")
+            for wd in word_docs:
+                try:
+                    word_texts.append((wd, _extract_docx_text(wd)))
+                except Exception as e:
+                    log.warning(f"  Could not read Word doc {wd.name} "
+                                f"(skipped): {e}")
+        elif word_docs:
+            log.info(f"Found {len(word_docs)} Word doc(s) beside {len(pdfs)} "
+                     f"PDF(s); leaving them alone (Word conversion runs only "
+                     f"when the folder has no PDFs)")
+        if legacy_doc and not pdfs:
+            log.warning(f"  {len(legacy_doc)} legacy .doc file(s) found "
+                        f"(e.g. {legacy_doc[0].name}); the old binary .doc "
+                        f"format can't be converted — re-save as .docx.")
 
     # Estimated-finish marker: worth it only for a multi-file batch (a single
     # file has no throughput to project from until it is already done).
@@ -13170,8 +13770,10 @@ def main():
         if _want_key:
             _write_fix_launcher(folder, log)
 
-    if pseudonymizer is not None and pdfs:
-        corpus = _pn_prescan_folder(pdfs, pseudonymizer, log)
+    if pseudonymizer is not None and (pdfs or word_texts):
+        corpus = _pn_prescan_folder(
+            pdfs, pseudonymizer, log,
+            extra_texts=[(p.stem, t) for p, t in word_texts])
         partial = (args.partial_names if args.partial_names is not None
                    else _config_bool(cfg, "partial_names", False))
         if partial:
@@ -13221,6 +13823,13 @@ def main():
             _save_eta_rate(done_work / _elapsed)
         _write_done_marker(folder)   # clean finish stamps 'DONE <finish time>'
 
+    # Bulk Word→text conversion (gated above). Done after the PDFs so every leak
+    # finding lands in the same worksheet and the same quarantine gate below.
+    if word_texts:
+        n = _convert_word_docs(word_texts, log, pseudonymizer,
+                               text_subdir, original_subdir)
+        log.info(f"Converted {n} Word doc(s) to text")
+
     # One key file for the whole folder maps every real value to its fake.
     if pseudonymizer is not None:
         # Human-triage worksheet of every located potential leak — written even
@@ -13228,6 +13837,19 @@ def main():
         # Prior yes/no decisions are carried through (yes was scrubbed above).
         _pn_write_leak_report(folder, pseudonymizer.leak_report, log,
                               leak_decisions, cfg=cfg)
+        # Record this run's KEEP decisions into the single cross-folder master
+        # KEEP sheet: every LOCAL keep (made in this folder), plus any GLOBAL
+        # keep that actually protected text here (a real hit) — so Times Seen /
+        # Cases / dates accumulate and the durable decision survives cleanup.
+        _record = {}
+        for vl, d in getattr(pseudonymizer, "_keep_decisions", {}).items():
+            hit = any(p.lower() in pseudonymizer.kept_hits
+                      for p in _pn_decision_keep_parts(d))
+            if vl in pseudonymizer._keep_local or hit:
+                _record[vl] = d
+        if _record:
+            _pn_update_master_keep(cfg, _record, folder.name,
+                                   datetime.date.today().isoformat(), log)
         # Two addresses on one street with adjacent numbers were faked to two
         # unrelated streets — the failure that moved an ADU off its parcel.
         for w in _pn_address_adjacency(pseudonymizer.records.values()):

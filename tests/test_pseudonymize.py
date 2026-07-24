@@ -891,6 +891,6 @@ class TestNeverFakeFormBoilerplate:
         ws.append(["case_number", "CIV-100", "CIV-472", "replaced", "--term", "3"])
         wb.save(tmp_path / "pseudonym_key.xlsx")
         reg = pl._PnFakeRegistry()
-        terms = pl._pn_load_key(tmp_path / "pseudonym_key.xlsx", reg,
-                                logging.getLogger("t"))
+        terms, _ = pl._pn_load_key(tmp_path / "pseudonym_key.xlsx", reg,
+                                   logging.getLogger("t"))
         assert not any(t.real == "CIV-100" for t in terms)   # stale binding dropped

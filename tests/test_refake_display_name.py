@@ -57,7 +57,7 @@ def test_display_name_row_count_stable_across_key_reload(tmp_path):
     # Re-run: fresh registry, reload the key (the authoritative-binding path),
     # feed run-1's already-scrubbed output back in.
     reg2 = P._PnFakeRegistry()
-    terms2 = P._pn_load_key(kp, reg2, log)
+    terms2, _ = P._pn_load_key(kp, reg2, log)
     pz2 = P.Pseudonymizer(terms2, [], registry=reg2)
     _seed_own_fakes(pz2)
     disp_before = {k for (c, k) in pz2.records if c == "display-name"}

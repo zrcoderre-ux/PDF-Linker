@@ -122,12 +122,13 @@ def test_roundtrip_persists_yes_suppresses_no_and_surfaces_new(tmp_path):
     # a marked-yes value that's now gone is RETAINED so the term keeps applying
     assert by_val["Travelers"][1] == "yes"
     assert by_val["Travelers"][4] == P._PN_LEAK_ABSENT
-    # a marked-no value is carried forward
-    assert by_val["Worthington Motors"][1] == "no"
+    # a marked-NO value is a KEEP: it moves to the cross-folder master KEEP
+    # sheet (handled by the run), so it no longer clutters this transient
+    # per-folder triage.
+    assert "Worthington Motors" not in by_val
     # a new undecided finding is blank and sorts ABOVE the resolved rows
     assert by_val["New Corp"][1] in (None, "")
     order = [r[0] for r in rows[1:]]
-    assert order.index("New Corp") < order.index("Worthington Motors")
     assert order.index("New Corp") < order.index("Travelers")
 
 
