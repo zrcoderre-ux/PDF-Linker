@@ -81,13 +81,27 @@ drops any harvested reversal row for a kept value.
   and in body text "HENDRY2 CORPORATIOLORNE10"). Keep the four pools
   (name/entity/city/street) disjoint (`TestPoolsAreDisjoint`) and every added
   surname a valid `_pn_is_name_token`.
-- **OCR/typo folding** (`_PnFakeRegistry.token`): a name token within edit
-  distance 1 of an already-bound token (min length `_PN_NAME_FOLD_MIN`) folds
-  onto a *typo of that token's fake* (`_pn_typo_variants`), so "Palladina"/
-  "Pallading" read as typos of the one "Keswick" the canonical "Palladino" got,
-  each still keeping its own distinct (reversible) stand-in. The op mirrors the
-  real's deviation so lengths track (insert↔duplicate, delete↔drop, sub↔visual
-  confusable). Mirrors the domain OCR-folding (`_pn_edit_distance_le1`).
+- **OCR/typo folding** (`_PnFakeRegistry.token`): a name token near an already-
+  bound token (min length `_PN_NAME_FOLD_MIN`) folds onto a *typo of that token's
+  fake* (`_pn_typo_variants`), so "Palladina"/"Pallading" read as typos of the one
+  "Keswick" the canonical "Palladino" got, each still keeping its own distinct
+  (reversible) stand-in. The op mirrors the real's deviation so lengths track
+  (insert↔duplicate, delete↔drop, sub↔visual confusable, adjacent-transpose↔swap).
+  "Near" is **OSA / Damerau-Levenshtein** (`_pn_osa_distance`, so a swapped pair
+  like "Adler"/"Alder" is ONE slip, not two subs) and the allowed distance
+  **scales with length** (`_pn_name_fold_dist`: 1 for short names, 2 at ≥10 chars,
+  3 at ≥16 — a long token plausibly carries more typos, and two genuinely
+  different long surnames rarely sit that close). A multi-character length delta
+  is mirrored (`reps`), so a real that gained two letters gets a fake that grew by
+  two. A **welded** token (a column-splice glued two names, "ADLERMICHAEL" =
+  "ADLER"+"MICHAEL") folds onto the CONCATENATION of the two parts' fakes
+  ("Darrow"+"Fenmore"), guarded so an ordinary long surname is never split.
+  Folding is **document-order-independent**: an edit-distance fold is symmetric,
+  but a weld is strictly longer than its base, so `_pn_build_terms` runs a scratch
+  pass (`_PnTokenOrderRecorder`) to enumerate the bare tokens and pre-binds them
+  **shortest-first** — every base is bound before any token that contains or
+  extends it. The single-edit domain OCR-fold uses the `k==1` wrapper
+  `_pn_edit_distance_le1`.
 - **Registry** (`_PnFakeRegistry`): injective, deterministic real→fake fakes,
   seeded on the real value (same input → same fake across runs, no two reals
   collide onto one fake). Draw every fake through it so the used-pool stays

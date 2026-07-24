@@ -1519,6 +1519,30 @@ def test_osa_counts_a_transposition_as_one():
     assert P._pn_osa_distance("kitten", "sitting") == 3
 
 
+def test_weld_folding_is_order_independent():
+    # A weld is strictly longer than its base, so it can only fold once the base
+    # is bound. The build pre-binds tokens shortest-first, so "ADLERMICHAEL"
+    # folds onto "ADLER" no matter which order the document presents them in —
+    # and the assignment is identical across orderings.
+    def fakes_for(order):
+        reg = P._PnFakeRegistry()
+        terms = P._pn_build_terms(list(order), [], [], registry=reg)
+        return {t.real.lower(): t.fake.lower()
+                for t in terms if t.category in ("person", "entity")}
+
+    orderings = [
+        ["adlermichael", "adler", "michael"],   # weld first (the old failure)
+        ["adler", "adlermichael", "michael"],
+        ["michael", "adlermichael", "adler"],
+    ]
+    results = [fakes_for(o) for o in orderings]
+    for f in results:
+        assert f["adlermichael"].startswith(f["adler"])   # weld shows the base
+        assert f["adlermichael"] == f["adler"] + f["michael"]
+    # Deterministic: every ordering yields the very same three fakes.
+    assert results[0] == results[1] == results[2]
+
+
 def test_ordinary_long_surname_is_not_split_as_a_weld():
     # A single surname that merely starts with a bound short name must NOT be
     # torn into two fakes: too short to hold two full name tokens (< 2x the

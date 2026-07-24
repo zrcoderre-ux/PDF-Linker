@@ -8471,13 +8471,45 @@ def _pn_load_key(path, registry, log):
     return terms, key_decisions
 
 
-def _pn_build_terms(names, casenos, extra_terms, registry=None):
+class _PnTokenOrderRecorder(_PnFakeRegistry):
+    """A throwaway registry that ENUMERATES the bare name/entity tokens a term
+    build will mint, and the pool each is drawn from — the fakes it hands out are
+    discarded. `_pn_build_terms` runs one first, then pre-binds the real registry
+    SHORTEST-FIRST, so a welded token ("ADLERMICHAEL") always sees its base
+    ("ADLER") already bound and folds onto it whatever order the document
+    presented them in. The set of tokens minted does not depend on order, so this
+    dry run reliably names them even though its own fold order is arbitrary."""
+
+    def __init__(self):
+        super().__init__()
+        self.pool_of = {}    # real_lower -> (pool, seed_tag) of its first mint
+
+    def token(self, real, words, seed_tag):
+        if (self._memo_tag(seed_tag), real.lower()) not in self._memo:
+            self.pool_of.setdefault(real.lower(), (words, seed_tag))
+        return super().token(real, words, seed_tag)
+
+
+def _pn_build_terms(names, casenos, extra_terms, registry=None, _prewarm=True):
     """Turn raw strings into _PnTerm objects with stable fake replacements.
     A shared `registry` keeps every fake unique across the whole case; pass the
     SAME registry to the Pseudonymizer so declarant names added later can't
-    reuse a fake already assigned here."""
+    reuse a fake already assigned here.
+
+    `_prewarm` makes OCR/typo folding independent of the order names appear in.
+    An edit-distance fold is symmetric — whichever near-variant is minted first
+    becomes the canonical one and the rest fold onto it — but a WELD is strictly
+    longer than its base and can only fold once the base is bound. So a scratch
+    pass enumerates the bare tokens and they are pre-bound shortest-first, which
+    guarantees every base precedes any token that contains or extends it."""
     if registry is None:
         registry = _PnFakeRegistry()
+    if _prewarm:
+        rec = _PnTokenOrderRecorder()
+        _pn_build_terms(names, casenos, extra_terms, rec, _prewarm=False)
+        for tok in sorted(rec.pool_of, key=lambda s: (len(s), s)):
+            pool, tag = rec.pool_of[tok]
+            registry.token(tok, pool, tag)      # bases before welds/extensions
     terms = []
     for raw in names:
         raw, is_short = raw if isinstance(raw, tuple) else (raw, False)
