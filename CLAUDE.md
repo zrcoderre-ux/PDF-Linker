@@ -38,9 +38,14 @@ of `pseudonym_key.xlsx` accepts the same operator control words the LEAKS `Fix?`
 column does — `no` (keep this Real Value verbatim) and a `[bracketed]` keep-spec
 (keep the bracketed part, auto-fake the rest) — so a mistake baked into the key
 that never surfaced as a leak can be fixed where it lives (`_pn_load_key` returns
-these as `key_decisions`). A KEEP value is protected verbatim by
-`Pseudonymizer.keep_values` (spans added to `_substitute`'s `protected` set, so
-no term OR detector fakes it; `_keep_spans` records `kept_hits`).
+these as `key_decisions`). A KEEP value is protected by `Pseudonymizer.keep_values` (spans added to
+`_substitute`'s `protected` set; `_keep_spans` records `kept_hits`), with two
+rules that make it precise: it matches the value on **word boundaries** (`no` on
+"Cal" keeps the standalone word, never "Cal" inside "California"), and a **full
+party match wins** — a kept word that falls inside a `_PN_PARTY_OVERRIDE_CATS`
+(person/entity/case_number) term is released so the real party is still faked
+("Cal" kept alone, "CAL EQUIPMENT FE RANCH, LLC" faked whole; "Doe" kept alone,
+"John Doe" faked). Bare tokens/short-names and detectors do NOT release a keep.
 
 **The KEEP store is a SINGLE cross-folder sheet**, the `KEEP` tab of the master
 workbook (`_pn_master_path`, next to the config or `PDF_LINKER_MASTER` /
@@ -50,10 +55,10 @@ run in every folder reads it (`_pn_read_master_keep`) and applies it, and record
 its own local keeps back (`_pn_update_master_keep`, accumulating Times Seen /
 Cases / dates) so the screening can learn from real history. This — NOT the
 per-folder `LEAKS.xlsx` — is the preservation vehicle: the transient LEAKS triage
-can be auto-deleted freely without ever dropping a keep. Safety: `_pn_resolve_keeps`
-drops a GLOBAL keep that collides with a person/entity/case_number the current
-case binds to a fake (local keeps always win), so a keep learned in one matter
-can never leave a real party un-faked in another. Persistence is macro-safe: the
+can be auto-deleted freely without ever dropping a keep. Safety: the full-party
+override in `_keep_spans` means a keep (local OR global) can never leave a real
+party un-faked — wherever a person/entity/case_number term matches, the keep is
+released and the party is scrubbed. Persistence is macro-safe: the
 `no`/bracket instruction is NEVER written into `pseudonym_key.xlsx` (a literal
 "no" in a Replacement cell would poison the reversal macro); `write_key` also
 drops any harvested reversal row for a kept value.
