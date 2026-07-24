@@ -72,26 +72,53 @@ def test_load_key_normal_replacement_unchanged(tmp_path):
     assert any(t.real == "Jane Doe" and t.fake == "Keswick Bexley" for t in terms)
 
 
-# ── keep_values actually prevents faking ─────────────────────────────────────
+# ── keep_values: what it protects, and what overrides it ─────────────────────
 
-def test_keep_values_blocks_a_term(tmp_path):
+def _apply(keep, term_srcs, text):
     reg = pl._PnFakeRegistry()
-    terms = pl._pn_build_terms(["Acme Holdings"], [], [], registry=reg)
-    pz = pl.Pseudonymizer(terms, DET, registry=reg)
-    # Without protection the term fakes it.
-    assert "Acme Holdings" not in pz.apply("We sued Acme Holdings today.")
-    # With protection the exact value is left verbatim.
-    pz2 = pl.Pseudonymizer(terms, DET, registry=pl._PnFakeRegistry())
-    pz2.keep_values = {"Acme Holdings"}
-    assert "Acme Holdings" in pz2.apply("We sued Acme Holdings today.")
+    pz = pl.Pseudonymizer(pl._pn_build_terms(term_srcs, [], [], registry=reg),
+                          DET, registry=reg)
+    pz.keep_values = set(keep)
+    return pz.apply(text)
 
 
-def test_keep_values_blocks_a_detector(tmp_path):
+def test_keep_protects_a_standalone_word():
+    # A kept word with no party term for it is left verbatim (a bare token /
+    # detector cannot fake it).
+    out = _apply({"Assistant"}, ["Ramona Vale"],
+                 "The Assistant emailed. Ramona Vale signed it.")
+    assert "Assistant" in out
+    assert "Ramona Vale" not in out
+
+
+def test_keep_matches_on_word_boundaries_only():
+    # "Cal" kept must NOT keep "Cal" inside a larger word.
+    out = _apply({"Cal"}, [], "Cal went to California with Calvin.")
+    assert out.count("California") == 1 and "Calvin" in out   # untouched
+
+
+def test_full_party_match_overrides_a_kept_word():
+    # The user's real example: keep "Cal", but the full entity is still faked;
+    # standalone "Cal" stays.
+    out = _apply({"Cal"}, ["CAL EQUIPMENT FE RANCH, LLC"],
+                 "Cal is fine. CAL EQUIPMENT FE RANCH, LLC sued here.")
+    assert out.startswith("Cal is fine")                    # standalone kept
+    assert "CAL EQUIPMENT FE RANCH" not in out              # full party faked
+
+
+def test_kept_word_inside_a_faked_phrase_is_released():
+    # "Doe" kept alone, but "John Doe" (a party) is faked whole.
+    out = _apply({"Doe"}, ["John Doe"],
+                 "John Doe testified. Later, Doe left the room.")
+    assert "John Doe" not in out                            # phrase faked
+    assert "Doe left the room" in out                       # standalone kept
+
+
+def test_keep_blocks_a_detector():
     reg = pl._PnFakeRegistry()
     pz = pl.Pseudonymizer([], DET, registry=reg)
     pz.keep_values = {"info@acme.com"}
-    out = pz.apply("Contact info@acme.com for details.")
-    assert "info@acme.com" in out
+    assert "info@acme.com" in pz.apply("Contact info@acme.com for details.")
 
 
 # ── end-to-end through the reuse path (main) with a real PDF ─────────────────

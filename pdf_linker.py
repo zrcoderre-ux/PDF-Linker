@@ -37,9 +37,10 @@ For each *.pdf in the folder (processed from shortest to longest by file size):
      fakes the rest. These no/bracket KEEP decisions are recorded to a SINGLE
      cross-folder sheet — the KEEP tab of master_leaks.xlsx — so they are applied
      on every future run in EVERY folder (accumulating Times Seen / Cases /
-     dates), letting the screening learn from real history. A global KEEP never
-     overrides a value the current case explicitly binds to a fake, so it can
-     never leave a real party in the clear.
+     dates), letting the screening learn from real history. A KEEP matches on
+     WORD BOUNDARIES and loses to a full party name, so "no" on "Cal" keeps the
+     standalone word yet still fakes "CAL EQUIPMENT FE RANCH, LLC" whole — a keep
+     can never leave a real party in the clear.
   1a. Writes a plain-text companion (.txt) for each PDF that has a real text
      layer into a "Text Files" subfolder of the case folder (name overridable
      via text_subfolder in pdf_linker.config), so a text-only copy can be
@@ -8178,6 +8179,13 @@ _PN_WELD_CORE_CATS = frozenset({
     "display-name",
 })
 
+# A KEEP loses to an exact party match: a kept word that falls inside one of
+# these FULL-name term matches is released so the real party is still faked
+# ("Cal" kept alone, "CAL EQUIPMENT FE RANCH, LLC" faked whole). Deliberately
+# NOT the bare *-token / short-name / display-name categories — those are how a
+# standalone kept word would get faked, and the keep must win over them.
+_PN_PARTY_OVERRIDE_CATS = frozenset({"person", "entity", "case_number"})
+
 
 def _pn_key_looks_like_ours(path):
     """True when `path` is a key THIS tool wrote (header row = _PN_KEY_HEADERS),
@@ -9790,22 +9798,43 @@ class Pseudonymizer:
 
     def _keep_spans(self, text):
         """Spans of operator-KEPT values in `text` — a value marked `no` (keep
-        whole) or the bracketed part of a keep-spec, from the LEAKS worksheet or
-        the pseudonym key. A candidate overlapping one of these is dropped in
-        `_substitute`, so the kept text is left verbatim even when a term or a
-        PII detector would otherwise fake it. Case-insensitive; longest keeps
-        first so a multi-word keep wins over a shorter substring."""
+        the whole value) or the bracketed part of a keep-spec. A candidate
+        overlapping one of these is dropped in `_substitute`, so the kept text is
+        left verbatim even when a bare-token term or a PII detector would fake it.
+
+        Two rules make this precise:
+          * EXACT WORD only — the keep matches `value` on WORD BOUNDARIES, so a
+            `no` on "Cal" keeps the standalone word but never the "Cal" inside
+            "California" or "Calvin".
+          * a FULL party-name match WINS — a kept word that falls inside a full
+            person/entity/case_number term (a real party this case fakes) is
+            RELEASED so the party is still faked. So "Cal" is kept on its own but
+            "CAL EQUIPMENT FE RANCH, LLC" is faked whole; "Doe" is kept alone but
+            "John Doe" is faked. Bare tokens and detectors do NOT release a keep."""
         if not self.keep_values:
             return []
+        # Spans of full party-name matches, which override a keep.
+        party = []
+        for t in self.terms:
+            if t.category not in _PN_PARTY_OVERRIDE_CATS:
+                continue
+            for m in self._compiled(t.pattern, t.flags).finditer(text):
+                if m.start() != m.end():
+                    party.append((m.start(), m.end()))
         spans = []
         for v in sorted(self.keep_values, key=len, reverse=True):
             if not v:
                 continue
             hit = False
-            for m in re.finditer(re.escape(v), text, re.IGNORECASE):
-                if m.start() != m.end():
-                    spans.append(m.span())
-                    hit = True
+            for m in re.finditer(r"(?<!\w)" + re.escape(v) + r"(?!\w)",
+                                 text, re.IGNORECASE):
+                s, e = m.span()
+                if s == e:
+                    continue
+                if any(s < pe and ps < e for ps, pe in party):
+                    continue          # inside a full party match — party fakes it
+                spans.append((s, e))
+                hit = True
             if hit:
                 self.kept_hits.add(v.lower())
         return spans
@@ -11258,29 +11287,20 @@ def _pn_parse_decision_rows(rows):
     return out
 
 
-def _pn_resolve_keeps(decisions, local_vls, records):
-    """Resolve which KEEP decisions actually protect text this run.
-
-    Returns (keep_values, dropped). `keep_values` is the set of exact strings to
-    leave verbatim (whole value for a `no`, bracketed part(s) for a keep-spec).
-    A LOCAL keep (its value_lower in `local_vls` — made in this folder's key or
-    LEAKS) always applies. A GLOBAL keep inherited from the master log is DROPPED
-    (its value collected into `dropped`) when it collides with a party this case
-    binds to a fake (a person/entity/case_number record), so a keep learned in
-    another matter can never leave a real party un-faked here."""
-    party_reals = {str(r["real"]).lower() for r in records.values()
-                   if r["category"] in ("person", "entity", "case_number")}
-    keep_values, dropped = set(), []
-    for vl, d in decisions.items():
+def _pn_keep_values(decisions):
+    """The set of exact strings to leave verbatim, gathered from every KEEP
+    decision — the whole value for a `no`, the bracketed part(s) for a keep-spec.
+    These are matched on WORD BOUNDARIES and lose to a full party match at
+    substitution time (see Pseudonymizer._keep_spans), so a keep never leaves a
+    real party un-faked; nothing needs to be dropped here."""
+    keep = set()
+    for d in decisions.values():
         if not _pn_decision_is_keep(d):
-            continue
-        if vl not in local_vls and vl in party_reals:
-            dropped.append(d["value"])
             continue
         for p in _pn_decision_keep_parts(d):
             if p:
-                keep_values.add(p)
-    return keep_values, dropped
+                keep.add(p)
+    return keep
 
 
 def _pn_read_leak_decisions(folder):
@@ -13232,16 +13252,14 @@ def _fix_leaks_mode(folder, args, cfg, log):
     # (party names + the flagged values) is wanted.
     pz = Pseudonymizer(terms, [], registry)
     pz.suppressed = suppressed
-    keep_values, _dropped = _pn_resolve_keeps(decisions, local_vls, pz.records)
-    pz.keep_values = keep_values
+    pz.keep_values = _pn_keep_values(decisions)
     pz.override_fixes(explicit)   # typed fake beats any other record for a value
     for r in pz.records.values():
         pz._own_fakes.add(str(r["fake"]).lower().rstrip(" .,;:"))
     # Record this run's LOCAL keep decisions into the cross-folder master KEEP
     # sheet so a key/worksheet edit made here persists globally.
     _keep_rec = {vl: d for vl, d in decisions.items()
-                 if _pn_decision_is_keep(d) and vl in local_vls
-                 and d["value"] not in _dropped}
+                 if _pn_decision_is_keep(d) and vl in local_vls}
     if _keep_rec:
         _pn_update_master_keep(cfg, _keep_rec, folder.name,
                                datetime.date.today().isoformat(), log)
@@ -13669,24 +13687,16 @@ def main():
 
         pseudonymizer = Pseudonymizer(terms, detectors, registry)
         pseudonymizer.suppressed = suppressed
-        # Resolve KEEP protection. Local keeps (this folder's key or LEAKS)
-        # always apply; a GLOBAL keep inherited from the master log is dropped
-        # where it collides with a party THIS case binds to a fake, so a keep
-        # learned elsewhere can never leave a real party in the clear here.
+        # KEEP protection: a kept word is left verbatim EXCEPT where it falls
+        # inside a full party match (a real party this case fakes), which the
+        # substitution releases so the party is still scrubbed. So a keep never
+        # leaves a real party in the clear, whether learned here or globally.
         local_vls = set(key_decisions) | set(folder_decisions)
-        keep_values, dropped = _pn_resolve_keeps(
-            leak_decisions, local_vls, pseudonymizer.records)
-        pseudonymizer.keep_values = keep_values
+        pseudonymizer.keep_values = _pn_keep_values(leak_decisions)
         pseudonymizer._keep_decisions = {
-            vl: d for vl, d in leak_decisions.items()
-            if _pn_decision_is_keep(d) and d["value"] not in dropped}
+            vl: d for vl, d in leak_decisions.items() if _pn_decision_is_keep(d)}
         pseudonymizer._keep_local = {vl for vl in pseudonymizer._keep_decisions
                                      if vl in local_vls}
-        if dropped:
-            _warn("Pseudonymize: a global KEEP from the master log matches a "
-                  f"party in THIS case ({', '.join(sorted(set(dropped))[:6])}); "
-                  "faking it here so a real party isn't left in the clear. Mark "
-                  "it in this folder's LEAKS worksheet if it must be kept here.")
         if reused_key:
             # Loaded fakes are already-final strings; don't let a detector try
             # to re-fake one it meets in the new file.
