@@ -225,23 +225,18 @@ def test_partial_keep_fakes_only_the_unbracketed_part(tmp_path):
     assert "Technologies" in body                    # the bracketed part kept
 
 
-def test_partial_keep_roundtrips_the_bracket_spec(tmp_path):
-    # While a value is still tracked (the writer keeps the sheet when it has
-    # rows), a bracket keep-spec survives back into the worksheet verbatim, not
-    # collapsed to "yes" (which would fake the whole phrase, kept words and all).
-    wb = openpyxl.Workbook(); ws = wb.active; ws.title = "Potential Leaks"
-    ws.append(["File", "Type", "Value", "Where (page:line)",
-               "Fix? (yes/no)", "Notes"])
-    ws.append(["A.pdf", "LEAK", "Raytheon Technologies", "p.1",
-               "[Technologies]", ""])
-    wb.save(tmp_path / "LEAKS.xlsx")
-    dec = P._pn_read_leak_decisions(tmp_path)
-    P._pn_write_leak_report(
-        tmp_path,
-        [{"file": "A.pdf", "type": "LEAK",
-          "value": "Raytheon Technologies", "where": "p.1"}],
-        log, decisions=dec)
-    ws2 = openpyxl.load_workbook(tmp_path / "LEAKS.xlsx", data_only=True).active
-    cell = next(str(r[1] or "") for r in ws2.iter_rows(values_only=True)
-                if r and str(r[0]).strip() == "Raytheon Technologies")
-    assert cell == "[Technologies]"
+def test_partial_keep_roundtrips_the_bracket_spec_via_master(tmp_path):
+    # A bracket keep-spec is a KEEP: it lives in the cross-folder master KEEP
+    # sheet (not the transient per-folder LEAKS triage), and survives back
+    # verbatim — NOT collapsed to "yes" (which would fake the whole phrase, kept
+    # words and all). PDF_LINKER_MASTER (set by the conftest) isolates it here.
+    cfg = {}
+    d = {"value": "Raytheon Technologies", "type": "KEEP-PART", "fix": "yes",
+         "replacement": None, "fake_values": ["Raytheon"],
+         "fixcell": "[Technologies]", "notes": ""}
+    P._pn_update_master_keep(cfg, {"raytheon technologies": d},
+                             "Case A", "2026-01-01", log)
+    back = P._pn_read_master_keep(cfg)
+    got = back["raytheon technologies"]
+    assert got["fixcell"] == "[Technologies]"      # round-trips verbatim
+    assert got["fake_values"] == ["Raytheon"]      # keep "Technologies", fake rest

@@ -34,8 +34,12 @@ For each *.pdf in the folder (processed from shortest to longest by file size):
      faked) can be corrected in place in the key's Replacement column, using the
      same words the LEAKS worksheet's Fix? column accepts: "no" leaves that Real
      Value verbatim, and a [bracketed] keep-spec keeps the bracketed part and
-     fakes the rest. The decision is applied on the next re-run and recorded to
-     LEAKS.xlsx (and the master leak log) so it persists.
+     fakes the rest. These no/bracket KEEP decisions are recorded to a SINGLE
+     cross-folder sheet — the KEEP tab of master_leaks.xlsx — so they are applied
+     on every future run in EVERY folder (accumulating Times Seen / Cases /
+     dates), letting the screening learn from real history. A global KEEP never
+     overrides a value the current case explicitly binds to a fake, so it can
+     never leave a real party in the clear.
   1a. Writes a plain-text companion (.txt) for each PDF that has a real text
      layer into a "Text Files" subfolder of the case folder (name overridable
      via text_subfolder in pdf_linker.config), so a text-only copy can be
@@ -8950,9 +8954,12 @@ class Pseudonymizer:
                                  # the worksheet — never quarantine on these
         self.keep_values = set() # exact strings the operator marked KEEP (a
                                  # 'no' or the bracketed part of a keep-spec, in
-                                 # the LEAKS worksheet OR the pseudonym key) —
-                                 # protected verbatim, never faked (see
-                                 # _keep_spans / apply)
+                                 # the LEAKS worksheet, the pseudonym key OR the
+                                 # cross-folder master KEEP sheet) — protected
+                                 # verbatim, never faked (see _keep_spans / apply)
+        self.kept_hits = set()   # keep_values (lowercased) that ACTUALLY matched
+                                 # text this run — so the master KEEP log can bump
+                                 # only the decisions a run really used
         self._own_fakes = set()  # detector fakes we minted, so a re-scrub of
                                  # already-fake text never re-fakes them
         # (category, real_lower) -> record dict {category, real, fake, source,
@@ -9794,9 +9801,13 @@ class Pseudonymizer:
         for v in sorted(self.keep_values, key=len, reverse=True):
             if not v:
                 continue
+            hit = False
             for m in re.finditer(re.escape(v), text, re.IGNORECASE):
                 if m.start() != m.end():
                     spans.append(m.span())
+                    hit = True
+            if hit:
+                self.kept_hits.add(v.lower())
         return spans
 
     def _mask_protected_citations(self, text):
@@ -11117,6 +11128,9 @@ _PN_LEAK_COLUMNS = (
 _PN_LEAK_HEADERS = tuple(h for h, _k, _w in _PN_LEAK_COLUMNS)
 _PN_LEAK_ABSENT = "(no longer present)"
 
+# Sheet title of the per-folder genuine-leak triage.
+_PN_LEAK_SHEET = "LEAKS"
+
 # The review worksheet's filename (stem). Renamed from the historical
 # "pdf_linker_leaks" to a plain "LEAKS"; the old name is still READ so a
 # folder triaged under the previous version keeps its decisions.
@@ -11186,31 +11200,23 @@ def _pn_decision_keep_parts(d):
     return []
 
 
-def _pn_read_leak_decisions(folder):
-    """{value_lower: {value, type, fix, replacement, fake_values, fixcell,
-    notes}} read back from a leak worksheet the reviewer annotated on a prior
-    run. `fix` is normalised to 'yes'/'no'/''. A Fix? entry that is NOT a
-    reserved control word ('yes'/'no' and the bare y/n dropdown shorthands) is
-    read as one of two operator instructions:
+def _pn_decision_is_keep(d):
+    """True when a decision is a KEEP: `no` (leave verbatim) or a bracketed
+    keep-spec (fake only the non-bracketed fragment(s)). These are the durable
+    decisions that live in the worksheet's KEEP sheet and drive re-runs; every
+    other decision (yes / explicit replacement / undecided) belongs to the
+    transient genuine-leak triage."""
+    return d.get("fix") == "no" or d.get("fake_values") is not None
 
-      * BRACKETED text that is part of the flagged value — the operator keeps
-        the bracketed part verbatim and auto-fakes the rest (`fake_values` holds
-        the fragment(s) to fake); or
-      * anything else — an explicit typed replacement (`replacement` carries the
-        text verbatim), dictating the exact fake instead of the auto-faker's.
 
-    `fixcell` is the exact string to write back so the annotation round-trips.
-    Empty when there is no readable worksheet."""
-    xlsx = _pn_existing_leak_xlsx(folder)
-    if not xlsx.is_file():
-        return {}
-    try:
-        import openpyxl
-        wb = openpyxl.load_workbook(xlsx, data_only=True, read_only=True)
-        rows = list(wb.active.iter_rows(values_only=True))
-        wb.close()
-    except Exception:
-        return {}
+def _pn_parse_decision_rows(rows):
+    """Parse the (values_only) rows of a decision sheet — LEAKS or KEEP — into
+    {value_lower: {value, type, fix, replacement, fake_values, fixcell, notes}}.
+    `fix` is normalised to 'yes'/'no'/''. A Fix? entry that is NOT a reserved
+    control word ('yes'/'no' and the bare y/n shorthands) is one of:
+      * BRACKETED text that is part of the value — keep the bracketed part
+        verbatim, auto-fake the rest (`fake_values` holds the fragment(s)); or
+      * anything else — an explicit typed replacement (`replacement`)."""
     if not rows:
         return {}
     hdr = [str(h).strip().lower() if h else "" for h in rows[0]]
@@ -11229,10 +11235,6 @@ def _pn_read_leak_decisions(folder):
         val = str(val)
         raw = str(cell("fix? (yes/no)") or "").strip()
         low = raw.lower()
-        # Reserved control words are ONLY 'yes'/'no' (with the historical bare
-        # y/n dropdown shorthands). A bracketed fragment of the value is a
-        # partial-keep instruction; anything else non-empty is an explicit
-        # operator-typed replacement. Both bypass or steer the auto-faker.
         replacement, fake_values, fixcell = None, None, None
         if low in ("yes", "y"):
             fix, replacement = "yes", None
@@ -11254,6 +11256,52 @@ def _pn_read_leak_decisions(folder):
                             "fake_values": fake_values, "fixcell": fixcell,
                             "notes": str(cell("notes") or "").strip()}
     return out
+
+
+def _pn_resolve_keeps(decisions, local_vls, records):
+    """Resolve which KEEP decisions actually protect text this run.
+
+    Returns (keep_values, dropped). `keep_values` is the set of exact strings to
+    leave verbatim (whole value for a `no`, bracketed part(s) for a keep-spec).
+    A LOCAL keep (its value_lower in `local_vls` — made in this folder's key or
+    LEAKS) always applies. A GLOBAL keep inherited from the master log is DROPPED
+    (its value collected into `dropped`) when it collides with a party this case
+    binds to a fake (a person/entity/case_number record), so a keep learned in
+    another matter can never leave a real party un-faked here."""
+    party_reals = {str(r["real"]).lower() for r in records.values()
+                   if r["category"] in ("person", "entity", "case_number")}
+    keep_values, dropped = set(), []
+    for vl, d in decisions.items():
+        if not _pn_decision_is_keep(d):
+            continue
+        if vl not in local_vls and vl in party_reals:
+            dropped.append(d["value"])
+            continue
+        for p in _pn_decision_keep_parts(d):
+            if p:
+                keep_values.add(p)
+    return keep_values, dropped
+
+
+def _pn_read_leak_decisions(folder):
+    """{value_lower: decision} read back from this folder's LEAKS worksheet the
+    reviewer annotated on a prior run — the transient, per-case genuine-leak
+    triage. (The durable `no`/bracket KEEP decisions live in the cross-folder
+    master KEEP sheet, read separately by `_pn_read_master_keep`.) Empty when
+    there is no readable worksheet.
+
+    `fixcell` is the exact string to write back so the annotation round-trips."""
+    xlsx = _pn_existing_leak_xlsx(folder)
+    if not xlsx.is_file():
+        return {}
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(xlsx, data_only=True, read_only=True)
+        rows = list(wb.active.iter_rows(values_only=True))
+        wb.close()
+    except Exception:
+        return {}
+    return _pn_parse_decision_rows(rows)
 
 
 def _leak_sev(t):
@@ -11278,58 +11326,134 @@ def _pn_merge_where(wheres):
     return ", ".join(toks[:12]) + (" …" if len(toks) > 12 else "")
 
 
-# ── Master leak log (cross-case, accumulates over time) ──────────────────────
+# ── Master workbook (cross-case, accumulates over time) ──────────────────────
+# One workbook next to pdf_linker.config holds two sheets:
+#   * "Master Leaks" — the tally of genuine leaks seen across matters (opt-in
+#      via master_leaks = on); and
+#   * "KEEP" — the DURABLE no/bracket decisions, a single persistent sheet
+#      across every folder and run. It is the preservation vehicle: a value
+#      marked "leave it alone" (or a bracketed keep-spec) is remembered here and
+#      re-applied on every future run in any folder, accumulating Times Seen /
+#      Cases / dates so the screening can be tuned from real history over time.
 _PN_MASTER_HEADERS = ("Value", "Type", "Times Seen", "Cases",
                       "First Seen", "Last Seen")
+_PN_MASTER_LEAK_SHEET = "Master Leaks"
+_PN_MASTER_KEEP_SHEET = "KEEP"
+# The KEEP sheet's Fix? column is named so _pn_parse_decision_rows can read the
+# instruction ("no" or a [bracket] spec) straight back out.
+_PN_MASTER_KEEP_HEADERS = ("Value", "Fix? (yes/no)", "Type", "Times Seen",
+                           "Cases", "First Seen", "Last Seen", "Notes")
+
+
+def _pn_master_path(cfg):
+    """The cross-case master workbook path (ALWAYS available — the KEEP sheet is
+    the preservation vehicle, not opt-in). Config `master_leaks_path` wins, then
+    the PDF_LINKER_MASTER env var (used to relocate or isolate the master), else
+    it lives next to pdf_linker.config."""
+    cfg = cfg or {}
+    override = (cfg.get("master_leaks_path") or "").strip().strip('"')
+    if override:
+        return Path(override)
+    env = (os.environ.get("PDF_LINKER_MASTER") or "").strip()
+    if env:
+        return Path(env)
+    return _config_path().with_name("master_leaks.xlsx")
 
 
 def _pn_master_leaks_path(cfg):
-    """Path to the cross-case master leak log, or None when disabled. Lives next
-    to pdf_linker.config by default so it persists across runs and case folders;
-    relocate with `master_leaks_path`, enable with `master_leaks = on`."""
+    """Path to the master workbook for the genuine-leak TALLY, or None when that
+    tally is disabled (`master_leaks = off` and no `master_leaks_path`). The KEEP
+    sheet in the same file is maintained regardless (see _pn_master_path)."""
     cfg = cfg or {}
     override = (cfg.get("master_leaks_path") or "").strip().strip('"')
     if not _config_bool(cfg, "master_leaks", False) and not override:
         return None
-    if override:
-        return Path(override)
-    return _config_path().with_name("master_leaks.xlsx")
+    return _pn_master_path(cfg)
+
+
+def _pn_master_load(master_path):
+    """Load the master workbook for update (all sheets preserved), or a fresh
+    empty one. Normal (not read-only) mode so a save keeps every OTHER sheet."""
+    import openpyxl
+    if master_path.exists():
+        try:
+            return openpyxl.load_workbook(master_path)
+        except Exception:
+            pass
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
+    return wb
+
+
+def _pn_master_sheet_rows(wb, title):
+    """(values_only) rows of the named sheet, or [] when it isn't present."""
+    for ws in wb.worksheets:
+        if ws.title.strip().lower() == title.strip().lower():
+            return list(ws.iter_rows(values_only=True))
+    return []
+
+
+def _pn_master_replace_sheet(wb, title, headers, data_rows, widths):
+    """Drop and recreate the named sheet with `headers` + `data_rows`, leaving
+    every other sheet untouched. `data_rows` is a list of value lists."""
+    for ws in list(wb.worksheets):
+        if ws.title.strip().lower() == title.strip().lower():
+            wb.remove(ws)
+    ws = wb.create_sheet(title)
+    ws.append(list(headers))
+    for row in data_rows:
+        ws.append(row)
+    from openpyxl.utils import get_column_letter
+    for i, w in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    return ws
+
+
+def _pn_master_save(wb, master_path, log, what):
+    """Atomically save the master workbook (temp + replace). Ensures at least one
+    sheet exists. Best-effort: a master open in Excel is warned about, not fatal."""
+    if not wb.worksheets:
+        wb.create_sheet(_PN_MASTER_LEAK_SHEET)
+    tmp = master_path.with_name(master_path.name + ".tmp")
+    try:
+        wb.save(tmp)
+        os.replace(tmp, master_path)
+        return True
+    except OSError as e:
+        log.warning(f"  Master {what}: could not write {master_path} ({e}) — is "
+                    f"it open in Excel? This run's values were not recorded.")
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
+        return False
 
 
 def _pn_update_master_leaks(master_path, values, case_name, today, log):
-    """Merge this run's flagged values into the master leak log — one row per
-    distinct value, sorted alphabetically — so a value that keeps leaking across
-    matters is easy to spot. `values` is [(value, type), ...]. Times Seen counts
-    the runs a value appeared in; Cases lists the folders; First/Last Seen bound
-    the dates. Best-effort and atomic (temp + replace): a master left open in
-    Excel is warned about, not fatal, and a crash can't truncate the history."""
+    """Merge this run's genuine-leak values into the master workbook's
+    'Master Leaks' sheet — one row per distinct value — WITHOUT disturbing the
+    KEEP sheet. `values` is [(value, type), ...]."""
     try:
-        import openpyxl
+        import openpyxl  # noqa: F401
     except ImportError:
         return
-
+    wb = _pn_master_load(master_path)
     rows = {}   # value_lower -> {value, type, times, cases:set, first, last}
-    if master_path.exists():
-        try:
-            ws = openpyxl.load_workbook(master_path).active
-            for r in list(ws.iter_rows(values_only=True))[1:]:
-                if not r or r[0] in (None, ""):
-                    continue
-                val = str(r[0])
-                times = r[2] if len(r) > 2 else 1
-                cases = r[3] if len(r) > 3 else ""
-                rows[val.lower()] = {
-                    "value": val,
-                    "type": (str(r[1]) if len(r) > 1 and r[1] else "LEAK"),
-                    "times": int(times) if str(times).isdigit() else 1,
-                    "cases": {c.strip() for c in str(cases or "").split(";")
-                              if c.strip() and "cases" not in c},
-                    "first": (str(r[4]) if len(r) > 4 and r[4] else today),
-                    "last": (str(r[5]) if len(r) > 5 and r[5] else today)}
-        except Exception as e:
-            log.warning(f"  Master leak log: could not read {master_path.name} "
-                        f"({e}); starting a fresh one.")
-            rows = {}
+    for r in _pn_master_sheet_rows(wb, _PN_MASTER_LEAK_SHEET)[1:]:
+        if not r or r[0] in (None, ""):
+            continue
+        val = str(r[0])
+        times = r[2] if len(r) > 2 else 1
+        cases_raw = r[3] if len(r) > 3 else ""
+        rows[val.lower()] = {
+            "value": val,
+            "type": (str(r[1]) if len(r) > 1 and r[1] else "LEAK"),
+            "times": int(times) if str(times).isdigit() else 1,
+            "cases": {c.strip() for c in str(cases_raw or "").split(";")
+                      if c.strip() and "cases" not in c},
+            "first": (str(r[4]) if len(r) > 4 and r[4] else today),
+            "last": (str(r[5]) if len(r) > 5 and r[5] else today)}
 
     for value, vtype in values:
         vl = value.lower()
@@ -11344,31 +11468,96 @@ def _pn_update_master_leaks(master_path, values, case_name, today, log):
             if _leak_sev(vtype) < _leak_sev(g["type"]):
                 g["type"] = vtype
 
-    ordered = sorted(rows.values(), key=lambda g: g["value"].lower())
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "Master Leaks"
-    ws.append(list(_PN_MASTER_HEADERS))
-    for g in ordered:
+    data = []
+    for g in sorted(rows.values(), key=lambda g: g["value"].lower()):
         cases = sorted(c for c in g["cases"] if c)
         cell = "; ".join(cases) if len(cases) <= 8 else f"{len(cases)} cases"
-        ws.append([g["value"], g["type"], g["times"], cell, g["first"], g["last"]])
-    for col, width in zip("ABCDEF", (34, 12, 11, 44, 12, 12)):
-        ws.column_dimensions[col].width = width
-    tmp = master_path.with_name(master_path.name + ".tmp")
-    try:
-        wb.save(tmp)
-        os.replace(tmp, master_path)
+        data.append([g["value"], g["type"], g["times"], cell, g["first"], g["last"]])
+    _pn_master_replace_sheet(wb, _PN_MASTER_LEAK_SHEET, _PN_MASTER_HEADERS, data,
+                             (34, 12, 11, 44, 12, 12))
+    if _pn_master_save(wb, master_path, log, "leak log"):
         log.info(f"  Master leak log updated: {master_path} "
-                 f"({len(ordered)} distinct value(s))")
-    except OSError as e:
-        log.warning(f"  Master leak log: could not write {master_path} ({e}) — "
-                    f"is it open in Excel? This run's values were not recorded.")
-        try:
-            if tmp.exists():
-                tmp.unlink()
-        except OSError:
-            pass
+                 f"({len(rows)} distinct value(s))")
+
+
+def _pn_read_master_keep(cfg):
+    """The durable cross-folder KEEP decisions {value_lower: decision} from the
+    master workbook's KEEP sheet — the `no`/bracket instructions to re-apply on
+    every run in every folder. Empty when the sheet is absent/unreadable."""
+    path = _pn_master_path(cfg)
+    if not path.exists():
+        return {}
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
+        rows = _pn_master_sheet_rows(wb, _PN_MASTER_KEEP_SHEET)
+        wb.close()
+    except Exception:
+        return {}
+    return _pn_parse_decision_rows(rows)
+
+
+def _pn_update_master_keep(cfg, record_map, case_name, today, log):
+    """Merge this run's KEEP decisions into the master workbook's KEEP sheet
+    (single persistent sheet across folders and runs), WITHOUT disturbing the
+    'Master Leaks' sheet. `record_map` is {value_lower: decision} for the keeps
+    made or re-affirmed this run; Times Seen / Cases / dates accumulate so the
+    screening can be tuned from real history. Returns the KEEP-sheet row count."""
+    if not record_map and not _pn_master_path(cfg).exists():
+        return 0
+    try:
+        import openpyxl  # noqa: F401
+    except ImportError:
+        return 0
+    master_path = _pn_master_path(cfg)
+    wb = _pn_master_load(master_path)
+
+    rows = {}   # value_lower -> {value, instruction, type, times, cases, first, last, notes}
+    for r in _pn_master_sheet_rows(wb, _PN_MASTER_KEEP_SHEET)[1:]:
+        if not r or r[0] in (None, ""):
+            continue
+        val = str(r[0])
+        times = r[3] if len(r) > 3 else 1
+        cases_raw = r[4] if len(r) > 4 else ""
+        rows[val.lower()] = {
+            "value": val,
+            "instruction": (str(r[1]) if len(r) > 1 and r[1] else "no"),
+            "type": (str(r[2]) if len(r) > 2 and r[2] else "KEEP"),
+            "times": int(times) if str(times).isdigit() else 1,
+            "cases": {c.strip() for c in str(cases_raw or "").split(";")
+                      if c.strip() and "cases" not in c},
+            "first": (str(r[5]) if len(r) > 5 and r[5] else today),
+            "last": (str(r[6]) if len(r) > 6 and r[6] else today),
+            "notes": (str(r[7]) if len(r) > 7 and r[7] else "")}
+
+    for vl, d in record_map.items():
+        instruction = d.get("fixcell") or ("no" if d.get("fix") == "no" else "no")
+        vtype = d.get("type") or ("KEEP-PART" if d.get("fake_values") else "KEEP")
+        g = rows.get(vl)
+        if g is None:
+            rows[vl] = {"value": d["value"], "instruction": instruction,
+                        "type": vtype, "times": 1, "cases": {case_name},
+                        "first": today, "last": today,
+                        "notes": d.get("notes", "")}
+        else:
+            g["times"] += 1
+            g["cases"].add(case_name)
+            g["last"] = today
+            g["instruction"] = instruction     # newest instruction wins
+            g["type"] = vtype
+
+    data = []
+    for g in sorted(rows.values(), key=lambda g: g["value"].lower()):
+        cases = sorted(c for c in g["cases"] if c)
+        cell = "; ".join(cases) if len(cases) <= 8 else f"{len(cases)} cases"
+        data.append([g["value"], g["instruction"], g["type"], g["times"],
+                     cell, g["first"], g["last"], g["notes"]])
+    _pn_master_replace_sheet(wb, _PN_MASTER_KEEP_SHEET, _PN_MASTER_KEEP_HEADERS,
+                             data, (34, 16, 11, 11, 40, 12, 12, 26))
+    if _pn_master_save(wb, master_path, log, "KEEP log") and record_map:
+        log.info(f"  Master KEEP log updated: {master_path} "
+                 f"({len(rows)} kept value(s) tracked).")
+    return len(rows)
 
 
 def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None):
@@ -11410,32 +11599,44 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None):
         g["wheres"].append(e["where"])
 
     # Accumulate this run's flagged values into the cross-case master log, so a
-    # value that keeps leaking across matters is easy to spot over time.
+    # value that keeps leaking across matters is easy to spot over time. The
+    # durable KEEP (no/bracket) decisions are NOT part of this — they live in the
+    # master KEEP sheet, maintained by _pn_update_master_keep, so a genuine-leak
+    # tally never mixes with a "leave this alone" decision.
     master_path = _pn_master_leaks_path(cfg)
     if master_path is not None and grouped:
-        _pn_update_master_leaks(
-            master_path, [(g["value"], g["type"]) for g in grouped.values()],
-            folder.name, datetime.date.today().isoformat(), log)
+        leak_only = [(g["value"], g["type"]) for vl, g in grouped.items()
+                     if not _pn_decision_is_keep(decisions.get(vl, {}))]
+        if leak_only:
+            _pn_update_master_leaks(
+                master_path, leak_only, folder.name,
+                datetime.date.today().isoformat(), log)
 
+    # The per-folder worksheet is the TRANSIENT genuine-leak triage only; the
+    # durable no/bracket KEEP decisions are excluded here (they are preserved
+    # cross-folder in the master KEEP sheet) so this file can be cleaned up
+    # freely without ever dropping a keep.
     rows = []
     for vl, g in grouped.items():
         d = decisions.get(vl, {})
+        if _pn_decision_is_keep(d):
+            continue
         files = g["files"]
         file_cell = ", ".join(files) if len(files) <= 3 else f"{len(files)} files"
-        # `fixcell` is what the Fix? cell shows: an operator-typed replacement
-        # or a bracketed keep-spec is carried back verbatim (NOT collapsed to
-        # "yes"), so a re-run re-reads the exact instruction instead of
-        # re-deriving an auto fake.
+        # `fixcell` is what the Fix? cell shows: an operator-typed replacement is
+        # carried back verbatim (NOT collapsed to "yes"), so a re-run re-reads
+        # the exact instruction instead of re-deriving an auto fake.
         rows.append({"file": file_cell, "type": g["type"], "value": g["value"],
                      "where": _pn_merge_where(g["wheres"]),
                      "fix": d.get("fix", ""),
                      "fixcell": (d.get("fixcell") or d.get("replacement")
                                  or d.get("fix", "")),
                      "notes": d.get("notes", ""), "present": True})
-    # Persist a decision whose value didn't recur this run, so a Fix?=yes term
-    # keeps being applied and a Fix?=no stays suppressed on future runs.
+    # Persist a Fix?=yes/explicit decision whose value didn't recur this run, so
+    # the fix keeps applying. (KEEP decisions are omitted — the master holds them.)
     for vl, d in decisions.items():
-        if vl not in seen and d.get("fix") in ("yes", "no"):
+        if vl not in seen and d.get("fix") in ("yes", "no") \
+                and not _pn_decision_is_keep(d):
             rows.append({"file": "—", "type": d.get("type") or "(decided)",
                          "value": d["value"], "where": _PN_LEAK_ABSENT,
                          "fix": d["fix"],
@@ -11489,7 +11690,7 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None):
     from openpyxl.utils import get_column_letter
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.title = "LEAKS"
+    ws.title = _PN_LEAK_SHEET
     ws.append(list(_PN_LEAK_HEADERS))
     for r in rows:
         ws.append([r.get(key, "") for _hdr, key, _w in _PN_LEAK_COLUMNS])
@@ -12527,11 +12728,15 @@ _CONFIG_TEMPLATE = (
     "\n"
     "# Accumulate every flagged leak into ONE master spreadsheet across all runs\n"
     "# and case folders, so you can spot a value that keeps leaking over time.\n"
-    "# on/off (default: off). One row per distinct value, sorted alphabetically,\n"
-    "# with a Times-Seen count, the cases it appeared in, and first/last dates.\n"
+    "# on/off (default: off). This toggle controls the 'Master Leaks' TALLY sheet\n"
+    "# only. The 'KEEP' sheet in the SAME workbook — the durable no/[bracket]\n"
+    "# decisions, applied across every folder and run — is always maintained (it\n"
+    "# is the preservation vehicle for those decisions), so the workbook may be\n"
+    "# created for KEEP even with the tally off.\n"
     "master_leaks = off\n"
-    "# Where that master lives. Default: master_leaks.xlsx next to this config\n"
-    "# file. Point it anywhere stable (e.g. a OneDrive path) so it persists.\n"
+    "# Where that master workbook lives (both the KEEP and Master Leaks sheets).\n"
+    "# Default: master_leaks.xlsx next to this config file (or the PDF_LINKER_MASTER\n"
+    "# env var). Point it anywhere stable (e.g. a OneDrive path) so it persists.\n"
     "# master_leaks_path = C:\\Users\\you\\Documents\\Master Leaks.xlsx\n"
 )
 
@@ -12965,12 +13170,14 @@ def _fix_leaks_mode(folder, args, cfg, log):
         _warn(f"--fix-leaks: could not read key {key_path.name}: {e}")
         return 1
 
-    decisions = _pn_read_leak_decisions(folder)
+    master_keep = _pn_read_master_keep(cfg)
+    folder_decisions = _pn_read_leak_decisions(folder)
+    decisions = {**master_keep, **folder_decisions}
     # KEEP / KEEP-PART edits from the key's Replacement column ('no' or a
-    # [bracketed] keep-spec) are applied the same as the worksheet's: a value
-    # already triaged in the worksheet keeps that decision.
+    # [bracketed] keep-spec) are authoritative for this run.
     for vl, d in key_decisions.items():
-        decisions.setdefault(vl, d)
+        decisions[vl] = d
+    local_vls = set(key_decisions) | set(folder_decisions)
     # Two kinds of "yes": AUTO (let the tool mint a fake) and EXPLICIT (the
     # operator typed the exact replacement into the Fix? cell). An explicit fix
     # bypasses the faker entirely — the operator's deliberate choice of a
@@ -13025,13 +13232,19 @@ def _fix_leaks_mode(folder, args, cfg, log):
     # (party names + the flagged values) is wanted.
     pz = Pseudonymizer(terms, [], registry)
     pz.suppressed = suppressed
-    keep_parts = set()
-    for d in decisions.values():
-        keep_parts.update(_pn_decision_keep_parts(d))
-    pz.keep_values = {p for p in keep_parts if p}
+    keep_values, _dropped = _pn_resolve_keeps(decisions, local_vls, pz.records)
+    pz.keep_values = keep_values
     pz.override_fixes(explicit)   # typed fake beats any other record for a value
     for r in pz.records.values():
         pz._own_fakes.add(str(r["fake"]).lower().rstrip(" .,;:"))
+    # Record this run's LOCAL keep decisions into the cross-folder master KEEP
+    # sheet so a key/worksheet edit made here persists globally.
+    _keep_rec = {vl: d for vl, d in decisions.items()
+                 if _pn_decision_is_keep(d) and vl in local_vls
+                 and d["value"] not in _dropped}
+    if _keep_rec:
+        _pn_update_master_keep(cfg, _keep_rec, folder.name,
+                               datetime.date.today().isoformat(), log)
 
     def _is_tool_artifact(p):
         """The tool's OWN .txt files in the folder — the worksheet's text
@@ -13385,11 +13598,18 @@ def main():
         # Downloads (where the E-Court export lands).
         key_path = args.key if args.key else _pn_find_downloads_key(log)
         registry = _PnFakeRegistry()
-        # Round-trip the leak-triage worksheet: values the reviewer marked
-        # "yes" (needs fixing) are scrubbed as if passed via --term; values
-        # marked "no" are remembered so they never quarantine and drop out of
-        # the active review list. Decisions persist in the worksheet itself.
-        leak_decisions = _pn_read_leak_decisions(folder)
+        # Decisions feeding this run come from two places:
+        #   * this folder's LEAKS worksheet (transient genuine-leak triage), and
+        #   * the cross-folder master KEEP sheet (the durable no/bracket
+        #     decisions, remembered across every folder and run).
+        # The folder's own decisions layer ON TOP of the global keeps, so a case
+        # can locally override a global keep when it must.
+        master_keep = _pn_read_master_keep(cfg)
+        folder_decisions = _pn_read_leak_decisions(folder)
+        leak_decisions = {**master_keep, **folder_decisions}
+        if master_keep:
+            log.info(f"  Master KEEP: {len(master_keep)} durable no/bracket "
+                     f"decision(s) loaded from the cross-folder log.")
         # A bracketed keep-spec auto-fakes only its non-bracketed fragment(s);
         # every other Fix?=yes scrubs the whole flagged value.
         fix_terms = []
@@ -13432,10 +13652,8 @@ def main():
             terms = _pn_build_terms([], [], extra_terms, registry)
 
         # KEEP / KEEP-PART edits typed into the pseudonym key's Replacement
-        # column ('no' or a [bracketed] keep-spec): merge them into the run's
-        # decisions so they apply, persist to LEAKS.xlsx (round-tripping the Fix?
-        # cell) and reach the master log — the same path the worksheet uses. A
-        # value already triaged in the worksheet keeps that decision.
+        # column ('no' or a [bracketed] keep-spec): a key edit is authoritative
+        # for THIS run, so it overrides an inherited decision for the same value.
         if key_decisions:
             key_frags = []
             for d in key_decisions.values():
@@ -13446,23 +13664,29 @@ def main():
                 log.info(f"  Pseudonym key: auto-faking {len(key_frags)} "
                          f"bracketed keep-spec fragment(s).")
             for vl, d in key_decisions.items():
-                leak_decisions.setdefault(vl, d)
+                leak_decisions[vl] = d
                 suppressed.add(vl)
 
         pseudonymizer = Pseudonymizer(terms, detectors, registry)
         pseudonymizer.suppressed = suppressed
-        # Values marked KEEP (worksheet OR key 'no'/[bracket]) are protected
-        # verbatim so no term or detector fakes them this run.
-        keep_parts = set()
-        for d in leak_decisions.values():
-            keep_parts.update(_pn_decision_keep_parts(d))
-        pseudonymizer.keep_values = {p for p in keep_parts if p}
-        # Surface each key KEEP decision into the triage worksheet + master log,
-        # so a mistake corrected in the key is recorded like any other decision.
-        for d in key_decisions.values():
-            pseudonymizer.leak_report.append(
-                {"file": "(pseudonym key)", "type": d["type"],
-                 "value": d["value"], "where": "(from key)"})
+        # Resolve KEEP protection. Local keeps (this folder's key or LEAKS)
+        # always apply; a GLOBAL keep inherited from the master log is dropped
+        # where it collides with a party THIS case binds to a fake, so a keep
+        # learned elsewhere can never leave a real party in the clear here.
+        local_vls = set(key_decisions) | set(folder_decisions)
+        keep_values, dropped = _pn_resolve_keeps(
+            leak_decisions, local_vls, pseudonymizer.records)
+        pseudonymizer.keep_values = keep_values
+        pseudonymizer._keep_decisions = {
+            vl: d for vl, d in leak_decisions.items()
+            if _pn_decision_is_keep(d) and d["value"] not in dropped}
+        pseudonymizer._keep_local = {vl for vl in pseudonymizer._keep_decisions
+                                     if vl in local_vls}
+        if dropped:
+            _warn("Pseudonymize: a global KEEP from the master log matches a "
+                  f"party in THIS case ({', '.join(sorted(set(dropped))[:6])}); "
+                  "faking it here so a real party isn't left in the clear. Mark "
+                  "it in this folder's LEAKS worksheet if it must be kept here.")
         if reused_key:
             # Loaded fakes are already-final strings; don't let a detector try
             # to re-fake one it meets in the new file.
@@ -13613,6 +13837,19 @@ def main():
         # Prior yes/no decisions are carried through (yes was scrubbed above).
         _pn_write_leak_report(folder, pseudonymizer.leak_report, log,
                               leak_decisions, cfg=cfg)
+        # Record this run's KEEP decisions into the single cross-folder master
+        # KEEP sheet: every LOCAL keep (made in this folder), plus any GLOBAL
+        # keep that actually protected text here (a real hit) — so Times Seen /
+        # Cases / dates accumulate and the durable decision survives cleanup.
+        _record = {}
+        for vl, d in getattr(pseudonymizer, "_keep_decisions", {}).items():
+            hit = any(p.lower() in pseudonymizer.kept_hits
+                      for p in _pn_decision_keep_parts(d))
+            if vl in pseudonymizer._keep_local or hit:
+                _record[vl] = d
+        if _record:
+            _pn_update_master_keep(cfg, _record, folder.name,
+                                   datetime.date.today().isoformat(), log)
         # Two addresses on one street with adjacent numbers were faked to two
         # unrelated streets — the failure that moved an ADU off its parcel.
         for w in _pn_address_adjacency(pseudonymizer.records.values()):

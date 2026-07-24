@@ -14,6 +14,7 @@ Run:  cd PDF-Linker && python3 -m pytest tests/test_key_keep_decisions.py -v
 """
 import importlib.util
 import logging
+import os
 from pathlib import Path
 
 import openpyxl
@@ -128,30 +129,34 @@ def test_key_no_keeps_value_in_export(tmp_path, monkeypatch):
     assert "Jane Roe" not in txt           # normal binding still fakes
 
 
-def test_key_no_is_written_to_leaks_and_master(tmp_path, monkeypatch):
-    _make_pdf(tmp_path / "Motion.pdf", ["Acme Holdings appears here."])
+def test_key_no_is_written_to_master_keep_sheet(tmp_path, monkeypatch):
+    _make_pdf(tmp_path / "Motion.pdf",
+              ["In this action Acme Holdings appeared through counsel and filed",
+               "an opposition to the plaintiff's motion, considered on the "
+               "merits."])
     key = _write_key(tmp_path / "pseudonym_key.xlsx",
                      [("entity", "Acme Holdings", "no")])
-    # Point the master log at a file inside tmp so the test is self-contained.
-    master = tmp_path / "master_leaks.xlsx"
-    monkeypatch.setattr(pl, "_pn_master_leaks_path", lambda cfg: master)
+    # The conftest points PDF_LINKER_MASTER at a per-test tmp file.
+    master = Path(os.environ["PDF_LINKER_MASTER"])
     _run(tmp_path, monkeypatch, key)
 
-    # LEAKS.xlsx carries the decision (Fix? = no) so it round-trips.
-    leaks = tmp_path / "LEAKS.xlsx"
-    assert leaks.is_file()
-    rows = list(openpyxl.load_workbook(leaks).active.iter_rows(values_only=True))
+    # The durable no/bracket decision lives in the cross-folder master KEEP
+    # sheet (NOT the transient per-folder LEAKS triage).
+    assert master.is_file()
+    wb = openpyxl.load_workbook(master)
+    keep = {ws.title: ws for ws in wb.worksheets}["KEEP"]
+    rows = list(keep.iter_rows(values_only=True))
     hdr = [str(h).lower() if h else "" for h in rows[0]]
     vi, fi = hdr.index("value"), next(i for i, h in enumerate(hdr)
                                       if h.startswith("fix?"))
     kept = [r for r in rows[1:] if str(r[vi]) == "Acme Holdings"]
     assert kept and str(kept[0][fi]).strip().lower() == "no"
 
-    # Master log recorded it as a KEEP.
-    assert master.is_file()
-    mrows = list(openpyxl.load_workbook(master).active.iter_rows(values_only=True))
-    assert any(str(r[0]) == "Acme Holdings" and str(r[1]) == "KEEP"
-               for r in mrows[1:])
+    # ...and NOT in the per-folder LEAKS worksheet (if one was written at all).
+    leaks = tmp_path / "LEAKS.xlsx"
+    if leaks.is_file():
+        lrows = list(openpyxl.load_workbook(leaks).active.iter_rows(values_only=True))
+        assert not any(str(r[0]) == "Acme Holdings" for r in lrows[1:])
 
 
 def test_key_bracket_keeps_part_fakes_rest(tmp_path, monkeypatch):
@@ -169,3 +174,59 @@ def test_key_bracket_keeps_part_fakes_rest(tmp_path, monkeypatch):
     txt = "\n".join(p.read_text() for p in (tmp_path / "Text Files").glob("*.txt"))
     assert "Human Resources" in txt        # bracketed part kept
     assert "Raytheon" not in txt           # the rest is faked
+
+
+# ── cross-folder: the KEEP sheet is a single store that learns as it goes ─────
+
+def _pdf_lines(*lines):
+    return list(lines)
+
+
+def test_global_keep_applies_in_a_later_folder(tmp_path, monkeypatch):
+    # Folder A declares a KEEP in its key; folder B (a different case, no such
+    # key row) inherits it from the single cross-folder master KEEP sheet.
+    a, b = tmp_path / "A", tmp_path / "B"
+    a.mkdir(); b.mkdir()
+    body = ["In this matter Globex Industries appeared through its counsel of",
+            "record and answered the complaint, and the parties then met and",
+            "conferred about the schedule for the remainder of the litigation."]
+    _make_pdf(a / "Motion.pdf", body)
+    _make_pdf(b / "Brief.pdf", body)
+    ka = _write_key(a / "pseudonym_key.xlsx",
+                    [("entity", "Globex Industries", "no")])
+    _run(a, monkeypatch, ka)
+    # B's own key does not mention Globex at all.
+    kb = _write_key(b / "pseudonym_key.xlsx",
+                    [("person", "Jane Roe", "Keswick Bexley")])
+    _run(b, monkeypatch, kb)
+
+    btxt = "\n".join(p.read_text() for p in (b / "Text Files").glob("*.txt"))
+    assert "Globex Industries" in btxt     # inherited global KEEP applied in B
+
+    master = Path(os.environ["PDF_LINKER_MASTER"])
+    keep = {ws.title: ws for ws in openpyxl.load_workbook(master).worksheets}["KEEP"]
+    rows = [r for r in keep.iter_rows(values_only=True)][1:]
+    g = next(r for r in rows if str(r[0]) == "Globex Industries")
+    assert int(g[3]) >= 2                   # Times Seen accumulated across A and B
+
+
+def test_global_keep_yields_to_a_current_case_party(tmp_path, monkeypatch):
+    # Safety: a global KEEP must never leave a REAL party of the current case in
+    # the clear. If this case binds the same value to a fake, faking wins.
+    master = Path(os.environ["PDF_LINKER_MASTER"])
+    pl._pn_update_master_keep(
+        {}, {"vertex corp": {"value": "Vertex Corp", "type": "KEEP",
+                             "fix": "no", "fake_values": None,
+                             "fixcell": "no", "notes": ""}},
+        "Some Other Case", "2026-01-01", logging.getLogger("t"))
+    assert master.is_file()
+
+    _make_pdf(tmp_path / "Motion.pdf",
+              ["In this action Vertex Corp appeared through its counsel and",
+               "answered the complaint filed against it by the plaintiff here."])
+    key = _write_key(tmp_path / "pseudonym_key.xlsx",
+                     [("entity", "Vertex Corp", "Zenith Labs")])
+    _run(tmp_path, monkeypatch, key)
+
+    txt = "\n".join(p.read_text() for p in (tmp_path / "Text Files").glob("*.txt"))
+    assert "Vertex Corp" not in txt        # a current-case party is faked anyway
