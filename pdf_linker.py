@@ -11544,6 +11544,68 @@ def _pn_keep_values(decisions):
     return strict, soft
 
 
+def _pn_prior_fake_words(terms):
+    """Lower-cased words of every fake a REUSED key already handed out — the
+    stand-ins already standing in the exports. Used to recognise a HALF-SCRUBBED
+    leak value (see `_pn_strip_prior_fakes`)."""
+    out = set()
+    for t in terms:
+        f = str(t.fake)
+        out.add(f.lower())
+        out.update(w.lower() for w in _PN_WORD_RE.findall(f))
+    return out
+
+
+def _pn_strip_prior_fakes(value, fakes):
+    """Drop the words of `value` that are already this key's OWN fakes, keeping
+    the genuinely real remainder — or None when nothing real is left.
+
+    A flagged leak is routinely HALF-SCRUBBED: only the bare surname was bound
+    ("Penuela" -> "Sable"), so the export reads "Melissa Sable" and the review
+    scan rightly surfaces it — "Melissa" IS a real name still standing. But
+    marking it yes used to register the whole phrase as a REAL value, which put
+    a fake ("Sable") in the key's Real Value column and faked it a second time
+    ("Melissa Sable" -> "Ramsey Ellery"). The reversal macro then walked a
+    two-generation chain that never reached "Penuela", and every re-run grew
+    another generation.
+
+    Faking only the real remainder keeps the existing stand-in and round-trips:
+    "Melissa" gets its own fake, "Sable" stays as it is, and the macro reverses
+    the pair back to "Melissa Penuela"."""
+    words = str(value).split()
+    keep = [w for w in words if _pn_word_affixes(w)[1].lower() not in fakes]
+    if len(keep) == len(words):
+        return value                  # nothing of ours in it — take it as it is
+    rest = " ".join(keep).strip(" \t,.;:'’\"-–—")
+    return rest if re.search(r"[A-Za-z0-9]", rest) else None
+
+
+def _pn_drop_prior_fakes_from_terms(values, prior_fakes, log):
+    """Apply `_pn_strip_prior_fakes` across the leak-fix values a run is about to
+    turn into terms, logging what changed so the operator can see why the key
+    holds "Melissa" rather than the "Melissa Sable" they marked."""
+    if not prior_fakes:
+        return list(values)
+    out, changed, dropped = [], [], []
+    for v in values:
+        rest = _pn_strip_prior_fakes(v, prior_fakes)
+        if rest is None:
+            dropped.append(v)
+            continue
+        if rest != v:
+            changed.append(f"{v!r} -> {rest!r}")
+        out.append(rest)
+    if changed:
+        log.info(f"  Pseudonymize: {len(changed)} flagged value(s) were already "
+                 f"part-scrubbed — faking only the real remainder so a prior "
+                 f"fake never becomes a Real Value: {'; '.join(changed[:6])}")
+    if dropped:
+        log.info(f"  Pseudonymize: {len(dropped)} flagged value(s) are entirely "
+                 f"this run's own fakes — nothing left to scrub: "
+                 f"{', '.join(repr(v) for v in dropped[:6])}")
+    return out
+
+
 def _pn_retire_kept_key_terms(terms, decisions, registry, log):
     """A KEEP decision RETIRES the pseudonym key's own binding for that value, so
     the key a re-run writes stays CLEAN — only real values and the fakes actually
@@ -13515,6 +13577,10 @@ def _fix_leaks_mode(folder, args, cfg, log):
     # operator typed the exact replacement into the Fix? cell). An explicit fix
     # bypasses the faker entirely — the operator's deliberate choice of a
     # specific fake, and the cure for anything the faker would handle poorly.
+    # Fakes this key already handed out, so a HALF-SCRUBBED flagged value
+    # ("Melissa Sable", where only "Penuela" was bound) fakes just its real
+    # remainder instead of re-faking our own stand-in — see _pn_strip_prior_fakes.
+    prior_fakes = _pn_prior_fake_words(terms)
     auto_terms, explicit = [], {}
     for d in decisions.values():
         if d["fix"] != "yes":
@@ -13527,12 +13593,20 @@ def _fix_leaks_mode(folder, args, cfg, log):
         repl = (d.get("replacement") or "").strip()
         if repl and repl.lower() != d["value"].strip().lower():
             explicit[d["value"]] = repl
+            if _pn_strip_prior_fakes(d["value"], prior_fakes) != d["value"]:
+                log.warning(
+                    f"  --fix-leaks: typed replacement for {d['value']!r} — part "
+                    f"of that value is already a fake this key minted, so the key "
+                    f"will carry it as a Real Value. Type the fix against the "
+                    f"REAL name instead, or mark the row yes to auto-fake only "
+                    f"the un-scrubbed part.")
         elif repl:
             log.warning(f"  --fix-leaks: typed replacement for {d['value']!r} "
                         f"equals the value itself — ignoring (a self-map never "
                         f"scrubs). Type a DIFFERENT replacement.")
         else:
             auto_terms.append(d["value"])
+    auto_terms = _pn_drop_prior_fakes_from_terms(auto_terms, prior_fakes, log)
     suppressed = {vl for vl, d in decisions.items() if d["fix"] == "no"}
     # A LOCAL keep decision (this folder's key or LEAKS — not one merely
     # inherited from the master sheet) retires the key's own binding for that
@@ -13997,6 +14071,13 @@ def main():
                     # A key this tool wrote: reuse its bindings so a follow-up
                     # single-file run reproduces the original run's fakes.
                     terms, key_decisions = _pn_load_key(key_path, registry, log)
+                    # A flagged value the operator marked yes can be HALF-
+                    # scrubbed ("Melissa Sable", where only "Penuela" was bound).
+                    # Fake only its real remainder, so a stand-in this key
+                    # already handed out never lands in the Real Value column and
+                    # gets faked a second time.
+                    extra_terms = _pn_drop_prior_fakes_from_terms(
+                        extra_terms, _pn_prior_fake_words(terms), log)
                     # A LOCAL keep decision — typed into this key's Replacement
                     # column or this folder's LEAKS triage — retires the binding
                     # it corrects, so the key rewritten below holds only real

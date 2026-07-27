@@ -147,7 +147,20 @@ the party), so its row stays reversible.
   carries "postbox4"), and a phrase is suppressed once the fake tokens are
   removed and no real name still stands — so a fake dragged by a non-name
   prefix ("ASIC Pruett Keswick", "Nolan Relations") is not reported as
-  unscrubbed. A genuinely-new real name beside a fake is still surfaced. The
+  unscrubbed. A genuinely-new real name beside a fake is still surfaced —
+  correctly, but the phrase is then HALF-SCRUBBED, and taking it at face value
+  when the operator marks it yes fed our own fake back in as a REAL value. Only
+  the surname was bound ("Penuela" -> "Sable"), the export reads "Melissa
+  Sable", and keying that phrase faked it a second time ("Melissa Sable" ->
+  "Ramsey Ellery") — so the macro walked a two-generation chain that never
+  reached "Penuela", and every re-run grew another generation.
+  `_pn_strip_prior_fakes` / `_pn_drop_prior_fakes_from_terms` fake only the real
+  remainder ("Melissa"), leaving the established stand-in alone, so the pair
+  reverses to "Melissa Penuela". It bites in **`--fix-leaks`**, where the text is
+  already scrubbed and the PDFs are never reopened; a full run self-heals because
+  the pre-scan re-reads the real name from the PDF. An EXPLICIT typed
+  replacement is left as the operator's deliberate choice, but warns when its
+  value carries one of our fakes. The
   distinctness gate is the `_PN_COMMON_WORDS` gazetteer (~500 words: high-
   frequency English plus motion-practice vocabulary), so a title-case argument
   heading ("Defendant Cannot Establish...", "For Age Discrimination",
