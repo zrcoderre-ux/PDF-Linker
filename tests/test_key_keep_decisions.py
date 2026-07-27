@@ -277,3 +277,158 @@ def test_global_keep_yields_to_a_current_case_party(tmp_path, monkeypatch):
 
     txt = "\n".join(p.read_text() for p in (tmp_path / "Text Files").glob("*.txt"))
     assert "Vertex Corp" not in txt        # a current-case party is faked anyway
+
+
+# ── the re-run leaves the key CLEAN: real values and applied fakes only ───────
+#
+# A key row is a FULL PARTY match, and the full-party override deliberately beats
+# a keep — so without retiring the row an operator's own correction misfires: a
+# `no` value is faked anyway (and its row dropped, leaving an unreversible fake),
+# and a keep-spec fakes the whole flagged phrase while the dirty row survives.
+
+
+def _write_leaks(path, rows):
+    """rows: list of (value, Fix? cell)."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "LEAKS"
+    ws.append(list(pl._PN_LEAK_HEADERS))
+    hdr = [str(h).strip().lower() for h in pl._PN_LEAK_HEADERS]
+    vi = hdr.index("value")
+    fi = next(i for i, h in enumerate(hdr) if h.startswith("fix?"))
+    for val, fix in rows:
+        r = [""] * len(hdr)
+        r[vi], r[fi] = val, fix
+        ws.append(r)
+    wb.save(path)
+    return path
+
+
+def _key_rows(folder):
+    """{(category, real): replacement} from the key the run just wrote."""
+    wb = openpyxl.load_workbook(folder / "pseudonym_key.xlsx")
+    rows = list(wb.active.iter_rows(values_only=True))
+    return {(str(r[0]), str(r[1])): str(r[2]) for r in rows[1:] if r[1]}
+
+
+BODY = ["John Doe's Opposition was filed by Vertex Corp counsel of record in",
+        "this action, and the court considered it on the merits after the",
+        "hearing, together with the reply that the moving party filed."]
+
+
+def test_leaks_bracket_rewrites_the_key_row_to_the_fragment(tmp_path, monkeypatch):
+    # "John Doe's Opposition" leaked and the operator bracketed the non-name
+    # part. The re-run key must hold the NAME and its fake — not the flagged
+    # phrase, and never the bracket text.
+    _make_pdf(tmp_path / "Motion.pdf", BODY)
+    key = _write_key(tmp_path / "pseudonym_key.xlsx",
+                     [("person", "John Doe's Opposition", "Yorke Deverell")])
+    _write_leaks(tmp_path / "LEAKS.xlsx",
+                 [("John Doe's Opposition", "['s Opposition]")])
+    _run(tmp_path, monkeypatch, key)
+
+    rows = _key_rows(tmp_path)
+    assert rows[("person", "John Doe")] == "Yorke Deverell"   # fake carried over
+    assert not any(r.startswith("John Doe's") for _c, r in rows)
+    assert not any("[" in v or v.strip().lower() == "no" for v in rows.values())
+
+    txt = "\n".join(p.read_text() for p in (tmp_path / "Text Files").glob("*.txt"))
+    assert "Yorke Deverell's Opposition" in txt   # name faked, kept part verbatim
+
+
+def test_leaks_no_retires_the_key_row_and_keeps_the_value(tmp_path, monkeypatch):
+    # `no` on a value the key binds: kept verbatim AND its row is gone, so the
+    # key never shows a fake that was not applied.
+    _make_pdf(tmp_path / "Motion.pdf", BODY)
+    key = _write_key(tmp_path / "pseudonym_key.xlsx",
+                     [("entity", "Vertex Corp", "Zenith Labs")])
+    _write_leaks(tmp_path / "LEAKS.xlsx", [("Vertex Corp", "no")])
+    _run(tmp_path, monkeypatch, key)
+
+    txt = "\n".join(p.read_text() for p in (tmp_path / "Text Files").glob("*.txt"))
+    assert "Vertex Corp" in txt and "Zenith Labs" not in txt
+    assert not any(r == "Vertex Corp" for _c, r in _key_rows(tmp_path))
+
+
+def test_no_also_retires_the_derived_token_rows(tmp_path, monkeypatch):
+    # write_key emits a bare token row per name word; leaving them behind would
+    # reassemble the kept name word by word.
+    _make_pdf(tmp_path / "Motion.pdf",
+              ["In this action John Doe appeared through counsel of record and",
+               "answered the complaint filed against him by the plaintiff here."])
+    key = _write_key(tmp_path / "pseudonym_key.xlsx",
+                     [("person", "John Doe", "Yorke Deverell"),
+                      ("person-token", "John", "Yorke"),
+                      ("person-token", "Doe", "Deverell")])
+    _write_leaks(tmp_path / "LEAKS.xlsx", [("John Doe", "no")])
+    _run(tmp_path, monkeypatch, key)
+
+    txt = "\n".join(p.read_text() for p in (tmp_path / "Text Files").glob("*.txt"))
+    assert "John Doe" in txt and "Yorke" not in txt and "Deverell" not in txt
+    assert not any(r in ("John Doe", "John", "Doe") for _c, r in _key_rows(tmp_path))
+
+
+def test_a_token_another_party_still_uses_survives_the_keep(tmp_path, monkeypatch):
+    # Safety on the token retirement: "Doe" is also Jane Doe's surname here, so
+    # it must stay bound even though "John Doe" is kept.
+    _make_pdf(tmp_path / "Motion.pdf",
+              ["In this action John Doe and Jane Doe appeared through counsel",
+               "of record and answered the complaint filed by the plaintiff."])
+    key = _write_key(tmp_path / "pseudonym_key.xlsx",
+                     [("person", "John Doe", "Yorke Deverell"),
+                      ("person", "Jane Doe", "Marlow Deverell"),
+                      ("person-token", "John", "Yorke"),
+                      ("person-token", "Jane", "Marlow"),
+                      ("person-token", "Doe", "Deverell")])
+    _write_leaks(tmp_path / "LEAKS.xlsx", [("John Doe", "no")])
+    _run(tmp_path, monkeypatch, key)
+
+    txt = "\n".join(p.read_text() for p in (tmp_path / "Text Files").glob("*.txt"))
+    assert "John Doe" in txt                  # kept
+    assert "Jane Doe" not in txt              # the other party is still faked
+    rows = _key_rows(tmp_path)
+    assert rows[("person", "Jane Doe")] == "Marlow Deverell"
+    assert rows[("person-token", "Doe")] == "Deverell"   # still reversible
+
+
+def test_inherited_keep_does_not_retire_a_current_case_key_row(tmp_path, monkeypatch):
+    # The mirror of the safety rule: a keep inherited from ANOTHER case fakes the
+    # current party anyway, so its key row must stay — otherwise the export
+    # carries a fake nothing can reverse.
+    pl._pn_update_master_keep(
+        {}, {"vertex corp": {"value": "Vertex Corp", "type": "KEEP",
+                             "fix": "no", "fake_values": None,
+                             "fixcell": "no", "notes": ""}},
+        "Some Other Case", "2026-01-01", logging.getLogger("t"))
+    _make_pdf(tmp_path / "Motion.pdf",
+              ["In this action Vertex Corp appeared through its counsel and",
+               "answered the complaint filed against it by the plaintiff here."])
+    key = _write_key(tmp_path / "pseudonym_key.xlsx",
+                     [("entity", "Vertex Corp", "Zenith Labs")])
+    _run(tmp_path, monkeypatch, key)
+
+    txt = "\n".join(p.read_text() for p in (tmp_path / "Text Files").glob("*.txt"))
+    assert "Zenith Labs" in txt
+    assert _key_rows(tmp_path)[("entity", "Vertex Corp")] == "Zenith Labs"
+
+
+def test_key_control_words_leave_a_clean_idempotent_key(tmp_path, monkeypatch):
+    # End to end through the key's own Replacement column, twice: run 1 cleans
+    # the key, run 2 (key clean, master KEEP carrying the decisions) reproduces
+    # it byte for byte.
+    _make_pdf(tmp_path / "Motion.pdf", BODY)
+    key = _write_key(tmp_path / "pseudonym_key.xlsx",
+                     [("person", "John Doe's Opposition", "['s Opposition]"),
+                      ("entity", "Vertex Corp", "no")])
+    _run(tmp_path, monkeypatch, key)
+    first = _key_rows(tmp_path)
+    assert ("person", "John Doe") in first
+    assert not any("[" in v or v.strip().lower() == "no" for v in first.values())
+    assert not any(r in ("John Doe's Opposition", "Vertex Corp")
+                   for _c, r in first)
+
+    _run(tmp_path, monkeypatch, tmp_path / "pseudonym_key.xlsx")
+    assert _key_rows(tmp_path) == first
+
+    txt = "\n".join(p.read_text() for p in (tmp_path / "Text Files").glob("*.txt"))
+    assert "Vertex Corp" in txt and "John Doe" not in txt

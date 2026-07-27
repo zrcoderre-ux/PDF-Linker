@@ -72,6 +72,23 @@ released and the party is scrubbed. Persistence is macro-safe: the
 "no" in a Replacement cell would poison the reversal macro); `write_key` also
 drops any harvested reversal row for a kept value.
 
+**A keep RETIRES the key row it corrects** (`_pn_retire_kept_key_terms`), so the
+re-run leaves a CLEAN key — real values against the fakes actually applied, no
+control words and no row for a value that is no longer faked that way. Needed
+because a loaded key row is itself a full party match, so the safety override
+above turns against the operator's own edit: `no` on a keyed value faked it
+anyway *and* dropped its row (an unreversible fake in the exports), and a
+`[bracketed]` keep-spec faked the whole flagged phrase while the dirty row
+survived. Retired, `John Doe's Opposition -> ['s Opposition]` becomes
+`John Doe -> Yorke Deverell` — the fragment INHERITS the retired fake when the
+two align word for word (memo pre-seed), so exports already in circulation keep
+reading the same. A `no` also retires the bare `*-token` rows derived from its
+words, unless another party still carries the word ("Doe" stays bound for "Jane
+Doe"), or the value would be reassembled token by token. Retirement is for LOCAL
+edits only — this folder's key or LEAKS. A keep merely INHERITED from the master
+sheet must never retire this case's binding (the safety rule above still fakes
+the party), so its row stays reversible.
+
 ## Pseudonymization pipeline (the privacy-critical half)
 
 - **Fake pools** (`_PN_NAME_WORDS` ~190 surnames, `_PN_ENTITY_WORDS` ~110): drawn

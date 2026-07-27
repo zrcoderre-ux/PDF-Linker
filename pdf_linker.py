@@ -10570,10 +10570,35 @@ class Pseudonymizer:
 
         xlsx if openpyxl is available, else JSON alongside.
         """
-        if not self.records:
+        # Nothing to say — EXCEPT when this run retired every row it loaded (the
+        # operator marked them KEEP): the stale key on disk still names real
+        # values against fakes no longer applied, so it must be rewritten empty
+        # rather than left standing.
+        if not self.records and not getattr(self, "_retired_key_rows", None):
             return
 
-        keep_low = {str(k).lower() for k in (self.keep_soft | self.keep_strict)}
+        # Values with no fake to reverse, so no key row. Which keeps qualify
+        # depends on whether the decision is the operator's OWN:
+        #   * a LOCAL keep (this folder's key or LEAKS) retires the binding, so
+        #     the value really is left verbatim — drop any row for it, including
+        #     a KEEP-PART's flagged phrase ("John Doe's Opposition"), whose place
+        #     the surviving fragment ("John Doe") takes; but
+        #   * an INHERITED keep (another case's, via the master sheet) never
+        #     retires this case's binding — a current-case party is faked anyway
+        #     (see _pn_retire_kept_key_terms), so its row MUST stay or the export
+        #     carries a fake nothing can reverse.
+        decisions = getattr(self, "_keep_decisions", None)
+        if decisions is None:
+            keep_low = {str(k).lower() for k in (self.keep_soft | self.keep_strict)}
+        else:
+            local = getattr(self, "_keep_local", ())
+            keep_low = set()
+            for vl, d in decisions.items():
+                if vl not in local:
+                    continue
+                keep_low |= {p.lower() for p in _pn_decision_keep_parts(d)}
+                if d.get("fake_values") is not None:
+                    keep_low.add(vl)
 
         def _reversible(r):
             # A row that matched this run (count>0) OR one loaded from a reused
@@ -11517,6 +11542,76 @@ def _pn_keep_values(decisions):
                 if k:
                     strict.add(k)
     return strict, soft
+
+
+def _pn_retire_kept_key_terms(terms, decisions, registry, log):
+    """A KEEP decision RETIRES the pseudonym key's own binding for that value, so
+    the key a re-run writes stays CLEAN — only real values and the fakes actually
+    applied, never an operator control word and never a row for a value that is
+    no longer faked the way the row says.
+
+    This is needed because a loaded key row is a FULL PARTY match, and the
+    full-party override in `_keep_spans` deliberately beats a keep (so a keep can
+    never leave a real party in the clear). Against the operator's OWN edit that
+    override misfires two ways:
+
+      * `no` on a keyed value — the text is faked anyway, while `write_key` drops
+        the row for being a keep, leaving a fake in the exports that NOTHING in
+        the key reverses; and
+      * a `[bracketed]` keep-spec on a keyed value — the whole value is faked,
+        bracketed part and all, and the flagged phrase survives as a key row.
+
+    Retiring the term fixes both: a `no` value is genuinely left verbatim and its
+    row disappears, and a keep-spec leaves only its non-bracketed fragment
+    (rebuilt as its own term by the caller) — so the key ends up holding
+    "John Doe" -> "Yorke Deverell", not "John Doe's Opposition" -> "['s
+    Opposition]".
+
+    A `no` also retires the bare person-/entity-token rows DERIVED from its words
+    (`write_key` emits one per name token) unless the word still belongs to
+    another party this case fakes — otherwise a value marked `no` would simply be
+    reassembled word by word by its own leftover token rows.
+
+    A keep-spec's fragment INHERITS the retired fake when the two align word for
+    word, by pre-seeding the registry memo that the caller's `_pn_build_terms`
+    reads next: exports already circulating as "Yorke Deverell" keep saying it.
+
+    Returns `(surviving_terms, retired_reals)` — the input list is left alone.
+    `retired_reals` also tells `write_key` that a retirement happened, so a key
+    whose every row was retired is REWRITTEN empty instead of left on disk still
+    naming real values against fakes this run never applied."""
+    keeps = {vl: d for vl, d in decisions.items() if _pn_decision_is_keep(d)}
+    if not keeps:
+        return terms, []
+    retired, gone_words, kept_terms = [], set(), []
+    for t in terms:
+        d = keeps.get(str(t.real).lower())
+        if d is None:
+            kept_terms.append(t)
+            continue
+        retired.append(t)
+        if d.get("fix") == "no":
+            gone_words.update(w.lower()
+                              for w in _PN_WORD_RE.findall(str(t.real)))
+            continue
+        for frag in d.get("fake_values") or []:
+            for rtok, ftok in _pn_name_token_rows(frag, t.fake):
+                registry._memo.setdefault(("name_or_entity", rtok.lower()), ftok)
+    if not retired:
+        return terms, []
+    # A word another party of this case still carries is not orphaned by the
+    # retirement — "Doe" stays faked for "Jane Doe" even if "John Doe" is kept.
+    live = {w.lower() for t in kept_terms
+            if t.category in _PN_PARTY_OVERRIDE_CATS
+            for w in _PN_WORD_RE.findall(str(t.real))}
+    orphan = gone_words - live
+    survivors = [t for t in kept_terms
+                 if not (t.category in _PN_KEY_TOKEN_CATS
+                         and str(t.real).lower() in orphan)]
+    log.info(f"  Pseudonym key: retired {len(retired)} binding(s) marked KEEP "
+             f"({', '.join(str(t.real) for t in retired[:6])}) — the re-run key "
+             f"carries the corrected value only.")
+    return survivors, [str(t.real) for t in retired]
 
 
 def _pn_read_leak_decisions(folder):
@@ -13439,6 +13534,12 @@ def _fix_leaks_mode(folder, args, cfg, log):
         else:
             auto_terms.append(d["value"])
     suppressed = {vl for vl, d in decisions.items() if d["fix"] == "no"}
+    # A LOCAL keep decision (this folder's key or LEAKS — not one merely
+    # inherited from the master sheet) retires the key's own binding for that
+    # value, so the key this run rewrites carries only corrected values.
+    terms, retired_reals = _pn_retire_kept_key_terms(
+        terms, {vl: d for vl, d in decisions.items() if vl in local_vls},
+        registry, log)
     fix_terms = auto_terms + list(explicit)
     if not fix_terms:
         # Nothing to apply. If no quarantined *.LEAK export remains either, the
@@ -13471,6 +13572,10 @@ def _fix_leaks_mode(folder, args, cfg, log):
     pz = Pseudonymizer(terms, [], registry)
     pz.suppressed = suppressed
     pz.keep_strict, pz.keep_soft = _pn_keep_values(decisions)
+    pz._keep_decisions = {vl: d for vl, d in decisions.items()
+                          if _pn_decision_is_keep(d)}
+    pz._keep_local = {vl for vl in pz._keep_decisions if vl in local_vls}
+    pz._retired_key_rows = retired_reals
     pz.override_fixes(explicit)   # typed fake beats any other record for a value
     for r in pz.records.values():
         pz._own_fakes.add(str(r["fake"]).lower().rstrip(" .,;:"))
@@ -13866,7 +13971,7 @@ def main():
             log.info(f"  Leak worksheet: {len(suppressed)} value(s) marked "
                      f"Fix?=no will be left as-is and not re-flagged.")
 
-        terms, reused_key, key_decisions = [], False, {}
+        terms, reused_key, key_decisions, retired_reals = [], False, {}, []
         if key_path and not key_path.is_file():
             # The re-run launcher auto-pins the folder's OWN output key
             # (pseudonym_key.xlsx) so a re-run reproduces the prior fakes. If it
@@ -13892,6 +13997,15 @@ def main():
                     # A key this tool wrote: reuse its bindings so a follow-up
                     # single-file run reproduces the original run's fakes.
                     terms, key_decisions = _pn_load_key(key_path, registry, log)
+                    # A LOCAL keep decision — typed into this key's Replacement
+                    # column or this folder's LEAKS triage — retires the binding
+                    # it corrects, so the key rewritten below holds only real
+                    # values and the fakes actually applied. A keep merely
+                    # INHERITED from the master sheet must not: another case's
+                    # keep can never retire this case's own party binding.
+                    terms, retired_reals = _pn_retire_kept_key_terms(
+                        terms, {**folder_decisions, **key_decisions},
+                        registry, log)
                     terms += _pn_build_terms([], [], extra_terms, registry)
                     reused_key = True
                 else:
@@ -13935,6 +14049,7 @@ def main():
             vl: d for vl, d in leak_decisions.items() if _pn_decision_is_keep(d)}
         pseudonymizer._keep_local = {vl for vl in pseudonymizer._keep_decisions
                                      if vl in local_vls}
+        pseudonymizer._retired_key_rows = retired_reals
         if reused_key:
             # Loaded fakes are already-final strings; don't let a detector try
             # to re-fake one it meets in the new file.
