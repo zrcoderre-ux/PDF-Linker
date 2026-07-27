@@ -177,8 +177,18 @@ the party), so its row stays reversible.
   **any other text = an explicit operator-typed replacement**, and
   **`[bracketed]` text naming part of the value = keep that part verbatim and
   auto-fake the rest** (`_pn_bracket_keep`; "Raytheon's [Human Resources]" fakes
-  the name, keeps the department words). Government hosts (`*.gov`/`*.mil`) are public
-  infrastructure — never faked or flagged. When in doubt a **bare number under
+  the name, keeps the department words). **Website vs e-mail**: a government
+  WEBSITE (`*.gov`/`*.mil`) is public infrastructure — never faked, never flagged
+  — but the `@` settles it, so `clerk@courts.ca.gov` names a person and is faked
+  like any other address (`_pn_url_whitelisted` gates urls only). An **e-mail is
+  never a worksheet row**: it is always faked, so "should I fake this?" has one
+  answer and the row is pure triage cost. `_pn_is_email_value` keeps addresses
+  out of `LEAKS.xlsx` (the console log and `pdf_linker.log` still report them, so
+  a detector miss is never hidden), the url/domain review class ignores a host
+  preceded by `@` (OCR that spaced an address out left the host standing), and
+  `scrub_emails` cures the export with the fake the record already carries so
+  the miss does not survive either — scoped to `email` records, since an address
+  never sits inside a published citation but a bare URL can. When in doubt a **bare number under
   6 digits** is not a re-identification key (`reid_scan` filters it; bar
   numbers, a definite State Bar lookup, are exempt). A **bare 1-3 digit account
   number** is not even tracked (`_pn_identifier_values` drops it): "Response

@@ -7735,6 +7735,24 @@ def _pn_token_is_procedural(base):
     return reach[n] and doc[n]
 
 
+def _pn_is_email_value(value):
+    """True when `value` is an e-mail address — a local part, an `@`, and a
+    dotted host. The `@` is what settles it (a bare `courts.ca.gov` is a
+    government WEBSITE and stays; `clerk@courts.ca.gov` names a person).
+
+    An e-mail is always faked, so an e-mail row in the triage worksheet is never
+    a decision the operator can make differently — it is a row to clear. Such
+    values are kept OUT of `LEAKS.xlsx` (the console log and `pdf_linker.log`
+    still report them, so a detector miss is not hidden), and `scrub_emails`
+    cures the export so the miss does not survive either."""
+    v = str(value).strip()
+    if v.count("@") != 1:
+        return False
+    local, _, host = v.partition("@")
+    return bool(local.strip()
+                and re.fullmatch(r"[A-Za-z0-9.\-_]+\.[A-Za-z]{2,}", host.strip()))
+
+
 def _pn_is_procedural_phrase(value):
     """True when EVERY word in `value` is a document type, a party role, a
     connector, a corporate suffix, or common/legal boilerplate — so the phrase
@@ -8017,6 +8035,13 @@ def _pn_review_findings(text, known_fakes=()):
                 # Our own fake domain — the base pool OR a numbered mint of it
                 # (`postbox2.org`) that known_fakes now carries — is not a leak.
                 if host in _PN_EMAIL_DOMAINS or host in known_fakes:
+                    continue
+                # The host half of an E-MAIL, not a website: the url regex
+                # matches "acme.com" inside "jane@acme.com", and OCR that spaced
+                # the address out ("jane @ acme.com") leaves that fragment
+                # standing. An e-mail is always faked, so its host is never the
+                # operator's decision — reporting it is pure worksheet noise.
+                if re.search(r"@[ \t]*$", text[:m.start()]):
                     continue
             key = (cls, sample.lower())
             if key not in seen:
@@ -10217,6 +10242,35 @@ class Pseudonymizer:
                 pass
         return out
 
+    def scrub_emails(self, text):
+        """Write-side sweep for a tracked E-MAIL address the pattern pass left
+        standing, replaced with the fake already assigned to it.
+
+        An e-mail is ALWAYS faked — that is the policy, so a worksheet row asking
+        whether to fake one is never a decision, just a row to clear. The way to
+        earn that is to leave none behind: `apply()` resolves overlapping
+        candidates and yields to protected spans, so an address can survive a
+        second occurrence it could not claim. A literal sweep afterwards catches
+        those, using the SAME fake the record already carries — deterministic,
+        injective and reversible, since the key row already exists.
+
+        Scoped to `email` records on purpose: an address never appears inside a
+        published citation, so this cannot rename an authority (a bare URL can,
+        which is why urls are left to the pattern pass and its citation
+        protection)."""
+        src = _NFKC(text)
+        for (cat, _rl), rec in self.records.items():
+            if cat != "email":
+                continue
+            real, fake = str(rec["real"]), str(rec["fake"])
+            if not real or real == fake:
+                continue
+            pat = re.compile(re.escape(real), re.IGNORECASE)
+            src, n = pat.subn(fake, src)
+            if n:
+                rec["count"] += n
+        return src
+
     def surviving_reals_reduced(self, text):
         """Tracked reals found in the ALPHANUMERIC-ONLY reduction of `text`.
 
@@ -12225,6 +12279,11 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         # display text alone would report a page like that as clean.
         scrubbed_detect = pseudonymizer.apply(detect_full, count=False)
 
+        # An e-mail is always faked, so cure any address the pattern pass left
+        # standing rather than asking about it in the worksheet.
+        body = pseudonymizer.scrub_emails(body)
+        scrubbed_detect = pseudonymizer.scrub_emails(scrubbed_detect)
+
         # Column-splice check: if a page's extraction is corrupted, the whole-
         # word patterns match nothing, so also scan the alphanumeric reduction of
         # what was WRITTEN — `SCHILLECITORTORICILAW` survives the scrub and still
@@ -12283,13 +12342,13 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
             # A pure pleading phrase ("Opposition", "Plaintiff's Opposition to
             # Mot.") is a document type, never a party — never worth a worksheet
             # row no matter which scan produced it.
-            if _pn_is_procedural_phrase(real):
+            if _pn_is_procedural_phrase(real) or _pn_is_email_value(real):
                 continue
             pseudonymizer.leak_report.append(
                 {"file": pdf_path.name, "type": "LEAK", "value": real,
                  "where": _pn_locate(parsed, real)})
         for cls, sample in review:
-            if _pn_is_procedural_phrase(sample):
+            if _pn_is_procedural_phrase(sample) or _pn_is_email_value(sample):
                 continue
             pseudonymizer.leak_report.append(
                 {"file": pdf_path.name, "type": cls, "value": sample,
@@ -12540,13 +12599,13 @@ def _write_word_text_version(src_path, text, log, pseudonymizer=None,
                         f"identifier(s) to check before sharing ({shown}).")
 
         for real in sorted(survivors):
-            if _pn_is_procedural_phrase(real):
+            if _pn_is_procedural_phrase(real) or _pn_is_email_value(real):
                 continue
             pseudonymizer.leak_report.append(
                 {"file": src_path.name, "type": "LEAK", "value": real,
                  "where": _word_locate(body, real)})
         for cls, sample in review:
-            if _pn_is_procedural_phrase(sample):
+            if _pn_is_procedural_phrase(sample) or _pn_is_email_value(sample):
                 continue
             pseudonymizer.leak_report.append(
                 {"file": src_path.name, "type": cls, "value": sample,
@@ -13732,6 +13791,8 @@ def _fix_leaks_mode(folder, args, cfg, log):
             pz.note_leaks(survivors)
             parsed = _pn_body_lines(scrubbed)
             for real in sorted(survivors):
+                if _pn_is_email_value(real):
+                    continue          # always faked — never a triage decision
                 pz.leak_report.append(
                     {"file": f.name, "type": "LEAK", "value": real,
                      "where": _pn_locate(parsed, real)})
