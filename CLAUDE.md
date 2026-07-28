@@ -290,6 +290,20 @@ annotation-naming splice. Declarations/complaints skip linking
 - Files are processed **heaviest-first** by OCR-weighted cost; the one-click
   re-run launcher is written **up front** so an interrupted run still leaves one.
 
+## Folder artifacts (what a finished folder should contain)
+
+`Re-run PDF-Linker.bat` (`_write_rerun_launcher`), `Apply Leak Fixes.bat`
+(`_write_fix_launcher`, only once `pseudonym_key.xlsx` exists — it is what
+`--fix-leaks` reads) and the `ETA …`/`DONE …` markers (`_write_eta_marker` /
+`_write_done_marker`). Gate them on **`pdfs or word_texts`**, never `pdfs`
+alone: an **all-Word folder is a real batch** — same scrubbed exports, same
+key, same LEAKS worksheet — and gating on the PDF list left it with leaks to
+triage and nothing to double-click. The live ETA stays PDF-only (it projects
+from per-page OCR weights and Word has no OCR to project from), but a Word run
+still stamps `DONE` so a finished folder is distinguishable from an untouched
+one. `folder.glob("*.pdf")` is **non-recursive** — case subfolders are not
+walked, so pointing the launcher at a parent folder does nothing at all.
+
 ## Conventions
 
 - **No real judge name in the repo** — court-personnel scrubbing is name-agnostic
