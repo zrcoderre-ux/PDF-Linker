@@ -61,6 +61,24 @@ hyphen spelling — flagged `_PnTerm.derived`) earns a row by MATCHING and never
 merely by existing. `Pseudonymizer.__init__` must propagate `loaded`/`derived`
 into the record dict — it silently dropped `loaded`, so the "preserve a reused
 key's rows" branch never fired and a `--fix-leaks` rewrite could shrink the key.
+**Exactly ONE row may REVERSE each fake.** The registry is injective, so two rows
+sharing a Replacement are never two parties — only two spellings of one, since a
+synthetic spelling is registered against the canonical value's fake. Right
+forward, unusable backward: `DeAnonymize.bas` cannot tell a synthetic spelling
+from the real one, so it treats a fake claimed by two Real Values as ambiguous
+and retires the mapping — fail-safe, but the pseudonym is then left standing in
+the tentative, which made every hyphenated party and every OCR-matched name
+un-restorable. `write_key` marks the non-canonical rows (`Status` =
+`_PN_KEY_ALT_STATUS`, "alt spelling") instead of dropping them, and gives the
+owner the GROUP's status so it never reads `no match` for a fake the export is
+full of. Marked, not dropped, because the rows are still needed forward:
+`_pn_load_key` pins them, so a re-run with only the key — no template to rebuild
+the variants from — reproduces the delivered exports byte-identically instead of
+scrubbing the wrap-split form half by half ("Sedgwick- Linford"). `_pn_load_key`
+must also carry the marker back onto the term (`_PnTerm.derived`), or the re-run
+re-picks the owner by hit count, which the wrap-split spelling wins — it is the
+form the text actually carries — and ownership flips on the first re-run. A group
+that is ALL synthetic promotes one row, or the fake reverses to nothing.
 
 `_pn_supplement_key_terms` is the fallback for what the key still cannot carry:
 a key written by an older version, or a template AMENDED between runs (a Doe
