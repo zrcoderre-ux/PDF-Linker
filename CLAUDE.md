@@ -301,8 +301,22 @@ key, same LEAKS worksheet — and gating on the PDF list left it with leaks to
 triage and nothing to double-click. The live ETA stays PDF-only (it projects
 from per-page OCR weights and Word has no OCR to project from), but a Word run
 still stamps `DONE` so a finished folder is distinguishable from an untouched
-one. `folder.glob("*.pdf")` is **non-recursive** — case subfolders are not
-walked, so pointing the launcher at a parent folder does nothing at all.
+one. `_pdfs_in_folder` is **non-recursive** — case subfolders are not walked, so
+pointing the launcher at a parent folder does nothing at all.
+
+**An all-Word folder never borrows another case's party list.** Key resolution
+normally falls back to the newest `Order*.xlsx` in Downloads (where the E-Court
+export lands) — right for a PDF batch, wrong for a Word one: a Word folder is
+usually a one-off with no template of its own, so "newest in Downloads" hands
+it whatever case was downloaded LAST. The run then hunted a stranger's parties,
+left this case's in the clear, and (since the key now pins authoritative rows)
+wrote their names into this case's key. `_is_word_only_folder` withholds that
+guess at all three fallback sites — the two in key resolution and the one in
+`_pn_find_party_template`. Folder-local inputs are unambiguous and still win: an
+explicit `--key`, this folder's `pseudonym_key.xlsx`, or an `Order*.xlsx` the
+operator put IN the folder. With no list at all the run still scrubs via
+detectors + pre-scan harvest and says so loudly — never silently, since silence
+reads as "fully scrubbed".
 
 ## Conventions
 

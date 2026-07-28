@@ -8783,12 +8783,16 @@ def _pn_find_party_template(folder, log):
     pseudonym_key.xlsx: this looks past the key for the original party LIST, so
     a key-reuse run can still see a party the key never bound. Case folder
     first (where the workflow puts it), then Downloads (where the E-Court
-    export lands)."""
+    export lands) — except for an ALL-WORD folder, which has no template of its
+    own, so the Downloads guess would supplement this case's key with a
+    STRANGER'S parties (see `_is_word_only_folder`)."""
     orders = [p for p in folder.glob("*.xlsx")
               if not p.name.startswith("~$")
               and p.name.lower().startswith("order")]
     if orders:
         return max(orders, key=lambda p: p.stat().st_mtime)
+    if _is_word_only_folder(folder):
+        return None
     for base in (Path(os.environ.get("USERPROFILE") or Path.home()) / "Downloads",
                  Path.home() / "Downloads"):
         if not base.is_dir():
@@ -12764,6 +12768,28 @@ def _pn_prescan_folder(pdfs, pseudonymizer, log, extra_texts=()):
 _WORD_DOC_SUFFIXES = (".docx", ".docm")
 
 
+def _pdfs_in_folder(folder):
+    """Source PDFs directly in `folder` (not recursive), excluding this tool's
+    own `_linked` / `_temp` output. The single definition of "does this folder
+    hold a PDF batch" — the Word gate below asks the same question the main
+    run does, so the two can never drift apart."""
+    return [p for p in folder.glob("*.pdf")
+            if not p.stem.endswith("_linked") and not p.stem.endswith("_temp")]
+
+
+def _is_word_only_folder(folder):
+    """True when this folder is an all-WORD batch: Word documents and no PDFs.
+
+    Such a folder is converted to the same scrubbed .txt exports a PDF batch
+    gets — but it is typically a one-off (a draft, a set of filings pulled from
+    e-mail) that has no E-Court `Order*.xlsx` of its own. The Downloads
+    fallback then hands it whatever case was downloaded LAST, so the run
+    pseudonymizes against a stranger's party list: this case's parties go
+    unscrubbed while another matter's names are hunted for. Callers use this to
+    withhold that guess."""
+    return bool(_word_docs_in_folder(folder)) and not _pdfs_in_folder(folder)
+
+
 def _word_docs_in_folder(folder):
     """Convertible Word documents directly in `folder` (not recursive), sorted
     by name. Word's own '~$'-prefixed owner/lock files are skipped."""
@@ -14341,8 +14367,17 @@ def main():
         # (pseudonym_key.xlsx to reuse, or an Order*.xlsx template to start over
         # from), else the most recent Order*.xlsx in Downloads (where the E-Court
         # export lands). Folder-local wins so a re-run resolves its own inputs.
-        key_path = (args.key or _pn_find_folder_key(folder, log)
-                    or _pn_find_downloads_key(log))
+        #
+        # The Downloads guess is withheld for an ALL-WORD folder: it has no
+        # E-Court template of its own, so "newest .xlsx in Downloads" hands it
+        # whatever case was downloaded last and the run scrubs against a
+        # stranger's party list — this case's parties left in the clear while
+        # another matter's names are hunted for, and its key written full of
+        # values that were never here. An explicit --key or a template the
+        # operator put IN the folder is unambiguous and still honoured.
+        key_path = args.key or _pn_find_folder_key(folder, log)
+        if key_path is None and not _is_word_only_folder(folder):
+            key_path = _pn_find_downloads_key(log)
         registry = _PnFakeRegistry()
         # Decisions feeding this run come from two places:
         #   * this folder's LEAKS worksheet (transient genuine-leak triage), and
@@ -14384,11 +14419,14 @@ def main():
             # named key that is missing stays fatal, but is now also logged so a
             # background run leaves a trace in pdf_linker.log.
             if key_path.name == "pseudonym_key.xlsx":
+                word_only = _is_word_only_folder(folder)
                 log.info(f"  {key_path.name} not found — starting over with fresh "
                          f"fakes. Looking for an input key to draw party names "
-                         f"from (this folder's Order*.xlsx first, then Downloads).")
-                key_path = (_pn_find_folder_key(folder, log)
-                            or _pn_find_downloads_key(log))
+                         f"from (this folder's Order*.xlsx"
+                         + ("" if word_only else " first, then Downloads") + ").")
+                key_path = _pn_find_folder_key(folder, log)
+                if key_path is None and not word_only:
+                    key_path = _pn_find_downloads_key(log)
             else:
                 log.error(f"Key spreadsheet not found: {key_path}")
                 print(f"Key spreadsheet not found: {key_path}")
@@ -14482,8 +14520,7 @@ def main():
                  f"detectors={detectors or 'none'}")
 
     # Collect PDFs excluding _linked and _temp files.
-    pdfs = [p for p in folder.glob("*.pdf")
-            if not p.stem.endswith("_linked") and not p.stem.endswith("_temp")]
+    pdfs = _pdfs_in_folder(folder)
     sizes = {p: p.stat().st_size for p in pdfs}
     # Weight each file by processing cost — OCR pages dominate runtime, so this
     # is far truer than bytes (a big native-text brief is cheap; a small scanned
@@ -14514,6 +14551,21 @@ def main():
         if word_docs and not pdfs:
             log.info(f"Found {len(word_docs)} Word doc(s) and no PDFs; "
                      f"bulk-converting to text (not hyperlinked)")
+            # Say so plainly when the run has NO curated party list. Silence
+            # here reads as "fully scrubbed", when in fact only the detectors
+            # and the pre-scan harvest are working — a party they don't infer
+            # goes out in the clear. The Downloads guess is deliberately not
+            # used for this folder (it belongs to whatever case was downloaded
+            # last), so the fix is to name the list explicitly.
+            if pseudonymizer is not None and not pseudonymizer.terms:
+                _warn("Pseudonymize: this all-Word folder has no party list "
+                      "(no pseudonym_key.xlsx and no Order*.xlsx in the "
+                      "folder). Names will only be caught by the detectors and "
+                      "the document pre-scan — a party neither infers will NOT "
+                      "be scrubbed. Drop the case's Order*.xlsx in the folder, "
+                      "or pass --key/--term, and re-run. A template sitting in "
+                      "Downloads is NOT used here: it belongs to whichever case "
+                      "was downloaded last, not to this one.")
             for wd in word_docs:
                 try:
                     word_texts.append((wd, _extract_docx_text(wd)))
@@ -14674,8 +14726,15 @@ def main():
         # before sharing.
         if pseudonymizer.texts_applied and pseudonymizer.spreadsheet_hits() == 0:
             if not pseudonymizer.has_spreadsheet_terms():
-                reason = (f"the key {key_path.name} held no party/case values"
-                          if key_path else "no Order*.xlsx was found in Downloads")
+                if key_path:
+                    reason = f"the key {key_path.name} held no party/case values"
+                elif _is_word_only_folder(folder):
+                    # Downloads is deliberately not consulted here, so naming it
+                    # would send the operator to fix the wrong thing.
+                    reason = ("this all-Word folder had no party list "
+                              "(put the case's Order*.xlsx in the folder)")
+                else:
+                    reason = "no Order*.xlsx was found in Downloads"
             else:
                 reason = (f"none of the key values"
                           f"{f' from {key_path.name}' if key_path else ''} "
