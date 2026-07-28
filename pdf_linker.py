@@ -5913,6 +5913,21 @@ class _PnFakeRegistry:
                     if cand.lower() not in self._used:
                         return self._take(key, cand)
                 break     # a near-variant was found but yielded no free typo
+        # A HYPHENATED compound surname is two name components, not one word,
+        # and its fake must show that: "Ardeshirpour-Zartoshti" -> "Sedgwick-
+        # Linford", each half the SAME fake that half gets standing alone. A
+        # single pool word ("Gaskell") made the compound and its shorthand
+        # ("Dr. Ardeshirpour" -> "Dr. Sedgwick") read as two unrelated people,
+        # and it hid the compound shape from anyone reading the export. It also
+        # makes the reversal ROBUST: because the compound fake is exactly its
+        # parts' fakes joined, the macro's token-by-token pass rebuilds it
+        # correctly whichever row it applies first.
+        parts = low.split("-")
+        if (len(parts) > 1 and all(len(p) >= 2 and p.isalpha() for p in parts)
+                and any(len(p) >= _PN_NAME_FOLD_MIN for p in parts)):
+            cand = "-".join(self.token(p, words, seed_tag) for p in parts)
+            if cand.lower() not in self._used:
+                return self._take(key, cand)
         # Fold a WELDED token — a column-splice glued two names with no space
         # ("ADLERMICHAEL" = "ADLER" + "MICHAEL") — onto the CONCATENATION of the
         # two fakes, so the stand-in still shows the bound party ("Darrow" +

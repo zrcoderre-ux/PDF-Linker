@@ -242,3 +242,78 @@ def test_short_hyphen_halves_not_expanded():
     z = _pz(["Yusuf Al-Amin"])
     reals = {t.real for t in z.terms}
     assert "Al" not in reals and "Amin" not in reals
+
+
+# ── a hyphenated surname gets a HYPHENATED fake ─────────────────────────────
+
+def test_compound_surname_fake_is_compound():
+    reg = P._PnFakeRegistry()
+    fake = P._pn_fake_name_token("Ardeshirpour-Zartoshti", reg)
+    assert "-" in fake
+    first, second = fake.split("-")
+    # each half is exactly the fake that half gets standing alone, so the
+    # compound and its shorthand read as one person
+    assert P._pn_fake_name_token("Ardeshirpour", reg) == first
+    assert P._pn_fake_name_token("Zartoshti", reg) == second
+
+
+def test_compound_and_shorthand_read_as_one_person():
+    z = _pz(["Farhad Ardeshirpour-Zartoshti, M.D."])
+    full = z.apply("Farhad Ardeshirpour-Zartoshti, M.D.")
+    short = z.apply("Dr. Ardeshirpour saw the patient.")
+    surname = full.split()[1].rstrip(",")
+    assert "-" in surname
+    assert surname.split("-")[0] in short          # same stand-in, shortened
+
+
+def test_compound_fake_survives_case_and_wrap():
+    z = _pz(["Farhad Ardeshirpour-Zartoshti, M.D."])
+    caps = z.apply("ARDESHIRPOUR-ZARTOSHTI signed")
+    assert "-" in caps.split()[0] and caps.split()[0].isupper()
+    assert z.apply("Ardeshirpour-\nZartoshti") == z.apply("Ardeshirpour-Zartoshti")
+
+
+def test_compound_halves_order_does_not_change_the_fake():
+    # An edit-distance fold is symmetric but a compound is built from its
+    # parts, so whichever half the document binds first, the compound is the
+    # same — the property the shortest-first pre-bind pass exists to protect.
+    def bind(order):
+        reg = P._PnFakeRegistry()
+        for v in order:
+            P._pn_fake_name_token(v, reg)
+        return P._pn_fake_name_token("Ardeshirpour-Zartoshti", reg)
+    assert (bind(["Ardeshirpour", "Zartoshti"])
+            == bind(["Zartoshti", "Ardeshirpour"])
+            == bind(["Ardeshirpour-Zartoshti"]))
+
+
+def test_compound_fakes_stay_injective_and_ordered():
+    reg = P._PnFakeRegistry()
+    a = P._pn_fake_name_token("Smith-Jones", reg)
+    b = P._pn_fake_name_token("Jones-Smith", reg)
+    assert a != b                                   # order is part of identity
+    assert a.split("-") == list(reversed(b.split("-")))
+
+
+def test_compound_fake_reverses_token_by_token_in_any_order():
+    # The macro replaces token by token; because the compound fake IS its
+    # parts' fakes joined, either row order rebuilds the real name.
+    reg = P._PnFakeRegistry()
+    real = "Ardeshirpour-Zartoshti"
+    fake = P._pn_fake_name_token(real, reg)
+    rows = [(P._pn_fake_name_token(p, reg), p) for p in real.split("-")]
+    for order in (rows, list(reversed(rows))):
+        text = fake
+        for f, r in order:
+            text = text.replace(f, r)
+        assert text == real
+
+
+def test_compound_fake_is_deterministic_across_runs():
+    # Deleting pseudonym_key.xlsx and re-running must reproduce the same map.
+    def run():
+        reg = P._PnFakeRegistry()
+        terms = P._pn_build_terms(["Farhad Ardeshirpour-Zartoshti, M.D."],
+                                  [], [], registry=reg)
+        return {t.real: t.fake for t in terms}
+    assert run() == run()
