@@ -119,6 +119,20 @@ the party), so its row stays reversible.
   **shortest-first** — every base is bound before any token that contains or
   extends it. The single-edit domain OCR-fold uses the `k==1` wrapper
   `_pn_edit_distance_le1`.
+- **Hyphenated compound surnames** are two name components, so the fake is
+  compound too: "Ardeshirpour-Zartoshti" → "Sedgwick-Linford", each half
+  **exactly the fake that half gets standing alone**. One pool word for the whole
+  made the compound and its shorthand ("Dr. Ardeshirpour" → "Dr. Sedgwick") read
+  as two unrelated people. It also makes reversal ORDER-ROBUST — the compound
+  fake is literally its parts' fakes joined, so the macro's token-by-token pass
+  rebuilds it whichever row it applies first. Composition happens in
+  `_PnFakeRegistry.token` (after the typo fold, so a genuine OCR slip still folds;
+  a compound needs one part ≥ `_PN_NAME_FOLD_MIN`, so "Al-Amin" takes a single
+  word). Costs two pool words per compound — pool headroom matters that much
+  more. `_pn_append_person_terms` also registers the wrap-split spelling
+  ("Ardeshirpour- Zartoshti", same fake) and each half as its own token, so the
+  shorthand a brief actually uses is never left standing beside a faked given
+  name as a half-scrubbed pair.
 - **Registry** (`_PnFakeRegistry`): injective, deterministic real→fake fakes,
   seeded on the real value (same input → same fake across runs, no two reals
   collide onto one fake). Draw every fake through it so the used-pool stays
