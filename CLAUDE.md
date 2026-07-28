@@ -53,12 +53,7 @@ one at build time), so the binding was thrown away for nothing. Now a row is
 written when it matched, when it came from a reused key, OR when its source is
 authoritative (`_PN_KEY_UNMATCHED_SOURCES` = the E-Court template and `--term`),
 carrying Status `no match` so the sheet still says which values never reached an
-export. `--term` here means a value asserted about THIS case — the command line,
-or this folder's own LEAKS/key edits. A fragment merely INHERITED from the
-cross-folder master KEEP sheet is another matter's assertion, so it is built
-with `extra_source="master-keep"` and earns a row only by matching; left as
-`--term` it wrote itself into EVERY folder's key (`Alder Law, P.C. -> [Law]`
-put a `no match` "Alder" row in cases that never mentioned it). The old rule's reasoning — `ReAnonymize` must never rewrite a Real Value
+export. The old rule's reasoning — `ReAnonymize` must never rewrite a Real Value
 that was never a party — still governs everything INFERRED: a declarant read off
 a signature block, a prefix, a court-staff name, and any SYNTHETIC spelling this
 tool invents to widen matching (a `_pn_name_variants` near-miss, a wrap-split
@@ -106,7 +101,19 @@ run in every folder reads it (`_pn_read_master_keep`) and applies it, and record
 its own local keeps back (`_pn_update_master_keep`, accumulating Times Seen /
 Cases / dates) so the screening can learn from real history. This — NOT the
 per-folder `LEAKS.xlsx` — is the preservation vehicle: the transient LEAKS triage
-can be auto-deleted freely without ever dropping a keep. Safety: the full-party
+can be auto-deleted freely without ever dropping a keep.
+**An inherited decision contributes its KEEP and NOTHING ELSE.** A keep-spec
+carries one generalisable lesson — the BRACKETED fragment is never a name — and
+one case-local fact: the remainder is that matter's party. Only the folder that
+MADE the decision fakes the remainder (`vl in folder_decisions`); elsewhere just
+the bracket applies. Inheriting the faking half is cross-case inference — the
+failure the closed-entity rule exists to prevent — and it put another case's law
+firm in every folder's log and, once unmatched authoritative bindings were
+pinned, every folder's KEY (`Alder Law, P.C. -> [Law]` wrote a `no match`
+"Alder" row into cases that never mentioned it). A firm that genuinely recurs is
+caught by that case's own party list or pre-scan. `_pn_keep_values` reads the
+decisions directly, so withholding the fragments cannot weaken the keep. Safety:
+the full-party
 override in `_keep_spans` means a keep (local OR global) can never leave a real
 party un-faked — wherever a person/entity/case_number term matches, the keep is
 released and the party is scrubbed. Persistence is macro-safe: the
