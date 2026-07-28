@@ -79,3 +79,32 @@ def test_no_master_written_when_disabled(tmp_path):
     P._pn_write_leak_report(folder, entries, log, cfg={})     # disabled
     assert not list(tmp_path.glob("*.xlsx")) or \
         all("master" not in p.name.lower() for p in tmp_path.glob("*.xlsx"))
+
+
+# ── an INHERITED keep fragment never pins itself into this case's key ────────
+# The master KEEP sheet is read by every run in every folder, and a KEEP-PART
+# row ("Alder Law, P.C." -> "[Law]") contributes its non-bracketed fragment as
+# a value to scrub. That fragment belongs to ANOTHER matter, so it must earn a
+# reversal-key row by MATCHING — not merely by existing. It was landing in
+# every folder's key as a Real Value with Status "no match", Source "--term".
+
+def test_inherited_keep_fragment_is_not_authoritative():
+    assert "master-keep" not in P._PN_KEY_UNMATCHED_SOURCES
+    assert "spreadsheet" in P._PN_KEY_UNMATCHED_SOURCES
+
+
+def test_inherited_fragment_terms_carry_the_inherited_source():
+    reg = P._PnFakeRegistry()
+    terms = P._pn_build_terms([], [], ["Alder"], registry=reg,
+                              extra_source="master-keep")
+    assert terms and all(t.source == "master-keep" for t in terms)
+    # …and such a term, unmatched, is not written to the key
+    z = P.Pseudonymizer(terms, [], registry=reg)
+    assert not [r for r in z.records.values()
+                if r["source"] in P._PN_KEY_UNMATCHED_SOURCES]
+
+
+def test_typed_term_is_still_authoritative():
+    reg = P._PnFakeRegistry()
+    terms = P._pn_build_terms([], [], ["Alder"], registry=reg)
+    assert terms and all(t.source == "--term" for t in terms)
