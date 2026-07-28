@@ -53,7 +53,12 @@ one at build time), so the binding was thrown away for nothing. Now a row is
 written when it matched, when it came from a reused key, OR when its source is
 authoritative (`_PN_KEY_UNMATCHED_SOURCES` = the E-Court template and `--term`),
 carrying Status `no match` so the sheet still says which values never reached an
-export. The old rule's reasoning — `ReAnonymize` must never rewrite a Real Value
+export. `--term` here means a value asserted about THIS case — the command line,
+or this folder's own LEAKS/key edits. A fragment merely INHERITED from the
+cross-folder master KEEP sheet is another matter's assertion, so it is built
+with `extra_source="master-keep"` and earns a row only by matching; left as
+`--term` it wrote itself into EVERY folder's key (`Alder Law, P.C. -> [Law]`
+put a `no match` "Alder" row in cases that never mentioned it). The old rule's reasoning — `ReAnonymize` must never rewrite a Real Value
 that was never a party — still governs everything INFERRED: a declarant read off
 a signature block, a prefix, a court-staff name, and any SYNTHETIC spelling this
 tool invents to widen matching (a `_pn_name_variants` near-miss, a wrap-split

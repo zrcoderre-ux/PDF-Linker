@@ -8698,11 +8698,18 @@ class _PnTokenOrderRecorder(_PnFakeRegistry):
         return super().token(real, words, seed_tag)
 
 
-def _pn_build_terms(names, casenos, extra_terms, registry=None, _prewarm=True):
+def _pn_build_terms(names, casenos, extra_terms, registry=None, _prewarm=True,
+                    extra_source="--term"):
     """Turn raw strings into _PnTerm objects with stable fake replacements.
     A shared `registry` keeps every fake unique across the whole case; pass the
     SAME registry to the Pseudonymizer so declarant names added later can't
     reuse a fake already assigned here.
+
+    `extra_source` labels the terms built from `extra_terms`. It defaults to
+    "--term" (the operator asserting a value about THIS case, authoritative
+    enough to pin into the key unmatched); pass something else for values that
+    merely MIGHT apply here, such as a fragment inherited from the cross-folder
+    master KEEP sheet.
 
     `_prewarm` makes OCR/typo folding independent of the order names appear in.
     An edit-distance fold is symmetric — whichever near-variant is minted first
@@ -8714,7 +8721,8 @@ def _pn_build_terms(names, casenos, extra_terms, registry=None, _prewarm=True):
         registry = _PnFakeRegistry()
     if _prewarm:
         rec = _PnTokenOrderRecorder()
-        _pn_build_terms(names, casenos, extra_terms, rec, _prewarm=False)
+        _pn_build_terms(names, casenos, extra_terms, rec, _prewarm=False,
+                        extra_source=extra_source)
         for tok in sorted(rec.pool_of, key=lambda s: (len(s), s)):
             pool, tag = rec.pool_of[tok]
             registry.token(tok, pool, tag)      # bases before welds/extensions
@@ -8739,9 +8747,9 @@ def _pn_build_terms(names, casenos, extra_terms, registry=None, _prewarm=True):
         if re.search(r"\d", raw) and not re.search(r"[A-Za-z]{2}", raw):
             terms.append(_PnTerm("case_number", raw, _pn_fake_caseno(raw, registry),
                                  whole_word=False, case_sensitive=False,
-                                 priority=2, source="--term"))
+                                 priority=2, source=extra_source))
         else:
-            _pn_append_name_terms(terms, raw, "--term", registry)
+            _pn_append_name_terms(terms, raw, extra_source, registry)
     # De-duplicate on (real, category); keep the highest-priority instance.
     dedup = {}
     for t in terms:
@@ -14393,17 +14401,33 @@ def main():
                      f"decision(s) loaded from the cross-folder log.")
         # A bracketed keep-spec auto-fakes only its non-bracketed fragment(s);
         # every other Fix?=yes scrubs the whole flagged value.
-        fix_terms = []
-        for d in leak_decisions.values():
+        #
+        # Split LOCAL decisions (this folder's LEAKS triage) from ones merely
+        # INHERITED from the cross-folder master KEEP sheet — the same
+        # distinction retirement already makes. A local decision is the
+        # operator speaking about THIS case; an inherited one is another
+        # matter's edit, applied here on the chance the value recurs. Labelling
+        # the inherited fragments keeps them out of `--term`, whose bindings are
+        # authoritative enough to be pinned into the key unmatched: a bracket
+        # keep from an unrelated case ("Alder Law, P.C." -> "[Law]") was
+        # otherwise writing its fragment into EVERY folder's key as a Real
+        # Value with Status "no match" and Source "--term".
+        fix_terms, inherited_terms = [], []
+        for vl, d in leak_decisions.items():
             if d["fix"] != "yes":
                 continue
             fv = d.get("fake_values")
-            fix_terms.extend(fv if fv is not None else [d["value"]])
+            vals = fv if fv is not None else [d["value"]]
+            (fix_terms if vl in folder_decisions else inherited_terms).extend(vals)
         suppressed = {vl for vl, d in leak_decisions.items() if d["fix"] == "no"}
         extra_terms = list(args.term or []) + fix_terms
         if fix_terms:
             log.info(f"  Leak worksheet: scrubbing {len(fix_terms)} value(s) "
                      f"marked Fix?=yes ({', '.join(fix_terms[:6])}).")
+        if inherited_terms:
+            log.info(f"  Master KEEP: {len(inherited_terms)} inherited "
+                     f"fragment(s) will be scrubbed IF they appear here "
+                     f"({', '.join(inherited_terms[:6])}).")
         if suppressed:
             log.info(f"  Leak worksheet: {len(suppressed)} value(s) marked "
                      f"Fix?=no will be left as-is and not re-flagged.")
@@ -14480,6 +14504,14 @@ def main():
                       f"Party names will NOT be pseudonymized in the .txt exports.")
         else:
             terms = _pn_build_terms([], [], extra_terms, registry)
+
+        # Fragments inherited from the cross-folder master KEEP sheet. Built
+        # last and labelled as inherited: they still scrub this folder if the
+        # value turns up, but they are another matter's assertion, so they earn
+        # a key row only by MATCHING — never merely by existing.
+        if inherited_terms:
+            terms += _pn_build_terms([], [], inherited_terms, registry,
+                                     extra_source="master-keep")
 
         # KEEP / KEEP-PART edits typed into the pseudonym key's Replacement
         # column ('no' or a [bracketed] keep-spec): a key edit is authoritative
