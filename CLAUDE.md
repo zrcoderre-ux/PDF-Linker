@@ -33,6 +33,29 @@ scrubbed. A `pseudonym_key.xlsx` round-trips real↔fake through the
 `DeAnonymize.bas` Word macro, so every minted fake must be globally unique and
 written to the key.
 
+**Adding a document to a folder already sent out (the incremental re-run).** The
+scrubbed exports go to an LLM for a draft, the draft says a filing is missing,
+the operator drops that PDF in and re-runs. The documents already sent MUST come
+back byte-identical or every earlier draft is invalidated — so a re-run beside
+`pseudonym_key.xlsx` reuses it (`_pn_load_key`) and never re-derives a bound
+value. Fakes are deterministic anyway (`_pn_rng` seeds SHA-256 on the real value
++ pool tag — no clock, no entropy), and `_pn_build_terms`' shortest-first
+pre-bind makes them order-independent; the key's job is to pin what the pool
+draw would otherwise shift when the input set changes. `_pn_load_key` seeds the
+registry's used-pool and its per-slot memos — name/entity tokens, domains, AND
+(because they are re-derived through their own slots) `caseno` and the
+number-stripped `street` identity — so a value written a second way in the new
+document folds onto the fake already in the key.
+`_pn_supplement_key_terms` closes the gap the key cannot: `write_key` omits a
+term that matched nothing (a Real Value that was never faked must never be in
+the reversal key), and a reuse run does not re-read the party template — so a
+party named ONLY in the missing document had no binding, no term, and shipped
+in the clear. The supplement re-reads `Order*.xlsx` (`_pn_find_party_template`,
+folder then Downloads) and adds only what the key lacks, drawing through the
+same memo-seeded registry so it can only ADD a fake, never move one. It runs
+BEFORE `_pn_retire_kept_key_terms` so an operator `no` still wins — a kept value
+must not come back to life just because it is also a template row.
+
 **Correcting the key in place / durable KEEP store.** The `Replacement` column
 of `pseudonym_key.xlsx` accepts the same operator control words the LEAKS `Fix?`
 column does — `no` (keep this Real Value verbatim) and a `[bracketed]` keep-spec

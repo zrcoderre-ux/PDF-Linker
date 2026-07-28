@@ -8607,6 +8607,22 @@ def _pn_load_key(path, registry, log):
                 registry._memo.setdefault(("domain", rh), fh)
                 registry._domain_reals.setdefault(rh, fh)
                 registry._used.add(fh.lower())
+        # A case number and a street are re-derived through their OWN registry
+        # slots, which the row above does not fill — so a value written a second
+        # way in a LATER-ADDED document ("1888 Century Park E." beside the
+        # first run's "…Park East", a case number picked up from its label)
+        # composed a brand-new fake and the same parcel/case shipped under two
+        # stand-ins. Seed those slots too, keyed exactly as the fakers key them
+        # (the street on its number-stripped identity), so every spelling folds
+        # onto the fake this key already carries.
+        elif cat == "case_number":
+            registry._memo.setdefault(("caseno", real.lower()), fake)
+        elif cat == "address":
+            core = _pn_addr_street_key(real)[0]
+            fake_core = _pn_addr_parts(fake)[0]
+            if core and fake_core:
+                registry._memo.setdefault(("street", core.lower()), fake_core)
+                registry._used.add(fake_core.lower())
 
         # A person-token row DERIVED from the judge's (or a staff member's)
         # full name exists for the reversal macro only. Loading it as a match
@@ -8743,6 +8759,70 @@ def _pn_find_folder_key(folder, log):
                  f"template: {newest.name}")
         return newest
     return None
+
+
+def _pn_find_party_template(folder, log):
+    """The E-Court `Order*.xlsx` party template for this case, or None.
+
+    Distinct from `_pn_find_folder_key`, which PREFERS this tool's own
+    pseudonym_key.xlsx: this looks past the key for the original party LIST, so
+    a key-reuse run can still see a party the key never bound. Case folder
+    first (where the workflow puts it), then Downloads (where the E-Court
+    export lands)."""
+    orders = [p for p in folder.glob("*.xlsx")
+              if not p.name.startswith("~$")
+              and p.name.lower().startswith("order")]
+    if orders:
+        return max(orders, key=lambda p: p.stat().st_mtime)
+    for base in (Path(os.environ.get("USERPROFILE") or Path.home()) / "Downloads",
+                 Path.home() / "Downloads"):
+        if not base.is_dir():
+            continue
+        orders = [p for p in base.glob("*.xlsx")
+                  if not p.name.startswith("~$")
+                  and p.name.lower().startswith("order")]
+        if orders:
+            return max(orders, key=lambda p: p.stat().st_mtime)
+        break
+    return None
+
+
+def _pn_supplement_key_terms(terms, folder, name_column, registry, log):
+    """Terms for a listed party the REUSED key never bound, drawn through the
+    same `registry` so every existing fake is untouched.
+
+    `write_key` deliberately omits a term that matched nothing (the key is the
+    reversal artifact: a Real Value that was never faked must never be in it),
+    and a key-reuse run never re-reads the party template — so a party who is
+    named ONLY in a document that was missing from the first batch had no
+    binding and no term, and shipped in the clear when that document was added.
+    That is the ordinary "re-run with the document I forgot" path, and it is
+    the one case where the key alone is not the whole truth about the case.
+
+    Re-derivation is safe because the registry is memo-seeded from the key:
+    a token the key already bound resolves to its stored fake, so a supplement
+    can only ADD a fake, never move one. Terms already loaded are dropped by
+    (category, real), so nothing is registered twice."""
+    template = _pn_find_party_template(folder, log)
+    if template is None:
+        return []
+    try:
+        names, casenos = _pn_terms_from_xlsx(template, name_column, log)
+    except RuntimeError as e:
+        log.warning(f"  Pseudonymize: could not re-read the party template "
+                    f"{template.name}: {e}. A party named only in a newly "
+                    f"added document may not be scrubbed.")
+        return []
+    have = {(t.category, str(t.real).lower()) for t in terms}
+    fresh = [t for t in _pn_build_terms(names, casenos, [], registry)
+             if (t.category, str(t.real).lower()) not in have]
+    if fresh:
+        added = sorted({t.real for t in fresh if t.category in
+                        ("person", "entity", "case_number")})
+        log.info(f"  Pseudonym key: {len(fresh)} binding(s) added from "
+                 f"{template.name} for listed value(s) the key had not bound"
+                 + (f" ({', '.join(added[:6])})" if added else "") + ".")
+    return fresh
 
 
 def _pn_find_downloads_key(log):
@@ -14301,6 +14381,20 @@ def main():
                     # values and the fakes actually applied. A keep merely
                     # INHERITED from the master sheet must not: another case's
                     # keep can never retire this case's own party binding.
+                    # Re-running with a document the first batch missed is the
+                    # normal way this tool is used (a draft comes back saying a
+                    # filing is absent). The key holds only values that MATCHED,
+                    # so a party named nowhere but in that missing document had
+                    # no binding — and, since a reuse run never re-reads the
+                    # party template, no term either. Supplement from the
+                    # template; the memo-seeded registry keeps every fake the
+                    # first run handed out exactly where it was.
+                    #
+                    # BEFORE retirement, so an operator KEEP still wins: a value
+                    # marked `no` must not come back to life just because it is
+                    # also a row in the party template.
+                    terms += _pn_supplement_key_terms(
+                        terms, folder, args.name_column, registry, log)
                     terms, retired_reals = _pn_retire_kept_key_terms(
                         terms, {**folder_decisions, **key_decisions},
                         registry, log)
