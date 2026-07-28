@@ -9422,6 +9422,14 @@ class Pseudonymizer:
                                  # it stands alone; released inside a multi-word
                                  # party name run (a possible party like "Cal
                                  # Equipment"), so the phrase is still faked.
+        # A bracketed keep-spec part from a decision THIS folder made. Such a
+        # keep beats even a full party match, because the operator's bracket
+        # already says how to split the name: keep this fragment, fake the
+        # rest — and the rest IS separately registered as a term, so the party
+        # is still scrubbed ("Alder Law, P.C." -> "Aldous Law, P.C."). An
+        # INHERITED keep-spec contributes no such fragment terms, so it must
+        # keep losing to the party match or the whole name would ride through.
+        self.keep_strict_local = set()
         self.keep_strict = set() # a bracketed keep-spec part — "this fragment is
                                  # never a name": kept verbatim even next to
                                  # names ("[Plaintiff]" stays in "Plaintiff X").
@@ -10294,7 +10302,7 @@ class Pseudonymizer:
 
         spans = []
 
-        def collect(values, soft):
+        def collect(values, soft, party_wins=True):
             for v in sorted(values, key=len, reverse=True):
                 if not v:
                     continue
@@ -10306,7 +10314,7 @@ class Pseudonymizer:
                 for m in re.finditer(r"(?<!\w)" + re.escape(v) + r"(?!\w)",
                                      text, re.IGNORECASE):
                     s, e = m.span()
-                    if s == e or in_party(s, e):
+                    if s == e or (party_wins and in_party(s, e)):
                         continue      # a full party match here — party fakes it
                     # A soft `no` keep is also released where the word sits in a
                     # multi-word capitalized name run (a possible party), so only
@@ -10318,7 +10326,9 @@ class Pseudonymizer:
                 if hit:
                     self.kept_hits.add(v.lower())
 
-        collect(self.keep_strict, soft=False)
+        local_strict = self.keep_strict_local & self.keep_strict
+        collect(local_strict, soft=False, party_wins=False)
+        collect(self.keep_strict - local_strict, soft=False)
         collect(self.keep_soft, soft=True)
         return spans
 
@@ -11814,7 +11824,8 @@ def _pn_parse_decision_rows(rows):
 
     def idx(name):
         return hdr.index(name) if name in hdr else None
-    ci = {k: idx(k) for k in ("type", "value", "fix? (yes/no)", "notes")}
+    ci = {k: idx(k) for k in ("type", "value", "fix? (yes/no)", "notes",
+                             "cases", "origin")}
     out = {}
     for r in rows[1:]:
         def cell(k):
@@ -11845,8 +11856,36 @@ def _pn_parse_decision_rows(rows):
         out[val.lower()] = {"value": val, "type": str(cell("type") or "").strip(),
                             "fix": fix, "replacement": replacement,
                             "fake_values": fake_values, "fixcell": fixcell,
-                            "notes": str(cell("notes") or "").strip()}
+                            "notes": str(cell("notes") or "").strip(),
+                            # Master KEEP only: which case folders this decision
+                            # came from, so a run can tell its OWN past decision
+                            # from another matter's (see `_pn_decision_is_ours`).
+                            "cases": str(cell("cases") or "").strip(),
+                            "origin": str(cell("origin") or "").strip()}
     return out
+
+
+def _pn_decision_is_ours(d, folder_name):
+    """True when `d` was made in THIS case folder.
+
+    The local `LEAKS.xlsx` is consumed once its rows are resolved, so a
+    decision the operator made here survives only on the cross-folder master
+    KEEP sheet — where it would otherwise look exactly like another matter's.
+    The master rows carry the case folders they came from, so a re-run can
+    still recognise its own past decision and keep applying its full meaning
+    (keep the bracket, fake the remainder) instead of demoting it to the
+    keep-only treatment an inherited decision gets."""
+    name = str(folder_name or "").strip().lower()
+    if not name:
+        return False
+    origin = str(d.get("origin") or "").strip().lower()
+    if origin:
+        return name == origin
+    # A sheet written before the Origin column existed: fall back to the Cases
+    # list, which for a decision only ever applied in ONE folder names it.
+    cases = [c.strip().lower() for c in str(d.get("cases") or "").split(";")
+             if c.strip()]
+    return len(cases) == 1 and cases[0] == name
 
 
 def _pn_keep_values(decisions):
@@ -12060,7 +12099,12 @@ _PN_MASTER_KEEP_SHEET = "KEEP"
 # The KEEP sheet's Fix? column is named so _pn_parse_decision_rows can read the
 # instruction ("no" or a [bracket] spec) straight back out.
 _PN_MASTER_KEEP_HEADERS = ("Value", "Fix? (yes/no)", "Type", "Times Seen",
-                           "Cases", "First Seen", "Last Seen", "Notes")
+                           "Cases", "First Seen", "Last Seen", "Notes",
+                           # The folder that MADE this decision. "Cases" lists
+                           # every folder the keep has since protected text in,
+                           # which is real history but not authorship — and
+                           # only the author fakes a keep-spec's remainder.
+                           "Origin")
 
 
 def _pn_master_path(cfg):
@@ -12246,17 +12290,20 @@ def _pn_update_master_keep(cfg, record_map, case_name, today, log):
                       if c.strip() and "cases" not in c},
             "first": (str(r[5]) if len(r) > 5 and r[5] else today),
             "last": (str(r[6]) if len(r) > 6 and r[6] else today),
-            "notes": (str(r[7]) if len(r) > 7 and r[7] else "")}
+            "notes": (str(r[7]) if len(r) > 7 and r[7] else ""),
+            "origin": (str(r[8]) if len(r) > 8 and r[8] else "")}
 
     for vl, d in record_map.items():
         instruction = d.get("fixcell") or ("no" if d.get("fix") == "no" else "no")
         vtype = d.get("type") or ("KEEP-PART" if d.get("fake_values") else "KEEP")
         g = rows.get(vl)
         if g is None:
+            # First folder to record a value is the one that decided it — an
+            # inherited decision already has its row, so it can never land here.
             rows[vl] = {"value": d["value"], "instruction": instruction,
                         "type": vtype, "times": 1, "cases": {case_name},
                         "first": today, "last": today,
-                        "notes": d.get("notes", "")}
+                        "notes": d.get("notes", ""), "origin": case_name}
         else:
             g["times"] += 1
             g["cases"].add(case_name)
@@ -12269,9 +12316,9 @@ def _pn_update_master_keep(cfg, record_map, case_name, today, log):
         cases = sorted(c for c in g["cases"] if c)
         cell = "; ".join(cases) if len(cases) <= 8 else f"{len(cases)} cases"
         data.append([g["value"], g["instruction"], g["type"], g["times"],
-                     cell, g["first"], g["last"], g["notes"]])
+                     cell, g["first"], g["last"], g["notes"], g["origin"]])
     _pn_master_replace_sheet(wb, _PN_MASTER_KEEP_SHEET, _PN_MASTER_KEEP_HEADERS,
-                             data, (34, 16, 11, 11, 40, 12, 12, 26))
+                             data, (34, 16, 11, 11, 40, 12, 12, 26, 22))
     if _pn_master_save(wb, master_path, log, "KEEP log") and record_map:
         log.info(f"  Master KEEP log updated: {master_path} "
                  f"({len(rows)} kept value(s) tracked).")
@@ -13924,7 +13971,11 @@ def _fix_leaks_mode(folder, args, cfg, log):
     # [bracketed] keep-spec) are authoritative for this run.
     for vl, d in key_decisions.items():
         decisions[vl] = d
-    local_vls = set(key_decisions) | set(folder_decisions)
+    # A master row this folder authored is still OURS: the local LEAKS.xlsx is
+    # consumed once resolved, so a decision made here survives only there.
+    local_vls = (set(key_decisions) | set(folder_decisions)
+                 | {vl for vl, d in decisions.items()
+                    if _pn_decision_is_ours(d, folder.name)})
     # Two kinds of "yes": AUTO (let the tool mint a fake) and EXPLICIT (the
     # operator typed the exact replacement into the Fix? cell). An explicit fix
     # bypasses the faker entirely — the operator's deliberate choice of a
@@ -13934,8 +13985,10 @@ def _fix_leaks_mode(folder, args, cfg, log):
     # remainder instead of re-faking our own stand-in — see _pn_strip_prior_fakes.
     prior_fakes = _pn_prior_fake_words(terms)
     auto_terms, explicit = [], {}
-    for d in decisions.values():
-        if d["fix"] != "yes":
+    for vl, d in decisions.items():
+        # An INHERITED decision contributes its KEEP and nothing else — the
+        # bracket generalises, the remainder is the authoring case's party.
+        if d["fix"] != "yes" or vl not in local_vls:
             continue
         # Bracketed keep-spec: auto-fake only the non-bracketed fragment(s); the
         # bracketed part is left verbatim (never registered, so never touched).
@@ -13998,6 +14051,8 @@ def _fix_leaks_mode(folder, args, cfg, log):
     pz = Pseudonymizer(terms, [], registry)
     pz.suppressed = suppressed
     pz.keep_strict, pz.keep_soft = _pn_keep_values(decisions)
+    pz.keep_strict_local = _pn_keep_values(
+        {vl: d for vl, d in decisions.items() if vl in local_vls})[0]
     pz._keep_decisions = {vl: d for vl, d in decisions.items()
                           if _pn_decision_is_keep(d)}
     pz._keep_local = {vl for vl in pz._keep_decisions if vl in local_vls}
@@ -14407,9 +14462,14 @@ def main():
         # inference is exactly what the closed-entity rule exists to prevent.
         # `_pn_keep_values` reads the decisions directly, so the bracketed part
         # is still protected here; only the faking half is withheld.
+        # "Ours" = typed in this folder's LEAKS/key this run, OR a master row
+        # this folder authored earlier (LEAKS.xlsx is consumed once resolved,
+        # so a decision made here lives on only in the master sheet).
+        ours = {vl for vl, d in leak_decisions.items()
+                if vl in folder_decisions or _pn_decision_is_ours(d, folder.name)}
         fix_terms = []
         for vl, d in leak_decisions.items():
-            if d["fix"] != "yes" or vl not in folder_decisions:
+            if d["fix"] != "yes" or vl not in ours:
                 continue
             fv = d.get("fake_values")
             fix_terms.extend(fv if fv is not None else [d["value"]])
@@ -14517,9 +14577,14 @@ def main():
         # inside a full party match (a real party this case fakes), which the
         # substitution releases so the party is still scrubbed. So a keep never
         # leaves a real party in the clear, whether learned here or globally.
-        local_vls = set(key_decisions) | set(folder_decisions)
+        local_vls = set(key_decisions) | set(folder_decisions) | ours
         (pseudonymizer.keep_strict,
          pseudonymizer.keep_soft) = _pn_keep_values(leak_decisions)
+        # A bracket THIS folder typed also beats the party override: its
+        # non-bracketed remainder is registered as its own term, so the party
+        # is scrubbed either way and the operator's split is honoured.
+        pseudonymizer.keep_strict_local = _pn_keep_values(
+            {vl: d for vl, d in leak_decisions.items() if vl in local_vls})[0]
         pseudonymizer._keep_decisions = {
             vl: d for vl, d in leak_decisions.items() if _pn_decision_is_keep(d)}
         pseudonymizer._keep_local = {vl for vl in pseudonymizer._keep_decisions

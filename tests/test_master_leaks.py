@@ -109,6 +109,26 @@ def test_keep_protection_is_independent_of_the_faking_half():
     assert P._pn_keep_values(d)[0] == {"Law"}
 
 
+def test_origin_marks_the_authoring_folder_not_every_folder_seen():
+    # "Cases" accumulates every folder the keep protected text in — real
+    # history, but not authorship. Only the AUTHOR fakes the remainder.
+    d = {"value": "Alder Law, P.C.", "fix": "yes", "fake_values": ["Alder"],
+         "fixcell": "[Law]", "cases": "Alder Matter; Other Matter",
+         "origin": "Alder Matter"}
+    assert P._pn_decision_is_ours(d, "Alder Matter")
+    assert not P._pn_decision_is_ours(d, "Other Matter")
+
+
+def test_legacy_row_without_origin_falls_back_to_a_lone_case():
+    # A sheet written before the Origin column: a decision applied in exactly
+    # one folder names it, so that folder is still recognised as the author.
+    legacy = {"value": "Alder Law, P.C.", "fix": "yes", "fake_values": ["Alder"],
+              "fixcell": "[Law]", "cases": "Alder Matter", "origin": ""}
+    assert P._pn_decision_is_ours(legacy, "Alder Matter")
+    legacy["cases"] = "Alder Matter; Other Matter"
+    assert not P._pn_decision_is_ours(legacy, "Other Matter")
+
+
 def test_local_decision_still_fakes_the_remainder():
     # In the folder that MADE the decision, the bracket means exactly what it
     # says: keep "Law", fake the rest.
@@ -173,3 +193,63 @@ def test_inherited_fragment_does_not_reach_an_unrelated_folder(tmp_path,
     txt = next((case / "Text Files").glob("*.txt")).read_text(encoding="utf-8")
     assert "Law Group" in txt
     assert "Hollis Vantreight" not in txt
+
+
+def test_authoring_folder_keeps_the_bracket_and_fakes_the_rest(tmp_path,
+                                                               monkeypatch):
+    """The point of the bracket: "Alder Law, P.C." -> "<fake> Law, P.C." in the
+    folder that made the decision — and still so on the NEXT run, when the
+    local LEAKS.xlsx has been consumed and the decision lives only in the
+    master sheet."""
+    import sys
+    import zipfile
+    case = tmp_path / "Alder Matter"
+    case.mkdir()
+    body = ("<w:p><w:r><w:t>Declaration of Hollis Vantreight in support."
+            "</w:t></w:r></w:p>"
+            "<w:p><w:r><w:t>Counsel: Alder Law, P.C. appeared.</w:t></w:r></w:p>")
+    with zipfile.ZipFile(case / "Motion.docx", "w") as z:
+        z.writestr("word/document.xml",
+                   '<?xml version="1.0"?><w:document xmlns:w="http://schemas.'
+                   'openxmlformats.org/wordprocessingml/2006/main"><w:body>'
+                   + body + "</w:body></w:document>")
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Case Number", "Title Plaintiff", "Title Defendant", "Other Names"])
+    ws.append(["24STCV00001", "Hollis Vantreight", "Cascadia Freight, Inc.",
+               "Alder Law, P.C."])
+    wb.save(case / "Order_Mine.xlsx")
+    # the operator's own triage decision
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "LEAKS"
+    ws.append(["Value", "Fix? (yes/no)", "File", "Type", "Where (page:line)",
+               "Notes"])
+    ws.append(["Alder Law, P.C.", "[Law]", "Motion.docx", "unscrubbed name?",
+               "p.1", ""])
+    wb.save(case / "LEAKS.xlsx")
+
+    monkeypatch.setenv("PDF_LINKER_MASTER", str(tmp_path / "master.xlsx"))
+    monkeypatch.setattr(sys, "argv", ["pdf_linker.py", str(case)])
+
+    def _run():
+        try:
+            P.main()
+        except SystemExit:
+            pass
+        return next((case / "Text Files").glob("*.txt")).read_text(
+            encoding="utf-8")
+
+    first = _run()
+    assert "Alder" not in first          # the identifying word is faked …
+    assert "Law, P.C." in first          # … the bracketed part is kept
+    # the decision is now recorded as OURS, authored by this folder
+    keep = openpyxl.load_workbook(tmp_path / "master.xlsx")[
+        P._PN_MASTER_KEEP_SHEET]
+    row = [r for r in keep.iter_rows(min_row=2, values_only=True) if r[0]][0]
+    assert row[8] == case.name           # Origin
+
+    import shutil
+    shutil.rmtree(case / "Text Files")
+    second = _run()                      # LEAKS.xlsx consumed — master only now
+    assert "Alder" not in second and "Law, P.C." in second
