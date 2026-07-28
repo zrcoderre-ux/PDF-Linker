@@ -88,10 +88,13 @@ never touches "California"):
   name": kept even next to names, so `[Plaintiff]` stays in "Plaintiff John Doe"
   and `[Attached]` stays in "Jack Gerlach Attached".
 
-Both tiers still lose to a **full party match** — a kept word inside a
+A keep normally loses to a **full party match** — a kept word inside a
 `_PN_PARTY_OVERRIDE_CATS` (person/entity/case_number) term is released so the real
 party is faked ("CAL EQUIPMENT FE RANCH, LLC" faked whole, "John Doe" faked).
-Bare `*-token`/short-name terms and detectors do NOT release a keep.
+The ONE exception is `keep_strict_local`, a bracket typed in THIS folder: see the
+keep-spec rule below — the bracket already says how to split the name and its
+remainder is a term, so honouring it still scrubs the party. Bare
+`*-token`/short-name terms and detectors do NOT release a keep.
 
 **The KEEP store is a SINGLE cross-folder sheet**, the `KEEP` tab of the master
 workbook (`_pn_master_path`, next to the config or `PDF_LINKER_MASTER` /
@@ -102,11 +105,19 @@ its own local keeps back (`_pn_update_master_keep`, accumulating Times Seen /
 Cases / dates) so the screening can learn from real history. This — NOT the
 per-folder `LEAKS.xlsx` — is the preservation vehicle: the transient LEAKS triage
 can be auto-deleted freely without ever dropping a keep.
-**An inherited decision contributes its KEEP and NOTHING ELSE.** A keep-spec
-carries one generalisable lesson — the BRACKETED fragment is never a name — and
-one case-local fact: the remainder is that matter's party. Only the folder that
-MADE the decision fakes the remainder (`vl in folder_decisions`); elsewhere just
-the bracket applies. Inheriting the faking half is cross-case inference — the
+**A keep-spec means what it says IN ITS OWN FOLDER, and only its keep
+elsewhere.** `Alder Law, P.C. -> [Law]` yields `<fake> Law, P.C.` in the case
+that made it: `keep_strict_local` beats even the full-party override, which is
+safe because the bracket's REMAINDER is registered as its own term, so the party
+is scrubbed either way. Elsewhere only the bracket applies — the lesson "this
+fragment is never a name" generalises, the remainder ("Alder" is that matter's
+law firm) does not, and an inherited keep-spec builds no fragment terms, so it
+must keep losing to the party match or the whole name would ride through.
+Ownership is the `Origin` column of the master KEEP sheet (`_pn_decision_is_ours`),
+NOT `Cases`: the local `LEAKS.xlsx` is consumed once resolved, so a decision made
+here survives only on the master sheet, and `Cases` accumulates every folder the
+keep has since protected text in. Only the folder that first recorded a value
+authors it. Inheriting the faking half is cross-case inference — the
 failure the closed-entity rule exists to prevent — and it put another case's law
 firm in every folder's log and, once unmatched authoritative bindings were
 pinned, every folder's KEY (`Alder Law, P.C. -> [Law]` wrote a `no match`
