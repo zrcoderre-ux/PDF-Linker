@@ -81,30 +81,95 @@ def test_no_master_written_when_disabled(tmp_path):
         all("master" not in p.name.lower() for p in tmp_path.glob("*.xlsx"))
 
 
-# ── an INHERITED keep fragment never pins itself into this case's key ────────
-# The master KEEP sheet is read by every run in every folder, and a KEEP-PART
-# row ("Alder Law, P.C." -> "[Law]") contributes its non-bracketed fragment as
-# a value to scrub. That fragment belongs to ANOTHER matter, so it must earn a
-# reversal-key row by MATCHING — not merely by existing. It was landing in
-# every folder's key as a Real Value with Status "no match", Source "--term".
+# ── an INHERITED decision contributes its KEEP and nothing else ──────────────
+# The master KEEP sheet is read by every run in every folder. A KEEP-PART row
+# ("Alder Law, P.C." -> "[Law]") carries one generalisable lesson — the
+# BRACKETED fragment is never a name — and one case-local fact: "Alder" is that
+# matter's law firm. Inheriting the keep is right; inheriting "fake the rest"
+# is cross-case inference, and it put another case's firm in every folder's log
+# and (once unmatched authoritative bindings were pinned) every folder's key.
 
-def test_inherited_keep_fragment_is_not_authoritative():
-    assert "master-keep" not in P._PN_KEY_UNMATCHED_SOURCES
-    assert "spreadsheet" in P._PN_KEY_UNMATCHED_SOURCES
+def _decision(value, fixcell, fake_values):
+    return {"value": value, "type": "KEEP-PART", "fix": "yes",
+            "replacement": None, "fake_values": fake_values,
+            "fixcell": fixcell, "notes": "pseudonym key"}
 
 
-def test_inherited_fragment_terms_carry_the_inherited_source():
+def test_inherited_keep_still_protects_its_bracketed_fragment():
+    # The half that DOES generalise survives: "Law" is never a name, anywhere.
+    strict, soft = P._pn_keep_values(
+        {"alder law, p.c.": _decision("Alder Law, P.C.", "[Law]", ["Alder"])})
+    assert "Law" in strict
+
+
+def test_keep_protection_is_independent_of_the_faking_half():
+    # _pn_keep_values reads the decisions directly, so withholding the
+    # fragments as terms cannot weaken the keep.
+    d = {"alder law, p.c.": _decision("Alder Law, P.C.", "[Law]", ["Alder"])}
+    assert P._pn_keep_values(d)[0] == {"Law"}
+
+
+def test_local_decision_still_fakes_the_remainder():
+    # In the folder that MADE the decision, the bracket means exactly what it
+    # says: keep "Law", fake the rest.
     reg = P._PnFakeRegistry()
-    terms = P._pn_build_terms([], [], ["Alder"], registry=reg,
-                              extra_source="master-keep")
-    assert terms and all(t.source == "master-keep" for t in terms)
-    # …and such a term, unmatched, is not written to the key
+    terms = P._pn_build_terms([], [], ["Alder"], registry=reg)
     z = P.Pseudonymizer(terms, [], registry=reg)
-    assert not [r for r in z.records.values()
-                if r["source"] in P._PN_KEY_UNMATCHED_SOURCES]
+    z.keep_strict = {"Law"}
+    out = z.apply("Alder Law, P.C. appeared.")
+    assert "Alder" not in out and "Law" in out
 
 
 def test_typed_term_is_still_authoritative():
     reg = P._PnFakeRegistry()
     terms = P._pn_build_terms([], [], ["Alder"], registry=reg)
     assert terms and all(t.source == "--term" for t in terms)
+    assert "--term" in P._PN_KEY_UNMATCHED_SOURCES
+
+
+def test_inherited_fragment_does_not_reach_an_unrelated_folder(tmp_path,
+                                                               monkeypatch):
+    """End to end: case B never mentions Alder, so nothing about Alder may
+    appear in case B's key — while the inherited keep of "Law" still holds."""
+    import sys
+    import zipfile
+    body = ("<w:p><w:r><w:t>Declaration of Hollis Vantreight in support."
+            "</w:t></w:r></w:p>"
+            "<w:p><w:r><w:t>Filed by Hollis Vantreight Law Group.</w:t></w:r></w:p>")
+    case = tmp_path / "CaseB"
+    case.mkdir()
+    with zipfile.ZipFile(case / "Motion.docx", "w") as z:
+        z.writestr("word/document.xml",
+                   '<?xml version="1.0"?><w:document xmlns:w="http://schemas.'
+                   'openxmlformats.org/wordprocessingml/2006/main"><w:body>'
+                   + body + "</w:body></w:document>")
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Case Number", "Title Plaintiff", "Title Defendant"])
+    ws.append(["24STCV00001", "Hollis Vantreight", "Cascadia Freight, Inc."])
+    wb.save(case / "Order_Mine.xlsx")
+    # the master KEEP sheet, carrying a bracket decision from ANOTHER matter
+    master = tmp_path / "master_leaks.xlsx"
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = P._PN_MASTER_KEEP_SHEET
+    ws.append(list(P._PN_MASTER_KEEP_HEADERS))
+    ws.append(["Alder Law, P.C.", "[Law]", "KEEP-PART", 3,
+               "24STCV27134 Other Case", "2026-07-27", "2026-07-27", "key"])
+    wb.save(master)
+
+    monkeypatch.setenv("PDF_LINKER_MASTER", str(master))
+    monkeypatch.setattr(sys, "argv", ["pdf_linker.py", str(case)])
+    try:
+        P.main()
+    except SystemExit:
+        pass
+
+    reals = {str(r[1]) for r in
+             openpyxl.load_workbook(case / "pseudonym_key.xlsx").active
+             .iter_rows(min_row=2, values_only=True) if r[1]}
+    assert not any("alder" in r.lower() for r in reals), sorted(reals)
+    # the inherited KEEP still did its job: "Law" survived beside a faked name
+    txt = next((case / "Text Files").glob("*.txt")).read_text(encoding="utf-8")
+    assert "Law Group" in txt
+    assert "Hollis Vantreight" not in txt
