@@ -14549,7 +14549,14 @@ def main():
     # end too). --key is pinned only if the folder key already exists; on a first
     # run it does not yet, so the re-run re-discovers the key and the
     # deterministic fakes reproduce the same pseudonyms.
-    if pdfs:
+    #
+    # A WORD-ONLY folder is a real batch, not a no-op: it produces the same
+    # scrubbed .txt exports, the same pseudonym key and the same LEAKS
+    # worksheet, so it needs the same two launchers. Gating them on `pdfs`
+    # alone left an all-Word folder with leaks to triage and nothing to
+    # double-click — `--fix-leaks` reads the .txt exports and never reopens a
+    # source document, so it works on Word-derived exports unchanged.
+    if pdfs or word_texts:
         _want_key = (pseudonymizer is not None
                      and (folder / "pseudonym_key.xlsx").is_file())
         _write_rerun_launcher(folder, args.provider, _want_key, log)
@@ -14615,6 +14622,12 @@ def main():
         n = _convert_word_docs(word_texts, log, pseudonymizer,
                                text_subdir, original_subdir)
         log.info(f"Converted {n} Word doc(s) to text")
+        # Stamp the folder the same way a PDF batch is stamped, so an all-Word
+        # run shows at a glance that it FINISHED (a folder with neither marker
+        # is indistinguishable from one the tool never touched). No live ETA:
+        # the projection is built from per-page OCR weights, and a Word
+        # conversion has no OCR to project from — it is done in seconds.
+        _write_done_marker(folder)
 
     # One key file for the whole folder maps every real value to its fake.
     if pseudonymizer is not None:
@@ -14677,12 +14690,13 @@ def main():
     # One-click re-run launcher (written before the leak gate can exit, so it's
     # there to apply Fix? decisions after a quarantine). --key points at the
     # folder's own key when it exists, so a re-run reproduces the same fakes.
-    if pdfs:
+    if pdfs or word_texts:
         want_key = (pseudonymizer is not None
                     and (folder / "pseudonym_key.xlsx").is_file())
         _write_rerun_launcher(folder, args.provider, want_key, log)
         # Companion launcher: apply the worksheet Fix? decisions to the exports
-        # directly (no PDFs reopened) — the fast path after triaging leaks.
+        # directly (no source document reopened) — the fast path after triaging
+        # leaks, and the only one that exists for an all-Word folder.
         if want_key:
             _write_fix_launcher(folder, log)
 
