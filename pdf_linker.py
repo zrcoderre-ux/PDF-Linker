@@ -6753,7 +6753,7 @@ def _pn_append_person_terms(terms, raw, source, registry):
         for var in _pn_name_variants(real_tok):
             terms.append(_PnTerm("person-token", var, fake_tok,
                                  whole_word=True, case_sensitive=False,
-                                 priority=0, source=source))
+                                 priority=0, source=source, derived=True))
         # A HYPHENATED surname is one token to the tokenizer, so nothing else
         # can see its halves — and a brief uses them freely: a line wrap opens
         # the hyphen ("Ardeshirpour- Zartoshti"), a shorthand reference drops
@@ -6773,7 +6773,7 @@ def _pn_append_person_terms(terms, raw, source, registry):
                              + "-".join(halves[k:]))
                 terms.append(_PnTerm("person-token", split_var, fake_tok,
                                      whole_word=True, case_sensitive=False,
-                                     priority=0, source=source))
+                                     priority=0, source=source, derived=True))
             for part in halves:
                 terms.append(_PnTerm("person-token", part,
                                      _pn_fake_name_token(part, registry),
@@ -8272,10 +8272,10 @@ def _pn_build_pattern(term, *, whole_word):
 
 class _PnTerm:
     __slots__ = ("category", "real", "fake", "pattern", "flags", "priority",
-                 "source", "whole_word", "count", "loaded")
+                 "source", "whole_word", "count", "loaded", "derived")
 
     def __init__(self, category, real, fake, *, whole_word, case_sensitive,
-                 priority, source):
+                 priority, source, derived=False):
         self.category = category
         self.real = real
         self.fake = fake
@@ -8286,6 +8286,11 @@ class _PnTerm:
         self.source = source
         self.count = 0
         self.loaded = False   # set on a term pre-bound from a reused key
+        # A SYNTHETIC spelling this tool invented to widen matching — a
+        # near-miss variant ("Esstrada"), a line-wrap spelling ("Smith- Jones").
+        # It is a real value only if a document actually contained it, so it
+        # earns a reversal-key row by MATCHING and never merely by existing.
+        self.derived = derived
 
 
 # ── Spreadsheet key (the E-Court order-template export) ──────────────────────
@@ -8464,6 +8469,16 @@ _PN_KEY_HEADERS = ("Category", "Real Value", "Replacement", "Status", "Source",
 # priority 3, so a loaded literal must sit ABOVE that to reproduce the exact
 # stored fake instead of letting the detector recompute a different one.
 _PN_KEY_DETECTOR_CATS = frozenset({"email", "phone", "address", "url", "ssn"})
+
+# Term sources whose binding is AUTHORITATIVE rather than inferred: the operator
+# stated this value names a party, so its row is written to the key even when it
+# matched nothing in this batch. That pins the fake for the run that finally
+# meets the party (the "add the document I forgot" path) instead of leaving it
+# to be re-derived — or, worse, never registered at all. Every other source is a
+# guess the documents themselves produced (a declarant read off a signature, a
+# prefix, a court-staff name), and a guess that matched nothing stays out of the
+# reversal key exactly as before.
+_PN_KEY_UNMATCHED_SOURCES = frozenset({"spreadsheet", "--term"})
 _PN_KEY_TOKEN_CATS = frozenset({"person-token", "entity-token", "short-name",
                                 "address_fragment"})
 
@@ -9431,7 +9446,8 @@ class Pseudonymizer:
             self.records[(t.category, t.real.lower())] = {
                 "category": t.category, "real": t.real, "fake": fake,
                 "source": t.source, "count": t.count, "pattern": t.pattern,
-                "flags": t.flags}
+                "flags": t.flags, "loaded": getattr(t, "loaded", False),
+                "derived": getattr(t, "derived", False)}
         # Real values pre-bound from a reused key: authoritative, so the
         # citation-only prune must never drop one (a party that happens to
         # appear only in a citation in THIS file is still a known party).
@@ -9478,7 +9494,8 @@ class Pseudonymizer:
             self.records[k] = {
                 "category": t.category, "real": t.real, "fake": fake,
                 "source": t.source, "count": 0, "pattern": t.pattern,
-                "flags": t.flags, "loaded": getattr(t, "loaded", False)}
+                "flags": t.flags, "loaded": getattr(t, "loaded", False),
+                "derived": getattr(t, "derived", False)}
             added = True
         if added:
             # Keep terms ordered biggest/most-specific first for apply()'s
@@ -10847,16 +10864,26 @@ class Pseudonymizer:
                 rec["source"] = "leak-fix"
 
     def write_key(self, path, log):
-        """Write the REVERSAL key the Word macro consumes. Only rows that
-        actually matched (Occurrences > 0) and contain no newline are written,
-        so it is a clean bijection: `ReAnonymize` can never replace a Real
-        Value that was never a party, and Word's Find (which cannot match a
-        literal newline) never meets a dead line-wrapped row. The Status column
-        ("replaced" / "leaked") flags any matched value that ALSO survived
-        somewhere; never-matched terms are simply omitted — anything that
-        matters about them (a leak, a stale sheet) is already warned about on
-        the console and in the log, so a second spreadsheet just to restate
-        them earned its keep from nobody.
+        """Write the REVERSAL key the Word macro consumes. A row is written when
+        it MATCHED (Occurrences > 0), when it came from a REUSED key, or when it
+        is an AUTHORITATIVE binding — a party the E-Court template or a --term
+        named (`_PN_KEY_UNMATCHED_SOURCES`) — and never when it contains a
+        newline (Word's Find cannot match one, so such a row is dead).
+
+        The old rule wrote only what matched, on the reasoning that `ReAnonymize`
+        must never replace a Real Value that was never a party. That reasoning
+        holds for an INFERRED value — a pre-scan guess, a declarant read off a
+        signature block — and those are still dropped when they match nothing.
+        It does not hold for a name the operator's own party template lists: that
+        value IS a party, its fake is already minted (every term gets one at
+        build time, matched or not), and dropping the row threw away the only
+        durable record of a binding the case will need the moment the party is
+        finally mentioned. Concretely: a party named ONLY in a document missing
+        from the first batch had no row, so adding that document later either
+        leaked the name or renamed it inconsistently.
+
+        Such a row carries Status "no match", so the sheet still says plainly
+        which values were never written into an export.
 
         xlsx if openpyxl is available, else JSON alongside.
         """
@@ -10891,14 +10918,18 @@ class Pseudonymizer:
                     keep_low.add(vl)
 
         def _reversible(r):
-            # A row that matched this run (count>0) OR one loaded from a reused
+            # A row that matched this run (count>0), one loaded from a reused
             # key (preserve it even if it didn't re-match — in fix-leaks mode the
             # text is already scrubbed, so loaded party names never re-match yet
-            # must stay in the key for the reversal macro). A value the operator
-            # marked KEEP is left verbatim, so it has no fake to reverse — drop
-            # any (e.g. harvested) row for it so the key doesn't show a fake that
+            # must stay in the key for the reversal macro), or an AUTHORITATIVE
+            # binding the party template / --term named, which pins the fake for
+            # the run that finally meets that party. A value the operator marked
+            # KEEP is left verbatim, so it has no fake to reverse — drop any
+            # (e.g. harvested) row for it so the key doesn't show a fake that
             # was never applied.
-            return ((r["count"] > 0 or r.get("loaded"))
+            return ((r["count"] > 0 or r.get("loaded")
+                     or (r.get("source") in _PN_KEY_UNMATCHED_SOURCES
+                         and not r.get("derived")))
                     and str(r["real"]).lower() not in keep_low
                     and "\n" not in str(r["real"]) and "\n" not in str(r["fake"]))
         keyrows = [r for r in self.records.values() if _reversible(r)]

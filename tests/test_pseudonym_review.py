@@ -139,7 +139,12 @@ def test_public_email_providers_preserved():
 #   ReAnonymize runs the key in reverse and will replace a Real Value that was
 #   never in the documents. Build terms, apply to text that hits ONLY some of
 #   them, write the key, and assert no surviving "no match" rows.
-def test_reversal_key_has_no_zero_occurrence_rows(tmp_path):
+def test_reversal_key_zero_occurrence_rows_are_authoritative_only(tmp_path):
+    # A value the PARTY TEMPLATE names is authoritative: its row is written even
+    # when this batch never mentioned it, so the fake is pinned for the run that
+    # finally meets that party (the "add the document I forgot" path). What must
+    # NOT appear is a SYNTHETIC spelling this tool invented to widen matching —
+    # a near-miss variant is a real value only if a document contained it.
     z = _pz(names=["Roxane Estrada", "Azul Concreto, Inc.", "Someone Neverpresent"])
     z.apply("Plaintiff Roxane Estrada sued Azul Concreto, Inc. in 25STCV37838.")
     out = tmp_path / "pseudonym_key.xlsx"
@@ -147,15 +152,38 @@ def test_reversal_key_has_no_zero_occurrence_rows(tmp_path):
     wb = openpyxl.load_workbook(out)
     ws = wb.active
     header = [c.value for c in next(ws.iter_rows(max_row=1))]
-    occ_i = header.index("Occurrences")
-    zero = [r for r in ws.iter_rows(min_row=2, values_only=True)
-            if r[occ_i] in (0, None)]
-    assert not zero, f"{len(zero)} zero-occurrence row(s) in the reversal key"
+    occ_i, real_i, stat_i = (header.index("Occurrences"),
+                             header.index("Real Value"), header.index("Status"))
+    rows = list(ws.iter_rows(min_row=2, values_only=True))
+    zero = [r for r in rows if r[occ_i] in (0, None)]
+    assert all(r[stat_i] == "no match" for r in zero)
+    reals = {str(r[real_i]) for r in rows}
+    assert "Someone Neverpresent" in reals          # pinned though never seen
+    # every variant spelling of a name that matched nothing stays out
+    invented = {v for tok in ("Estrada", "Roxane", "Neverpresent")
+                for v in P._pn_name_variants(tok)}
+    assert not (reals & invented), sorted(reals & invented)
     # The separate audit spreadsheet was retired (repo owner: unnecessary for
     # a casual-recognition precaution) — the key is the ONLY file written, and
     # a stale audit from an earlier version is cleaned up.
     assert not (tmp_path / "pseudonym audit.xlsx").exists()
     assert not (tmp_path / "pseudonym_key audit.xlsx").exists()
+
+
+def test_reversal_key_omits_an_inferred_value_that_matched_nothing(tmp_path):
+    # A harvested guess is NOT authoritative: if it matched nothing it was
+    # probably never a party, and ReAnonymize must not rewrite it.
+    z = _pz(names=["Roxane Estrada"])
+    z._add_terms([P._PnTerm("person", "Hollis Vantreight", "Ashby Renwick",
+                           whole_word=False, case_sensitive=False,
+                           priority=2, source="declarant")])
+    z.apply("Plaintiff Roxane Estrada appeared.")
+    out = tmp_path / "pseudonym_key.xlsx"
+    z.write_key(out, log)
+    reals = {str(r[1]) for r in
+             openpyxl.load_workbook(out).active.iter_rows(min_row=2,
+                                                          values_only=True)}
+    assert "Hollis Vantreight" not in reals
 
 
 def test_stale_audit_sheet_is_removed(tmp_path):

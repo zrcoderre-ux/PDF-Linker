@@ -117,13 +117,24 @@ def test_case_number_and_address_stay_consistent(folder):
 
 def test_party_named_only_in_the_added_document_is_scrubbed(folder):
     z1, _ = _first_run(folder)
-    # precondition: she matched nothing, so the key rightly has no row for her
-    keyed = {str(r[1]) for r in
-             openpyxl.load_workbook(folder / "pseudonym_key.xlsx").active
-             .iter_rows(min_row=2, values_only=True)}
-    assert "Jane Roe" not in keyed
+    # She matched nothing, but the party template names her, so the key pins
+    # her binding ("no match") instead of discarding it.
+    rows = {str(r[1]): (str(r[2]), r[3]) for r in
+            openpyxl.load_workbook(folder / "pseudonym_key.xlsx").active
+            .iter_rows(min_row=2, values_only=True) if r[1]}
+    assert rows["Jane Roe"][1] == "no match"
     out = _rerun(folder).apply(ADDED)
     assert "Jane Roe" not in out
+    # and she is faked to exactly the stand-in the first run had reserved
+    assert rows["Jane Roe"][0] in out
+
+
+def test_pinned_party_survives_even_without_the_template(folder):
+    # The key alone now carries the binding, so the supplement is a fallback
+    # for an older key or an amended template — not the only line of defence.
+    _first_run(folder)
+    (folder / "Order_Template_Input.xlsx").unlink()
+    assert "Jane Roe" not in _rerun(folder).apply(ADDED)
 
 
 def test_supplemented_party_does_not_disturb_the_others(folder):
