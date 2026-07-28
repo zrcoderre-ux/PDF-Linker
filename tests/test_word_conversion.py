@@ -200,3 +200,98 @@ def test_empty_folder_still_gets_no_launchers(tmp_path, monkeypatch):
     # not be littered with launchers for a batch that does not exist.
     _run_main(tmp_path, monkeypatch)
     assert _launchers(tmp_path) == set()
+
+
+# ── an all-Word folder never borrows another case's party list ───────────────
+# A Word batch is typically a one-off with no E-Court Order*.xlsx of its own.
+# The Downloads fallback ("newest .xlsx there") then hands it whatever case was
+# downloaded LAST: the run hunts for a stranger's parties, leaves this case's
+# in the clear, and writes their names into this case's key as authoritative
+# bindings. Folder-local inputs stay unambiguous and are still honoured.
+
+def _order_sheet(path, plaintiff, defendant, caseno="24STCV00001"):
+    openpyxl = pytest.importorskip("openpyxl")
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Case Number", "Title Plaintiff", "Title Defendant"])
+    ws.append([caseno, plaintiff, defendant])
+    wb.save(path)
+    return path
+
+
+def test_is_word_only_folder(tmp_path):
+    assert not pl._is_word_only_folder(tmp_path)          # empty
+    _docx(tmp_path / "Filing.docx", _para("Body"))
+    assert pl._is_word_only_folder(tmp_path)              # word, no pdf
+    (tmp_path / "Motion.pdf").write_bytes(b"%PDF-1.4")
+    assert not pl._is_word_only_folder(tmp_path)          # a pdf batch
+
+
+def test_word_only_folder_ignores_a_downloads_template(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    (home / "Downloads").mkdir(parents=True)
+    _order_sheet(home / "Downloads" / "Order_Other_Case.xlsx",
+                 "Ernest N Ramirez", "Ford Motor Company")
+    case = tmp_path / "Convert"
+    case.mkdir()
+    _docx(case / "Filing.docx", _para("Plaintiff Hollis Vantreight appeared."))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+    assert pl._pn_find_downloads_key(log) is not None     # it IS findable …
+    assert pl._pn_find_party_template(case, log) is None  # … but not used here
+
+
+def test_pdf_folder_still_uses_the_downloads_template(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    (home / "Downloads").mkdir(parents=True)
+    sheet = _order_sheet(home / "Downloads" / "Order_Case.xlsx", "A Party", "B Corp")
+    case = tmp_path / "Case"
+    case.mkdir()
+    (case / "Motion.pdf").write_bytes(b"%PDF-1.4")
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+    # The E-Court export landing in Downloads is the designed PDF workflow.
+    assert pl._pn_find_party_template(case, log) == sheet
+
+
+def test_word_folder_still_uses_its_own_template(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    (home / "Downloads").mkdir(parents=True)
+    _order_sheet(home / "Downloads" / "Order_Other.xlsx", "Stranger Party", "X Corp")
+    case = tmp_path / "Convert"
+    case.mkdir()
+    mine = _order_sheet(case / "Order_Mine.xlsx", "Hollis Vantreight", "Cascadia Freight")
+    _docx(case / "Filing.docx", _para("Body"))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+    # A template the operator put IN the folder is unambiguous — use it.
+    assert pl._pn_find_party_template(case, log) == mine
+
+
+def test_word_run_scrubs_nobody_elses_parties(tmp_path, monkeypatch):
+    pytest.importorskip("openpyxl")
+    home = tmp_path / "home"
+    (home / "Downloads").mkdir(parents=True)
+    _order_sheet(home / "Downloads" / "Order_Other_Case.xlsx",
+                 "Ernest N Ramirez", "Ford Motor Company")
+    case = tmp_path / "Convert"
+    case.mkdir()
+    # A declaration anchor, so the pre-scan has a name to harvest with no
+    # party list at all — that harvest is the only scrubbing left here.
+    _docx(case / "Filing.docx",
+          _para("Declaration of Hollis Vantreight in support.")
+          + _para("Plaintiff Hollis Vantreight appeared."))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+    monkeypatch.setattr(sys, "argv", ["pdf_linker.py", str(case)])
+    try:
+        pl.main()
+    except SystemExit:
+        pass
+    import openpyxl
+    reals = {str(r[1]) for r in
+             openpyxl.load_workbook(case / "pseudonym_key.xlsx").active
+             .iter_rows(min_row=2, values_only=True) if r[1]}
+    assert "Ernest N Ramirez" not in reals      # the other case stays out …
+    assert "Ford Motor Company" not in reals
+    assert "Hollis Vantreight" in reals         # … the pre-scan still works
