@@ -6132,6 +6132,11 @@ _PN_JURIS_QUALIFIERS = (
     "general", "limited", "domestic", "foreign", "close", "closely", "held",
     "unincorporated", "incorporated", "registered", "statutory", "charitable",
     "religious", "family", "business",
+    # "…, an unincorporated INTERINDEMNITY arrangement" — the physician
+    # mutual-protection form. Unrecognised, the whole clause was harvested as
+    # part of the entity name and each of its ordinary words became a bare
+    # pseudonym token the operator had to retire by hand.
+    "interindemnity", "reciprocal", "inter-insurance",
 )
 _PN_ENTITY_FORM_NOUN = (
     r"(?:corporations?|corp|compan(?:y|ies)|"
@@ -6139,6 +6144,7 @@ _PN_ENTITY_FORM_NOUN = (
     r"limited\s+partnerships?|general\s+partnerships?|partnerships?|"
     r"joint\s+venture|unincorporated\s+association|associations?|"
     r"business\s+trust|trust|cooperative|"
+    r"arrangements?|organizations?|exchange|"
     r"l\.?\s*l\.?\s*c|l\.?\s*l\.?\s*p|l\.?\s*p|p\.?\s*l\.?\s*l\.?\s*c|"
     r"p\.?\s*c|p\.?\s*a)")
 _PN_DESCRIPTOR_BODY = (
@@ -6733,6 +6739,31 @@ def _pn_append_person_terms(terms, raw, source, registry):
             terms.append(_PnTerm("person-token", var, fake_tok,
                                  whole_word=True, case_sensitive=False,
                                  priority=0, source=source))
+        # A HYPHENATED surname is one token to the tokenizer, so nothing else
+        # can see its halves — and a brief uses them freely: a line wrap opens
+        # the hyphen ("Ardeshirpour- Zartoshti"), a shorthand reference drops
+        # one half ("Dr. Ardeshirpour"). The whole-token term matches neither,
+        # and the surviving half stood beside the faked given name as a half-
+        # scrubbed pair. Register the wrap-split spelling (same fake — it IS
+        # the same token) and each half as its own low-priority token with its
+        # own registry fake, so every form is scrubbed and reversible.
+        core = _pn_word_affixes(real_tok)[1]
+        halves = [p for p in core.split("-") if p]
+        if len(halves) >= 2 and all(
+                len(p) >= 4 and _pn_is_name_token(p)
+                and not _pn_is_generic_token(_pn_word_base(p))
+                for p in halves):
+            for k in range(1, len(halves)):
+                split_var = ("-".join(halves[:k]) + "- "
+                             + "-".join(halves[k:]))
+                terms.append(_PnTerm("person-token", split_var, fake_tok,
+                                     whole_word=True, case_sensitive=False,
+                                     priority=0, source=source))
+            for part in halves:
+                terms.append(_PnTerm("person-token", part,
+                                     _pn_fake_name_token(part, registry),
+                                     whole_word=True, case_sensitive=False,
+                                     priority=0, source=source))
     return _pn_person_token_map(raw, registry)
 
 
@@ -6750,6 +6781,40 @@ def _pn_append_shortname_term(terms, raw, source, registry):
     terms.append(_PnTerm("short-name", raw, _pn_fake_entity(raw, registry),
                          whole_word=True, case_sensitive=False, priority=1,
                          source=source))
+
+
+_PN_TITLE_CONNECTORS = frozenset({"to", "of", "for", "re", "on", "against"})
+
+
+def _pn_strip_pleading_title_prefix(name):
+    """A harvested name cell sometimes carries a DOCUMENT TITLE, not a bare
+    party: "DEMURRER TO RESCORE HOLLYWOOD, LLC". Registered whole, the
+    pleading words become part of the "party" (and their bare tokens rewrite
+    every later "Demurrer" in the briefs). Strip a leading run of pleading/
+    procedural words ending in a connector so only the party remains — and
+    only that shape: "Motion Picture Industry Pension Plan" has no connector
+    after its pleading word, so a real name that merely STARTS with one is
+    never truncated. Returns the party remainder, or `name` unchanged."""
+    words = name.split()
+    i = 0
+    while True:
+        j = i
+        while j < len(words) and _pn_word_base(words[j]) in _PN_PLEADING_WORDS:
+            j += 1
+        if j == i or j >= len(words):
+            break
+        if _pn_word_base(words[j]) not in _PN_TITLE_CONNECTORS:
+            break
+        i = j + 1
+    if not i:
+        return name
+    rest = " ".join(words[i:])
+    # "MOTION TO STRIKE": the "remainder" is itself procedural — the whole
+    # cell is a title with no party in it, so there is nothing to register.
+    if (not re.search("[" + _PN_LAT_UPPER + "]", rest)
+            or _pn_is_procedural_phrase(rest)):
+        return ""
+    return rest
 
 
 def _pn_append_name_terms(terms, raw, source, registry):
@@ -6776,7 +6841,13 @@ def _pn_append_name_terms(terms, raw, source, registry):
         for alias in aliases:
             parts = _pn_split_dba(alias)
             head, dbas = parts[0], parts[1:]
-            if (_pn_is_party_role(head) or not re.search(r"[A-Za-z]", head)
+            # A cell carrying a document TITLE names its target party after
+            # the pleading words ("DEMURRER TO RESCORE HOLLYWOOD, LLC") — or
+            # nobody at all ("MOTION TO STRIKE"). Register the party, not the
+            # pleading vocabulary.
+            head = _pn_strip_pleading_title_prefix(head)
+            if (not head or _pn_is_party_role(head)
+                    or not re.search(r"[A-Za-z]", head)
                     or _PN_ONLY_DESCRIPTOR_RE.match(head)):
                 continue
             # Drop a trailing state-of-organization descriptor ("Acme, Inc., a
@@ -7240,11 +7311,34 @@ def _pn_fake_street(real):
 
 # ── URL / bare-domain handling ──────────────────────────────────────────────
 # Citation hosts the authorities appendix emits on purpose — never rewrite them,
-# or the public verification links break.
+# or the public verification links break. The second group is e-filing /
+# court-services infrastructure: a One Legal or usLegalPro status page in a
+# proof of service names the FILING CHANNEL, not a party — like a `.gov` host
+# it identifies no one, so faking it protects nothing and flagging it put a
+# worksheet row (and an operator "no") in front of every filing-receipt page.
 _PN_URL_WHITELIST = (
     "leginfo.legislature.ca.gov", "law.cornell.edu", "scholar.google.com",
     "courts.ca.gov", "google.com", "casetext.com", "justia.com",
+    "onelegal.com", "uslegalpro.com", "lawhelpcalifornia.org",
 )
+
+
+def _pn_url_fragmentary(real):
+    """True when a URL match carries no registrable host — a line-wrap split
+    the URL and the detector saw only the lead fragment ("http://www",
+    "https://", "http://]", a bare "www"). Such a fragment identifies no one,
+    so faking it corrupts the wrapped URL's visible text for nothing — and the
+    minted record then "survived" as a LEAK row wherever an intact kept URL
+    (every whitelisted court link starts with the same "https://www") contained
+    the fragment. Not a detector miss to hide: the tail half of the wrap is a
+    bare domain and still matches on its own line."""
+    host = _pn_url_host(real)
+    if "." not in host:
+        return True                     # "www", "http", "]" — no domain at all
+    stem, _, tld = host.rpartition(".")
+    # A registrable host needs an alphabetic TLD and a non-empty label before
+    # it ("law.com" qualifies; ".com" and "www." do not).
+    return not (stem.strip(".") and re.fullmatch(r"[a-z]{2,}", tld))
 
 
 def _pn_url_host(real):
@@ -7395,10 +7489,15 @@ _PN_DETECTORS = {
     # Bare URL or domain OUTSIDE an @-address (an @-address is the email
     # detector's job and wins overlap resolution). Citation hosts are filtered
     # out in _detector_cands so the authorities appendix survives.
+    # Curly quotes are sentence punctuation, not URL characters: a citation
+    # ending “…onelegal.com/.” swallowed the closing `.”` into the match, so
+    # the same URL was tracked twice (with and without the tail) and the
+    # duplicate row survived every dedup keyed on the exact value.
     "url": (re.compile(
-        r"(?:https?://|www\.)[^\s<>()\"']*[^\s<>()\"'.,;:!?]"
+        r"(?:https?://|www\.)[^\s<>()\"'‘’“”]*[^\s<>()\"'‘’“”.,;:!?]"
         r"|(?<!@)(?<![\w.])[A-Za-z0-9][\w-]*(?:\.[\w-]+)*"
-        r"\.(?:com|net|org|law|gov|edu|us|biz|info)\b(?:/[^\s<>()\"'.,;:!?]*)?"),
+        r"\.(?:com|net|org|law|gov|edu|us|biz|info)\b"
+        r"(?:/[^\s<>()\"'‘’“”.,;:!?]*)?"),
         _pn_fake_url),
 }
 _PN_DEFAULT_DETECTORS = ["ssn", "email", "phone", "address", "url"]
@@ -7695,8 +7794,12 @@ _PN_PROC_SEG_VOCAB = None
 def _pn_proc_seg_vocab():
     global _PN_PROC_SEG_VOCAB
     if _PN_PROC_SEG_VOCAB is None:
+        # "attorney"/"counsel" live in the review stop-list, not the role
+        # words, so a welded "DefendantAttorneys" failed segmentation and was
+        # flagged as an unscrubbed name (a KEEP `no` per spelling, forever).
         substantive = (_PN_PLEADING_WORDS | _PN_DECL_DESCRIPTOR
-                       | {w for w in _PN_PARTY_ROLE_WORDS if " " not in w})
+                       | {w for w in _PN_PARTY_ROLE_WORDS if " " not in w}
+                       | {"attorney", "attorneys", "counsel", "counsels"})
         _PN_PROC_SEG_VOCAB = (substantive, substantive | _PN_PROC_SEG_CONNECTORS)
     return _PN_PROC_SEG_VOCAB
 
@@ -7852,6 +7955,7 @@ def _pn_review_is_neutral(word, known):
             or base in _PN_COMMON_WORDS or base in _PN_PLEADING_WORDS
             or base in _PN_DECL_DESCRIPTOR or base in _PN_REVIEW_NAME_STOP
             or _pn_is_role_token(word) or _pn_is_entity_keep(base)
+            or _pn_token_is_procedural(base)
             or (word.isupper() and len(base) <= 4))
 
 
@@ -7863,7 +7967,10 @@ def _pn_person_review_findings(text, known_fakes=()):
     out, seen = [], set()
     for rx in _PN_REVIEW_PERSON_RES:
         for m in rx.finditer(text):
-            name = re.sub(r"\s+", " ", m.group("n")).strip()
+            # A trailing quote/apostrophe is sentence punctuation the name
+            # regex swallowed ("Sheila Bird'…"), and it forks the dedup: the
+            # same person then rows once bare and once quoted.
+            name = re.sub(r"\s+", " ", m.group("n")).strip().rstrip("'’\"“”")
             if _pn_is_never_fake(name):
                 continue      # court-form boilerplate ("Default Only") — leave it
             words = [w.strip(".,").lower() for w in name.split()]
@@ -7958,7 +8065,12 @@ deposition depo depos volume vol testified testimony declares declared
 established alleged fabricated financial articulate
 made make makes making day days irate feha dec decs grieve grievance
 undisputed disputed genuine material fact facts issue issues each every
-none no yes true false""".split())
+none no yes true false
+fax telephone number numbers reservation date cure confer floor suite
+owner builder builders membership arrangement unincorporated
+interindemnity helpdesk
+hospital hospitals medical center centers surgery surgical physician
+physicians clinic clinics healthcare""".split())
 
 
 def _pn_unknown_name_findings(text, neutral_words):
@@ -7985,7 +8097,7 @@ def _pn_unknown_name_findings(text, neutral_words):
     neutral = {w.lower() for w in neutral_words}
     out, seen = [], set()
     for m in anchor.finditer(text):
-        name = re.sub(r"\s+", " ", m.group("n")).strip(" .,;:")
+        name = re.sub(r"\s+", " ", m.group("n")).strip(" .,;:'’\"“”")
         if not name or name.lower() in seen:
             continue
         if _pn_is_never_fake(name):        # court-form boilerplate — leave it
@@ -7996,14 +8108,31 @@ def _pn_unknown_name_findings(text, neutral_words):
             base = _pn_word_base(w)
             # A token that CONTAINS a known fake is a welded stand-in ("HENDRY2
             # CORPORATIOLORNE10", "POSTBOX4.ORGPANY") — already scrubbed, so
-            # neutral. `neutral` here is the set of minted fake words.
+            # neutral. `neutral` here is the set of minted fake words. A welded
+            # run of role/document words ("DefendantAttorneys") is boilerplate
+            # that lost its space, not a name — the segmentation check reads it.
             if _pn_word_is_own_fake(w, neutral):
                 return True
             return (len(base) < 3
                     or base in _PN_COMMON_WORDS or _pn_is_entity_keep(base)
                     or _pn_is_role_token(w)
-                    or base in _PN_REVIEW_NAME_STOP)
+                    or base in _PN_REVIEW_NAME_STOP
+                    or _pn_token_is_procedural(base))
         words = name.split()
+        # "Attorneys for Defendant HEALTH NET" captures "Defendant HEALTH NET"
+        # — the second role word is part of the RUN, not the anchor. Reported
+        # with the role word attached, the row (a) dodged every dedup against
+        # the same name found elsewhere and (b) made a plain `yes` decision
+        # wrong: the fix faked the word "Defendant" document-wide, which is
+        # what the operator's `[Defendant]` bracket keeps were working around.
+        # Trim the leading role words so the row is the name alone.
+        while words and _pn_is_role_token(words[0]):
+            words.pop(0)
+        if not words:
+            continue
+        name = " ".join(words)
+        if not name or name.lower() in seen:
+            continue
         flags = [not _neutral(w) for w in words]
         if not any(flags):
             continue
@@ -8029,12 +8158,20 @@ def _pn_review_findings(text, known_fakes=()):
         for m in rx.finditer(text):
             sample = re.sub(r"\s+", " ", m.group(0)).strip()
             if cls == "url/domain":
-                if _pn_url_whitelisted(sample):
+                if _pn_url_whitelisted(sample) or _pn_url_fragmentary(sample):
                     continue
                 host = _pn_url_host(sample)
                 # Our own fake domain — the base pool OR a numbered mint of it
                 # (`postbox2.org`) that known_fakes now carries — is not a leak.
                 if host in _PN_EMAIL_DOMAINS or host in known_fakes:
+                    continue
+                # A WELDED own fake: a column splice glued the fake host to its
+                # neighbour ("www.wadsworth.com.mallory", "drvance.com" where
+                # "Vance" is this run's minted surname). The host is already
+                # scrubbed content, not a survivor — same substring rule as
+                # _pn_word_is_own_fake, length-gated so a short coincidental
+                # match can't hide a real domain.
+                if any(k in host for k in known_fakes if len(k) >= 5):
                     continue
                 # The host half of an E-MAIL, not a website: the url regex
                 # matches "acme.com" inside "jane@acme.com", and OCR that spaced
@@ -9792,7 +9929,11 @@ class Pseudonymizer:
                 # Never rewrite a whitelisted citation URL — the authorities
                 # appendix emits those deliberately — nor a fake we ourselves
                 # minted (so re-scrubbing already-fake text is a fixed point).
-                if cat == "url" and _pn_url_whitelisted(match):
+                # A line-wrap's lead fragment ("http://www") is skipped too:
+                # it names no host, and a record minted for it re-matched the
+                # head of every intact kept URL as a phantom folder-wide leak.
+                if cat == "url" and (_pn_url_whitelisted(match)
+                                     or _pn_url_fragmentary(match)):
                     continue
                 # A bare 10-digit run that is really an OCR'd date ("06/06/2025"
                 # -> "0610612025") must not be faked as a phone; the date stays.
