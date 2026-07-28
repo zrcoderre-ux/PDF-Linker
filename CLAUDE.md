@@ -46,15 +46,29 @@ registry's used-pool and its per-slot memos — name/entity tokens, domains, AND
 (because they are re-derived through their own slots) `caseno` and the
 number-stripped `street` identity — so a value written a second way in the new
 document folds onto the fake already in the key.
-`_pn_supplement_key_terms` closes the gap the key cannot: `write_key` omits a
-term that matched nothing (a Real Value that was never faked must never be in
-the reversal key), and a reuse run does not re-read the party template — so a
-party named ONLY in the missing document had no binding, no term, and shipped
-in the clear. The supplement re-reads `Order*.xlsx` (`_pn_find_party_template`,
-folder then Downloads) and adds only what the key lacks, drawing through the
-same memo-seeded registry so it can only ADD a fake, never move one. It runs
-BEFORE `_pn_retire_kept_key_terms` so an operator `no` still wins — a kept value
-must not come back to life just because it is also a template row.
+**The key pins every AUTHORITATIVE binding, matched or not.** `write_key` used
+to write only rows that matched, so a party the template names but this batch
+never mentioned had no row — and the fake was already minted (every term gets
+one at build time), so the binding was thrown away for nothing. Now a row is
+written when it matched, when it came from a reused key, OR when its source is
+authoritative (`_PN_KEY_UNMATCHED_SOURCES` = the E-Court template and `--term`),
+carrying Status `no match` so the sheet still says which values never reached an
+export. The old rule's reasoning — `ReAnonymize` must never rewrite a Real Value
+that was never a party — still governs everything INFERRED: a declarant read off
+a signature block, a prefix, a court-staff name, and any SYNTHETIC spelling this
+tool invents to widen matching (a `_pn_name_variants` near-miss, a wrap-split
+hyphen spelling — flagged `_PnTerm.derived`) earns a row by MATCHING and never
+merely by existing. `Pseudonymizer.__init__` must propagate `loaded`/`derived`
+into the record dict — it silently dropped `loaded`, so the "preserve a reused
+key's rows" branch never fired and a `--fix-leaks` rewrite could shrink the key.
+
+`_pn_supplement_key_terms` is the fallback for what the key still cannot carry:
+a key written by an older version, or a template AMENDED between runs (a Doe
+defendant named). It re-reads `Order*.xlsx` (`_pn_find_party_template`, folder
+then Downloads) and adds only what the key lacks, drawing through the same
+memo-seeded registry so it can only ADD a fake, never move one. It runs BEFORE
+`_pn_retire_kept_key_terms` so an operator `no` still wins — a kept value must
+not come back to life just because it is also a template row.
 
 **Correcting the key in place / durable KEEP store.** The `Replacement` column
 of `pseudonym_key.xlsx` accepts the same operator control words the LEAKS `Fix?`
