@@ -8479,6 +8479,15 @@ _PN_KEY_DETECTOR_CATS = frozenset({"email", "phone", "address", "url", "ssn"})
 # prefix, a court-staff name), and a guess that matched nothing stays out of the
 # reversal key exactly as before.
 _PN_KEY_UNMATCHED_SOURCES = frozenset({"spreadsheet", "--term"})
+
+# Status for a key row that is FORWARD-ONLY: a synthetic spelling this tool
+# invented to widen matching (a wrap-split hyphen, an OCR near-miss), pointing
+# at another row's fake. Real->fake is right and must stay pinned so a re-run
+# reproduces the delivered exports; fake->real is ambiguous, and `DeAnonymize`
+# retires a fake claimed by two Real Values rather than guess, which left the
+# pseudonym standing in the tentative. The marker tells the macro which of the
+# two rows owns the reversal so exactly one does. See write_key.
+_PN_KEY_ALT_STATUS = "alt spelling"
 _PN_KEY_TOKEN_CATS = frozenset({"person-token", "entity-token", "short-name",
                                 "address_fragment"})
 
@@ -8547,7 +8556,8 @@ def _pn_load_key(path, registry, log):
     rows = ws.iter_rows(values_only=True)
     header = [(_pn_norm_header(h)) for h in next(rows, ())]
     idx = {name: header.index(name) for name in
-           ("category", "real value", "replacement", "source", "occurrences")
+           ("category", "real value", "replacement", "status", "source",
+            "occurrences")
            if name in header}
     terms, seen, key_decisions = [], set(), {}
     for row in rows:
@@ -8665,6 +8675,14 @@ def _pn_load_key(path, registry, log):
                     priority=priority, source=source)
         t.count = occ
         t.loaded = True
+        # Round-trip the `alt spelling` marker. Without it the re-run's
+        # write_key sees two ordinary rows on one fake and re-picks the owner by
+        # hit count — which the wrap-split spelling usually wins, since it is
+        # the form a line break actually leaves in the text. Ownership would
+        # then flip to the synthetic spelling on the first re-run, undoing the
+        # whole point of the marker.
+        t.derived = (str(cell("status") or "").strip().lower()
+                     == _PN_KEY_ALT_STATUS)
         terms.append(t)
     wb.close()
     terms.sort(key=lambda t: (-t.priority, -len(t.real)))
@@ -10968,6 +10986,67 @@ class Pseudonymizer:
                                 "source": r["source"], "count": r["count"]})
         keyrows += derived
 
+        # ONE REVERSIBLE row per fake. The registry is INJECTIVE, so two rows
+        # sharing a Replacement are never two different parties — they are
+        # always alternate SPELLINGS of one real value, deliberately registered
+        # against the canonical value's fake so that every spelling scrubs: a
+        # wrap-split hyphen ("Ardeshirpour- Zartoshti" for
+        # "Ardeshirpour-Zartoshti"), a `_pn_name_variants` near-miss ("Sarra"
+        # for "Sara"). Right for the forward pass, and unusable in reverse:
+        # `DeAnonymize.bas` cannot tell a synthetic spelling from the real one,
+        # so it treats a fake claimed by two Real Values as ambiguous and
+        # retires the mapping outright — fail-safe, but the fake is then left
+        # standing in the tentative. Registering those spellings therefore made
+        # every hyphenated party and every OCR-matched name un-restorable.
+        #
+        # The non-canonical rows are marked `alt spelling` in Status rather than
+        # dropped. Both halves of the contract need them:
+        #   * the macro reads Status and uses an `alt spelling` row only in the
+        #     REAL->FAKE direction, where it is unambiguous, so exactly one row
+        #     reverses each fake and the ambiguity guard never fires; and
+        #   * `_pn_load_key` still pins them, so a re-run that has only the key
+        #     (no party template to rebuild the variants from) reproduces the
+        #     already-delivered exports BYTE-IDENTICALLY. Dropping the rows
+        #     broke that: the re-run scrubbed the wrap-split spelling half by
+        #     half ("Sedgwick- Linford") instead of as one token.
+        # The canonical row is the one the fake was composed from (not
+        # `derived`); when a group is ALL derived — the canonical value never
+        # matched and isn't authoritative, so it earned no row — one variant is
+        # promoted, or the fake would reverse to nothing.
+        alt_rows, owner_count, nalt = set(), {}, 0
+        by_fake = {}
+        for r in keyrows:
+            by_fake.setdefault(str(r["fake"]).lower(), []).append(r)
+        for group in by_fake.values():
+            if len(group) < 2:
+                continue
+            canon = [r for r in group if not r.get("derived")] or group
+            # Deterministic when a group somehow holds several canonical rows:
+            # the most-seen, then the shortest spelling.
+            keep = min(canon, key=lambda r: (-r["count"], len(str(r["real"])),
+                                             str(r["real"]).lower()))
+            # (category, real) is this list's own primary key — the records
+            # dict is keyed on it and the derived rows were deduped against the
+            # same set.
+            def rk(r):
+                return (r["category"], str(r["real"]).lower())
+            # Status on the OWNER row answers for the whole group: the fake
+            # reached the export however it was spelled, and the owner is the
+            # row that reverses it. Otherwise it reads "no match" — a binding
+            # nothing ever used, which the macro rightly discounts — whenever
+            # the export happened to carry only a wrap-split or misspelt form.
+            # Occurrences stays per-row (each says how many arrived spelled
+            # THAT way) so a re-run can keep loading it without inflating it.
+            owner_count[rk(keep)] = sum(r["count"] for r in group)
+            for r in group:
+                if r is not keep:
+                    alt_rows.add(rk(r))
+                    nalt += 1
+        if nalt:
+            log.info(f"  Pseudonymize: {nalt} key row(s) marked "
+                     f"'{_PN_KEY_ALT_STATUS}' (a synthetic spelling of another "
+                     f"row's value — forward-only, not reversible)")
+
         # People (and their bare tokens / short forms) sort to the TOP of the
         # key, entities next, every other class after in name order — the reader
         # scans party names first, not an alphabetical run that buries them
@@ -10978,6 +11057,15 @@ class Pseudonymizer:
                                     r["category"], str(r["real"]).lower()))
         headers = ["Category", "Real Value", "Replacement", "Status", "Source",
                    "Occurrences"]
+
+        def row_status(r):
+            key = (r["category"], str(r["real"]).lower())
+            if key in alt_rows:
+                return _PN_KEY_ALT_STATUS
+            if owner_count.get(key):
+                return "leaked" if r["real"].lower() in self.leaked else "replaced"
+            return self._status(r)
+
 
         # An audit spreadsheet from an earlier version of this tool would sit
         # beside the key looking current; remove it so it can't mislead.
@@ -10999,8 +11087,9 @@ class Pseudonymizer:
             kp.write_text(json.dumps(
                 {"mappings": [{"category": r["category"], "real": r["real"],
                                "replacement": r["fake"],
-                               "status": self._status(r),
-                               "source": r["source"], "occurrences": r["count"]}
+                               "status": row_status(r),
+                               "source": r["source"],
+                               "occurrences": r["count"]}
                               for r in keyrows]}, indent=2), encoding="utf-8")
             log.info(f"  openpyxl not installed; reversal key written as JSON: "
                      f"{kp.name} ({len(keyrows)} mapping(s))")
@@ -11011,7 +11100,7 @@ class Pseudonymizer:
         ws.title = "Pseudonym Key"
         ws.append(headers)
         for r in keyrows:
-            ws.append([r["category"], r["real"], r["fake"], self._status(r),
+            ws.append([r["category"], r["real"], r["fake"], row_status(r),
                        r["source"], r["count"]])
         wb.save(path)
         for cluster in self.alias_candidates():
