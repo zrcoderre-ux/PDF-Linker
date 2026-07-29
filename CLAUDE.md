@@ -316,8 +316,11 @@ annotation-naming splice. Declarations/complaints skip linking
 ## Folder artifacts (what a finished folder should contain)
 
 `Re-run PDF-Linker.bat` (`_write_rerun_launcher`), `Apply Leak Fixes.bat`
-(`_write_fix_launcher`, only once `pseudonym_key.xlsx` exists — it is what
-`--fix-leaks` reads) and the `ETA …`/`DONE …` markers (`_write_eta_marker` /
+(`_write_fix_launcher` — it needs `pseudonym_key.xlsx`, which is what
+`--fix-leaks` reads, AND a `LEAKS.xlsx` to apply: it is that worksheet's
+companion, so it is written beside one and REMOVED when there is none. The
+end-of-run block settles it, after `_pn_write_leak_report` has decided the
+worksheet's fate — the up-front copy can only see the previous run's state) and the `ETA …`/`DONE …` markers (`_write_eta_marker` /
 `_write_done_marker`). Gate them on **`pdfs or word_texts`**, never `pdfs`
 alone: an **all-Word folder is a real batch** — same scrubbed exports, same
 key, same LEAKS worksheet — and gating on the PDF list left it with leaks to

@@ -174,12 +174,33 @@ def test_word_only_folder_is_stamped_done(tmp_path, monkeypatch):
     assert [p.name for p in tmp_path.glob("DONE *.txt")]
 
 
-def test_word_only_folder_gets_the_fix_launcher_once_a_key_exists(
+def test_word_only_folder_gets_the_fix_launcher_when_there_is_triage(
         tmp_path, monkeypatch):
-    # The leak-fix launcher is the companion the triage loop needs, and it is
-    # written only when the folder has a pseudonym key — that is what
-    # --fix-leaks reads. A scrubbing run writes the key, so one run should
-    # leave both launchers behind.
+    # The leak-fix launcher is the companion of the LEAKS worksheet — it exists
+    # to apply that worksheet's Fix? decisions — so it appears beside one and
+    # nowhere else. An all-Word folder must get it just like a PDF batch.
+    pytest.importorskip("openpyxl")
+    _docx(tmp_path / "Filing.docx",
+          _para("Ernest N Ramirez appeared.")
+          + _para("Attorneys for Defendant TRAVELERS CASUALTY answered."))
+    monkeypatch.setattr(sys, "argv", ["pdf_linker.py", str(tmp_path),
+                                      "--term", "Ernest N Ramirez"])
+    try:
+        pl.main()
+    except SystemExit:
+        pass
+    assert (tmp_path / "pseudonym_key.xlsx").is_file()
+    assert (tmp_path / "LEAKS.xlsx").is_file()          # something to triage
+    assert any(n.startswith("Apply Leak Fixes") for n in _launchers(tmp_path))
+    # and the export really was scrubbed
+    txt = (tmp_path / "Text Files" / "Filing.txt")
+    assert "Ernest N Ramirez" not in txt.read_text(encoding="utf-8")
+
+
+def test_fix_launcher_absent_when_there_is_nothing_to_triage(tmp_path,
+                                                             monkeypatch):
+    # No worksheet -> no launcher. A launcher left behind after a clean run
+    # implies there is still something to triage.
     pytest.importorskip("openpyxl")
     _docx(tmp_path / "Filing.docx", _para("Ernest N Ramirez appeared."))
     monkeypatch.setattr(sys, "argv", ["pdf_linker.py", str(tmp_path),
@@ -188,11 +209,11 @@ def test_word_only_folder_gets_the_fix_launcher_once_a_key_exists(
         pl.main()
     except SystemExit:
         pass
-    assert (tmp_path / "pseudonym_key.xlsx").is_file()
-    assert any(n.startswith("Apply Leak Fixes") for n in _launchers(tmp_path))
-    # and the export really was scrubbed, so there is something to triage
-    txt = (tmp_path / "Text Files" / "Filing.txt")
-    assert "Ernest N Ramirez" not in txt.read_text(encoding="utf-8")
+    assert (tmp_path / "pseudonym_key.xlsx").is_file()   # the run did scrub
+    assert not (tmp_path / "LEAKS.xlsx").exists()
+    assert not any(n.startswith("Apply Leak Fixes") for n in _launchers(tmp_path))
+    # the re-run launcher is unaffected — that one always belongs
+    assert any(n.startswith("Re-run PDF-Linker") for n in _launchers(tmp_path))
 
 
 def test_empty_folder_still_gets_no_launchers(tmp_path, monkeypatch):
