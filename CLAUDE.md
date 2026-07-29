@@ -335,10 +335,33 @@ the party), so its row stays reversible.
   `_PN_COMMON_WORDS`, name-shaped, and **actually welded** at the match site
   (`_pn_span_is_welded`) — a clean standalone occurrence belongs to the
   boundary-anchored pass, which yields to keeps and citations this pass cannot
-  see. Still no help where `_page_looks_spliced` never fires: a caps-run welded
-  to a DIGIT run ("MICHAEL14.", "MARIA46.") is not yet a splice signal, and the
-  obvious rule `[A-Z]{3,}\d{2,}` cannot be used as-is because every California
-  case number ("26STCV00400") matches it.
+  see.
+  **Classify the SEAM, not the page, where the page signal cannot reach.** A
+  caps run welded to a paragraph NUMBER ("MICHAEL14.", "MARIA46.") is invisible
+  to `_page_looks_spliced`, and the obvious repair — add `[A-Z]{3,}\d{2,}` —
+  measures **~90% false positives on this repo's own corpus**, all of them
+  shapes the tool handles most: a California case number ("25STCV37838"), a
+  federal docket, a VIN, a Bates stamp ("RAM000013"), a reservation code.
+  Tightening it (caps run ≥5, short digit run, anchored to a word start so
+  backtracking cannot slide past the leading year of a case number) still fires
+  on a surname-prefixed Bates stamp ("RAMIREZ000013") and on "COVID19" — and a
+  false page flag is NOT free, because it switches the ≥8-char reduced pass on
+  document-wide and that tier has no boundary check at all.
+  `_pn_span_has_hard_seam` asks instead whether the matched span meets its
+  neighbour across a **letter↔digit transition or a case flip** — evidence a
+  printed boundary was lost at that exact spot. It needs no guess about the
+  page because it only runs where a trusted party token already matched:
+  "COVID19"/"CIV100"/"RAM000013" are untouched unless the case has a party named
+  Covid, Civ or Ram, and "Juanita"/"Carrollton"/"Marianne" have no transition so
+  they keep their letters. So `scrub_welded` / `surviving_reals_reduced` take a
+  `spliced` flag: `True` (the default, and what a flagged page or a `.LEAK`
+  quarantine passes) is the full pass; `False` is the narrow hard-seam pass that
+  now runs on EVERY page. The two must stay mirrored tier for tier, or detection
+  out-runs replacement. Cost on an ordinary page is ~0.5 ms — the candidate
+  scan early-outs before citation detection when no core is present.
+  Residual, and accepted: a Bates stamp built on a party's own surname
+  ("AMEZCUA001234") is faked, which is what the tool already does to a
+  production number.
 - **`--fix-leaks`**: a text-only fast path that applies the worksheet's Fix?
   decisions to the `.txt`/`.LEAK` exports without reopening the PDFs.
 
