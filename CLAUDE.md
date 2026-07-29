@@ -379,6 +379,35 @@ the party), so its row stays reversible.
   production number.
 - **`--fix-leaks`**: a text-only fast path that applies the worksheet's Fix?
   decisions to the `.txt`/`.LEAK` exports without reopening the PDFs.
+  **Nothing to APPLY is not nothing to DO**, so the pass never returns before it
+  runs: a worksheet whose rows are all `no` says the flagged values are fine to
+  leave, and a `no` never gates delivery (the same filter the main gate applies
+  to `pz.suppressed`), so the exports are still re-checked, every quarantine
+  that no longer carries a *gating* leak is released, the worksheet and launcher
+  go once nothing is held, and the ETA marker becomes a **DONE** stamp. Bailing
+  out early left the folder quarantined forever for a leak the operator had
+  already dismissed — while a full re-run of that same folder delivered it — and
+  left an `ETA … (applying leak fixes)` marker on a folder nothing was working
+  on. With no fix terms the pass is strictly LESS invasive than an ordinary one
+  (the same key-loaded terms, minus the flagged values) and a file is rewritten
+  only when its content changes. The ONE thing that still blocks the release is
+  a decision the operator MEANT to apply that had to be dropped — a typed
+  replacement identical to the value (`rejected`): nothing fixed it, so its file
+  stays held (`held`, unioned into `offenders`) and the worksheet stays, per file
+  rather than per batch so a typo in one cell never rides out on another row's
+  coat-tails. A crash after the ETA is projected clears the marker without
+  stamping DONE (the pass did not finish).
+- **A re-run drops the quarantine it supersedes**
+  (`_pn_drop_superseded_quarantine`, called from both export write sites). The
+  gate renames `Brief.txt` to `Brief.txt.LEAK` and leaves it for triage; when a
+  later run re-scrubs the same document and the export comes out clean, the
+  worksheet and launcher were already cleaned up but that file was not — so a
+  re-run that "resolved the leaks" still said there was triage pending, and kept
+  the one copy in the folder carrying the real names verbatim. Every name the
+  export may have been quarantined under is checked (the scrubbed one, the
+  source stem, the pre-subfolder case-root location) and only the tool's own
+  `.txt.LEAK` extension is ever unlinked. Safe because the gate re-creates the
+  quarantine at the end of the run if THIS run's export leaks too.
 
 ## Citation linking
 

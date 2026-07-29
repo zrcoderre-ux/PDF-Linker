@@ -136,14 +136,17 @@ def test_plain_yes_still_auto_fakes(tmp_path):
     assert "Gregory Yu" not in body
 
 
-def test_no_leaves_nothing_to_apply(tmp_path):
-    # "no" = leave it: with no yes/typed row, --fix-leaks has nothing to apply
-    # and returns cleanly without delivering the still-leaking export.
+def test_no_leaves_the_value_but_releases_the_export(tmp_path):
+    # "no" = leave the value verbatim, and it never gates delivery (parity with
+    # the main leak gate, which filters a suppressed value out of `gating`). So
+    # nothing is scrubbed, the export is released, and the folder's leak workflow
+    # is cleared — the operator has said there is nothing left to triage.
     tdir = _setup(tmp_path, "no")
     rc = P._fix_leaks_mode(tmp_path, _args(tmp_path), {}, log)
     assert rc == 0
-    assert (tdir / "Motion.txt.LEAK").exists()       # not delivered
-    assert "M & M" in (tdir / "Motion.txt.LEAK").read_text()
+    assert not (tdir / "Motion.txt.LEAK").exists()   # released
+    assert "M & M" in (tdir / "Motion.txt").read_text()   # kept verbatim
+    assert not (tmp_path / "LEAKS.xlsx").exists()    # nothing left to triage
 
 
 def test_decisions_parse_typed_value(tmp_path):

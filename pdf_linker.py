@@ -12859,6 +12859,38 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
         log.warning(f"  Could not write leak-review worksheet: {ex}")
 
 
+def _pn_drop_superseded_quarantine(txt_path, src_path, log):
+    """Delete the `*.txt.LEAK` quarantine that this freshly-written export
+    supersedes.
+
+    A run that gates renames `Brief.txt` to `Brief.txt.LEAK` and leaves it for
+    triage. When a LATER run re-scrubs the same document and the export comes
+    out clean, that quarantine is stale twice over: it tells the operator the
+    folder still has a leak to triage, and it is the one file left in the folder
+    carrying the real names verbatim — so a re-run that "resolved the leaks"
+    silently kept the unscrubbed copy. The fresh export beside it is the
+    delivered one, and the leak gate at the end of the run re-creates the
+    quarantine if THIS run's export leaks too, so dropping it here can only
+    remove a superseded file.
+
+    Every name the export may have been quarantined under is checked: the
+    scrubbed one, the source stem (a run before filename scrubbing), and the
+    pre-subfolder case-root location. Only the tool's own `.txt.LEAK` extension
+    is ever unlinked — nothing else writes it, so provenance is not in doubt."""
+    stale = {txt_path.with_name(txt_path.name + ".LEAK"),
+             txt_path.parent / (src_path.stem + ".txt.LEAK"),
+             src_path.with_name(src_path.stem + ".txt.LEAK")}
+    for p in stale:
+        try:
+            if p.is_file():
+                p.unlink()
+                log.info(f"  Dropped superseded quarantine {p.name} — this "
+                         f"run's {txt_path.name} replaces it.")
+        except OSError as e:
+            log.warning(f"  Could not remove superseded quarantine "
+                        f"{p.name}: {e}")
+
+
 def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
                         pseudonymizer=None, text_subdir="Text Files",
                         original_subdir=None) -> bool:
@@ -13091,6 +13123,9 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         pseudonymizer.written.append(txt_path)
         if survivors:
             pseudonymizer.leaked_by_file[txt_path] = {s.lower() for s in survivors}
+        # A quarantine of THIS export from an earlier run is now superseded by
+        # the copy just written; the gate below re-creates it if this one leaks.
+        _pn_drop_superseded_quarantine(txt_path, pdf_path, log)
     log.info(f"  Wrote {'pseudonymized ' if pseudonymizer else ''}text "
              f"version: {text_subdir}/{txt_path.name}")
 
@@ -13350,6 +13385,7 @@ def _write_word_text_version(src_path, text, log, pseudonymizer=None,
         pseudonymizer.written.append(txt_path)
         if survivors:
             pseudonymizer.leaked_by_file[txt_path] = {s.lower() for s in survivors}
+        _pn_drop_superseded_quarantine(txt_path, src_path, log)
     log.info(f"  Wrote {'pseudonymized ' if pseudonymizer else ''}text "
              f"version: {text_subdir}/{txt_path.name}")
 
@@ -14361,6 +14397,12 @@ def _fix_leaks_mode(folder, args, cfg, log):
     # ("Melissa Sable", where only "Penuela" was bound) fakes just its real
     # remainder instead of re-faking our own stand-in — see _pn_strip_prior_fakes.
     prior_fakes = _pn_prior_fake_words(terms)
+    # Values whose decision the operator MEANT to apply but that had to be
+    # dropped (a typed replacement identical to the value — a self-map never
+    # scrubs). Nothing fixed them, so they leave the folder UNRESOLVED: the pass
+    # must not release their quarantine or delete the worksheet, or a typo in
+    # one cell is silently converted into a delivered leak.
+    rejected = []
     auto_terms, explicit = [], {}
     for vl, d in decisions.items():
         # An INHERITED decision contributes its KEEP and nothing else — the
@@ -14383,6 +14425,7 @@ def _fix_leaks_mode(folder, args, cfg, log):
                     f"REAL name instead, or mark the row yes to auto-fake only "
                     f"the un-scrubbed part.")
         elif repl:
+            rejected.append(d["value"])
             log.warning(f"  --fix-leaks: typed replacement for {d['value']!r} "
                         f"equals the value itself — ignoring (a self-map never "
                         f"scrubs). Type a DIFFERENT replacement.")
@@ -14397,21 +14440,32 @@ def _fix_leaks_mode(folder, args, cfg, log):
         terms, {vl: d for vl, d in decisions.items() if vl in local_vls},
         registry, log)
     fix_terms = auto_terms + list(explicit)
-    if not fix_terms:
-        # Nothing to apply. If no quarantined *.LEAK export remains either, the
-        # workflow is already resolved — clean up its worksheet and launcher so
-        # a done folder doesn't keep both around.
-        if not any(p.name.endswith(".txt.LEAK") for p in text_dir.iterdir()
-                   if p.is_file()):
-            removed = _pn_remove_leak_workflow(folder, log)
-            if removed:
-                log.info("  --fix-leaks: nothing left to fix — removed "
-                         + ", ".join(removed) + ".")
-                return 0
-        log.info("--fix-leaks: no Fix?=yes rows in LEAKS.xlsx — "
-                 "nothing to apply. Mark the leaks you want scrubbed (yes, or "
-                 "type the exact replacement) and double-click again.")
+    if not fix_terms and rejected:
+        # Nothing was applied AND a decision was dropped: the folder is not
+        # resolved, so leave it untouched — quarantine, worksheet and launcher
+        # all stand — and point at the cell to correct.
+        log.warning("--fix-leaks: nothing applied — correct the Fix? cell(s) "
+                    "for " + ", ".join(rejected[:6]) + " and click again. The "
+                    "export(s) stay quarantined until a fix actually applies.")
         return 0
+    if not fix_terms:
+        # Nothing to APPLY is not nothing to DO, so this no longer returns.
+        # A worksheet whose rows are all `no` says the flagged values are fine
+        # to leave, and a `no` never gates delivery (same rule as the main leak
+        # gate) — so the pass still runs: it re-checks the exports, releases
+        # every quarantine that no longer carries a gating leak, deletes the
+        # worksheet and the Apply-Leak-Fixes launcher once nothing is held, and
+        # replaces the ETA marker with a DONE stamp. Returning early left the
+        # exports quarantined for a leak the operator had already dismissed,
+        # both workflow files standing, and no DONE stamp on the folder.
+        #
+        # With no fix terms this is strictly LESS invasive than an ordinary fix
+        # pass — the same key-loaded terms, minus the flagged values — and a
+        # file is only rewritten when its content actually changes.
+        log.info("--fix-leaks: no Fix?=yes rows in LEAKS.xlsx — nothing to "
+                 "scrub, so this pass only re-checks the exports and releases "
+                 "what no longer carries a leak. (To scrub a value, mark its "
+                 "row yes or type the exact replacement, then click again.)")
 
     terms += _pn_build_terms([], [], list(args.term or []) + auto_terms, registry)
     # Operator-typed replacements: authoritative, reversible, never re-derived.
@@ -14480,6 +14534,12 @@ def _fix_leaks_mode(folder, args, cfg, log):
     _fix_start = time.monotonic()
 
     changed = 0
+    # Files held because a REJECTED decision's value is still in them (see
+    # `rejected`): the worksheet's other rows may have applied cleanly, and
+    # those files are released as usual — but a file whose own fix was dropped
+    # must not ride out on their coat-tails.
+    held = set()
+    rejected_low = [v.lower() for v in rejected]
     for f in files:
         try:
             body = f.read_text(encoding="utf-8")
@@ -14510,6 +14570,9 @@ def _fix_leaks_mode(folder, args, cfg, log):
         # delivered as "clean". Mirrors the cure above, tier for tier.
         survivors |= set(pz.surviving_reals_reduced(scrubbed, spliced=is_leak))
         pz.written.append(f)
+        low = scrubbed.lower()
+        if any(v in low for v in rejected_low):
+            held.add(f)
         if survivors:
             pz.leaked_by_file[f] = {s.lower() for s in survivors}
             pz.note_leaks(survivors)
@@ -14526,7 +14589,7 @@ def _fix_leaks_mode(folder, args, cfg, log):
     # blocks delivery here either.
     gating = {v for v in pz.primary_leaks()
               if str(v).lower() not in pz.suppressed}
-    offenders = set(pz.files_to_quarantine(gating))
+    offenders = set(pz.files_to_quarantine(gating)) | held
     unq = 0
     for f in files:
         if f.name.endswith(".txt.LEAK") and f not in offenders and f.exists():
@@ -14745,7 +14808,16 @@ def main():
     # directly and exit — no PDFs reopened, no linking. Fast follow-up path.
     if args.fix_leaks:
         log.info(f"--fix-leaks on folder: {folder}")
-        sys.exit(_fix_leaks_mode(folder, args, cfg, log))
+        try:
+            rc = _fix_leaks_mode(folder, args, cfg, log)
+        except BaseException:
+            # A crash must not leave the projected-finish marker standing: an
+            # "ETA ~5.12PM (applying leak fixes)" file in a folder nothing is
+            # working on reads as a run still in progress. Clear it (no DONE
+            # stamp — the pass did not finish) and let the error surface.
+            _clear_eta_markers(folder)
+            raise
+        sys.exit(rc)
 
     if args.pseudonymize is None:
         args.pseudonymize = _config_bool(cfg, "pseudonymize", True)

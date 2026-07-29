@@ -70,16 +70,22 @@ def test_fix_leaks_needs_a_real_key(tmp_path):
     assert P._fix_leaks_mode(tmp_path, args, {}, log) == 1   # no key -> refuse
 
 
-def test_fix_leaks_noop_without_yes_decisions(tmp_path):
+def test_no_decision_scrubs_nothing_but_still_releases(tmp_path):
+    # "no" = leave the value verbatim. There is nothing to SCRUB, but a `no`
+    # never gates delivery (the same rule the main leak gate applies), so the
+    # pass still runs: the export is released and the flagged name is left
+    # standing in it, exactly as the operator asked. Returning early here left
+    # the folder quarantined forever for a leak already dismissed — while a full
+    # re-run of the same folder delivered it.
     tdir = _setup(tmp_path)
-    # flip the only decision to "no"
     wb = openpyxl.load_workbook(tmp_path / "LEAKS.xlsx")
     wb.active["E2"] = "no"
     wb.save(tmp_path / "LEAKS.xlsx")
     args = _Args()
     args.key = str(tmp_path / "pseudonym_key.xlsx")
     assert P._fix_leaks_mode(tmp_path, args, {}, log) == 0
-    assert (tdir / "Opposition.txt.LEAK").exists()          # untouched
+    assert not (tdir / "Opposition.txt.LEAK").exists()       # released
+    assert "Gregory Yu" in (tdir / "Opposition.txt").read_text()   # kept, as asked
 
 
 def test_fix_launcher_spec_windows_and_frozen():
@@ -207,3 +213,79 @@ def test_fix_leaks_writes_eta_then_done_marker(tmp_path, monkeypatch):
                if p.name.startswith(("ETA ", "DONE "))]
     assert any(m.startswith("DONE ") for m in markers)     # finished stamp
     assert not any(m.startswith("ETA ") for m in markers)  # none left behind
+
+
+def _markers(folder):
+    return [p.name for p in folder.iterdir()
+            if p.name.startswith(("ETA ", "DONE "))]
+
+
+def test_nothing_to_apply_still_stamps_done(tmp_path):
+    # A pass with nothing to scrub is still a pass that RAN: it must replace the
+    # projected-finish marker with a DONE stamp. It used to return before the
+    # marker was touched, so a folder the operator had just clicked kept reading
+    # "ETA ... (applying leak fixes)" with nothing working on it.
+    td = _fixable_folder(tmp_path)
+    (td / "Brief.txt.LEAK").rename(td / "Brief.txt")       # already resolved
+    (tmp_path / "ETA ~5.00PM (applying leak fixes).txt").write_text("")
+    assert P._fix_leaks_mode(tmp_path, _fl_args(tmp_path), {}, log) == 0
+    assert any(m.startswith("DONE ") for m in _markers(tmp_path))
+    assert not any(m.startswith("ETA ") for m in _markers(tmp_path))
+    # ...and the resolved workflow's own files are gone
+    assert not (tmp_path / "LEAKS.xlsx").exists()
+    assert not (tmp_path / "Apply Leak Fixes.command").exists()
+
+
+def test_rejected_fix_holds_its_own_file_but_not_the_batch(tmp_path):
+    # Two rows: one applies, one is a self-identical typed replacement that has
+    # to be dropped. The clean file is released; the file whose own fix was
+    # dropped stays quarantined, and the worksheet stays so the cell can be
+    # corrected — a typo in one cell must not ride out on the other row's
+    # coat-tails.
+    td = tmp_path / "Text Files"
+    td.mkdir()
+    reg = P._PnFakeRegistry()
+    pz = P.Pseudonymizer(P._pn_build_terms(["Ford Motor Company"], [], [],
+                                           registry=reg), {}, registry=reg)
+    pz.apply("Ford Motor Company")
+    pz.write_key(tmp_path / "pseudonym_key.xlsx", log)
+    (td / "Opp.txt.LEAK").write_text(
+        "====== Page 1 ======\nGregory Yu testified.\n", encoding="utf-8")
+    (td / "Reply.txt.LEAK").write_text(
+        "====== Page 1 ======\nM & M answered.\n", encoding="utf-8")
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["File", "Type", "Value", "Where", "Fix? (yes/no)", "Notes"])
+    ws.append(["Opp.txt.LEAK", "LEAK", "Gregory Yu", "p.1", "yes", ""])
+    ws.append(["Reply.txt.LEAK", "LEAK", "M & M", "p.1", "M & M", ""])
+    wb.save(tmp_path / "LEAKS.xlsx")
+    (tmp_path / "Apply Leak Fixes.command").write_text("#!/bin/sh\n")
+    P._fix_leaks_mode(tmp_path, _fl_args(tmp_path), {}, log)
+    assert not (td / "Opp.txt.LEAK").exists()          # the applied row released
+    assert (td / "Reply.txt.LEAK").exists()            # the dropped row held
+    assert (tmp_path / "LEAKS.xlsx").exists()          # cell still to correct
+    assert (tmp_path / "Apply Leak Fixes.command").exists()
+
+
+def test_rejected_fix_alone_leaves_the_folder_untouched(tmp_path):
+    # Nothing applied and a decision dropped: the folder is not resolved, so the
+    # quarantine, the worksheet and the launcher all stand.
+    td = tmp_path / "Text Files"
+    td.mkdir()
+    reg = P._PnFakeRegistry()
+    pz = P.Pseudonymizer(P._pn_build_terms(["Ford Motor Company"], [], [],
+                                           registry=reg), {}, registry=reg)
+    pz.apply("Ford Motor Company")
+    pz.write_key(tmp_path / "pseudonym_key.xlsx", log)
+    (td / "Reply.txt.LEAK").write_text(
+        "====== Page 1 ======\nM & M answered.\n", encoding="utf-8")
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["File", "Type", "Value", "Where", "Fix? (yes/no)", "Notes"])
+    ws.append(["Reply.txt.LEAK", "LEAK", "M & M", "p.1", "M & M", ""])
+    wb.save(tmp_path / "LEAKS.xlsx")
+    (tmp_path / "Apply Leak Fixes.command").write_text("#!/bin/sh\n")
+    assert P._fix_leaks_mode(tmp_path, _fl_args(tmp_path), {}, log) == 0
+    assert (td / "Reply.txt.LEAK").exists()
+    assert (tmp_path / "LEAKS.xlsx").exists()
+    assert (tmp_path / "Apply Leak Fixes.command").exists()
