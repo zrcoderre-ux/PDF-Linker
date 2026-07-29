@@ -221,3 +221,39 @@ def test_suppressed_value_excluded_from_gate():
     gating = {v for v in z.primary_leaks()
               if str(v).lower() not in z.suppressed}
     assert gating == set()
+
+
+# ── a resolved decision does not regenerate the worksheet ────────────────────
+# A Fix?=yes mints a fake that the pseudonym KEY pins, and every later run
+# re-applies it — so the value is legitimately absent from then on. Carrying
+# the row forward preserved nothing and rebuilt LEAKS.xlsx on every clean run,
+# a sheet whose only content was "(no longer present)".
+
+def test_key_bound_decision_is_not_carried_forward(tmp_path):
+    folder = tmp_path / "Case"
+    folder.mkdir()
+    decisions = {"travelers casualty": {
+        "value": "TRAVELERS CASUALTY", "type": "unscrubbed name?", "fix": "yes",
+        "replacement": None, "fake_values": None, "fixcell": "yes",
+        "notes": ""}}
+    # no findings this run, and the key already binds the value
+    P._pn_write_leak_report(folder, [], log, decisions=decisions,
+                            bound=["TRAVELERS CASUALTY"])
+    assert not list(folder.glob("LEAKS.xlsx"))
+
+
+def test_unbound_decision_is_still_carried_forward(tmp_path):
+    folder = tmp_path / "Case"
+    folder.mkdir()
+    decisions = {"travelers casualty": {
+        "value": "TRAVELERS CASUALTY", "type": "unscrubbed name?", "fix": "yes",
+        "replacement": None, "fake_values": None, "fixcell": "yes",
+        "notes": ""}}
+    # nothing else holds it, so the instruction must survive in the worksheet
+    P._pn_write_leak_report(folder, [], log, decisions=decisions, bound=[])
+    sheet = folder / "LEAKS.xlsx"
+    assert sheet.is_file()
+    vals = [str(r[0]) for r in
+            openpyxl.load_workbook(sheet).active.iter_rows(min_row=2,
+                                                           values_only=True)]
+    assert "TRAVELERS CASUALTY" in vals
