@@ -12414,7 +12414,8 @@ def _pn_update_master_keep(cfg, record_map, case_name, today, log):
     return len(rows)
 
 
-def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None):
+def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
+                          bound=()):
     """Write/refresh the leak-triage worksheet 'LEAKS.xlsx'. Each DISTINCT
     flagged value is ONE row with a 'Fix?' column — the files and page:line
     locations it was found in are aggregated into that row, so a name that
@@ -12487,8 +12488,17 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None):
                                  or d.get("fix", "")),
                      "notes": d.get("notes", ""), "present": True})
     # Persist a Fix?=yes/explicit decision whose value didn't recur this run, so
-    # the fix keeps applying. (KEEP decisions are omitted — the master holds them.)
+    # the fix keeps applying — but ONLY while nothing else already holds it.
+    # KEEP decisions are omitted (the master KEEP sheet holds them), and so is
+    # any value the pseudonym KEY has bound: a Fix?=yes mints a fake that the
+    # key pins and every later run re-applies, so carrying the row forward
+    # preserves nothing and regenerates LEAKS.xlsx on every clean run — a
+    # worksheet whose only content is "(no longer present)", which reads as a
+    # leak to review when there is nothing to do.
+    bound_low = {str(b).strip().lower() for b in bound}
     for vl, d in decisions.items():
+        if vl in bound_low:
+            continue
         if vl not in seen and d.get("fix") in ("yes", "no") \
                 and not _pn_decision_is_keep(d):
             rows.append({"file": "—", "type": d.get("type") or "(decided)",
@@ -14278,7 +14288,8 @@ def _fix_leaks_mode(folder, args, cfg, log):
     still = len(offenders)
     if still:
         _pn_write_leak_report(folder, pz.leak_report, log, decisions=decisions,
-                              cfg=cfg)
+                              cfg=cfg,
+                              bound=[r["real"] for r in pz.records.values()])
     else:
         # Every LEAK file is fixed: the worksheet and the Apply-Leak-Fixes
         # launcher have done their job — remove them instead of leaving stale
@@ -14855,7 +14866,9 @@ def main():
         # if the leak gate quarantines below, so the reviewer always gets it.
         # Prior yes/no decisions are carried through (yes was scrubbed above).
         _pn_write_leak_report(folder, pseudonymizer.leak_report, log,
-                              leak_decisions, cfg=cfg)
+                              leak_decisions, cfg=cfg,
+                              bound=[r["real"] for r in
+                                     pseudonymizer.records.values()])
         # Record this run's KEEP decisions into the single cross-folder master
         # KEEP sheet: every LOCAL keep (made in this folder), plus any GLOBAL
         # keep that actually protected text here (a real hit) — so Times Seen /
