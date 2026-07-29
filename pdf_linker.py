@@ -14791,7 +14791,10 @@ def main():
         _want_key = (pseudonymizer is not None
                      and (folder / "pseudonym_key.xlsx").is_file())
         _write_rerun_launcher(folder, args.provider, _want_key, log)
-        if _want_key:
+        # Only if a worksheet from a prior run is already waiting — otherwise
+        # an interrupted run would leave a launcher for a triage that does not
+        # exist. The end-of-run block settles it either way.
+        if _want_key and _pn_leak_xlsx_path(folder).is_file():
             _write_fix_launcher(folder, log)
 
     if pseudonymizer is not None and (pdfs or word_texts):
@@ -14936,9 +14939,22 @@ def main():
         _write_rerun_launcher(folder, args.provider, want_key, log)
         # Companion launcher: apply the worksheet Fix? decisions to the exports
         # directly (no source document reopened) — the fast path after triaging
-        # leaks, and the only one that exists for an all-Word folder.
-        if want_key:
+        # leaks, and the only one that exists for an all-Word folder. It exists
+        # to apply THAT worksheet, so it belongs beside it and nowhere else:
+        # written when there is something to triage, removed when there is not.
+        # This runs after the report is written, so it sees THIS run's verdict
+        # (the up-front copy is written from the previous run's state).
+        if want_key and _pn_leak_xlsx_path(folder).is_file():
             _write_fix_launcher(folder, log)
+        else:
+            for _p in _pn_fix_launcher_paths(folder):
+                try:
+                    if _p.exists():
+                        _p.unlink()
+                        log.info(f"  Nothing left to triage — removed "
+                                 f"{_p.name}.")
+                except OSError:
+                    pass
 
     # Leak gate, TIERED (config `leak_gate`): the pseudonymization is a
     # precaution against casual recognition of a public filing, so only a
