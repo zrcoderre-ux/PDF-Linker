@@ -8039,6 +8039,8 @@ requests demand demands discovery deposition depositions interrogatory
 interrogatories sanction sanctions damages relief injunction stay stays
 statement statements facts fact introduction conclusion argument arguments
 summary points authorities authority memorandum support further supplemental
+seek seeks seeking sought contend contends contended contention contentions
+object objects objected objection objections evidentiary
 amended first second third fourth fifth sixth seventh eighth ninth tenth
 eleventh twelfth thirteenth fourteenth fifteenth sixteenth seventeenth
 eighteenth nineteenth twentieth cause causes proposed joint separate general
@@ -8502,6 +8504,42 @@ _PN_WELD_CORE_CATS = frozenset({
     "person", "entity", "person-token", "entity-token", "short-name",
     "display-name",
 })
+
+# How long an alphanumeric core must be before the reduced-substring passes will
+# hunt for it. The bar is high because a reduced core carries no word boundary,
+# so a short one coincides inside ordinary words ("law" in "lawsuit").
+_PN_WELD_CORE_MIN = 8
+# …which is longer than most FIRST and LAST names — "michael", "carroll",
+# "amezcua", "maria", "juan" are all 4-7 — so the gate skipped precisely the
+# values the pass exists to recover. A spliced caption welds the party's bare
+# name tokens to their neighbours ("MICHAELCARROLL", "AMEZCUApain") and the
+# whole-word patterns cannot reach them either, so the defendant's name rode
+# into the export while `surviving_reals` reported the file clean.
+#
+# A SHORT core is therefore allowed, but only where a coincidence is
+# implausible and the value is not a guess:
+#   * a PERSON name (an entity's words are generic — "law", "firm", "brothers"
+#     — and nest inside real words; a person token does not),
+#   * named by the operator's OWN party list (`_trusted_party_tokens`, which
+#     already drops connectors, role words and corporate suffixes, so "De" of
+#     "Cruz De Amezcua" never qualifies),
+#   * not an ordinary English word, and shaped like a name, and
+#   * actually WELDED to a neighbour in the source (`_pn_span_is_welded`) —
+#     a clean standalone occurrence is the boundary-anchored pass's business,
+#     and if it left one it did so deliberately (a keep, a citation).
+_PN_WELD_SHORT_CORE_MIN = 4
+_PN_WELD_SHORT_CORE_CATS = frozenset({"person", "person-token"})
+
+
+def _pn_span_is_welded(src, start, end):
+    """True when `src[start:end]` runs straight into an alphanumeric neighbour.
+
+    That is the whole reason the reduced pass exists: a welded span has no word
+    boundary, so the ordinary term patterns cannot match it. A span with clean
+    boundaries on both sides was reachable and was left standing on purpose."""
+    before = src[start - 1] if start > 0 else ""
+    after = src[end] if end < len(src) else ""
+    return bool((before and before.isalnum()) or (after and after.isalnum()))
 
 # A KEEP loses to an exact party match: a kept word that falls inside one of
 # these FULL-name term matches is released so the real party is still faked
@@ -10224,6 +10262,36 @@ class Pseudonymizer:
             out.append((2, start + offset, m.end("name") + offset, rec))
         return out
 
+    def _display_name_repeat_cands(self, text, offset=0):
+        """Candidates for a known display-name STANDING ALONE, away from the
+        "Name <addr@domain>" pair that first revealed it.
+
+        The pair is where the name is recognised; it is rarely where the name is
+        printed most. A firm's paralegal appears once beside her address and
+        then on every page of the letterhead and every signature block.
+        `_display_name_cands` mints the record into `self.records` — so
+        `surviving_reals` reports it and `write_key` writes a row for it — but
+        never into `self.terms`, and `_term_cands` iterates `self.terms`. So
+        every standalone occurrence rode through untouched while the key
+        promised a reversal the exports did not honour: the macro would map the
+        fake back onto pages where the real name was still printed.
+
+        Word-boundary matched and case-insensitive (`_substitute` case-matches
+        the fake), so an ALL-CAPS letterhead is covered and a name can never
+        match inside a longer word."""
+        out = []
+        for (cat, _rl), rec in self.records.items():
+            if cat != "display-name":
+                continue
+            real = _NFKC(str(rec["real"]))
+            if not real:
+                continue
+            pat = r"(?<!\w)" + re.escape(real) + r"(?!\w)"
+            for m in self._compiled(pat, re.IGNORECASE).finditer(text):
+                if m.start() != m.end():
+                    out.append((2, m.start() + offset, m.end() + offset, rec))
+        return out
+
     def _trusted_party_tokens(self):
         """Distinctive lower-cased word bases of the parties named in the
         spreadsheet key (and any --term), used to decide the caption exemption.
@@ -10422,8 +10490,12 @@ class Pseudonymizer:
         if count:
             self.texts_applied += 1
         text = _NFKC(text)
+        # The repeat pass runs AFTER _display_name_cands so a name first met in
+        # this very text is already a record and its other occurrences are
+        # covered on the same pass, not only from the next page onward.
         cands = (self._detector_cands(text) + self._term_cands(text)
-                 + self._display_name_cands(text))
+                 + self._display_name_cands(text)
+                 + self._display_name_repeat_cands(text))
         return self._substitute(
             text, cands, count=count,
             protected=self._protected_citation_spans(text) + self._keep_spans(text))
@@ -10443,7 +10515,8 @@ class Pseudonymizer:
         self.texts_applied += 1
         bodies = [_NFKC(b) for b in bodies]
         joined = "\n".join(bodies)
-        cands = self._term_cands(joined) + self._display_name_cands(joined)
+        cands = (self._term_cands(joined) + self._display_name_cands(joined)
+                 + self._display_name_repeat_cands(joined))
         off = 0
         for b in bodies:
             cands += self._detector_cands(b, off)
@@ -10518,8 +10591,24 @@ class Pseudonymizer:
         match nothing, so it had no replacement count, so the old count>0 guard
         skipped it and the leak was reported as clean."""
         text = self._mask_protected_citations(_NFKC(text))
+        # A value the operator marked KEEP is present ON PURPOSE — that is what
+        # the decision means — so it is not a leak. Reporting it anyway put a
+        # permanent row in LEAKS.xlsx that no answer could ever clear: `no` is
+        # what produced it, and the durable decision lives on the master KEEP
+        # sheet, so consuming the local worksheet never retired the row either.
+        # The review scans already suppress kept values; this tier did not.
+        #
+        # Scoped to the categories a keep actually survives in. A keep is
+        # RELEASED inside a full party match (`_keep_spans`), so a
+        # person/entity/case_number real that is still standing was faked
+        # nowhere and IS a leak — the safety rule that stops a keep leaving a
+        # party in the clear must not be undone here.
+        kept = {str(v).lower() for v in (self.keep_soft | self.keep_strict)}
         out = []
         for rec in self.records.values():
+            if (kept and rec["category"] not in _PN_PARTY_OVERRIDE_CATS
+                    and str(rec["real"]).lower() in kept):
+                continue
             try:
                 if self._compiled(rec["pattern"], rec["flags"]).search(text):
                     out.append(rec["real"])
@@ -10556,23 +10645,59 @@ class Pseudonymizer:
                 rec["count"] += n
         return src
 
+    def _weld_core(self, rec):
+        """`(core, short)` — the alphanumeric core the reduced passes may hunt
+        for `rec` by, and whether it qualified only under the SHORT-name rule
+        (which additionally demands a real weld at the match site). `("", False)`
+        when the record is not eligible at all. See `_PN_WELD_CORE_MIN`."""
+        if rec["category"] not in _PN_WELD_CORE_CATS:
+            return "", False
+        core = _pn_alnum_core(rec["real"])
+        if len(core) >= _PN_WELD_CORE_MIN:
+            return core, False
+        if (len(core) >= _PN_WELD_SHORT_CORE_MIN
+                and rec["category"] in _PN_WELD_SHORT_CORE_CATS
+                and core in self._trusted_party_tokens()
+                and core not in _PN_COMMON_WORDS
+                and _pn_is_name_token(core.title())):
+            return core, True
+        return "", False
+
+    def _reduce_with_index(self, src):
+        """`(reduced, idx)` — `src` folded to bare lower-case alphanumerics, with
+        `idx[i]` the offset in `src` that produced `reduced[i]`, so a hit in the
+        reduction can be located back in the original text."""
+        reduced, idx = [], []
+        for i, ch in enumerate(src):
+            c = _pn_ascii_fold(ch).lower()
+            if "a" <= c <= "z" or "0" <= c <= "9":
+                reduced.append(c)
+                idx.append(i)
+        return "".join(reduced), idx
+
     def surviving_reals_reduced(self, text):
         """Tracked reals found in the ALPHANUMERIC-ONLY reduction of `text`.
 
         On a column-spliced caption the whole-word patterns match nothing —
         `Schilleci & Tortorici` extracts as `SCHILLECITORTORICILAW` with no
         boundaries — yet the reduction `schillecitortoricilaw` still CONTAINS
-        `schillecitortorici`. Only reasonably long cores are checked so a short
-        name can't match inside an unrelated word."""
+        `schillecitortorici`. Which cores qualify is `_weld_core`'s call, and it
+        must stay the mirror of `scrub_welded`'s: a value this reports but that
+        one cannot cure is a leak the substituter was never able to clean."""
         masked = self._mask_protected_citations(_NFKC(text))
-        red = re.sub(r"[^a-z0-9]", "", _pn_ascii_fold(masked).lower())
+        red, idx = self._reduce_with_index(masked)
         out = []
         for rec in self.records.values():
-            if rec["category"] not in _PN_WELD_CORE_CATS:
+            core, short = self._weld_core(rec)
+            if not core:
                 continue
-            core = _pn_alnum_core(rec["real"])
-            if len(core) >= 8 and core in red:
-                out.append(rec["real"])
+            k = red.find(core)
+            while k >= 0:
+                if not short or _pn_span_is_welded(
+                        masked, idx[k], idx[k + len(core) - 1] + 1):
+                    out.append(rec["real"])
+                    break
+                k = red.find(core, k + 1)
         return out
 
     def scrub_welded(self, text):
@@ -10589,17 +10714,11 @@ class Pseudonymizer:
 
         Longest cores first and non-overlapping, so a name nested in a longer
         firm name doesn't double-substitute; the fake is case-matched to the
-        span it replaces. A >=8-char core can coincide inside an unrelated word,
-        so callers run this ONLY on a page already flagged spliced — a page the
-        tool already reports as corrupted and asks a human to verify."""
+        span it replaces. Even a long core can coincide inside an unrelated
+        word, so callers run this ONLY on a page already flagged spliced — a
+        page the tool already reports as corrupted and asks a human to verify."""
         src = _NFKC(text)
-        reduced, idx = [], []
-        for i, ch in enumerate(src):
-            c = _pn_ascii_fold(ch).lower()
-            if "a" <= c <= "z" or "0" <= c <= "9":
-                reduced.append(c)
-                idx.append(i)
-        reduced = "".join(reduced)
+        reduced, idx = self._reduce_with_index(src)
         if not reduced:
             return text
         # The same citation protection the ordinary substitution path applies
@@ -10610,15 +10729,14 @@ class Pseudonymizer:
         protected = self._protected_citation_spans(src)
         cands = []
         for rec in self.records.values():
-            if rec["category"] not in _PN_WELD_CORE_CATS:
-                continue
-            core = _pn_alnum_core(rec["real"])
-            if len(core) >= 8:
-                cands.append((core, _pn_fake_core_display(rec["fake"]), rec))
+            core, short = self._weld_core(rec)
+            if core:
+                cands.append((core, _pn_fake_core_display(rec["fake"]), rec,
+                              short))
         cands.sort(key=lambda c: -len(c[0]))
         taken = [False] * len(reduced)
         repls = []
-        for core, fake, rec in cands:
+        for core, fake, rec, short in cands:
             start = 0
             while True:
                 k = reduced.find(core, start)
@@ -10627,6 +10745,13 @@ class Pseudonymizer:
                 end = k + len(core)
                 o_s, o_e = idx[k], idx[end - 1] + 1
                 if any(o_s < pe and ps < o_e for ps, pe in protected):
+                    start = k + 1
+                    continue
+                # A short name only earns a cure where it is genuinely WELDED —
+                # standing alone it was the boundary-anchored pass's to make,
+                # and that pass yields to keeps and citations this one cannot
+                # see.
+                if short and not _pn_span_is_welded(src, o_s, o_e):
                     start = k + 1
                     continue
                 if not any(taken[k:end]):
