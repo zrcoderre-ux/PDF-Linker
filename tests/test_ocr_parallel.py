@@ -80,7 +80,7 @@ def test_parallel_every_page_gets_its_text_layer(monkeypatch):
     good = _good_overlay_bytes()
     calls = []
 
-    def _ocr(img, extension="", timeout=0):
+    def _ocr(img, extension="", config="", timeout=0):
         calls.append(timeout)
         return good
 
@@ -107,7 +107,7 @@ def test_parallel_stall_is_ground_down_not_skipped(monkeypatch):
     good = _good_overlay_bytes()
     state = {"n": 0}
 
-    def _ocr(img, extension="", timeout=0):
+    def _ocr(img, extension="", config="", timeout=0):
         state["n"] += 1
         if state["n"] == 1:
             raise RuntimeError("Tesseract process timeout")

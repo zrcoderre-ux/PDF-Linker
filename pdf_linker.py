@@ -1791,6 +1791,15 @@ def _ocr_pixmap(page):
 # keeps even the last attempt legible enough to be useful.
 _OCR_RETRY_FACTORS = (1.0, 0.66, 0.5, 0.33, 0.24)
 _OCR_MIN_DPI = 60
+# Tesseract collapses runs of spaces by default, which is exactly the space a
+# two-column caption needs to keep ("MICHAEL   PATRICK" -> "MICHAELPATRICK" is
+# the weld the reduced pass then has to undo). Preserving inter-word spacing
+# costs nothing and keeps the boundary the whole-word patterns depend on.
+_OCR_CONFIG = "-c preserve_interword_spaces=1"
+# Below this the grind has traded away real recognition quality. The page still
+# gets a text layer (never skipped), but it is named in the log so a reviewer
+# knows which pages to trust least.
+_OCR_LOW_DPI = 150
 
 
 def _ocr_page_to_pdf(page, pytesseract, Image, io, log, label, start=0):
@@ -1811,8 +1820,14 @@ def _ocr_page_to_pdf(page, pytesseract, Image, io, log, label, start=0):
         try:
             pix = page.get_pixmap(dpi=dpi)
             img = Image.open(io.BytesIO(pix.tobytes("png")))
-            return pytesseract.image_to_pdf_or_hocr(
-                img, extension="pdf", timeout=timeout)
+            out = pytesseract.image_to_pdf_or_hocr(
+                img, extension="pdf", config=_OCR_CONFIG, timeout=timeout)
+            if dpi < _OCR_LOW_DPI:
+                log.warning(
+                    f"  {label} REVIEW: page {page.number} was recognised at "
+                    f"only {dpi} dpi after grinding down — its text is "
+                    f"low-confidence; verify this page before sharing.")
+            return out
         except Exception as e:
             if i < last:
                 nxt = max(_OCR_MIN_DPI, int(base * _OCR_RETRY_FACTORS[i + 1]))
@@ -1895,7 +1910,8 @@ def _ocr_pdf(doc, log):
                     rendered.append((page, img))
                 futs = [(page, ex.submit(
                             pytesseract.image_to_pdf_or_hocr, img,
-                            extension="pdf", timeout=timeout))
+                            extension="pdf", config=_OCR_CONFIG,
+                            timeout=timeout))
                         for page, img in rendered]
                 for page, fut in futs:
                     try:
@@ -2037,7 +2053,8 @@ def _reocr_garbled_pages(doc, log):
                     rendered.append((page, img))
                 futs = [(page, ex.submit(
                             pytesseract.image_to_pdf_or_hocr, img,
-                            extension="pdf", timeout=timeout))
+                            extension="pdf", config=_OCR_CONFIG,
+                            timeout=timeout))
                         for page, img in rendered]
                 for page, fut in futs:
                     try:
@@ -11553,13 +11570,25 @@ def _page_lined_rows(page):
 
     rows = _strip_markers([(a["line_num"], a["segments"])
                            for a in sorted(anchors, key=lambda a: a["y_mid"])])
-    # Normalize before detect: when the ordinary extraction shows splice
-    # corruption, retry from character geometry — a welded span splits at its
-    # column jumps and the party name comes out contiguous, so the ordinary
-    # term patterns can replace it. Adopted only when the cure actually clears
-    # the splice signature; otherwise the original rows stand and the
-    # reduced-span scrub (scrub_welded) remains the net beneath.
-    if _page_looks_spliced(rows):
+    # Normalize before detect: rebuild the body spans from character geometry,
+    # splitting each welded span at its column jumps, so the party name comes
+    # out contiguous and the ordinary term patterns can replace it. This is the
+    # only stage that PREVENTS a weld; everything downstream (scrub_welded, the
+    # hard-seam pass) merely cures one.
+    #
+    # Gated on the weld SCORE, not on `_page_looks_spliced`. The verdict misses
+    # exactly the shape that motivated this — a caps run welded to a paragraph
+    # number ("MICHAEL14.") — and it cannot be taught to see it without
+    # swallowing every case number and Bates stamp. The score can, because it is
+    # only ever read comparatively.
+    #
+    # Adopted only when the rebuild STRICTLY REDUCES that score. That is what
+    # makes running this more often cheap in risk rather than expensive: a
+    # rebuild that doesn't help is discarded and the original rows stand. A
+    # shape the rebuild leaves alone (a case number, a VIN) scores the same on
+    # both sides and cannot tip the decision either way.
+    score = _page_weld_score(rows)
+    if score:
         try:
             cured = _detect_line_anchors(page, desplice=True)
         except Exception:
@@ -11567,7 +11596,7 @@ def _page_lined_rows(page):
         if cured:
             crows = _strip_markers([(a["line_num"], a["segments"])
                                     for a in sorted(cured, key=lambda a: a["y_mid"])])
-            if not _page_looks_spliced(crows):
+            if _page_weld_score(crows) < score:
                 return crows
     return rows
 
@@ -11610,6 +11639,47 @@ _PN_SPLICE_UPPERRUN_RE = re.compile(r"[A-Z]{3,}[a-z]{2,}")
 _PN_SPLICE_ATRUN_RE = re.compile(r"(?:^|\s)@[A-Za-z]")
 # Punctuation used as a rule/leader line: "______", "------", "......".
 _PN_SPLICE_RULE_RE = re.compile(r"^(.)\1{4,}$")
+# A caps run welded to a digit run, anchored to a word start so backtracking
+# cannot slide past a case number's leading year ("25STCV37838" must not be
+# rescued as "TCV37838"). Unusable as an absolute page verdict — see the
+# _PN_SPLICE_UPPERRUN_RE note — but perfectly usable as a COMPARATIVE measure,
+# which is the only place it appears: a case number, a VIN and a Bates stamp
+# score the SAME before and after a desplice rebuild, so they cancel out and
+# only a shape the rebuild actually changed can move the total.
+_PN_WELD_DIGIT_SEAM_RE = re.compile(r"(?<![A-Za-z0-9])[A-Z]{3,}\d{2,}")
+
+
+def _page_weld_score(rows):
+    """How much weld evidence a page's extracted rows carry — a COUNT, not a
+    verdict.
+
+    `_page_looks_spliced` answers "is this page corrupt?", which has to be right
+    in absolute terms and so cannot afford a signal like the digit seam. This
+    answers "did a rebuild make it better?", which only has to be right
+    RELATIVELY — so it can count every weld shape, including the ones whose
+    false-positive rate rules them out of the verdict. Whatever a signal
+    misfires on, it misfires on identically in both scores."""
+    if not rows:
+        return 0
+    text = " ".join(t for _num, segs in rows for _x, t in segs)
+    score = len(_PN_SPLICE_ATRUN_RE.findall(text))
+    for tok in text.split():
+        if _PN_SPLICE_RULE_RE.match(tok):
+            continue                      # a signature rule, not a long word
+        if (len(tok) > _PN_SPLICE_LONG_TOKEN
+                and not re.search(r"[-@._/]", tok)):
+            score += 1
+        score += len(_PN_SPLICE_UPPERRUN_RE.findall(tok))
+        score += len(_PN_WELD_DIGIT_SEAM_RE.findall(tok))
+        # Same surname-particle exemption the verdict makes: "McDONALD" is a
+        # name's own convention, not a splice.
+        if re.match(r"(?:Mc|Mac|Di|De|Da|La|Le|Lo|Fitz|Van|Von|St\.?|"
+                    r"O['’]|D['’])[A-Z][A-Za-z'’.,-]*$", tok):
+            continue
+        for m in _PN_SPLICE_CASEFLIP_RE.finditer(tok):
+            if re.match(r"[A-Z]{3,}", tok[m.start() + 1:]):
+                score += 1
+    return score
 
 
 def _page_looks_spliced(rows):

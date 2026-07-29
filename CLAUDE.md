@@ -314,6 +314,21 @@ the party), so its row stays reversible.
   scaled down on sparse pages), so a caption's label-value tab gap
   ("Department:&nbsp;&nbsp;&nbsp;55") stays one segment instead of splitting into a
   phantom column that hides the value from its label-anchored detector.
+  **The only stage that PREVENTS a weld** is the normalize-before-detect rebuild
+  in `_page_lined_rows`: `_detect_line_anchors(page, desplice=True)` rebuilds the
+  body spans from CHARACTER geometry (`_despliced_body_spans`, via `rawdict`) and
+  splits each welded span at its column jumps, so the name comes out contiguous
+  and the ordinary whole-word patterns can replace it. Everything below merely
+  cures a weld that already reached the scrubber. It is gated on
+  `_page_weld_score`, NOT on `_page_looks_spliced` — the verdict misses
+  "MICHAEL14." and cannot be widened to see it (the ~90% false-positive result
+  below). A COUNT can use signals a VERDICT cannot afford, because it is only
+  ever read comparatively: `_PN_WELD_DIGIT_SEAM_RE` is in the score and not in
+  the verdict, and whatever it misfires on it misfires on identically in both
+  scores. The rebuild is adopted only when it STRICTLY REDUCES that score, which
+  is what makes a loose gate cheap in risk rather than expensive — a rebuild
+  that doesn't help is discarded and the original rows stand. A clean page pays
+  nothing (score 0 → no second pass); a page with weld evidence pays ~4 ms.
   Post-hoc, `surviving_reals_reduced` / `scrub_welded`
   recover welded party names via an alphanumeric-reduced substring match —
   restricted to NAME-type records only (`_PN_WELD_CORE_CATS`), never structured
@@ -380,7 +395,16 @@ annotation-naming splice. Declarations/complaints skip linking
   whose text extracts as gibberish (bad encoding). Both **parallelize** render+
   OCR across worker threads (Tesseract is a subprocess → releases the GIL);
   **rendering stays on the main thread** (PyMuPDF is not thread-safe); overlay
-  is serial.
+  is serial. Note what this means for a WELD: a filed pleading is born-digital,
+  so neither path touches it — a welded caption there is an EXTRACTION failure,
+  not a recognition one, and no OCR setting can affect it.
+- `_OCR_CONFIG` (`-c preserve_interword_spaces=1`) is passed on **every** call
+  site, the grind rungs included. Tesseract otherwise collapses the run of
+  spaces a two-column caption depends on — a weld manufactured at recognition
+  time, upstream of every cure the pseudonymizer has.
+- The grind never skips a page, but a page re-rendered below `_OCR_LOW_DPI`
+  (150) has traded away real recognition quality, so it is named in the log as
+  low-confidence. Silence there read as "recognised fine".
 - Per-page **timeout + grind**: a stalled page is re-rendered at lower
   resolution and retried, never skipped, never hangs (the earlier 0%-CPU hang).
 - Env vars: `PDF_LINKER_OCR_WORKERS` (default cores-1, cap 10),

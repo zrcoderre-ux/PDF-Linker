@@ -77,7 +77,7 @@ def test_stalled_page_grinds_to_lower_res_instead_of_skipping(monkeypatch):
 
     dpis, n = [], {"calls": 0}
 
-    def _fake_ocr(img, extension="", timeout=0):
+    def _fake_ocr(img, extension="", config="", timeout=0):
         n["calls"] += 1
         if n["calls"] <= 2:
             raise RuntimeError("Tesseract process timeout")   # stall
@@ -113,7 +113,7 @@ def test_timeout_is_passed_on_every_attempt(monkeypatch):
     # Guard against an edit dropping the timeout: every attempt must carry it.
     seen = []
 
-    def _fake_ocr(img, extension="", timeout=0):
+    def _fake_ocr(img, extension="", config="", timeout=0):
         seen.append(timeout)
         raise RuntimeError("timeout")                   # never succeeds -> all attempts run
 

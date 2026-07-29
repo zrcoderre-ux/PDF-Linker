@@ -48,7 +48,7 @@ def test_reocr_parallel_relayers_every_page(monkeypatch):
     good = _good_overlay_bytes()
     calls = []
 
-    def _ocr(img, extension="", timeout=0):
+    def _ocr(img, extension="", config="", timeout=0):
         calls.append(timeout)
         return good
 
@@ -70,7 +70,7 @@ def test_reocr_stall_is_ground_down_not_skipped(monkeypatch):
     good = _good_overlay_bytes()
     state = {"n": 0}
 
-    def _ocr(img, extension="", timeout=0):
+    def _ocr(img, extension="", config="", timeout=0):
         state["n"] += 1
         if state["n"] == 1:                             # first page stalls once
             raise RuntimeError("Tesseract process timeout")
