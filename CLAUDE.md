@@ -230,9 +230,29 @@ the party), so its row stays reversible.
 - **Detectors** (`_PN_DETECTORS`: ssn/email/phone/address/url) run as regex over
   the text in `apply()`; `_detector_cands`/`_term_cands` produce candidates,
   highest-priority longest-non-overlapping wins.
+- **A `display-name` record is a record, not a term.** `_display_name_cands`
+  recognises the NAME in a "Name <addr@domain>" pair and mints it into
+  `self.records` — enough for `surviving_reals` to report it and `write_key` to
+  write a reversal row — but `_term_cands` iterates `self.terms`, so the name
+  was faked at the pair site and NOWHERE else. A firm's paralegal, named once
+  beside her address and then printed on every page of the letterhead, survived
+  on all of them, and the key PROMISED the reversal, so `DeAnonymize` would map
+  the fake back onto pages still carrying the real name.
+  `_display_name_repeat_cands` closes it: every known display-name is matched
+  standing alone, word-bounded and case-insensitively (`_substitute` case-matches
+  the fake, so an ALL-CAPS letterhead is covered). It runs AFTER
+  `_display_name_cands` in both `apply` and `apply_lines`, so a name first met in
+  a text has its other occurrences covered on that same pass.
 - **Two-tier leak detection**: `surviving_reals` (a tracked real still present)
   and the high-recall REVIEW scans (`review_scan`, `unknown_name_scan`,
   `reid_scan`) surface anything name-shaped for human triage in `LEAKS.xlsx`.
+  **A KEPT value is not a leak** — it is present because the operator said so,
+  so `surviving_reals` skips it (the REVIEW scans always did). Reporting it put
+  a row in `LEAKS.xlsx` that no answer could clear: `no` is what produced it,
+  and the durable decision lives on the master KEEP sheet, so consuming the
+  local worksheet never retired it either. Scoped to the categories a keep
+  survives in — a keep is RELEASED inside a full party match, so a
+  `_PN_PARTY_OVERRIDE_CATS` real still standing was faked nowhere and IS a leak.
   These scans must never re-flag the run's OWN fakes: `_pn_word_is_own_fake`
   recognises a bare fake ("Keswick") AND a welded one where a splice glued the
   fake to a neighbour ("CORPORATIOLORNE10" carries "lorne10", "POSTBOX4.ORGPANY"
@@ -299,6 +319,26 @@ the party), so its row stays reversible.
   restricted to NAME-type records only (`_PN_WELD_CORE_CATS`), never structured
   identifiers (a domain core nests inside the party it belongs to). Such pages
   are also flagged `REVIEW ... appears column-spliced` for a human.
+  **The core-length gate is two-tier** (`_weld_core`, the single eligibility
+  rule both passes share — they must stay mirrored, or detection out-runs
+  replacement and quarantines an export nothing can clean). The default
+  `_PN_WELD_CORE_MIN` is 8 because a reduced core carries no word boundary, but
+  that is longer than most first and last names — "michael", "carroll",
+  "amezcua", "maria", "juan" are 4-7 — so the gate skipped precisely the values
+  the pass exists for, and a spliced opposition put the defendant's name in the
+  export while `surviving_reals` called the file clean. A SHORT core
+  (`_PN_WELD_SHORT_CORE_MIN` 4) is allowed only when coincidence is implausible
+  AND the value is not a guess: a PERSON token (`_PN_WELD_SHORT_CORE_CATS` — an
+  entity's words are generic, "law"/"firm" nest inside "lawsuit"/"confirm"),
+  named by the operator's own party list (`_trusted_party_tokens`, which already
+  drops connectors so the "De" of "Cruz De Amezcua" never qualifies), not in
+  `_PN_COMMON_WORDS`, name-shaped, and **actually welded** at the match site
+  (`_pn_span_is_welded`) — a clean standalone occurrence belongs to the
+  boundary-anchored pass, which yields to keeps and citations this pass cannot
+  see. Still no help where `_page_looks_spliced` never fires: a caps-run welded
+  to a DIGIT run ("MICHAEL14.", "MARIA46.") is not yet a splice signal, and the
+  obvious rule `[A-Z]{3,}\d{2,}` cannot be used as-is because every California
+  case number ("26STCV00400") matches it.
 - **`--fix-leaks`**: a text-only fast path that applies the worksheet's Fix?
   decisions to the `.txt`/`.LEAK` exports without reopening the PDFs.
 
