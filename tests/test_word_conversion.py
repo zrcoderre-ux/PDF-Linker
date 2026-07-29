@@ -216,6 +216,93 @@ def test_fix_launcher_absent_when_there_is_nothing_to_triage(tmp_path,
     assert any(n.startswith("Re-run PDF-Linker") for n in _launchers(tmp_path))
 
 
+# ── a re-run that resolves the leaks leaves no trace of the leak workflow ────
+# The worksheet and the launcher were already cleaned up, but the QUARANTINED
+# export from the earlier run was not: it kept saying the folder had a leak to
+# triage, and it was the one file left in the folder carrying the real names
+# verbatim — so "the re-run resolved the leaks" quietly preserved the unscrubbed
+# copy. The fresh export beside it is the delivered one, so the re-run drops it.
+
+def test_rerun_drops_the_quarantine_it_supersedes(tmp_path, monkeypatch):
+    pytest.importorskip("openpyxl")
+    _docx(tmp_path / "Filing.docx", _para("Ernest N Ramirez appeared."))
+    td = tmp_path / "Text Files"
+    td.mkdir()
+    # what the earlier run left: the export it quarantined, real name and all
+    (td / "Filing.txt.LEAK").write_text(
+        "====== Page 1 ======\nErnest N Ramirez appeared.\n", encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["pdf_linker.py", str(tmp_path),
+                                      "--term", "Ernest N Ramirez"])
+    try:
+        pl.main()
+    except SystemExit:
+        pass
+    assert not (td / "Filing.txt.LEAK").exists()      # superseded, dropped
+    body = (td / "Filing.txt").read_text(encoding="utf-8")
+    assert "Ernest N Ramirez" not in body             # and the export is clean
+    assert not any(p.name.endswith(".LEAK") for p in td.iterdir())
+
+
+def test_rerun_deletes_worksheet_and_launcher_once_triage_is_resolved(
+        tmp_path, monkeypatch):
+    # End to end: run 1 flags a value, the operator marks it yes, run 2 scrubs it
+    # — and the folder is left with neither the worksheet nor the launcher, since
+    # there is nothing left to triage or to apply.
+    openpyxl = pytest.importorskip("openpyxl")
+    _docx(tmp_path / "Filing.docx",
+          _para("Ernest N Ramirez appeared.")
+          + _para("Attorneys for Defendant TRAVELERS CASUALTY answered."))
+    argv = ["pdf_linker.py", str(tmp_path), "--term", "Ernest N Ramirez"]
+    monkeypatch.setattr(sys, "argv", argv)
+    try:
+        pl.main()
+    except SystemExit:
+        pass
+    sheet = tmp_path / "LEAKS.xlsx"
+    assert sheet.is_file()
+    assert any(n.startswith("Apply Leak Fixes") for n in _launchers(tmp_path))
+
+    wb = openpyxl.load_workbook(sheet)
+    ws = wb.active
+    fix_col = [c.value for c in ws[1]].index("Fix? (yes/no)") + 1
+    for r in range(2, ws.max_row + 1):
+        ws.cell(row=r, column=fix_col).value = "yes"
+    wb.save(sheet)
+
+    monkeypatch.setattr(sys, "argv", argv)
+    try:
+        pl.main()
+    except SystemExit:
+        pass
+    assert not sheet.exists()
+    assert not any(n.startswith("Apply Leak Fixes") for n in _launchers(tmp_path))
+    body = (tmp_path / "Text Files" / "Filing.txt").read_text(encoding="utf-8")
+    assert "TRAVELERS CASUALTY" not in body and "Ernest N Ramirez" not in body
+
+
+def test_superseded_quarantine_covers_every_name_and_only_leak_files(tmp_path):
+    # The export's name is scrubbed, so the quarantine may sit under a DIFFERENT
+    # stem than the file being written: the source stem (a run from before
+    # filename scrubbing) and the pre-subfolder case-root location both count.
+    # Nothing but the tool's own .txt.LEAK extension is ever unlinked.
+    td = tmp_path / "Text Files"
+    td.mkdir()
+    src = tmp_path / "Yu Decl.pdf"
+    txt = td / "Bennett Decl.txt"
+    txt.write_text("fresh", encoding="utf-8")
+    victims = [td / "Bennett Decl.txt.LEAK", td / "Yu Decl.txt.LEAK",
+               tmp_path / "Yu Decl.txt.LEAK"]
+    for p in victims:
+        p.write_text("old", encoding="utf-8")
+    keep = [td / "Bennett Decl.txt", td / "Yu Decl.txt",
+            tmp_path / "Yu Decl notes.txt"]
+    for p in keep:
+        p.write_text("mine", encoding="utf-8")
+    pl._pn_drop_superseded_quarantine(txt, src, log)
+    assert not any(p.exists() for p in victims)
+    assert all(p.exists() for p in keep)
+
+
 def test_empty_folder_still_gets_no_launchers(tmp_path, monkeypatch):
     # No PDFs and no Word docs is genuinely nothing to do — the folder must
     # not be littered with launchers for a batch that does not exist.
