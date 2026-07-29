@@ -8541,6 +8541,41 @@ def _pn_span_is_welded(src, start, end):
     after = src[end] if end < len(src) else ""
     return bool((before and before.isalnum()) or (after and after.isalnum()))
 
+
+def _pn_span_has_hard_seam(src, start, end):
+    """True when `src[start:end]` meets a neighbour across a letter<->digit
+    transition or a case flip — positive evidence that a printed boundary was
+    LOST at that exact spot, as opposed to two letters merely sitting together.
+
+    This is what lets a welded party name be recovered on a page
+    `_page_looks_spliced` never flagged. That heuristic classifies the PAGE, and
+    the obvious way to widen it — treat a caps run welded to a digit run
+    ("MICHAEL14.") as corruption — cannot be written as `[A-Z]{3,}\\d{2,}`:
+    measured over this repo's own corpus that rule is ~90% false positives, and
+    they are the very shapes this tool handles most (a California case number
+    "26STCV00400", a federal docket, a VIN, a Bates stamp "RAM000013", a
+    reservation code). Flagging those pages is not free either — it switches on
+    the >=8-char reduced pass document-wide, and that tier has no boundary check
+    at all.
+
+    Classifying the SEAM instead of the page needs no such guess, because it
+    only ever runs where a trusted party token already matched: "COVID19",
+    "CIV100" and "RAM000013" are untouched unless the case has a party named
+    Covid, Civ or Ram. What it will still catch is a Bates stamp built on a
+    party's own surname ("AMEZCUA001234") — which this tool already fakes as a
+    production number, so the two agree."""
+    def flip(a, b):
+        if not a or not b:
+            return False
+        if a.isdigit() != b.isdigit():
+            return True                             # letter <-> digit
+        if a.isalpha() and b.isalpha():
+            return a.isupper() != b.isupper()       # case flip
+        return False
+    left = flip(src[start - 1], src[start]) if start > 0 else False
+    right = flip(src[end - 1], src[end]) if end < len(src) else False
+    return left or right
+
 # A KEEP loses to an exact party match: a kept word that falls inside one of
 # these FULL-name term matches is released so the real party is still faked
 # ("Cal" kept alone, "CAL EQUIPMENT FE RANCH, LLC" faked whole). Deliberately
@@ -10675,7 +10710,7 @@ class Pseudonymizer:
                 idx.append(i)
         return "".join(reduced), idx
 
-    def surviving_reals_reduced(self, text):
+    def surviving_reals_reduced(self, text, spliced=True):
         """Tracked reals found in the ALPHANUMERIC-ONLY reduction of `text`.
 
         On a column-spliced caption the whole-word patterns match nothing —
@@ -10683,24 +10718,38 @@ class Pseudonymizer:
         boundaries — yet the reduction `schillecitortoricilaw` still CONTAINS
         `schillecitortorici`. Which cores qualify is `_weld_core`'s call, and it
         must stay the mirror of `scrub_welded`'s: a value this reports but that
-        one cannot cure is a leak the substituter was never able to clean."""
+        one cannot cure is a leak the substituter was never able to clean.
+
+        `spliced=False` (the page carries no splice signal) narrows the pass to
+        the short PERSON tier at a HARD seam — see `_pn_span_has_hard_seam`."""
+        cores = []
+        for rec in self.records.values():
+            core, short = self._weld_core(rec)
+            if core and (spliced or short):
+                cores.append((core, short, rec))
+        if not cores:
+            return []
+        # Cheap reject before the expensive citation mask: masking can only
+        # remove text, so a core absent from the raw reduction cannot appear.
+        raw, _idx = self._reduce_with_index(_NFKC(text))
+        if not any(c in raw for c, _s, _r in cores):
+            return []
         masked = self._mask_protected_citations(_NFKC(text))
         red, idx = self._reduce_with_index(masked)
         out = []
-        for rec in self.records.values():
-            core, short = self._weld_core(rec)
-            if not core:
-                continue
+        for core, short, rec in cores:
             k = red.find(core)
             while k >= 0:
-                if not short or _pn_span_is_welded(
-                        masked, idx[k], idx[k + len(core) - 1] + 1):
+                o_s, o_e = idx[k], idx[k + len(core) - 1] + 1
+                if ((not short or _pn_span_is_welded(masked, o_s, o_e))
+                        and (spliced
+                             or _pn_span_has_hard_seam(masked, o_s, o_e))):
                     out.append(rec["real"])
                     break
                 k = red.find(core, k + 1)
         return out
 
-    def scrub_welded(self, text):
+    def scrub_welded(self, text, spliced=True):
         """Write-side mirror of `surviving_reals_reduced`: remove a tracked real
         that survives only in the ALPHANUMERIC reduction of `text`.
 
@@ -10715,11 +10764,27 @@ class Pseudonymizer:
         Longest cores first and non-overlapping, so a name nested in a longer
         firm name doesn't double-substitute; the fake is case-matched to the
         span it replaces. Even a long core can coincide inside an unrelated
-        word, so callers run this ONLY on a page already flagged spliced — a
-        page the tool already reports as corrupted and asks a human to verify."""
+        word, so the FULL pass runs only on a page already flagged spliced — a
+        page the tool already reports as corrupted and asks a human to verify.
+
+        `spliced=False` runs the narrow pass every page gets: the short PERSON
+        tier, and only across a HARD seam (`_pn_span_has_hard_seam`). That is
+        what recovers "MICHAEL14." / "MARIA46." — a caps run welded to a
+        paragraph number, which `_page_looks_spliced` cannot be taught to
+        recognise without swallowing every case number and Bates stamp."""
         src = _NFKC(text)
         reduced, idx = self._reduce_with_index(src)
         if not reduced:
+            return text
+        cands = []
+        for rec in self.records.values():
+            core, short = self._weld_core(rec)
+            if core and (spliced or short):
+                cands.append((core, _pn_fake_core_display(rec["fake"]), rec,
+                              short))
+        # Nothing to hunt for, or nothing present: leave before paying for
+        # citation detection, which this pass now runs on every page.
+        if not any(core in reduced for core, _f, _r, _s in cands):
             return text
         # The same citation protection the ordinary substitution path applies
         # (P0-A): a cited decision whose party name contains a tracked core
@@ -10727,12 +10792,6 @@ class Pseudonymizer:
         # on a splice-flagged page — renaming an authority is a worse failure
         # than leaving a welded name in.
         protected = self._protected_citation_spans(src)
-        cands = []
-        for rec in self.records.values():
-            core, short = self._weld_core(rec)
-            if core:
-                cands.append((core, _pn_fake_core_display(rec["fake"]), rec,
-                              short))
         cands.sort(key=lambda c: -len(c[0]))
         taken = [False] * len(reduced)
         repls = []
@@ -10752,6 +10811,12 @@ class Pseudonymizer:
                 # and that pass yields to keeps and citations this one cannot
                 # see.
                 if short and not _pn_span_is_welded(src, o_s, o_e):
+                    start = k + 1
+                    continue
+                # Off a splice-flagged page, only a HARD seam is evidence a
+                # boundary was lost here, so "Juanita" and "Carrollton" keep
+                # their letters while "MARIA46." and "JUANthe" are cured.
+                if not spliced and not _pn_span_has_hard_seam(src, o_s, o_e):
                     start = k + 1
                     continue
                 if not any(taken[k:end]):
@@ -11519,9 +11584,22 @@ _COLUMN_BAND_TOL = 30.0   # pt; segment left edges this close share a page colum
 # certified clean on the whole-word patterns alone.
 _PN_SPLICE_LONG_TOKEN = 25
 _PN_SPLICE_CASEFLIP_RE = re.compile(r"[a-z][A-Z]")
-# The mirror flip: an upper-case RUN welded to a lower-case word ("SERVICEoffices",
-# "TRANSMISSION1010"). Two lower-case letters are required so an ordinary
-# acronym plural ("ADUs", "PDFs") is not mistaken for a splice.
+# The mirror flip: an upper-case RUN welded to a LOWER-CASE word
+# ("SERVICEoffices"). Two lower-case letters are required so an ordinary acronym
+# plural ("ADUs", "PDFs") is not mistaken for a splice.
+#
+# Deliberately NOT extended to a caps run welded to a DIGIT run
+# ("TRANSMISSION1010", "MICHAEL14.") — this comment used to cite one as an
+# example it covers, which it never did. `[A-Z]{3,}\d{2,}` measures ~90% false
+# positives on this repo's own corpus, and they are the shapes the tool handles
+# most: a California case number ("25STCV37838"), a federal docket, a VIN, a
+# Bates stamp ("RAM000013"), a reservation code. Tightening it (caps run >= 5,
+# short digit run, anchored to a word start) still fires on a Bates stamp built
+# on a surname ("RAMIREZ000013") and on "COVID19", and a false page flag is not
+# free — it switches on the >=8-char reduced pass document-wide, which has no
+# boundary check. That weld shape is recovered by `_pn_span_has_hard_seam`
+# instead, which classifies the SEAM at a site where a trusted party token
+# already matched and so needs no guess about the page.
 _PN_SPLICE_UPPERRUN_RE = re.compile(r"[A-Z]{3,}[a-z]{2,}")
 # A DANGLING "@" — one at the start of a token, i.e. preceded by whitespace or by
 # nothing. A real address never begins with it; a spliced caption does, because
@@ -12833,23 +12911,28 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         # (the source contains every real name by definition).
         spliced = [i + 1 for i, (_h, c) in enumerate(page_blocks)
                    if isinstance(c, list) and _page_looks_spliced(c)]
+        # A welded party name defeats the boundary-anchored patterns, so cure
+        # the written body with the reduced-span replacement (the write-side
+        # mirror of surviving_reals_reduced) BEFORE re-scanning — otherwise
+        # detection out-runs replacement and quarantines an export the
+        # substituter never had a chance to clean. The FULL pass needs a
+        # splice-flagged page; the narrow hard-seam pass runs on every page,
+        # because a caps run welded to a paragraph number ("MICHAEL14.") is not
+        # a signal `_page_looks_spliced` can carry.
+        body = pseudonymizer.scrub_welded(body, spliced=bool(spliced))
+        scrubbed_detect = pseudonymizer.scrub_welded(scrubbed_detect,
+                                                     spliced=bool(spliced))
         if spliced:
-            # A welded party name defeats the boundary-anchored patterns, so
-            # cure the written body with the reduced-span replacement (the
-            # write-side mirror of surviving_reals_reduced) BEFORE re-scanning —
-            # otherwise detection out-runs replacement and quarantines an export
-            # the substituter never had a chance to clean.
-            body = pseudonymizer.scrub_welded(body)
-            scrubbed_detect = pseudonymizer.scrub_welded(scrubbed_detect)
             log.warning(f"  Pseudonymization REVIEW on {pdf_path.name}: caption "
                         f"on page(s) {spliced} appears column-spliced; term "
                         f"matching is unreliable there — verify by hand.")
 
         survivors = set(pseudonymizer.surviving_reals(body))
         survivors |= set(pseudonymizer.surviving_reals(scrubbed_detect))
-        if spliced:
-            survivors |= set(pseudonymizer.surviving_reals_reduced(body))
-            survivors |= set(pseudonymizer.surviving_reals_reduced(scrubbed_detect))
+        survivors |= set(pseudonymizer.surviving_reals_reduced(
+            body, spliced=bool(spliced)))
+        survivors |= set(pseudonymizer.surviving_reals_reduced(
+            scrubbed_detect, spliced=bool(spliced)))
 
         if survivors:
             pseudonymizer.note_leaks(survivors)
@@ -14335,13 +14418,13 @@ def _fix_leaks_mode(folder, args, cfg, log):
             continue
         is_leak = f.name.endswith(".txt.LEAK")
         scrubbed = pz.apply(body)
-        if is_leak:
-            # A quarantined file may have been held for a WELDED leak the
-            # whole-word patterns can't see ("FORDMOTORCOMPANYDEFENDANT" on a
-            # spliced caption). Cure it the way the full run cures a flagged
-            # page — quarantine already marks the file as human-review, the
-            # precondition scrub_welded requires.
-            scrubbed = pz.scrub_welded(scrubbed)
+        # A quarantined file may have been held for a WELDED leak the whole-word
+        # patterns can't see ("FORDMOTORCOMPANYDEFENDANT" on a spliced caption).
+        # Cure it the way the full run cures a flagged page — quarantine already
+        # marks the file as human-review, the precondition the full pass
+        # requires. An ordinary export gets the narrow hard-seam pass, the same
+        # one every page gets in a full run.
+        scrubbed = pz.scrub_welded(scrubbed, spliced=is_leak)
         # Compare against the NFKC form: apply() normalizes unconditionally, so
         # a file whose only difference is normalization has no actual fix in it
         # and is left untouched (not rewritten, not counted as changed).
@@ -14352,11 +14435,10 @@ def _fix_leaks_mode(folder, args, cfg, log):
             except Exception as e:
                 log.warning(f"  Could not write {f.name}: {e}")
         survivors = set(pz.surviving_reals(scrubbed))
-        if is_leak:
-            # ...and gate the un-quarantine on the reduced scan too, so a
-            # welded survivor the cure couldn't fix keeps the file held
-            # instead of being delivered as "clean".
-            survivors |= set(pz.surviving_reals_reduced(scrubbed))
+        # ...and gate the un-quarantine on the reduced scan too, so a welded
+        # survivor the cure couldn't fix keeps the file held instead of being
+        # delivered as "clean". Mirrors the cure above, tier for tier.
+        survivors |= set(pz.surviving_reals_reduced(scrubbed, spliced=is_leak))
         pz.written.append(f)
         if survivors:
             pz.leaked_by_file[f] = {s.lower() for s in survivors}
