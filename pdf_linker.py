@@ -12081,6 +12081,298 @@ def _form_widget_cells(w, rect):
             for i, ln in enumerate(lines)]
 
 
+# ── the same form, filled with INK ──────────────────────────────────────────
+# A form that was printed, marked by hand and scanned (or filled on screen and
+# FLATTENED) has no widgets left: the checkbox is a printed square and the answer
+# is ink inside it. There is nothing authoritative to read, so the state has to
+# be MEASURED, and the three sources differ in how much they can be trusted:
+#
+#   1. a MARK GLYPH inside the box — the ZapfDingbats check a flattened form
+#      keeps, or the stray "x"/"v" OCR makes of a pen stroke. Exact: a glyph is
+#      either there or it is not.
+#   2. a VECTOR path strictly inside the box — a pen stroke from a PDF annotation
+#      that was flattened, or a drawn X. Also exact.
+#   3. RASTER INK — the scanned case, where the only evidence is dark pixels.
+#      Inferred, and reported as such.
+#
+# For (3) the box position CANNOT be taken from the caption's geometry: a probe
+# window centred by estimate lands a point or two off, the box border bleeds into
+# the measured interior, and empty boxes then measure as heavily inked as marked
+# ones (0.14 vs 0.15 — indistinguishable, and it flips with a 1pt shift). So the
+# box is found IN THE RASTER first — the bounding box of the dark pixels in the
+# window IS the printed square — and only its interior, inset clear of the
+# border, is measured. That self-registers: the same box measures the same fill
+# whatever the estimate was off by, and empty vs marked separates ~0.00 vs ~0.33.
+# A box touching the window edge may be clipped, so it yields NO verdict rather
+# than a guess.
+
+_INK_BOX_MIN, _INK_BOX_MAX = 5.0, 16.0     # pt; a printed checkbox's side
+_INK_ASPECT_LO, _INK_ASPECT_HI = 0.6, 1.7
+# The window swept left of a caption for its box. Wide enough that an ordinary
+# box-to-caption gap leaves the box whole inside it, stopping just short of the
+# caption's own first glyph.
+_INK_WIN_LEFT, _INK_WIN_RIGHT = 26.0, 1.5
+_INK_WIN_HALF = 9.0
+_INK_PROBE_DPI = 200        # a 9pt box is ~25px across: interior ~11px square
+_INK_DARK = 170             # 0-255; at or below this a pixel is ink (catches
+                            # pencil and a light-blue pen on an off-white scan)
+_INK_INSET = 0.28           # of the measured box, discarded as border
+_INK_MARK_FILL = 0.06       # interior ink fraction that reads as MARKED
+_INK_EMPTY_FILL = 0.03      # ...and below this as empty; between the two, [?]
+_INK_MIN_BOXES = 3          # near-square drawings that make a page form-shaped
+# A single character standing alone in a checkbox: the flattened check, or what
+# OCR makes of a pen mark. Not a word, so it never hides a caption. Deliberately
+# no DIGITS: the ZapfDingbats check does extract as "3", but the dingbat FONT
+# already settles that case, and admitting bare digits would read a stray form
+# number as a check for nothing. On a scan an OCR'd digit falls through to the
+# raster pass, which measures the actual ink.
+_INK_MARK_CHARS = frozenset("xX✓✔✗✘×✕✖☑☒■●▪◼•")
+# ...and the mirror: a glyph that positively means UNCHECKED. Some flattened
+# forms print the empty box as a character rather than line art, and reading it
+# as a mark would report relief the party never requested.
+_INK_EMPTY_CHARS = frozenset("□☐○◯")
+_INK_MARK_FONTS = ("dingbat", "wingding", "zadb", "symbol")
+
+
+def _ink_glyph_state(span):
+    """True (marked), False (positively unmarked) or None (not a state glyph) for
+    a span sitting inside a checkbox. A dingbat/symbol font says "mark" outright;
+    otherwise only a lone character qualifies, so a caption that drifted into the
+    window is never read as a check."""
+    text = str(span.get("text", "")).strip()
+    if not text or len(text) > 2:
+        return None
+    if all(ch in _INK_EMPTY_CHARS for ch in text):
+        return False
+    font = str(span.get("font", "")).lower()
+    if any(f in font for f in _INK_MARK_FONTS):
+        return True
+    return True if all(ch in _INK_MARK_CHARS for ch in text) else None
+
+
+def _ink_span_blocks_window(span):
+    """True when a span in the probe window is real TEXT — two or more
+    alphanumerics — so the window is not a checkbox slot at all (a neighbouring
+    column, a pleading gutter number, a wrapped caption)."""
+    text = str(span.get("text", "")).strip()
+    return sum(1 for ch in text if ch.isalnum()) >= 2
+
+
+class _InkRaster:
+    """One grayscale render of a page, sliced per checkbox. `pix.samples` copies
+    the whole buffer on every access (8 MB a time at 300 dpi), so the memoryview
+    is taken ONCE — that alone was the difference between ~1 s and ~1 ms a box."""
+
+    def __init__(self, page, dpi=_INK_PROBE_DPI):
+        import fitz
+        self.pix = page.get_pixmap(dpi=dpi, colorspace=fitz.csGRAY, annots=False)
+        try:
+            self.buf = self.pix.samples_mv          # no copy
+        except AttributeError:
+            self.buf = self.pix.samples
+        self.k = dpi / 72.0
+        self.ox, self.oy = page.rect.x0, page.rect.y0
+
+    def _dark_rows(self, rect):
+        """([dark x's] per row, window bounds) for `rect`, in raster pixels."""
+        pix, k, buf = self.pix, self.k, self.buf
+        x0 = max(0, int((rect.x0 - self.ox) * k))
+        x1 = min(pix.width - 1, int((rect.x1 - self.ox) * k))
+        y0 = max(0, int((rect.y0 - self.oy) * k))
+        y1 = min(pix.height - 1, int((rect.y1 - self.oy) * k))
+        st = pix.stride
+        rows = []
+        for y in range(y0, y1 + 1):
+            base = y * st
+            rows.append([x for x in range(x0, x1 + 1) if buf[base + x] < _INK_DARK])
+        return rows, (x0, x1)
+
+    def box_fill(self, window):
+        """(interior ink fraction, the box's rect in POINTS) for the printed box
+        found inside `window`, or None when no plausible whole box is there
+        (blank space, a rule line, or a box the window clipped). The rect is
+        measured, not estimated, so the state box is laid out where the printed
+        one actually is."""
+        import fitz
+        rows, (wx0, wx1) = self._dark_rows(window)
+        ys = [i for i, xs in enumerate(rows) if xs]
+        if not ys:
+            return None                       # blank: no printed box here
+        r0, r1 = ys[0], ys[-1]
+        bx0 = min(min(xs) for xs in rows if xs)
+        bx1 = max(max(xs) for xs in rows if xs)
+        bw, bh = bx1 - bx0 + 1, r1 - r0 + 1
+        lo = _INK_BOX_MIN * self.k * 0.8
+        if bw < lo or bh < lo or not _INK_ASPECT_LO <= bw / bh <= _INK_ASPECT_HI:
+            return None                       # not a square: a rule, a smudge
+        if bx0 <= wx0 or bx1 >= wx1 or r0 == 0 or r1 == len(rows) - 1:
+            return None                       # touching the edge: maybe clipped
+        dx, dy = round(bw * _INK_INSET), round(bh * _INK_INSET)
+        ix0, ix1, iy0, iy1 = bx0 + dx, bx1 - dx, r0 + dy, r1 - dy
+        if ix1 <= ix0 or iy1 <= iy0:
+            return None
+        dark = sum(1 for y in range(iy0, iy1 + 1) for x in rows[y]
+                   if ix0 <= x <= ix1)
+        fill = dark / ((ix1 - ix0 + 1) * (iy1 - iy0 + 1))
+        # rows are indexed from the window's top edge, columns absolutely
+        wy0 = max(0, int((window.y0 - self.oy) * self.k))
+        rect = fitz.Rect(self.ox + bx0 / self.k, self.oy + (wy0 + r0) / self.k,
+                         self.ox + (bx1 + 1) / self.k,
+                         self.oy + (wy0 + r1 + 1) / self.k)
+        return fill, rect
+
+
+def _ink_state_from_fill(fill):
+    """Marked / empty / UNREADABLE from a measured interior ink fraction.
+
+    The middle band is reported as unreadable rather than rounded to the nearer
+    answer. A pencil tick too faint to separate from scanner speckle is exactly
+    the case where guessing is worst: on a default-judgment packet the checkbox
+    decides the disposition, so "[?] verify this one" is worth far more than a
+    confident coin-flip."""
+    if fill >= _INK_MARK_FILL:
+        return True
+    if fill <= _INK_EMPTY_FILL:
+        return False
+    return None
+
+
+def _ink_square_drawings(page):
+    """Checkbox-sized near-square vector rects, and every drawing rect on the
+    page. A flattened form's boxes are template line art, so this finds them
+    exactly — no rendering needed."""
+    try:
+        drawings = page.get_drawings()
+    except Exception:
+        return [], []
+    boxes, allr = [], []
+    for d in drawings:
+        r = d.get("rect")
+        if r is None:
+            continue
+        allr.append(r)
+        w, h = r.width, r.height
+        if (_INK_BOX_MIN <= w <= _INK_BOX_MAX and _INK_BOX_MIN <= h <= _INK_BOX_MAX
+                and h and _INK_ASPECT_LO <= w / h <= _INK_ASPECT_HI):
+            boxes.append(r)
+    return boxes, allr
+
+
+def _ink_form_cells(page):
+    """(cells, boxes, marked, unsure, exact) for a form filled with ink, or None
+    when the page is not an ink-filled form.
+
+    `exact` is True when every state came from a glyph or a vector path — no
+    raster inference was needed, so the states are as trustworthy as a widget's.
+    """
+    import fitz
+    # The gate, cheapest-first: a page whose own line art already shows enough
+    # checkbox-sized squares is form-shaped without further proof; otherwise a
+    # Judicial Council form id in the footer decides it. An ordinary filing fails
+    # both in ~1.5 ms and never reaches the extraction or the render below.
+    squares, all_rects = _ink_square_drawings(page)
+    if len(squares) < _INK_MIN_BOXES and not _form_page_number(page):
+        return None
+    try:
+        blocks = page.get_text("dict").get("blocks", [])
+    except Exception:
+        return None
+    spans = [sp for blk in blocks for ln in blk.get("lines", [])
+             for sp in ln.get("spans", []) if str(sp.get("text", "")).strip()]
+    if not spans:
+        return None
+    # Plain tuples, compared arithmetically: a real form page runs to hundreds of
+    # spans, and building a Rect per span per window made this quadratic in
+    # object churn for no gain.
+    bbs = [tuple(sp["bbox"]) for sp in spans]
+
+    raster = None            # built lazily: only a scan needs one
+    cells, boxes, marked, unsure, exact = [], 0, 0, 0, True
+    consumed = []            # span bboxes that turned out to be marks
+    for idx, sp in enumerate(spans):
+        bb = bbs[idx]
+        ym = (bb[1] + bb[3]) / 2
+        wx0, wy0 = bb[0] - _INK_WIN_LEFT, ym - _INK_WIN_HALF
+        wx1, wy1 = bb[0] - _INK_WIN_RIGHT, ym + _INK_WIN_HALF
+        if wx0 < page.rect.x0 or wx1 <= wx0:
+            continue
+        win = fitz.Rect(wx0, wy0, wx1, wy1)
+        inside = [spans[j] for j, o in enumerate(bbs)
+                  if j != idx and o[0] < wx1 and o[2] > wx0
+                  and o[1] < wy1 and o[3] > wy0]
+        if any(_ink_span_blocks_window(o) for o in inside):
+            continue                     # real text: not a checkbox slot
+        # (1) a state glyph — a flattened check, an empty-box character, or the
+        # stray character OCR made of a pen stroke
+        state = None
+        for o in inside:
+            g = _ink_glyph_state(o)
+            if g is not None:
+                state = g if state is not True else True
+        # The box we will report against: the template rect when we have it.
+        box = next((r for r in squares if r.intersects(win)), None)
+        if state is None:
+            # (2) a vector path strictly inside the box (a flattened pen stroke)
+            if box is not None:
+                inner = fitz.Rect(box)
+                inner.x0 += box.width * 0.2
+                inner.x1 -= box.width * 0.2
+                inner.y0 += box.height * 0.2
+                inner.y1 -= box.height * 0.2
+                if any(inner.intersects(r) and r.width < box.width * 0.95
+                       for r in all_rects):
+                    state = True
+                else:
+                    state = False        # a template box with nothing in it
+        if state is None:
+            # (3) raster ink — the scanned page, and the only inferred source
+            if raster is None:
+                try:
+                    raster = _InkRaster(page)
+                except Exception:
+                    return None
+            got = raster.box_fill(win)
+            if got is None:
+                continue                 # no whole box here: not a checkbox
+            fill, box = got              # the MEASURED box, not an estimate
+            exact = False
+            state = _ink_state_from_fill(fill)
+        rect = box if box is not None else fitz.Rect(
+            win.x1 - _INK_BOX_MAX, ym - _INK_BOX_MAX / 2, win.x1, ym + _INK_BOX_MAX / 2)
+        boxes += 1
+        marked += 1 if state is True else 0
+        unsure += 1 if state is None else 0
+        mark = "[X]" if state is True else "[ ]" if state is False else "[?]"
+        cells.append(_form_cell((rect.y0 + rect.y1) / 2,
+                                (rect.y1 - rect.y0) / 2, rect.x0, mark))
+        # Whatever sits INSIDE the box is the mark — a flattened check glyph, or
+        # the stray character OCR made of a pen stroke. It is never caption text
+        # (the window guard excluded that), and the state box now stands for it,
+        # so drop it: the export must not read "[X] 3 a. Enter default...".
+        for o in inside:
+            ob = o["bbox"]
+            if rect.contains(fitz.Point((ob[0] + ob[2]) / 2,
+                                        (ob[1] + ob[3]) / 2)):
+                consumed.append(fitz.Rect(ob))
+    if not boxes:
+        return None
+
+    # Static text, minus whatever the state boxes above now stand for.
+    for sp in spans:
+        bb = sp["bbox"]
+        mid = fitz.Point((bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2)
+        if any(r.contains(mid) for r in consumed):
+            continue
+        text = _MARKER_DETECT_RE.sub("", sp["text"])
+        parts = text.split("\n")
+        h = max((bb[3] - bb[1]) / max(len(parts), 1), 1.0)
+        for k, part in enumerate(parts):
+            if part.strip():
+                cells.append(_form_cell(bb[1] + h * (k + 0.5), h / 2, bb[0],
+                                        part.strip()))
+    return cells, boxes, marked, unsure, exact
+
+
 def _form_page_cells(page):
     """(cells, widget_count, checked_count) for a widget-bearing page, or None
     when the page carries no widgets (every non-form page, and every form that
@@ -12143,17 +12435,9 @@ def _form_page_number(page):
     return m.group(1) if m else ""
 
 
-def _form_page_text(page):
-    """Reading-order text for a fillable-form page: every checkbox rendered as
-    [X] or [ ] beside the caption it governs, every filled field inlined at its
-    own label. Returns None when the page carries no widgets, so the caller
-    falls through to ordinary extraction."""
-    got = _form_page_cells(page)
-    if got is None:
-        return None
-    cells, boxes, checked = got
-    if not cells:
-        return None
+def _form_layout(cells):
+    """Lay cells out as monospace rows: group by printed row, then place each at
+    its own column. Shared by the widget path and the ink path."""
     left = min(x for _y, _h, x, _t in cells)
     rows, cur, top, bot = [], [], 0.0, 0.0
     for y, half, x, t in sorted(cells, key=lambda c: (c[0], c[2])):
@@ -12180,15 +12464,50 @@ def _form_page_text(page):
                 col = max(col, len(line) + 1)
             line += " " * (col - len(line)) + t
         out.append(line.rstrip())
+    return out
 
-    # A one-line provenance banner: it names the form, says the page was
-    # rendered by this path at all, and gives the operator a checkable count so
-    # "did the checkboxes come through?" has an answer at the top of the page.
+
+def _form_banner(page, boxes, checked, unsure=0, source="fields"):
+    """The one-line provenance banner. It names the form, says which pass
+    rendered the page, gives a checkable box tally — and where the states were
+    MEASURED rather than read from a form field, says so and asks for a check,
+    because an inferred checkbox on a default-judgment packet is exactly the kind
+    of fact nobody should take on trust."""
     form_no = _form_page_number(page)
-    tally = (f"{boxes} checkbox(es), {checked} checked" if boxes
-             else "no checkboxes")
-    label = f"fillable form {form_no}" if form_no else "fillable form"
-    return f"[{label}: {tally}]\n" + "\n".join(out)
+    what = f"form {form_no}" if form_no else "court form"
+    if source == "fields":
+        tally = (f"{boxes} checkbox(es), {checked} checked" if boxes
+                 else "no checkboxes")
+        return f"[fillable {what}: {tally}]"
+    read = ("marks read from the page's line art"
+            if source == "exact" else
+            "marks READ FROM INK — no form fields left; VERIFY against the PDF")
+    tally = f"{boxes} box(es), {checked} marked"
+    if unsure:
+        tally += f", {unsure} unreadable ([?])"
+    return f"[printed {what} — {read}: {tally}]"
+
+
+def _form_page_text(page):
+    """Reading-order text for a court form: every checkbox rendered as [X], [ ]
+    (or [?] when it could not be read) beside the caption it governs, and every
+    filled value inlined at its own label.
+
+    Prefers the form's own WIDGETS, which are authoritative. Falls back to the
+    ink pass for a form that was flattened or printed-and-scanned. Returns None
+    when the page is neither, so the caller keeps ordinary extraction."""
+    got = _form_page_cells(page)
+    if got is not None and got[0]:
+        cells, boxes, checked = got
+        return (_form_banner(page, boxes, checked) + "\n"
+                + "\n".join(_form_layout(cells)))
+    ink = _ink_form_cells(page)
+    if ink is None or not ink[0]:
+        return None
+    cells, boxes, marked, unsure, exact = ink
+    return (_form_banner(page, boxes, marked, unsure,
+                         "exact" if exact else "ink") + "\n"
+            + "\n".join(_form_layout(cells)))
 
 
 def _doc_has_form_fields(doc):
@@ -12200,17 +12519,13 @@ def _doc_has_form_fields(doc):
         return False
 
 
-def _page_has_choice_widgets(page):
-    """True when the page carries a checkbox or radio widget — the state that
-    ordinary extraction cannot represent at all, and so the one thing worth
-    giving up pleading-line numbering for."""
-    try:
-        import fitz
-        return any(w.field_type in (fitz.PDF_WIDGET_TYPE_CHECKBOX,
-                                    fitz.PDF_WIDGET_TYPE_RADIOBUTTON)
-                   for w in page.widgets())
-    except Exception:
-        return False
+def _form_has_state_boxes(form):
+    """True when a form rendering carries at least one checkbox STATE — the thing
+    no other rendering of the page can express, and so the only reason to give up
+    pleading-paper line numbering (and the "p.3:7" pinpoint cites built on it).
+    Asked of the rendered text so it holds for a widget form and an ink one
+    alike."""
+    return bool(form) and ("[X]" in form or "[ ]" in form or "[?]" in form)
 
 
 # Sentinel: "the caller has not decided about the form path". Distinct from None,
@@ -13182,10 +13497,8 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
     detect_pages = []  # column-ordered page text, for name detection / leak check
     page_blocks = []  # (header, rows_or_text) before pseudonymization; rows is
                       # a list of (line_num, segments) for pleading pages, else a str
-    # One cheap check for the whole document: without an AcroForm there are no
-    # widgets to render, so no page pays for the form path.
     has_fields = _doc_has_form_fields(doc)
-    forms_seen = []
+    forms_seen, ink_seen = [], []
     for i, page in enumerate(doc):
         raw = page.get_text("text")
         # Drop our invisible citation markers (present when re-processing an
@@ -13200,16 +13513,22 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         # each line's body without its number prefix; other pages fall back to
         # flowing text.
         rows = _page_lined_rows(page)
-        # A fillable-form page is rebuilt from its widgets instead (see
-        # _form_page_text). It wins over the pleading-rows path only when the
-        # page actually carries a checkbox or radio — that state is invisible to
-        # every other rendering, which is worth giving up line numbering for,
-        # while a form with only text fields keeps its gutter numbers.
-        form = _form_page_text(page) if has_fields else None
-        if form is not None and rows is not None and not _page_has_choice_widgets(page):
+        # A court-form page is rebuilt from its widgets, or from the INK on it
+        # when the widgets are gone (see _form_page_text). Not gated on
+        # `has_fields`: a printed-and-scanned form declares no AcroForm at all,
+        # which is exactly the case the ink pass exists for.
+        #
+        # It wins over the pleading-rows path only when the rendering actually
+        # carries a checkbox state — that is invisible to every other rendering,
+        # which is worth giving up line numbering for, while a form with only
+        # text fields keeps its gutter numbers.
+        form = _form_page_text(page)
+        if form is not None and rows is not None and not _form_has_state_boxes(form):
             form = None
         if form is not None:
             forms_seen.append(i + 1)
+            if "READ FROM INK" in form.split("\n", 1)[0]:
+                ink_seen.append(i + 1)
             rows = None
             clean = form
         orig_pages.append(clean)
@@ -13224,12 +13543,13 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
                   + " ======")
         page_blocks.append((header, rows if rows is not None else clean))
 
+    def _pages(nums):
+        return (", ".join(str(p) for p in nums[:12])
+                + (f" (+{len(nums) - 12} more)" if len(nums) > 12 else ""))
+
     if forms_seen:
-        log.info(f"  Fillable-form page(s) rendered from their widgets "
-                 f"(checkbox state preserved): "
-                 f"{', '.join(str(p) for p in forms_seen[:12])}"
-                 + (f" (+{len(forms_seen) - 12} more)"
-                    if len(forms_seen) > 12 else ""))
+        log.info(f"  Court-form page(s) rendered with checkbox state: "
+                 f"{_pages(forms_seen)}")
     elif has_fields:
         # An AcroForm the widget pass found nothing usable on — worth saying, so
         # a form that exported badly is never silently attributed to the tool
@@ -13237,6 +13557,16 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         log.info("  Document declares form fields but no page carried a "
                  "readable widget (flattened or scanned?) — pages exported by "
                  "ordinary extraction.")
+    if ink_seen:
+        # Louder than the line above, and deliberately: these states were
+        # MEASURED off the page, not read from a form field. On a default-
+        # judgment packet a checkbox decides the disposition, so the operator is
+        # told which pages to check rather than left to assume all of them are
+        # equally reliable.
+        log.warning(f"  Form page(s) filled with INK (no form fields left): "
+                    f"{_pages(ink_seen)} — checkbox states were read from the "
+                    f"marks on the page. Each page's banner says so; verify them "
+                    f"against the PDF before relying on them.")
 
     # Register this document's declarant(s) and any "dba" pair written into the
     # text, so those names are scrubbed even when absent from the spreadsheet

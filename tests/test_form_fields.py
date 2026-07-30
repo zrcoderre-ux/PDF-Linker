@@ -45,6 +45,10 @@ def _checkbox(page, name, x, y, on, size=10.0):
     w.field_type = fitz.PDF_WIDGET_TYPE_CHECKBOX
     w.rect = fitz.Rect(x, y, x + size, y + size)
     w.field_value = on
+    # A real form's checkbox is a PRINTED square, so the fixture draws one too:
+    # it is what survives when the widgets are flattened away.
+    w.border_width = 0.7
+    w.border_color = (0, 0, 0)
     page.add_widget(w)
 
 
@@ -302,20 +306,6 @@ def test_a_page_without_widgets_is_untouched():
     assert pl._doc_has_form_fields(doc) is False
 
 
-def test_a_flattened_form_falls_through_to_ordinary_extraction(tmp_path):
-    # Printed, signed and scanned: the widgets are gone and the checkboxes are
-    # ink. Nothing here applies, and the page must still export.
-    src = tmp_path / "flat.pdf"
-    doc = _civ100()
-    doc.bake()                      # flatten the widgets into page content
-    doc.save(src)
-    flat = fitz.open(src)
-    assert pl._form_page_text(flat[0]) is None
-    assert pl._write_text_version(src, flat, log, pseudonymizer=_pz())
-    body = next((tmp_path / "Text Files").glob("*.txt")).read_text()
-    assert "Enter default of defendant" in body
-
-
 def test_text_only_form_on_pleading_paper_keeps_its_line_numbers():
     # A widget page with NO checkbox has nothing the form path uniquely recovers,
     # so a line-numbered page (an MC-025 attachment) keeps its gutter numbers —
@@ -328,11 +318,12 @@ def test_text_only_form_on_pleading_paper_keeps_its_line_numbers():
         _static(p, 80, y, f"Averment number {i} of the pleading text.", 11)
     _text(p, "f", 300, 100, "FIELD VALUE", 90.0)
     rows = pl._page_lined_rows(p)
+    form = pl._form_page_text(p)
     assert rows is not None                       # pleading paper, recognised
-    assert pl._page_has_choice_widgets(p) is False
-    assert pl._form_page_text(p) is not None      # the form path COULD run...
+    assert form is not None                       # the form path COULD run...
+    assert pl._form_has_state_boxes(form) is False
     # ...and the routing rule in _write_text_version declines it
-    assert not (rows is None or pl._page_has_choice_widgets(p))
+    assert not (rows is None or pl._form_has_state_boxes(form))
 
 
 def test_text_only_form_off_pleading_paper_still_anchors_its_values():
@@ -345,6 +336,245 @@ def test_text_only_form_off_pleading_paper_still_anchors_its_values():
     assert pl._page_lined_rows(p) is None
     text = pl._form_page_text(p)
     assert "ACME LENDING, LLC" in _line_with(text, "PLAINTIFF:")
+
+
+# ── the same forms, filled with INK (no widgets left) ───────────────────────
+# Printed, marked by hand and scanned — or filled on screen and flattened. The
+# checkbox is a printed square and the answer is ink inside it, so the state has
+# to be measured rather than read.
+
+_INK_ITEMS = [      # (caption baseline, box x, caption x, caption, marked?)
+    (250, 62, 75, "a. Enter default of defendant (names): ERNEST N RAMIREZ", True),
+    (275, 62, 75, "b. Enter clerk's judgment", False),
+    (295, 78, 90, "(1) For restitution of the premises only", False),
+    (315, 78, 90, "(2) Under Code of Civil Procedure section 585(a)", True),
+    (340, 62, 75, "c. Enter court judgment under CCP 585(b)", True),
+    (380, 62, 75, "d. Enter default of cross-defendant", False),
+]
+_INK_BOX = 9.5
+
+
+def _printed(mark="vector", box_gap=0.0):
+    """A PRINTED CIV-100: box borders are template line art. `mark` says how a
+    checked box is inked — 'glyph' (a flattened check), 'vector' (a pen stroke
+    flattened into the page) or 'none' (a blank form). `box_gap` moves every box
+    away from its caption, so the ink pass can be shown not to depend on the
+    distance it guesses."""
+    doc = fitz.open()
+    p = _page(doc)
+    _static(p, 40, 150, "PLAINTIFF: ACME LENDING, LLC", 7)
+    _static(p, 40, 170, "DEFENDANT: ERNEST N RAMIREZ", 7)
+    _static(p, 400, 150, "CASE NUMBER: 24STCV24253", 7)
+    _static(p, 60, 230, "1. TO THE CLERK: On the complaint filed", 8)
+    for y, bx, cx, cap, on in _INK_ITEMS:
+        bx -= box_gap
+        _static(p, cx, y, cap, 8)
+        top = y - _INK_BOX + 1.5
+        p.draw_rect(fitz.Rect(bx, top, bx + _INK_BOX, top + _INK_BOX),
+                    color=(0, 0, 0), width=0.7)          # the printed box
+        if not on:
+            continue
+        if mark == "glyph":
+            p.insert_text((bx + 1, y - 1), "3", fontsize=9, fontname="zadb")
+        elif mark == "vector":
+            p.draw_line(fitz.Point(bx + 1.5, top + 5), fitz.Point(bx + 4, top + 8),
+                        color=(0, 0, 0.4), width=1.1)
+            p.draw_line(fitz.Point(bx + 4, top + 8), fitz.Point(bx + 8.5, top + 1),
+                        color=(0, 0, 0.4), width=1.1)
+    _static(p, 40, 745, "CIV-100 [Rev. January 1, 2023]", 6)
+    return doc
+
+
+def _scanned(src_doc, dpi=200):
+    """The page as it comes back from the court's scanner, after OCR: a raster
+    image plus an invisible text layer. No vectors and no mark glyph survive —
+    dark pixels are all the evidence there is."""
+    src = src_doc[0]
+    pix = src.get_pixmap(dpi=dpi)
+    out = fitz.open()
+    q = out.new_page(width=src.rect.width, height=src.rect.height)
+    q.insert_image(q.rect, pixmap=pix)
+    for blk in src.get_text("dict")["blocks"]:
+        for ln in blk.get("lines", []):
+            for sp in ln["spans"]:
+                if sp["font"].lower().startswith("zadb"):
+                    continue                  # the scanner sees ink, not a glyph
+                q.insert_text((sp["bbox"][0], sp["bbox"][3] - 1.5), sp["text"],
+                              fontsize=sp["size"], fontname="helv",
+                              render_mode=3)  # invisible, like an OCR layer
+    return out
+
+
+def _states(text):
+    """[(state, caption)] for every line that carries a checkbox state."""
+    out = []
+    for ln in _lines(text):
+        s = ln.strip()
+        for mark in ("[X]", "[ ]", "[?]"):
+            if s.startswith(mark):
+                out.append((mark, s[len(mark):].strip()))
+                break
+    return out
+
+
+def _expected():
+    return [("[X]" if on else "[ ]", cap) for _y, _bx, _cx, cap, on in _INK_ITEMS]
+
+
+def test_a_flattened_form_is_read_from_its_line_art():
+    # Filled on screen then flattened: the check survives as a glyph inside the
+    # printed square. Exact — a glyph is either there or it is not.
+    text = pl._form_page_text(_printed("glyph")[0])
+    assert _states(text) == _expected()
+    assert text.startswith("[printed form CIV-100 — marks read from the page's "
+                           "line art: 6 box(es), 3 marked]")
+
+
+def test_a_flattened_pen_stroke_is_read_as_a_mark():
+    text = pl._form_page_text(_printed("vector")[0])
+    assert _states(text) == _expected()
+    assert "line art" in _lines(text)[0]
+
+
+def test_a_blank_printed_form_reports_nothing_marked():
+    text = pl._form_page_text(_printed("none")[0])
+    assert [s for s, _c in _states(text)] == ["[ ]"] * 6
+    assert "0 marked" in _lines(text)[0]
+
+
+def test_a_scanned_form_is_read_from_the_ink():
+    # The case this exists for: nothing but dark pixels to go on.
+    doc = _scanned(_printed("vector"))
+    assert not list(doc[0].widgets())
+    assert pl._ink_square_drawings(doc[0])[0] == []      # no line art either
+    text = pl._form_page_text(doc[0])
+    assert _states(text) == _expected()
+    # ...and it says so, because an inferred checkbox decides a default judgment
+    assert "READ FROM INK" in _lines(text)[0]
+    assert "VERIFY against the PDF" in _lines(text)[0]
+
+
+def test_a_scanned_blank_form_invents_no_marks():
+    # The dangerous direction: reporting [X] on an empty box would say a party
+    # requested relief it never asked for.
+    text = pl._form_page_text(_scanned(_printed("none"))[0])
+    assert [s for s, _c in _states(text)] == ["[ ]"] * 6
+    assert "0 marked" in _lines(text)[0]
+
+
+def test_the_ink_pass_does_not_depend_on_the_box_to_caption_distance():
+    # The box is FOUND in the raster rather than centred by estimate — which is
+    # what makes it work. Moving every box further from its caption must not
+    # change a single state.
+    for gap in (0.0, 3.0, 6.0):
+        text = pl._form_page_text(_scanned(_printed("vector", box_gap=gap))[0])
+        assert _states(text) == _expected(), gap
+
+
+def test_an_ordinary_page_never_reaches_the_ink_pass():
+    # No form id in the footer and no checkbox-sized line art: an ordinary filing
+    # must not pay for a raster render, let alone get checkbox markers.
+    doc = fitz.open()
+    p = _page(doc)
+    for i in range(1, 29):
+        y = 70 + i * 24
+        _static(p, 40, y, str(i), 10)
+        _static(p, 80, y, f"Averment number {i} of the pleading text.", 11)
+    assert pl._ink_form_cells(p) is None
+    assert pl._form_page_text(p) is None
+
+
+def test_a_rule_line_beside_a_caption_is_not_a_checkbox():
+    doc = fitz.open()
+    p = _page(doc)
+    _static(p, 40, 745, "CIV-100 [Rev. January 1, 2023]", 6)   # passes the gate
+    for i, y in enumerate((200, 220, 240)):
+        _static(p, 90, y, f"item {i} of the form", 8)
+        p.draw_line(fitz.Point(66, y - 3), fitz.Point(88, y - 3), width=0.7)
+    got = pl._ink_form_cells(p)
+    assert got is None or got[1] == 0          # no box counted
+
+
+def test_a_fill_it_cannot_settle_is_unreadable_not_rounded():
+    # The safety property of the whole ink pass: a mark too faint to separate
+    # from scanner speckle is reported as unreadable, never rounded to the nearer
+    # answer. On a default-judgment packet the checkbox decides the disposition.
+    assert pl._ink_state_from_fill(0.40) is True
+    assert pl._ink_state_from_fill(pl._INK_MARK_FILL) is True
+    assert pl._ink_state_from_fill(0.00) is False
+    assert pl._ink_state_from_fill(pl._INK_EMPTY_FILL) is False
+    mid = (pl._INK_EMPTY_FILL + pl._INK_MARK_FILL) / 2
+    assert pl._ink_state_from_fill(mid) is None
+
+
+def test_a_faint_pencil_tick_is_not_reported_as_checked():
+    # ...and end to end: whatever a faint mark resolves to, the tally always
+    # accounts for every box, and a blank form never gains a mark.
+    doc = _printed("none")
+    p = doc[0]
+    for y, bx, _cx, _cap, on in _INK_ITEMS:
+        if on:
+            top = y - _INK_BOX + 1.5
+            p.draw_line(fitz.Point(bx + 2, top + 5), fitz.Point(bx + 7, top + 2),
+                        color=(0.55, 0.55, 0.6), width=0.3)     # barely there
+    text = pl._form_page_text(_scanned(doc)[0])
+    states = [s for s, _c in _states(text)]
+    assert len(states) == 6
+    banner = _lines(text)[0]
+    marked = states.count("[X]")
+    unsure = states.count("[?]")
+    assert f"{marked} marked" in banner
+    if unsure:
+        assert f"{unsure} unreadable" in banner
+    # the three boxes that were never touched stay unmarked, whatever the rest do
+    assert states[1] == states[2] == states[5] == "[ ]"
+
+
+def test_an_empty_box_glyph_reads_as_unchecked():
+    # Some flattened forms print the empty box as a character. Reading it as a
+    # mark would report relief the party never requested.
+    for ch, want in (("□", False), ("☐", False), ("✓", True), ("X", True),
+                     ("☒", True)):
+        got = pl._ink_glyph_state({"text": ch, "font": "Helvetica"})
+        assert got is want, (ch, got)
+    # a lone DIGIT is not a check: the dingbat font settles the real check glyph,
+    # and on a scan the raster pass measures the actual ink
+    assert pl._ink_glyph_state({"text": "3", "font": "Helvetica"}) is None
+    assert pl._ink_glyph_state({"text": "3", "font": "ZapfDingbats"}) is True
+    # ...and anything long enough to be a WORD is not a state glyph at all, so a
+    # caption that drifted into the window can never be read as a check
+    assert pl._ink_glyph_state({"text": "Enter", "font": "Helvetica"}) is None
+    assert pl._ink_glyph_state({"text": "individual", "font": "ZapfDingbats"}) is None
+
+
+def test_the_banner_names_unreadable_boxes():
+    # A state the ink could not settle is reported as [?] and counted, never
+    # rounded to checked or unchecked.
+    page = _printed("none")[0]
+    assert "1 unreadable ([?])" in pl._form_banner(page, 6, 3, 1, "ink")
+    assert "unreadable" not in pl._form_banner(page, 6, 3, 0, "ink")
+    assert "READ FROM INK" in pl._form_banner(page, 6, 3, 0, "ink")
+    assert "READ FROM INK" not in pl._form_banner(page, 6, 3, 0, "fields")
+
+
+def test_widgets_win_over_ink_when_both_are_available():
+    # A form whose fields are intact must be read from them: the widget is
+    # authoritative, the ink is inferred.
+    text = pl._form_page_text(_civ100()[0])
+    assert text.startswith("[fillable form CIV-100:")
+    assert "READ FROM INK" not in text
+
+
+def test_an_ink_form_page_is_still_scrubbed(tmp_path):
+    src = tmp_path / "Scanned CIV-100.pdf"
+    _scanned(_printed("vector")).save(src)
+    pz = _pz()
+    assert pl._write_text_version(src, fitz.open(src), log, pseudonymizer=pz)
+    body = next((tmp_path / "Text Files").glob("*.txt")).read_text(encoding="utf-8")
+    assert "[X] a. Enter default of defendant" in body
+    assert "ERNEST N RAMIREZ" not in body.upper()
+    assert "24STCV24253" not in body
+    assert "CIV-100" in body                   # form boilerplate, never faked
 
 
 def test_several_checkboxes_on_one_printed_row():
