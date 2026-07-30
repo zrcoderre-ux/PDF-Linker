@@ -409,11 +409,17 @@ the party), so its row stays reversible.
   `.txt.LEAK` extension is ever unlinked. Safe because the gate re-creates the
   quarantine at the end of the run if THIS run's export leaks too.
 
-## Fillable Judicial Council forms (the checkbox-heavy half of a filing)
+## Judicial Council forms (the checkbox-heavy half of a filing)
 
 A filled Judicial Council form — CIV-100 and the rest of a **default-judgment
 packet**, the **discretionary complaint forms** PLD-C-001 / PLD-PI-001 and their
-per-cause-of-action attachments — is an **AcroForm**: the answers live in WIDGET
+per-cause-of-action attachments — arrives one of two ways, and BOTH are handled:
+as an **AcroForm** whose answers are widget annotations (below), or **filled with
+ink** and flattened or scanned, where the answers are marks on the page (the
+subsection after it). Either way the checkbox IS the pleading, so a rendering
+that drops its state drops the document.
+
+Taking the AcroForm case first: the answers live in WIDGET
 annotations, not in the page content stream. Plain extraction therefore prints
 the blank form's boilerplate first and then every answer in one unanchored heap
 at the end, so no value sits beside the label it answers. A **checkbox fares
@@ -445,7 +451,8 @@ answerable at the top of the page.
   the off state, which is what makes "anything else is on" safe across the export
   values real forms use ("Yes", "On", "1").
 - **The form path wins over the pleading-rows path only when the page carries a
-  checkbox or radio.** That state is invisible to every other rendering, which is
+  checkbox state** (`_form_has_state_boxes`, asked of the rendered text so it
+  holds for a widget form and an ink one alike). That state is invisible to every other rendering, which is
   worth giving up gutter line numbers (and "p.3:7" pinpoint cites) for; a
   text-only form on pleading paper (an MC-025 attachment) keeps its numbers, and
   a text-only form off pleading paper still takes the form path because its
@@ -461,13 +468,56 @@ answerable at the top of the page.
   default-judgment packet carries several and the complaint forms carry a
   numbered attachment per cause of action — and a form number faked as a case
   number is a nonsense stamp that destroys the form's identity.
-- **A form that was printed, signed and SCANNED has no widgets left** — its
-  checkboxes are ink. Nothing here applies (the page falls through to ordinary
-  extraction/OCR) and the run says so, so a badly-exported form is never
-  silently attributed to the tool "handling forms now". Recovering a state from
-  ink is a different problem.
-- Cost: one `doc.is_form_pdf` check per document gates the whole path, and the
-  per-page widget probe is ~0.02 ms, so an ordinary filing pays nothing.
+### The same form, filled with INK (`_ink_form_cells`)
+
+A form that was printed, marked by hand and scanned — or filled on screen and
+FLATTENED — has no widgets left: the checkbox is a printed square and the answer
+is ink inside it. There is nothing authoritative to read, so the state is
+MEASURED, from three sources that differ in how far they can be trusted:
+
+1. **a state GLYPH inside the box** — the ZapfDingbats check a flattened form
+   keeps, an empty-box character (`□`, which positively means UNCHECKED — reading
+   it as a mark would report relief nobody requested), or the stray character OCR
+   makes of a pen stroke. Exact.
+2. **a VECTOR path strictly inside the box** — a flattened pen stroke or drawn X,
+   distinguished from the box's own border by being narrower than it. Exact.
+3. **RASTER INK** — the scanned case. Inferred, and said to be.
+
+**For (3) the box position cannot come from the caption's geometry.** A probe
+window centred by estimate lands a point or two off, the border bleeds into the
+measured interior, and empty boxes then measure as heavily inked as marked ones
+(0.14 vs 0.15 — indistinguishable, and it flips with a 1 pt shift). So the box is
+found IN THE RASTER first: the bounding box of the dark pixels in the window IS
+the printed square, and only its interior, inset clear of the border
+(`_INK_INSET`), is measured. That **self-registers** — the same box measures the
+same fill however far off the estimate was, and empty vs marked separates ~0.00
+vs ~0.33, verified unchanged as the box-to-caption distance moves. A box touching
+the window edge may be clipped, so it yields NO verdict rather than a guess.
+
+- **The middle band is `[?]`, never rounded** (`_ink_state_from_fill`). A pencil
+  tick too faint to separate from scanner speckle is exactly where guessing is
+  worst, and the banner counts the unreadable ones.
+- **A window holding real text is not a checkbox slot** at all
+  (`_ink_span_blocks_window`: two or more alphanumerics), which is what keeps a
+  neighbouring column, a gutter number or a wrapped caption from being probed.
+  Conversely everything INSIDE a confirmed box is the mark and is dropped from
+  the static text, so the export never reads `[X] 3 a. Enter default...`.
+- **`_INK_MARK_CHARS` admits no digits.** The ZapfDingbats check does extract as
+  `3`, but the dingbat FONT already settles that; admitting bare digits would
+  read a stray form number as a check for nothing, and on a scan an OCR'd digit
+  falls through to the raster pass, which measures the actual ink anyway.
+- **The gate is cheapest-first and must stay that way**: enough checkbox-sized
+  squares in the page's own line art, else a Judicial Council form id in the
+  footer. An ordinary filing fails both in ~1.6 ms/page and never reaches the
+  `get_text("dict")` or the render. An ink form page costs ~150 ms — negligible
+  beside the seconds of OCR a scanned page already pays.
+- **Widgets always win.** The ink pass runs only where they are absent, so an
+  intact form is never read by inference.
+- **The banner and the log both say when a state was inferred**, and ask for a
+  check. An inferred checkbox on a default-judgment packet is precisely the fact
+  nobody should take on trust, so it is never presented as equal to a widget's.
+- Cost of the widget path: one `doc.is_form_pdf` check per document, and a
+  ~0.02 ms per-page widget probe.
 
 ## Citation linking
 
