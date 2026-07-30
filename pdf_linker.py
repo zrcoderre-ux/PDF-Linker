@@ -6942,7 +6942,20 @@ def _pn_fake_caseno(real, registry):
 # these are never registered as terms and never flagged for review. Compared on
 # an alphanumeric-only, case-folded reduction, so spacing/dash variants
 # ("CIV 100", "Case Number") all match. Extend as more form boilerplate turns up.
-_PN_NEVER_FAKE = frozenset({"casenumber", "civ100", "defaultonly"})
+_PN_NEVER_FAKE = frozenset({
+    "casenumber", "civ100", "defaultonly",
+    # The caption block every Judicial Council form prints, label by label. Each
+    # sits immediately beside the value it asks for, so a harvest that reads the
+    # pair as one run offers the label up as a name; faked, the form no longer
+    # says what its own fields are.
+    "attorneyorpartywithoutattorney", "attorneyfor", "forcourtuseonly",
+    "superiorcourtofcalifornia", "countyof", "streetaddress", "mailingaddress",
+    "cityandzipcode", "branchname", "shorttitle", "casenumberfor",
+    "telephoneno", "faxno", "emailaddress", "statebarno", "statebarnumber",
+    "typeorprintname", "signatureofdeclarant", "dateandtime",
+    "formapprovedforoptionaluse", "judicialcouncilofcalifornia",
+    "codeofcivilprocedure",
+})
 
 # ...and the SHAPE of a Judicial Council form id, so the whole catalogue is
 # covered rather than the one entry someone happened to add: CIV-100, JUD-100,
@@ -7267,17 +7280,39 @@ shores vista mesa park city long
 """.split())
 
 
+# The printed FURNITURE of a Judicial Council form: the words its field labels
+# are built from. A form prints them beside the answer, so a harvest that reads
+# a label-and-value pair as one name run registers the label's words as bare
+# tokens and the tool then rewrites the form's own labels — "CITY AND ZIP CODE"
+# came out "CITY AND ZIP CRESSWELL" and "BRANCH NAME" came out "BLUMEN NAME",
+# which is the form's identity destroyed to protect nothing.
+#
+# Kept SEPARATE from the review gazetteer on purpose. `_PN_COMMON_WORDS` also
+# decides what the leak scans call boilerplate, and a word swallowed there stops
+# being reportable; these are only withheld from becoming a bare TOKEN, so a
+# party who really is named Page or Short still has their full name registered,
+# still gets scrubbed, and a bare survivor is still surfaced for review.
+_PN_FORM_LABEL_WORDS = frozenset({
+    "branch", "zip", "code", "codes", "mailing", "signature", "signatures",
+    "judicial", "council", "optional", "specify", "describe", "attachment",
+    "attachments", "title", "titles", "short", "page", "pages", "print",
+    "printed", "address", "addresses", "bar", "item", "items", "box", "boxes",
+    "check", "form", "forms", "declarant", "deponent", "amount", "amounts",
+})
+
+
 def _pn_is_generic_token(base):
     """True for a word that must never become a BARE pseudonym token, however
     it was harvested: ordinary English / procedural vocabulary ("Warranty",
     "Legal", "Name" — the run that faked every 'warranty' as 'langley' and
-    'Legal Standard' as 'Granite Standard' came from exactly these), an
+    'Legal Standard' as 'Granite Standard' came from exactly these), a Judicial
+    Council form's own field-label vocabulary ("Branch", "Zip Code"), an
     institution word, or a word of a protected locality ("Beach"). The FULL
     name a token came from is still registered; only the free-standing token
     is withheld, so the cost is a missed bare occurrence (caught by the
     unknown-name net), never a corrupted document."""
     return (base in _PN_COMMON_WORDS or base in _PN_REVIEW_NAME_STOP
-            or base in _PN_LOCALITY_WORDS)
+            or base in _PN_LOCALITY_WORDS or base in _PN_FORM_LABEL_WORDS)
 
 
 def _pn_is_protected_locality(city):
@@ -12120,6 +12155,18 @@ _INK_INSET = 0.28           # of the measured box, discarded as border
 _INK_MARK_FILL = 0.06       # interior ink fraction that reads as MARKED
 _INK_EMPTY_FILL = 0.03      # ...and below this as empty; between the two, [?]
 _INK_MIN_BOXES = 3          # near-square drawings that make a page form-shaped
+# A printed checkbox is a HOLLOW square: its border is dark the whole way round
+# and the interior is what the answer goes in. Ink that instead FILLS its own
+# outline is a glyph, and the raster cannot tell the two apart from size and
+# aspect alone — a paragraph number "2.", an item letter "a." or a "(1)" all sit
+# in the probe window of the caption they index, all measure roughly square, and
+# all measure heavily inked, so every numbered paragraph on a PLD-PI-001 came
+# out `[X]` with its number swallowed. Requiring the border separates them with
+# room to spare: a printed box scores 1.00 on its weakest edge, an item label
+# 0.22 at best, so a badly broken border on a poor scan is still admitted.
+_INK_BORDER_BAND = 0.12     # of the box's side, taken as its border
+_INK_BORDER_MIN = 0.6       # ...of which this fraction must be dark, per edge
+_INK_BOX_DEDUP = 3.0        # pt; two cells this close report the SAME box
 # A single character standing alone in a checkbox: the flattened check, or what
 # OCR makes of a pen mark. Not a word, so it never hides a caption. Deliberately
 # no DIGITS: the ZapfDingbats check does extract as "3", but the dingbat FONT
@@ -12132,6 +12179,31 @@ _INK_MARK_CHARS = frozenset("xX✓✔✗✘×✕✖☑☒■●▪◼•")
 # as a mark would report relief the party never requested.
 _INK_EMPTY_CHARS = frozenset("□☐○◯")
 _INK_MARK_FONTS = ("dingbat", "wingding", "zadb", "symbol")
+# What OCR makes of a printed empty checkbox when it does not have the character
+# for it: one or two letters of roughly the square's shape. This is NOT read as
+# a state — a checked box scans as the same letters plus the pen mark, so
+# calling it empty would drop the answer. It only stops the artifact BLOCKING
+# the window (see _ink_span_blocks_window), leaving the raster to measure the
+# square that is really there. Untethered these are ordinary text, so a token
+# counts only when it REPEATS across the page, which a template artifact does
+# (a form page carries dozens of boxes) and a middle initial does not.
+_INK_BOX_OCR_TEXT = frozenset({"cj", "lj", "cl", "d", "o", "0", "c]", "[]", "()"})
+_INK_BOX_OCR_MIN = 3
+
+
+def _ink_span_text(span):
+    return str(span.get("text", "")).strip()
+
+
+def _ink_box_artifacts(spans):
+    """The span texts on this page that are OCR's rendering of the printed empty
+    checkbox — box-shaped, and repeated the way a template artifact is."""
+    counts = {}
+    for sp in spans:
+        t = _ink_span_text(sp).lower()
+        if t in _INK_BOX_OCR_TEXT:
+            counts[t] = counts.get(t, 0) + 1
+    return frozenset(t for t, n in counts.items() if n >= _INK_BOX_OCR_MIN)
 
 
 def _ink_glyph_state(span):
@@ -12150,11 +12222,17 @@ def _ink_glyph_state(span):
     return True if all(ch in _INK_MARK_CHARS for ch in text) else None
 
 
-def _ink_span_blocks_window(span):
+def _ink_span_blocks_window(span, artifacts=()):
     """True when a span in the probe window is real TEXT — two or more
     alphanumerics — so the window is not a checkbox slot at all (a neighbouring
-    column, a pleading gutter number, a wrapped caption)."""
-    text = str(span.get("text", "")).strip()
+    column, a pleading gutter number, a wrapped caption).
+
+    `artifacts` exempts the page's own OCR rendering of an empty box: "CJ" is
+    two alphanumerics, so a scanned form blocked every window that held one and
+    the pass then found no box on the page at all."""
+    text = _ink_span_text(span)
+    if text.lower() in artifacts:
+        return False
     return sum(1 for ch in text if ch.isalnum()) >= 2
 
 
@@ -12187,6 +12265,28 @@ class _InkRaster:
             rows.append([x for x in range(x0, x1 + 1) if buf[base + x] < _INK_DARK])
         return rows, (x0, x1)
 
+    @staticmethod
+    def _has_border(rows, r0, r1, bx0, bx1):
+        """True when the dark pixels bounded by (r0..r1, bx0..bx1) form the RING
+        a printed checkbox is — every edge dark most of the way along.
+
+        This is what tells a box from a glyph that happens to measure square. An
+        item number's ink is its strokes, so its bounding box has no continuous
+        edge: "2." reaches 0.17 on its weakest side, "(1)" 0.22, where a printed
+        square reaches 1.00. Without it, every numbered paragraph on a form was
+        reported as a checked box and its number deleted from the export."""
+        bw, bh = bx1 - bx0 + 1, r1 - r0 + 1
+        t = max(1, int(round(min(bw, bh) * _INK_BORDER_BAND)))
+        # left/right: rows are sorted ascending, so the extreme x settles it
+        band = [rows[y] for y in range(r0, r1 + 1)]
+        left = sum(1 for xs in band if xs and xs[0] < bx0 + t) / bh
+        right = sum(1 for xs in band if xs and xs[-1] > bx1 - t) / bh
+        if min(left, right) < _INK_BORDER_MIN:
+            return False
+        top = set().union(*(set(rows[y]) for y in range(r0, min(r1, r0 + t - 1) + 1)))
+        bot = set().union(*(set(rows[y]) for y in range(max(r0, r1 - t + 1), r1 + 1)))
+        return min(len(top), len(bot)) / bw >= _INK_BORDER_MIN
+
     def box_fill(self, window):
         """(interior ink fraction, the box's rect in POINTS) for the printed box
         found inside `window`, or None when no plausible whole box is there
@@ -12207,6 +12307,8 @@ class _InkRaster:
             return None                       # not a square: a rule, a smudge
         if bx0 <= wx0 or bx1 >= wx1 or r0 == 0 or r1 == len(rows) - 1:
             return None                       # touching the edge: maybe clipped
+        if not self._has_border(rows, r0, r1, bx0, bx1):
+            return None                       # a glyph filling its own outline
         dx, dy = round(bw * _INK_INSET), round(bh * _INK_INSET)
         ix0, ix1, iy0, iy1 = bx0 + dx, bx1 - dx, r0 + dy, r1 - dy
         if ix1 <= ix0 or iy1 <= iy0:
@@ -12286,9 +12388,12 @@ def _ink_form_cells(page):
     # object churn for no gain.
     bbs = [tuple(sp["bbox"]) for sp in spans]
 
+    artifacts = _ink_box_artifacts(spans)
     raster = None            # built lazily: only a scan needs one
     cells, boxes, marked, unsure, exact = [], 0, 0, 0, True
     consumed = []            # span bboxes that turned out to be marks
+    seen = []                # centres of the boxes already reported
+    claimed = set()          # spans already standing for a state box
     for idx, sp in enumerate(spans):
         bb = bbs[idx]
         ym = (bb[1] + bb[3]) / 2
@@ -12297,18 +12402,30 @@ def _ink_form_cells(page):
         if wx0 < page.rect.x0 or wx1 <= wx0:
             continue
         win = fitz.Rect(wx0, wy0, wx1, wy1)
-        inside = [spans[j] for j, o in enumerate(bbs)
-                  if j != idx and o[0] < wx1 and o[2] > wx0
-                  and o[1] < wy1 and o[3] > wy0]
-        if any(_ink_span_blocks_window(o) for o in inside):
+        inside_idx = [j for j, o in enumerate(bbs)
+                      if j != idx and o[0] < wx1 and o[2] > wx0
+                      and o[1] < wy1 and o[3] > wy0]
+        inside = [spans[j] for j in inside_idx]
+        if any(_ink_span_blocks_window(o, artifacts) for o in inside):
             continue                     # real text: not a checkbox slot
         # (1) a state glyph — a flattened check, an empty-box character, or the
-        # stray character OCR made of a pen stroke
-        state = None
-        for o in inside:
+        # stray character OCR made of a pen stroke. `stands_for` collects the
+        # spans the state box will replace: the mark, and the artifact OCR made
+        # of the printed square itself. They are dropped from the static text
+        # wherever they sit, so the export never reads "[X] CJ x MOTOR VEHICLE".
+        state, stands_for = None, []
+        for j, o in zip(inside_idx, inside):
             g = _ink_glyph_state(o)
             if g is not None:
                 state = g if state is not True else True
+                stands_for.append(j)
+            elif _ink_span_text(o).lower() in artifacts:
+                stands_for.append(j)
+        # One printed box, one state cell: two captions whose windows both reach
+        # the same box each reported it, which is where "[X] [X] [X] except
+        # defendant" and a box tally three times the page's came from.
+        if stands_for and all(j in claimed for j in stands_for):
+            continue
         # The box we will report against: the template rect when we have it.
         box = next((r for r in squares if r.intersects(win)), None)
         if state is None:
@@ -12339,20 +12456,25 @@ def _ink_form_cells(page):
             state = _ink_state_from_fill(fill)
         rect = box if box is not None else fitz.Rect(
             win.x1 - _INK_BOX_MAX, ym - _INK_BOX_MAX / 2, win.x1, ym + _INK_BOX_MAX / 2)
+        cx, cy = (rect.x0 + rect.x1) / 2, (rect.y0 + rect.y1) / 2
+        if any(abs(cx - px) <= _INK_BOX_DEDUP and abs(cy - py) <= _INK_BOX_DEDUP
+               for px, py in seen):
+            continue                     # the same printed box, seen from another
+        seen.append((cx, cy))            # caption in reach of it
+        claimed.update(stands_for)
         boxes += 1
         marked += 1 if state is True else 0
         unsure += 1 if state is None else 0
         mark = "[X]" if state is True else "[ ]" if state is False else "[?]"
-        cells.append(_form_cell((rect.y0 + rect.y1) / 2,
-                                (rect.y1 - rect.y0) / 2, rect.x0, mark))
+        cells.append(_form_cell(cy, (rect.y1 - rect.y0) / 2, rect.x0, mark))
         # Whatever sits INSIDE the box is the mark — a flattened check glyph, or
         # the stray character OCR made of a pen stroke. It is never caption text
         # (the window guard excluded that), and the state box now stands for it,
         # so drop it: the export must not read "[X] 3 a. Enter default...".
-        for o in inside:
+        for j, o in zip(inside_idx, inside):
             ob = o["bbox"]
-            if rect.contains(fitz.Point((ob[0] + ob[2]) / 2,
-                                        (ob[1] + ob[3]) / 2)):
+            if j in stands_for or rect.contains(
+                    fitz.Point((ob[0] + ob[2]) / 2, (ob[1] + ob[3]) / 2)):
                 consumed.append(fitz.Rect(ob))
     if not boxes:
         return None
