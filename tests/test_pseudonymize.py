@@ -863,8 +863,16 @@ class TestNeverFakeFormBoilerplate:
         for v in ("CIV-100", "CIV 100", "civ100", "CASE NUMBER", "Case Number",
                   "Default Only", "DEFAULT ONLY"):
             assert pl._pn_is_never_fake(v), v
-        for v in ("23STCV31247", "CIV-101", "Raytheon"):
+        for v in ("23STCV31247", "Raytheon", "BC123456", "RAM-000013"):
             assert not pl._pn_is_never_fake(v), v
+
+    def test_the_whole_form_catalogue_is_covered_by_shape(self):
+        # Naming one form at a time does not scale: a default-judgment packet
+        # carries several and the discretionary complaint forms carry a numbered
+        # attachment per cause of action. Any Judicial Council form id qualifies.
+        for v in ("CIV-110", "JUD-100", "PLD-C-001", "PLD-PI-001",
+                  "PLD-C-001(2)", "MC-025", "SUM-100", "FL-150"):
+            assert pl._pn_is_never_fake(v), v
 
     def test_form_number_from_the_case_number_column_is_not_faked(self):
         # A "Case Number" cell that actually holds a form number must not fake it.
