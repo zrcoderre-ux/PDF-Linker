@@ -409,6 +409,66 @@ the party), so its row stays reversible.
   `.txt.LEAK` extension is ever unlinked. Safe because the gate re-creates the
   quarantine at the end of the run if THIS run's export leaks too.
 
+## Fillable Judicial Council forms (the checkbox-heavy half of a filing)
+
+A filled Judicial Council form — CIV-100 and the rest of a **default-judgment
+packet**, the **discretionary complaint forms** PLD-C-001 / PLD-PI-001 and their
+per-cause-of-action attachments — is an **AcroForm**: the answers live in WIDGET
+annotations, not in the page content stream. Plain extraction therefore prints
+the blank form's boilerplate first and then every answer in one unanchored heap
+at the end, so no value sits beside the label it answers. A **checkbox fares
+worse than that**: a CHECKED box paints the ZapfDingbats check glyph, which
+extracts as a bare **`3`**, and an UNCHECKED box paints **nothing at all**. So
+the export carried a scatter of `3`s naming no item, and nothing whatsoever
+separated "clerk's judgment requested" from "not requested" — on these forms the
+checkbox IS the pleading, so that is the whole content of the document.
+
+`_form_page_text` rebuilds such a page from geometry: static template spans
+(minus anything a widget painted — the widget object is authoritative for its
+own box, so the check glyph and the label-less value copy are dropped by a
+centre-in-widget-rect test) plus one synthesized cell per widget, sorted into
+rows and laid out at each cell's own column (`_FORM_CHAR_W`). A checkbox becomes
+`[X]`/`[ ]` immediately left of the caption it governs; a field value lands
+beside its own label; a multi-line value walks down its own field box so its
+lines stay separate rows; an empty field prints nothing. A one-line banner names
+the form and tallies the boxes, so "did the checkboxes come through?" is
+answerable at the top of the page.
+
+- **Rows group by vertical OVERLAP, not centre distance** (`_FORM_ROW_PAD`): a
+  checkbox rect is taller than its caption and a field box taller than its
+  label, so a fixed centre tolerance either splits a printed row or welds two.
+  Each cell's extent is capped to a nominal text line (`_FORM_CELL_HALF`) so one
+  tall field box (a three-line attorney block) cannot annex the rows below it.
+- **A radio has to match its OWN on-state** (`_widget_is_on`): every widget in a
+  radio group carries the group's value, so comparing to `Off` alone reports all
+  of them checked the moment one is. `Off` is the name the PDF spec reserves for
+  the off state, which is what makes "anything else is on" safe across the export
+  values real forms use ("Yes", "On", "1").
+- **The form path wins over the pleading-rows path only when the page carries a
+  checkbox or radio.** That state is invisible to every other rendering, which is
+  worth giving up gutter line numbers (and "p.3:7" pinpoint cites) for; a
+  text-only form on pleading paper (an MC-025 attachment) keeps its numbers, and
+  a text-only form off pleading paper still takes the form path because its
+  values would otherwise stay unanchored.
+- **Detection reads what the export writes.** `_page_detect_text` takes the
+  DECIDED form text via the `_FORM_UNDECIDED` sentinel — distinct from `None`,
+  which means "decided against it" — because a page whose form rendering was
+  suppressed must not be leak-scanned against a rendering it never got. Form
+  values reach the scrubber and the leak scan precisely because they are in this
+  text; a party named only inside a widget would otherwise be certified clean.
+- **A form id is never faked, BY SHAPE** (`_PN_FORM_ID_RE`, checked from
+  `_pn_is_never_fake`). Naming them one at a time does not scale — a
+  default-judgment packet carries several and the complaint forms carry a
+  numbered attachment per cause of action — and a form number faked as a case
+  number is a nonsense stamp that destroys the form's identity.
+- **A form that was printed, signed and SCANNED has no widgets left** — its
+  checkboxes are ink. Nothing here applies (the page falls through to ordinary
+  extraction/OCR) and the run says so, so a badly-exported form is never
+  silently attributed to the tool "handling forms now". Recovering a state from
+  ink is a different problem.
+- Cost: one `doc.is_form_pdf` check per document gates the whole path, and the
+  per-page widget probe is ~0.02 ms, so an ordinary filing pays nothing.
+
 ## Citation linking
 
 `find_all_citations` (full/short-form/supra/statute/rule) over the combined

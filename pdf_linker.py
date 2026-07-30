@@ -6944,9 +6944,22 @@ def _pn_fake_caseno(real, registry):
 # ("CIV 100", "Case Number") all match. Extend as more form boilerplate turns up.
 _PN_NEVER_FAKE = frozenset({"casenumber", "civ100", "defaultonly"})
 
+# ...and the SHAPE of a Judicial Council form id, so the whole catalogue is
+# covered rather than the one entry someone happened to add: CIV-100, JUD-100,
+# PLD-C-001, PLD-PI-001(2), MC-025, SUM-100, FL-150. Listing them one at a time
+# does not scale — a default-judgment packet alone carries four, and the
+# discretionary complaint forms carry a numbered attachment per cause of action.
+# Matched on the RAW value (the reduction above strips the hyphens the shape
+# needs) and anchored, so only a whole token can qualify.
+_PN_FORM_ID_RE = re.compile(
+    r"[A-Z]{2,4}(?:-[A-Z]{1,3})?-\d{3}(?:\(\d{1,2}\))?\Z")
+
 
 def _pn_is_never_fake(value):
-    return re.sub(r"[^a-z0-9]", "", str(value).lower()) in _PN_NEVER_FAKE
+    s = str(value).strip()
+    if _PN_FORM_ID_RE.match(s):
+        return True
+    return re.sub(r"[^a-z0-9]", "", s.lower()) in _PN_NEVER_FAKE
 
 
 def _pn_reapply_digits(fake_digits, real):
@@ -11963,12 +11976,264 @@ def _pn_apply_page_rows(pseudonymizer, rows):
             for i, (_num, segs) in enumerate(rows)]
 
 
-def _page_detect_text(page):
+# ── Judicial Council / fillable-form pages ──────────────────────────────────
+# A filled Judicial Council form (CIV-100 and the rest of a default-judgment
+# packet, PLD-C-001 / PLD-PI-001 and their cause-of-action attachments) is an
+# AcroForm: the answers live in WIDGET annotations, not in the page content
+# stream. Plain extraction therefore prints the blank form's boilerplate first
+# and then every answer in one unanchored heap at the end, so no value sits
+# beside the label it answers — and a checkbox fares worse than that. A CHECKED
+# box paints the ZapfDingbats check glyph, which extracts as a bare "3"; an
+# UNCHECKED box paints nothing at all. So the export carried a scatter of stray
+# "3"s that named no item, and nothing whatsoever distinguished "clerk's
+# judgment requested" from "clerk's judgment not requested" — the single most
+# load-bearing fact on the page.
+#
+# These pages are rebuilt from geometry instead: static template spans (minus
+# whatever a widget painted, since the widget itself is the authority for that)
+# plus one synthesized cell per widget, sorted into rows and laid out at each
+# cell's own column. A checkbox becomes "[X]" or "[ ]" immediately left of the
+# caption it governs, and a field value lands beside its own label.
+#
+# A form that was printed, signed and SCANNED has no widgets left — its
+# checkboxes are ink. Nothing here applies to it (the page falls through to
+# ordinary extraction/OCR); recovering a state from ink is a different problem.
+
+# The form id printed in the footer: CIV-100, JUD-100, PLD-C-001,
+# PLD-PI-001(2), MC-030, FL-150. Only ever used to LABEL the rendering, so a
+# stray footer code that fits the shape costs nothing.
+_JC_FORM_NO_RE = re.compile(r"\b(" + _PN_FORM_ID_RE.pattern.replace(r"\Z", "")
+                            + r")(?![\w-])")
+
+# One output column per this many points. Judicial Council forms are set in
+# 8-9pt type, so ~5pt/char keeps a re-rendered row close to the printed one
+# without pushing the right-hand caption boxes off the end of the line.
+_FORM_CHAR_W = 5.0
+_FORM_MAX_COL = 118          # hard stop, so a stray far-right cell can't
+                             # produce a 500-character line of padding
+# Rows are grouped by VERTICAL OVERLAP, not by centre distance: a checkbox rect
+# is taller than the caption beside it and a field box taller than its label, so
+# a fixed centre tolerance either splits a printed row (tight) or welds two of
+# them (loose). A cell joins the open row when its centre falls inside the row's
+# extent, padded slightly for the printed row's own leading.
+_FORM_ROW_PAD = 2.0
+# ...and each cell's extent is capped to a nominal text line, so one tall field
+# box (a three-line attorney block) cannot swallow the rows below it.
+_FORM_CELL_HALF = 5.5
+
+
+def _widget_is_on(w):
+    """True when a checkbox/radio widget is CHECKED.
+
+    The PDF spec reserves the name `Off` for the off state, so any other state
+    name means on — which is what makes this safe across the export values real
+    forms use ("Yes", "On", "1"). A RADIO also has to match its OWN on-state:
+    every widget in a radio group carries the group's value, so comparing to
+    `Off` alone would report all of them checked as soon as one was."""
+    val = w.field_value
+    if isinstance(val, bool):
+        return val
+    s = str(val if val is not None else "").strip()
+    if s == "" or s.lower() == "off":
+        return False
+    try:
+        import fitz
+        if w.field_type == fitz.PDF_WIDGET_TYPE_RADIOBUTTON:
+            on = w.on_state()
+            if on:
+                return s == str(on)
+    except Exception:
+        pass
+    return True
+
+
+def _form_cell(y_mid, half, x, text):
+    """One laid-out cell: (centre, half-height, left edge, text). The half-height
+    is capped at a nominal text line so a tall widget box never annexes the rows
+    printed beneath it (see _FORM_CELL_HALF)."""
+    return (y_mid, min(half, _FORM_CELL_HALF), x, text)
+
+
+def _form_widget_cells(w, rect):
+    """The cells one widget contributes. A checkbox/radio yields its state box; a
+    filled text/choice field yields its value, one cell per line so a stacked
+    attorney block keeps its lines. An empty field yields nothing — a blank on
+    the form is blank in the export."""
+    import fitz
+    y_mid = (rect.y0 + rect.y1) / 2
+    half = (rect.y1 - rect.y0) / 2
+    if w.field_type in (fitz.PDF_WIDGET_TYPE_CHECKBOX,
+                        fitz.PDF_WIDGET_TYPE_RADIOBUTTON):
+        return [_form_cell(y_mid, half, rect.x0,
+                           "[X]" if _widget_is_on(w) else "[ ]")]
+    if w.field_type == fitz.PDF_WIDGET_TYPE_SIGNATURE:
+        return []
+    lines = [ln.strip() for ln in str(w.field_value or "").splitlines()]
+    lines = [ln for ln in lines if ln]
+    if not lines:
+        return []
+    if len(lines) == 1:
+        return [_form_cell(y_mid, half, rect.x0, lines[0])]
+    # Walk the value down the field's own box, so the rows interleave with the
+    # rest of the page in reading order instead of piling onto one line.
+    step = max((rect.y1 - rect.y0) / len(lines), 1.0)
+    return [_form_cell(rect.y0 + step * (i + 0.5), step / 2, rect.x0, ln)
+            for i, ln in enumerate(lines)]
+
+
+def _form_page_cells(page):
+    """(cells, widget_count, checked_count) for a widget-bearing page, or None
+    when the page carries no widgets (every non-form page, and every form that
+    was flattened or scanned)."""
+    try:
+        import fitz
+        widgets = list(page.widgets())
+    except Exception:
+        return None
+    if not widgets:
+        return None
+    rects = [fitz.Rect(w.rect) for w in widgets]
+    cells = []
+    try:
+        blocks = page.get_text("dict").get("blocks", [])
+    except Exception:
+        return None            # no static layer to place the widgets against
+    for blk in blocks:
+        for line in blk.get("lines", []):
+            for sp in line.get("spans", []):
+                bb = sp["bbox"]
+                mid = fitz.Point((bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2)
+                # Painted by a widget's appearance stream — the widget object is
+                # re-emitted below and is authoritative, so this copy (a check
+                # glyph, or a value with no label beside it) is dropped.
+                if any(r.contains(mid) for r in rects):
+                    continue
+                text = _MARKER_DETECT_RE.sub("", sp["text"])
+                parts = text.split("\n")
+                h = max((bb[3] - bb[1]) / max(len(parts), 1), 1.0)
+                for k, part in enumerate(parts):
+                    if part.strip():
+                        cells.append(_form_cell(bb[1] + h * (k + 0.5), h / 2,
+                                                bb[0], part.strip()))
+    choice = (fitz.PDF_WIDGET_TYPE_CHECKBOX, fitz.PDF_WIDGET_TYPE_RADIOBUTTON)
+    boxes = checked = 0
+    for w, r in zip(widgets, rects):
+        try:
+            if w.field_type in choice:
+                boxes += 1
+                checked += 1 if _widget_is_on(w) else 0
+            cells.extend(_form_widget_cells(w, r))
+        except Exception:
+            continue
+    return cells, boxes, checked
+
+
+def _form_page_number(page):
+    """The Judicial Council form id printed in this page's footer, or "". Scoped
+    to the bottom of the page so a case number or exhibit code in the body can
+    never be mistaken for one."""
+    try:
+        import fitz
+        r = page.rect
+        foot = fitz.Rect(r.x0, r.y1 - (r.y1 - r.y0) * 0.18, r.x1, r.y1)
+        text = page.get_text("text", clip=foot)
+    except Exception:
+        return ""
+    m = _JC_FORM_NO_RE.search(text or "")
+    return m.group(1) if m else ""
+
+
+def _form_page_text(page):
+    """Reading-order text for a fillable-form page: every checkbox rendered as
+    [X] or [ ] beside the caption it governs, every filled field inlined at its
+    own label. Returns None when the page carries no widgets, so the caller
+    falls through to ordinary extraction."""
+    got = _form_page_cells(page)
+    if got is None:
+        return None
+    cells, boxes, checked = got
+    if not cells:
+        return None
+    left = min(x for _y, _h, x, _t in cells)
+    rows, cur, top, bot = [], [], 0.0, 0.0
+    for y, half, x, t in sorted(cells, key=lambda c: (c[0], c[2])):
+        if cur and top - _FORM_ROW_PAD <= y <= bot + _FORM_ROW_PAD:
+            cur.append((x, t))
+            top, bot = min(top, y - half), max(bot, y + half)
+        else:
+            if cur:
+                rows.append(cur)
+            cur, top, bot = [(x, t)], y - half, y + half
+    if cur:
+        rows.append(cur)
+
+    out = []
+    for row in rows:
+        line = ""
+        for x, t in sorted(row):
+            # Each cell starts at its own column, but never on top of (or run
+            # together with) the cell before it — a printed boundary that the
+            # column arithmetic would swallow becomes a single space instead.
+            col = int(round((x - left) / _FORM_CHAR_W))
+            col = min(col, _FORM_MAX_COL)
+            if line:
+                col = max(col, len(line) + 1)
+            line += " " * (col - len(line)) + t
+        out.append(line.rstrip())
+
+    # A one-line provenance banner: it names the form, says the page was
+    # rendered by this path at all, and gives the operator a checkable count so
+    # "did the checkboxes come through?" has an answer at the top of the page.
+    form_no = _form_page_number(page)
+    tally = (f"{boxes} checkbox(es), {checked} checked" if boxes
+             else "no checkboxes")
+    label = f"fillable form {form_no}" if form_no else "fillable form"
+    return f"[{label}: {tally}]\n" + "\n".join(out)
+
+
+def _doc_has_form_fields(doc):
+    """True when the document declares an AcroForm — the cheap per-document
+    gate that keeps the form path off every ordinary filing."""
+    try:
+        return bool(doc.is_form_pdf)
+    except Exception:
+        return False
+
+
+def _page_has_choice_widgets(page):
+    """True when the page carries a checkbox or radio widget — the state that
+    ordinary extraction cannot represent at all, and so the one thing worth
+    giving up pleading-line numbering for."""
+    try:
+        import fitz
+        return any(w.field_type in (fitz.PDF_WIDGET_TYPE_CHECKBOX,
+                                    fitz.PDF_WIDGET_TYPE_RADIOBUTTON)
+                   for w in page.widgets())
+    except Exception:
+        return False
+
+
+# Sentinel: "the caller has not decided about the form path". Distinct from None,
+# which means "decided AGAINST it" — a caller that suppressed the form rendering
+# for its display text must get the same rendering scanned, or the leak check
+# reports a value against text the export never contained.
+_FORM_UNDECIDED = object()
+
+
+def _page_detect_text(page, form=_FORM_UNDECIDED):
     """Column-ordered plain text for a page, for NAME DETECTION and leak
     checking only. On a two-column caption the on-paper reading order splices
     the columns together; reading each column top to bottom instead makes a
     wrapped party name contiguous, which is what the dba scanner, the declarant
     scanner, and `surviving_reals` need to see."""
+    if form is _FORM_UNDECIDED:
+        form = _form_page_text(page)
+    if form is not None:
+        # A form page is already in reading order with each answer beside its
+        # own label, and it is the only rendering that carries the field values
+        # at all in a usable place — so detection and the leak scan must read
+        # THAT, not the unanchored heap plain extraction produces.
+        return form
     rows = _page_lined_rows(page)
     if not rows:
         return _MARKER_DETECT_RE.sub("", page.get_text("text"))
@@ -12917,6 +13182,10 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
     detect_pages = []  # column-ordered page text, for name detection / leak check
     page_blocks = []  # (header, rows_or_text) before pseudonymization; rows is
                       # a list of (line_num, segments) for pleading pages, else a str
+    # One cheap check for the whole document: without an AcroForm there are no
+    # widgets to render, so no page pays for the form path.
+    has_fields = _doc_has_form_fields(doc)
+    forms_seen = []
     for i, page in enumerate(doc):
         raw = page.get_text("text")
         # Drop our invisible citation markers (present when re-processing an
@@ -12925,14 +13194,28 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         # Collapse the runs of blank lines that marker removal and pleading
         # gutters leave behind. This flowing text drives citation detection.
         clean = re.sub(r"\n[ \t]*\n(?:[ \t]*\n)+", "\n\n", clean).strip()
-        orig_pages.append(clean)
 
         # Displayed text: on pleading-paper pages, keep per-line rows so we can
         # number each line (a "p.X:Y" cite lands on the right text) AND scrub
         # each line's body without its number prefix; other pages fall back to
         # flowing text.
         rows = _page_lined_rows(page)
-        detect_pages.append(_page_detect_text(page))
+        # A fillable-form page is rebuilt from its widgets instead (see
+        # _form_page_text). It wins over the pleading-rows path only when the
+        # page actually carries a checkbox or radio — that state is invisible to
+        # every other rendering, which is worth giving up line numbering for,
+        # while a form with only text fields keeps its gutter numbers.
+        form = _form_page_text(page) if has_fields else None
+        if form is not None and rows is not None and not _page_has_choice_widgets(page):
+            form = None
+        if form is not None:
+            forms_seen.append(i + 1)
+            rows = None
+            clean = form
+        orig_pages.append(clean)
+        # Pass the DECIDED form text (None when this page's form rendering was
+        # suppressed above), so detection reads exactly what the export writes.
+        detect_pages.append(_page_detect_text(page, form=form))
         # Header carries the printed (footer) page number when present, so the
         # page half of a pinpoint cite is unambiguous too.
         label = _footer_page_label(page)
@@ -12940,6 +13223,20 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
                   + (f" (printed p. {label})" if label else "")
                   + " ======")
         page_blocks.append((header, rows if rows is not None else clean))
+
+    if forms_seen:
+        log.info(f"  Fillable-form page(s) rendered from their widgets "
+                 f"(checkbox state preserved): "
+                 f"{', '.join(str(p) for p in forms_seen[:12])}"
+                 + (f" (+{len(forms_seen) - 12} more)"
+                    if len(forms_seen) > 12 else ""))
+    elif has_fields:
+        # An AcroForm the widget pass found nothing usable on — worth saying, so
+        # a form that exported badly is never silently attributed to the tool
+        # "handling forms now".
+        log.info("  Document declares form fields but no page carried a "
+                 "readable widget (flattened or scanned?) — pages exported by "
+                 "ordinary extraction.")
 
     # Register this document's declarant(s) and any "dba" pair written into the
     # text, so those names are scrubbed even when absent from the spreadsheet
@@ -14260,7 +14557,11 @@ def _dump_protected_terms(out=None):
     buf.write("\nCourt-form boilerplate  [_PN_NEVER_FAKE]\n"
               "  a form number / field label is never faked or flagged (matched\n"
               "  on an alphanumeric, case-folded reduction):\n"
-              "   CASE NUMBER, CIV-100, Default Only\n")
+              "   CASE NUMBER, CIV-100, Default Only\n"
+              "  ...plus any Judicial Council form id BY SHAPE "
+              "[_PN_FORM_ID_RE],\n"
+              "  so the whole catalogue is covered, not one entry at a time:\n"
+              "   CIV-110, JUD-100, PLD-C-001, PLD-PI-001(2), MC-025, FL-150\n")
     buf.write("\nCitation shapes protected from party-name rewriting "
               "(regex families, not word lists):\n"
               "   In re <Name> ... Litig.             [_PN_INRE_LITIG_RE]\n"
