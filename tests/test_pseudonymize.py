@@ -902,3 +902,49 @@ class TestNeverFakeFormBoilerplate:
         terms, _ = pl._pn_load_key(tmp_path / "pseudonym_key.xlsx", reg,
                                    logging.getLogger("t"))
         assert not any(t.real == "CIV-100" for t in terms)   # stale binding dropped
+
+
+# ── A Judicial Council form's own field labels ──────────────────────────────
+class TestFormFieldLabels:
+    """A form prints its label immediately beside the answer it asks for, so a
+    harvest that reads the pair as one run offers the LABEL up as a name. Faked,
+    the form stops saying what its own fields are: "CITY AND ZIP CODE" came back
+    "CITY AND ZIP CRESSWELL" and "BRANCH NAME" came back "BLUMEN NAME"."""
+
+    def _tokens(self, raw):
+        terms = pl._pn_build_terms([raw], [], [], pl._PnFakeRegistry())
+        return {t.real.lower() for t in terms if t.category.endswith("token")}
+
+    @pytest.mark.parametrize("label", [
+        "BRANCH NAME", "CITY AND ZIP CODE", "SHORT TITLE", "STREET ADDRESS",
+        "MAILING ADDRESS", "ATTORNEY FOR", "FOR COURT USE ONLY",
+        "TYPE OR PRINT NAME", "TELEPHONE NO", "E-MAIL ADDRESS",
+    ])
+    def test_a_whole_field_label_is_never_a_term(self, label):
+        assert pl._pn_is_never_fake(label)
+        assert pl._pn_build_terms([label], [], [], pl._PnFakeRegistry()) == []
+
+    @pytest.mark.parametrize("word", ["branch", "code", "zip", "signature",
+                                      "attachment", "judicial", "council"])
+    def test_a_label_word_is_never_a_bare_token(self, word):
+        # It is withheld only as a FREE-STANDING token: a real name harvested
+        # beside the label still binds, so the party is scrubbed either way.
+        assert pl._pn_is_generic_token(word)
+        assert self._tokens("Zip Code Reynolds") >= {"reynolds"}
+        assert "code" not in self._tokens("Zip Code Reynolds")
+
+    def test_a_real_party_is_untouched(self):
+        # The set must not swallow an ordinary name: it is form furniture only.
+        assert not pl._pn_is_never_fake("Mallory Deverell")
+        assert self._tokens("Mallory Deverell") >= {"mallory", "deverell"}
+
+    def test_a_label_word_stays_reportable_as_a_leak(self):
+        # Kept out of the review gazetteer on purpose: a word withheld THERE
+        # stops being reportable, and a party really named Page or Short must
+        # still surface for triage when their name survives a scrub.
+        for w in pl._PN_FORM_LABEL_WORDS:
+            assert w not in pl._PN_COMMON_WORDS, w
+
+    def test_a_form_id_is_still_never_faked(self):
+        for fid in ("PLD-PI-001", "PLD-PI-001(1)", "CIV-100", "MC-025"):
+            assert pl._pn_is_never_fake(fid)

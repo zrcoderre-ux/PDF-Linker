@@ -593,3 +593,196 @@ def test_several_checkboxes_on_one_printed_row():
     assert line.split() == ["ATTACHMENT", "TO", "[", "]", "Complaint",
                             "[X]", "Cross-Complaint"]
     assert pl._form_page_text(p).startswith("[fillable form PLD-C-001(2):")
+
+
+# ── a NUMBERED form: the item index is not a checkbox ────────────────────────
+# PLD-PI-001 and its cause-of-action attachments index every allegation — "2.",
+# "a.", "(1)", "MV-2." — and print the number in exactly the place a checkbox
+# would sit: just left of the caption it governs. The raster cannot tell a
+# printed square from a glyph on size and aspect alone, so every numbered
+# paragraph came out `[X]` with its number swallowed, and the banner tallied a
+# page of boxes that reported relief nobody had requested.
+
+_NUM_ITEMS = [      # (index label, has a printed box?, caption, marked?)
+    ("2.", False, "This pleading, including attachments, consists of pages: 4", False),
+    ("3.", False, "Each plaintiff named above is a competent adult", False),
+    ("a.", True, "except plaintiff (name):", False),
+    ("(1)", True, "a corporation qualified to do business in California", True),
+    ("(2)", True, "an unincorporated entity (describe):", False),
+    ("4.", False, "The true names of defendants sued as Does are unknown", False),
+    ("a.", True, "Doe defendants were the agents or employees", True),
+    ("b.", True, "Doe defendants are persons whose capacities are unknown", False),
+]
+
+
+def _numbered():
+    """A PLD-PI-001 body page: numbered allegations, some of which carry a
+    printed checkbox and some of which do not. Returns (doc, [(rect, on)])."""
+    doc = fitz.open()
+    p = _page(doc)
+    _static(p, 40, 100, "SHORT TITLE: SMITH vs. JONES", 7)
+    boxes = []
+    for i, (label, has_box, cap, on) in enumerate(_NUM_ITEMS):
+        y = 150 + i * 26
+        _static(p, 60, y, label, 9)
+        if not has_box:
+            _static(p, 82, y, cap, 9)
+            continue
+        top = y - _INK_BOX + 1.5
+        r = fitz.Rect(92, top, 92 + _INK_BOX, top + _INK_BOX)
+        p.draw_rect(r, color=(0, 0, 0), width=0.7)
+        boxes.append((r, on))
+        if on:
+            p.draw_line(fitz.Point(93.5, top + 5), fitz.Point(96, top + 8),
+                        color=(0, 0, 0.4), width=1.1)
+            p.draw_line(fitz.Point(96, top + 8), fitz.Point(100, top + 1.5),
+                        color=(0, 0, 0.4), width=1.1)
+        _static(p, 110, y, cap, 9)
+    _static(p, 40, 745, "PLD-PI-001 [Rev. January 1, 2007]", 6)
+    return doc, boxes
+
+
+def _scan_boxes_as(doc, boxes, ocr):
+    """`doc` scanned, with `ocr` standing in for each printed square in the text
+    layer — what OCR hands back when it has no character for an empty box."""
+    out = _scanned(doc)
+    q = out[0]
+    for r, on in boxes:
+        q.insert_text((r.x0, r.y1 - 1), ocr, fontsize=9, fontname="helv",
+                      render_mode=3)
+        if on:
+            q.insert_text((r.x0 + 2, r.y1 - 1), "x", fontsize=8,
+                          fontname="helv", render_mode=3)
+    return out
+
+
+def _marked_lines(text):
+    """[(state, what follows it)] for every line carrying a state box. Unlike
+    `_states`, the mark need not start the line: on a numbered form the item
+    index is printed to the LEFT of the box it indexes."""
+    out = []
+    for ln in _lines(text):
+        hits = [(ln.index(m), m) for m in ("[X]", "[ ]", "[?]") if m in ln]
+        if hits:
+            i, m = min(hits)
+            out.append((m, ln[i + len(m):].strip()))
+    return out
+
+
+def _numbered_expected():
+    return [("[X]" if on else "[ ]", cap)
+            for _l, has_box, cap, on in _NUM_ITEMS if has_box]
+
+
+def test_a_numbered_paragraph_is_never_read_as_a_checkbox():
+    # The page that started this: a form body with an index number beside every
+    # allegation and NO checkbox anywhere. Not one box may be reported — and
+    # because none is, the page is not a checkbox form at all and falls back to
+    # ordinary extraction, which keeps the numbering the pleading is cited by.
+    doc = fitz.open()
+    p = _page(doc)
+    for i, (label, _b, cap, _on) in enumerate(_NUM_ITEMS):
+        _static(p, 60, 150 + i * 26, label, 9)
+        _static(p, 82, 150 + i * 26, cap, 9)
+    _static(p, 40, 745, "PLD-PI-001 [Rev. January 1, 2007]", 6)
+    for page in (p, _scanned(doc)[0]):
+        assert pl._ink_form_cells(page) is None
+        assert pl._form_page_text(page) is None
+
+
+@pytest.mark.parametrize("render", ["flat", "scan", "scan-ocr-box"])
+def test_a_numbered_form_keeps_its_numbers_and_reads_its_boxes(render):
+    # ...and the mixed page, however it reaches us: the five real boxes are read
+    # and the three bare index numbers stay text. All three renderings have to
+    # agree, because the state is the pleading and the numbering indexes it.
+    doc, boxes = _numbered()
+    page = {"flat": lambda: doc[0],
+            "scan": lambda: _scanned(doc)[0],
+            "scan-ocr-box": lambda: _scan_boxes_as(doc, boxes, "CJ")[0]}[render]()
+    text = pl._form_page_text(page)
+    assert _marked_lines(text) == _numbered_expected()
+    assert "5 box(es), 2 marked" in _lines(text)[0]
+    # the unboxed allegations keep their numbers and gain no state
+    for label, has_box, cap, _on in _NUM_ITEMS:
+        if not has_box:
+            assert _line_with(text, cap).strip().startswith(label)
+    assert "CJ" not in text            # the artifact the state box stands for
+
+
+def test_a_box_ocr_read_as_letters_is_measured_not_believed():
+    # A scanner with no character for an empty square hands back a letter of
+    # roughly its shape ("CJ", "D"). Two alphanumerics blocked the window, so a
+    # scanned form found no box at all and left "CJ x MOTOR VEHICLE" in the
+    # export. The artifact is now transparent — but it is never read AS a state:
+    # a checked box scans as the same letters plus the mark, so the raster still
+    # measures the square underneath.
+    doc, boxes = _numbered()
+    for ocr in ("CJ", "D", "O"):
+        text = pl._form_page_text(_scan_boxes_as(doc, boxes, ocr)[0])
+        assert _marked_lines(text) == _numbered_expected(), ocr
+
+
+def test_a_lone_letter_is_only_a_box_when_it_repeats():
+    # The exemption above is what keeps a middle initial safe: an artifact of
+    # the template repeats across the page (a form carries dozens of boxes), a
+    # name does not, so a one-off "D" is still real text that blocks the window.
+    many = [{"text": "CJ"}] * pl._INK_BOX_OCR_MIN
+    assert pl._ink_box_artifacts(many) == {"cj"}
+    assert not pl._ink_span_blocks_window({"text": "CJ"},
+                                          pl._ink_box_artifacts(many))
+    lone = [{"text": "CJ"}, {"text": "Redmond L. Parrish"}]
+    assert pl._ink_box_artifacts(lone) == frozenset()
+    assert pl._ink_span_blocks_window({"text": "CJ"}, pl._ink_box_artifacts(lone))
+    # ...and nothing widens what counts as box-shaped: a two-letter word that
+    # repeats is still text, whatever else is on the page.
+    assert pl._ink_box_artifacts([{"text": "Re"}] * 9) == frozenset()
+
+
+def test_one_printed_box_reports_one_state():
+    # Two captions within reach of the same square each reported it, which is
+    # where "[X] [X] [X] except defendant" and a box tally several times the
+    # page's came from. One printed box, one state cell.
+    doc = fitz.open()
+    p = _page(doc)
+    for i, y in enumerate((200, 230)):
+        top = y - _INK_BOX + 1.5
+        p.draw_rect(fitz.Rect(92, top, 92 + _INK_BOX, top + _INK_BOX),
+                    color=(0, 0, 0), width=0.7)
+        _static(p, 106, y, "ab"[i], 9)          # a lettered sub-item...
+        _static(p, 118, y, "a corporation qualified to do business", 9)
+    _static(p, 40, 745, "PLD-PI-001 [Rev. January 1, 2007]", 6)
+    text = pl._form_page_text(p)
+    assert [s for s, _c in _states(text)] == ["[ ]", "[ ]"]
+    assert "2 box(es), 0 marked" in _lines(text)[0]
+
+
+def test_a_printed_box_is_a_ring_and_a_glyph_is_not():
+    # The measurement the whole distinction rests on: a printed checkbox is dark
+    # the whole way round its border, an item number's ink is its own strokes.
+    # A ring of any thickness passes; a solid blob and an open bracket do not.
+    ring = [list(range(0, 20)) if y in (0, 1, 18, 19)
+            else [0, 1, 18, 19] for y in range(20)]
+    assert pl._InkRaster._has_border(ring, 0, 19, 0, 19)
+    solid = [list(range(0, 20)) for _y in range(20)]
+    assert pl._InkRaster._has_border(solid, 0, 19, 0, 19)     # a filled box
+    blob = [list(range(6, 14)) for _y in range(20)]           # a stroke, no edges
+    assert not pl._InkRaster._has_border(blob, 0, 19, 0, 19)
+    bracket = [[0, 1] for _y in range(20)]                    # "(" — one edge only
+    assert not pl._InkRaster._has_border(bracket, 0, 19, 0, 19)
+
+
+def test_an_ocr_damaged_form_id_still_reaches_the_form_path():
+    # A scan reads the "I" of PLD-PI-001 as an "l" about as often as not. The
+    # footer id gates the ink pass, so a strict match denied the page the form
+    # treatment entirely and a cause-of-action attachment came back as
+    # unanchored OCR with its checkboxes left as stray letters.
+    doc, boxes = _numbered()
+    p = _scanned(doc)[0]
+    for footer in ("PLD-PI-001(2) [Rev. January 1, 2007]",
+                   "PLD-Pl-001(2) [Rev. January 1, 2007]"):
+        assert pl._JC_FORM_NO_RE.search(footer), footer
+    # ...but what a value is PROTECTED from faking by stays strict: case
+    # tolerance there would start shielding ordinary text.
+    assert pl._pn_is_never_fake("PLD-PI-001")
+    assert not pl._pn_is_never_fake("PLD-Pl-001")
+    assert _marked_lines(pl._form_page_text(p)) == _numbered_expected()

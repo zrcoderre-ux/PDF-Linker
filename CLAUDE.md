@@ -468,6 +468,22 @@ answerable at the top of the page.
   default-judgment packet carries several and the complaint forms carry a
   numbered attachment per cause of action — and a form number faked as a case
   number is a nonsense stamp that destroys the form's identity.
+- **Nor are the form's own FIELD LABELS.** A form prints the label hard against
+  the answer it asks for, so a harvest that reads the pair as one run offers the
+  label up as a name and the tool then rewrites the form's furniture: "CITY AND
+  ZIP CODE" came back "CITY AND ZIP CRESSWELL" and "BRANCH NAME" came back
+  "BLUMEN NAME" — the form no longer saying what its own fields are, to protect
+  nothing. Two guards, because the damage arrives two ways: the whole caption
+  label is in `_PN_NEVER_FAKE` ("branchname", "cityandzipcode", "shorttitle" …,
+  matched on the same case-folded reduction), and the WORDS labels are built
+  from are in `_PN_FORM_LABEL_WORDS`, read by `_pn_is_generic_token` so none of
+  them can become a free-standing token however it was harvested (that is the
+  one that bit: "BRANCH NAME" registered `BRANCH`, "CITY AND ZIP CODE"
+  registered `CODE`, since "Name"/"City" were already generic). Kept SEPARATE
+  from `_PN_COMMON_WORDS` on purpose — that gazetteer also decides what the leak
+  scans call boilerplate, and a word swallowed there stops being reportable, so
+  a party really named Page or Short keeps their full name registered, keeps
+  being scrubbed, and keeps surfacing for review if a bare one survives.
 ### The same form, filled with INK (`_ink_form_cells`)
 
 A form that was printed, marked by hand and scanned — or filled on screen and
@@ -494,6 +510,22 @@ same fill however far off the estimate was, and empty vs marked separates ~0.00
 vs ~0.33, verified unchanged as the box-to-caption distance moves. A box touching
 the window edge may be clipped, so it yields NO verdict rather than a guess.
 
+**...and the dark pixels must form a RING, or they are a glyph**
+(`_InkRaster._has_border`). Size and aspect alone cannot tell a printed square
+from ink that FILLS its own outline, and a form indexes every allegation —
+`2.`, `a.`, `(1)`, `MV-2.` — printing that index in exactly the place a checkbox
+sits, just left of the caption it governs. So the whole numbered body of a
+PLD-PI-001 measured square, measured heavily inked, and came out `[X]` with the
+number swallowed: page 2 of a four-page complaint reported "33 boxes, 32 marked"
+— relief nobody requested, on a document where the checkbox IS the pleading, and
+the numbering it is cited by deleted. A printed box is dark the whole way round
+its border; an index number's ink is its own strokes, so its bounding box has no
+continuous edge. Measured on this repo's fixtures, a printed square scores
+**1.00** on its weakest edge and the worst index label **0.22**, so
+`_INK_BORDER_MIN` at 0.6 still admits a badly broken border on a poor scan. A
+page left with NO box then fails `if not boxes` and falls back to ordinary
+extraction, which is what keeps the numbering.
+
 - **The middle band is `[?]`, never rounded** (`_ink_state_from_fill`). A pencil
   tick too faint to separate from scanner speckle is exactly where guessing is
   worst, and the banner counts the unreadable ones.
@@ -502,13 +534,34 @@ the window edge may be clipped, so it yields NO verdict rather than a guess.
   neighbouring column, a gutter number or a wrapped caption from being probed.
   Conversely everything INSIDE a confirmed box is the mark and is dropped from
   the static text, so the export never reads `[X] 3 a. Enter default...`.
+- **...except OCR's rendering of the empty box itself** (`_INK_BOX_OCR_TEXT`).
+  A scanner with no character for `☐` hands back a letter or two of its shape —
+  "CJ", "D", "O" — which is two alphanumerics, so a scanned form blocked every
+  window that held one and found no box on the page at all: the export kept the
+  raw `CJ x MOTOR VEHICLE` and the banner counted only the phantoms above. The
+  artifact is transparent to the block test but is **never read AS a state**: a
+  CHECKED box scans as the same letters plus the mark, so calling it empty would
+  drop the answer — the raster measures the square underneath instead. Untethered
+  these are ordinary text, so a token counts only when it **repeats** across the
+  page (`_INK_BOX_OCR_MIN`), which a template artifact does and a middle initial
+  does not. A state box also consumes the artifact wherever it sits, not only
+  where the rect happens to contain it.
+- **One printed box, one state cell** (`_INK_BOX_DEDUP`, plus the claimed-span
+  check). Two captions within reach of the same square each reported it, which
+  is where `[X] [X] [X] except defendant` and a tally several times the page's
+  came from. It matters more now that a box artifact no longer blocks a window,
+  since that puts more captions in reach.
 - **`_INK_MARK_CHARS` admits no digits.** The ZapfDingbats check does extract as
   `3`, but the dingbat FONT already settles that; admitting bare digits would
   read a stray form number as a check for nothing, and on a scan an OCR'd digit
   falls through to the raster pass, which measures the actual ink anyway.
 - **The gate is cheapest-first and must stay that way**: enough checkbox-sized
   squares in the page's own line art, else a Judicial Council form id in the
-  footer. An ordinary filing fails both in ~1.6 ms/page and never reaches the
+  footer — matched CASE-INSENSITIVELY (`_JC_FORM_NO_RE`), because a scan reads
+  the "I" of PLD-PI-001 as an "l" about as often as not and a strict match
+  denied the page the form treatment entirely. That regex only labels and gates,
+  so a stray footer code costs a discarded pass; `_PN_FORM_ID_RE`, which decides
+  what is PROTECTED from faking, stays strict for the opposite reason. An ordinary filing fails both in ~1.6 ms/page and never reaches the
   `get_text("dict")` or the render. An ink form page costs ~150 ms — negligible
   beside the seconds of OCR a scanned page already pays.
 - **Widgets always win.** The ink pass runs only where they are absent, so an
