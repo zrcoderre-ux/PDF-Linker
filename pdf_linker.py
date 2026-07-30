@@ -6001,11 +6001,16 @@ class _PnFakeRegistry:
                 return self._take(key, cand)
         return self._take(key, cand)  # give up after 10k tries; keep it stable
 
-    def alnum(self, real, seed_tag, letters="ABCDEFGHIJKLMNOPQRSTUVWXYZ"):
+    def alnum(self, real, seed_tag, letters="ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+              avoid=None):
         """A char-for-char fake of an alphanumeric identifier (a VIN, a
         confirmation code): each digit -> a random digit, each ASCII letter -> a
         random letter drawn from `letters` (the VIN alphabet excludes I/O/Q),
-        every other character kept. Unique per case."""
+        every other character kept. Unique per case.
+
+        `avoid` is a second rejection test alongside "already taken" — an
+        acronym passes `_pn_reads_as_word`, so a short identifier's stand-in is
+        re-rolled rather than shipped as an ordinary English word."""
         key = (seed_tag, real.lower())
         if key in self._memo:
             return self._memo[key]
@@ -6022,7 +6027,7 @@ class _PnFakeRegistry:
         for attempt in range(10000):
             r = _pn_rng(seed_tag, real, attempt)
             cand = "".join(sub(c, r) for c in real)
-            if cand.lower() not in self._used:
+            if cand.lower() not in self._used and not (avoid and avoid(cand)):
                 return self._take(key, cand)
         return self._take(key, cand)
 
@@ -6390,6 +6395,35 @@ def _pn_name_variants(word):
 
 _PN_INITIAL_POOL = tuple("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 
+# Two-letter English words a reader meets in running text. A fake for a set of
+# INITIALS is drawn one letter at a time, so nothing saw what the letters spelt
+# together and "M.W." came back "A.T." — the stand-in reads as a word, which is
+# both conspicuous and, case-insensitively, indistinguishable from the ordinary
+# word wherever the export happens to use it. Deliberately NOT the Scrabble list:
+# the obscure entries (aa, ae, qi, xu) forbid perfectly good-looking initials
+# while protecting no reader from anything.
+_PN_TWO_LETTER_WORDS = frozenset({
+    "ad", "ah", "am", "an", "as", "at", "aw", "ax", "be", "by", "do", "eh",
+    "ex", "go", "ha", "he", "hi", "ho", "id", "if", "in", "is", "it", "lo",
+    "me", "my", "no", "of", "oh", "ok", "on", "or", "ox", "so", "to", "uh",
+    "um", "up", "us", "we",
+})
+
+
+def _pn_reads_as_word(value):
+    """True when `value`'s LETTERS spell an ordinary word.
+
+    Reduced to letters so the separators an initials name carries cannot hide it:
+    "A.T.", "A & T" and "AT" all read the same aloud, and the reduction is what
+    the leak scans and the reversal macro see anyway. A lone letter is an initial,
+    not a word."""
+    letters = re.sub(r"[^A-Za-z]", "", str(value)).lower()
+    if len(letters) < 2:
+        return False
+    return (letters in _PN_TWO_LETTER_WORDS
+            or letters in _PN_SHORT_TOKEN_STOP
+            or letters in _PN_COMMON_WORDS)
+
 
 def _pn_norm_map(s):
     """Comparison form for a real/fake pair: NFKC-folded, whitespace-collapsed,
@@ -6408,15 +6442,31 @@ def _pn_fake_initials_name(real, registry):
     Map each real letter to a fake letter (repeats and separators preserved, so
     "M & M" -> "Q & Q" and "A & B" -> "Q & R"), each drawn through the registry
     so it is deterministic, globally unique and reversible. The pool excludes the
-    real letter, so the result can never equal the input."""
-    out = []
+    real letter, so the result can never equal the input.
+
+    ...and the letters together must not spell a WORD. Each is drawn on its own,
+    so nothing saw the pair: "M.W." came back "A.T.". Only the LAST letter is
+    re-drawn, under a key scoped to this name, from a pool that excludes every
+    completion that would read as a word — so the rest of the name keeps the
+    case-wide letter mapping ("M & M" stays a repeated letter) and only the
+    letter that caused the collision moves."""
+    out, letters = [], []
     for ch in real:
         if ch.isalpha():
             pool = [c for c in _PN_INITIAL_POOL if c != ch.upper()]
             fake = registry.token(ch.lower(), pool, "initial")
+            letters.append((len(out), ch))
             out.append(fake.upper() if ch.isupper() else fake.lower())
         else:
             out.append(ch)
+    if len(letters) >= 2 and _pn_reads_as_word("".join(out)):
+        at, ch = letters[-1]
+        prefix = "".join(out[i] for i, _c in letters[:-1])
+        pool = [c for c in _PN_INITIAL_POOL
+                if c != ch.upper() and not _pn_reads_as_word(prefix + c)]
+        fake = registry.token(f"{real.strip().lower()}\x00{ch.lower()}",
+                              pool, "initial")
+        out[at] = fake.upper() if ch.isupper() else fake.lower()
     return "".join(out)
 
 
@@ -9819,8 +9869,14 @@ class Pseudonymizer:
             if not re.search(rf"(?<!\w){re.escape(acr)}(?!\w)", text):
                 continue
             fake = initials(str(t.fake))
-            if not fake or fake == acr:
-                fake = self.registry.alnum(acr, "acronym")
+            # The acronym of the entity's own fake keeps the long and short
+            # forms one firm — unless those initials spell a word ("Alder
+            # Timberline" -> "AT"), which is the one thing a stand-in for a set
+            # of initials must never be. Then the tie is worth less than the
+            # word costs, and the alphanumeric fallback below settles it.
+            if not fake or fake == acr or _pn_reads_as_word(fake):
+                fake = self.registry.alnum(acr, "acronym",
+                                           avoid=_pn_reads_as_word)
             new.append(_PnTerm("short-name", acr, fake, whole_word=True,
                                case_sensitive=True, priority=1,
                                source="document"))
