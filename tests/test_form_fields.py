@@ -769,3 +769,20 @@ def test_a_printed_box_is_a_ring_and_a_glyph_is_not():
     assert not pl._InkRaster._has_border(blob, 0, 19, 0, 19)
     bracket = [[0, 1] for _y in range(20)]                    # "(" — one edge only
     assert not pl._InkRaster._has_border(bracket, 0, 19, 0, 19)
+
+
+def test_an_ocr_damaged_form_id_still_reaches_the_form_path():
+    # A scan reads the "I" of PLD-PI-001 as an "l" about as often as not. The
+    # footer id gates the ink pass, so a strict match denied the page the form
+    # treatment entirely and a cause-of-action attachment came back as
+    # unanchored OCR with its checkboxes left as stray letters.
+    doc, boxes = _numbered()
+    p = _scanned(doc)[0]
+    for footer in ("PLD-PI-001(2) [Rev. January 1, 2007]",
+                   "PLD-Pl-001(2) [Rev. January 1, 2007]"):
+        assert pl._JC_FORM_NO_RE.search(footer), footer
+    # ...but what a value is PROTECTED from faking by stays strict: case
+    # tolerance there would start shielding ordinary text.
+    assert pl._pn_is_never_fake("PLD-PI-001")
+    assert not pl._pn_is_never_fake("PLD-Pl-001")
+    assert _marked_lines(pl._form_page_text(p)) == _numbered_expected()

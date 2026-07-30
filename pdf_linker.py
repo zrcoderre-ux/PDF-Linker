@@ -12035,10 +12035,16 @@ def _pn_apply_page_rows(pseudonymizer, rows):
 # ordinary extraction/OCR); recovering a state from ink is a different problem.
 
 # The form id printed in the footer: CIV-100, JUD-100, PLD-C-001,
-# PLD-PI-001(2), MC-030, FL-150. Only ever used to LABEL the rendering, so a
-# stray footer code that fits the shape costs nothing.
-_JC_FORM_NO_RE = re.compile(r"\b(" + _PN_FORM_ID_RE.pattern.replace(r"\Z", "")
-                            + r")(?![\w-])")
+# PLD-PI-001(2), MC-030, FL-150. Only ever used to LABEL the rendering and to
+# gate the ink pass, so a stray footer code that fits the shape costs nothing —
+# which is why this one tolerates CASE, where `_PN_FORM_ID_RE` (what a value is
+# PROTECTED from faking by) must not. A scan reads the "I" of PLD-PI-001 as an
+# "l" about as often as not, and a strict match then denied the page the form
+# treatment entirely: a cause-of-action attachment footed "PLD-Pl-001(2)" came
+# out as unanchored OCR with its checkboxes left as stray letters.
+_JC_FORM_NO_RE = re.compile(
+    r"\b(" + _PN_FORM_ID_RE.pattern.replace(r"\Z", "") + r")(?![\w-])",
+    re.IGNORECASE)
 
 # One output column per this many points. Judicial Council forms are set in
 # 8-9pt type, so ~5pt/char keeps a re-rendered row close to the printed one

@@ -557,7 +557,11 @@ extraction, which is what keeps the numbering.
   falls through to the raster pass, which measures the actual ink anyway.
 - **The gate is cheapest-first and must stay that way**: enough checkbox-sized
   squares in the page's own line art, else a Judicial Council form id in the
-  footer. An ordinary filing fails both in ~1.6 ms/page and never reaches the
+  footer — matched CASE-INSENSITIVELY (`_JC_FORM_NO_RE`), because a scan reads
+  the "I" of PLD-PI-001 as an "l" about as often as not and a strict match
+  denied the page the form treatment entirely. That regex only labels and gates,
+  so a stray footer code costs a discarded pass; `_PN_FORM_ID_RE`, which decides
+  what is PROTECTED from faking, stays strict for the opposite reason. An ordinary filing fails both in ~1.6 ms/page and never reaches the
   `get_text("dict")` or the render. An ink form page costs ~150 ms — negligible
   beside the seconds of OCR a scanned page already pays.
 - **Widgets always win.** The ink pass runs only where they are absent, so an
