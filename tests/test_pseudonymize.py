@@ -948,3 +948,71 @@ class TestFormFieldLabels:
     def test_a_form_id_is_still_never_faked(self):
         for fid in ("PLD-PI-001", "PLD-PI-001(1)", "CIV-100", "MC-025"):
             assert pl._pn_is_never_fake(fid)
+
+
+# ── A stand-in for INITIALS is never an ordinary word ───────────────────────
+class TestInitialsAreNeverAWord:
+    """Each initial is drawn on its own, so nothing saw what the letters spelt
+    together: "M.W." came back "A.T.". Case-insensitively that is
+    indistinguishable from the ordinary word wherever the export uses it."""
+
+    def _states(self):
+        """A registry with 0..25 fake letters already taken — what shifts the
+        draw, and the only reason the collision showed up in one case and not
+        another."""
+        import string
+        for taken in range(26):
+            reg = pl._PnFakeRegistry()
+            for i, ch in enumerate(string.ascii_uppercase[:taken]):
+                reg._take(("initial", f"seed{i}"), ch)
+            yield reg
+
+    def test_no_pair_of_initials_ever_spells_a_word(self):
+        import itertools, string
+        for a, b in itertools.permutations(string.ascii_uppercase, 2):
+            for reg in self._states():
+                got = pl._pn_fake_initials_name(f"{a}.{b}.", reg)
+                assert not pl._pn_reads_as_word(got), (a, b, got)
+
+    def test_the_reduction_ignores_the_separators(self):
+        # "A.T.", "A & T" and "AT" read the same aloud, and the reduction is
+        # what the leak scans and the reversal macro see anyway.
+        for v in ("AT", "A.T.", "A & T", "a.t.", "THE", "U.P."):
+            assert pl._pn_reads_as_word(v), v
+        for v in ("MW", "M.W.", "Q & Q", "X.U.", "Keswick"):
+            assert not pl._pn_reads_as_word(v), v
+
+    def test_a_lone_initial_is_not_a_word(self):
+        # A single letter is an initial, not a word — "A." must stay drawable.
+        assert not pl._pn_reads_as_word("A.")
+        assert not pl._pn_reads_as_word("I")
+
+    def test_a_repeated_initial_stays_repeated(self):
+        # Only the LAST letter moves, so the case-wide letter mapping survives
+        # and "M & M" keeps reading as one repeated initial.
+        fake = pl._pn_fake_initials_name("M & M", pl._PnFakeRegistry())
+        letters = [c for c in fake if c.isalpha()]
+        assert len(letters) == 2 and letters[0] == letters[1]
+
+    def test_the_fake_never_equals_the_real(self):
+        import itertools, string
+        for a, b in itertools.permutations(string.ascii_uppercase[:8], 2):
+            for reg in self._states():
+                got = pl._pn_fake_initials_name(f"{a}.{b}.", reg)
+                assert pl._pn_norm_map(got) != pl._pn_norm_map(f"{a}.{b}.")
+
+    def test_it_is_stable_across_calls(self):
+        # The key round-trips only if the same real always gets the same fake.
+        reg = pl._PnFakeRegistry()
+        first = pl._pn_fake_initials_name("M.W.", reg)
+        assert pl._pn_fake_initials_name("M.W.", reg) == first
+        assert pl._pn_fake_initials_name("M.W.", pl._PnFakeRegistry()) == first
+
+    def test_an_entity_acronym_is_guarded_too(self):
+        # The bare-initialism path takes the acronym of the entity's OWN fake,
+        # so it can spell a word the same way ("Alder Timberline" -> "AT").
+        # Then the long/short tie is worth less than the word costs.
+        assert not pl._pn_reads_as_word(
+            pl._PnFakeRegistry().alnum("AT", "acronym", avoid=pl._pn_reads_as_word))
+        assert not pl._pn_reads_as_word(
+            pl._PnFakeRegistry().alnum("MW", "acronym", avoid=pl._pn_reads_as_word))

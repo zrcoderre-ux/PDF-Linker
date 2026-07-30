@@ -227,6 +227,24 @@ the party), so its row stays reversible.
   never registered as a term and never flagged — matched on an alphanumeric,
   case-folded reduction so spacing/dash variants all catch. Extend the set as
   more form boilerplate appears.
+- **A stand-in for INITIALS is never an ordinary WORD** (`_pn_reads_as_word`).
+  `_pn_fake_initials_name` draws each letter on its own, so nothing saw what
+  they spelt together and "M.W." came back "A.T." — conspicuous, and
+  case-insensitively indistinguishable from the ordinary word wherever the
+  export happens to use it. A sweep of every two-letter pair over every registry
+  state found **196** such fakes. The check reduces to LETTERS, so the
+  separators an initials name carries cannot hide it ("A.T.", "A & T" and "AT"
+  read the same aloud, and the reduction is what the leak scans and the reversal
+  macro see anyway); a lone letter is an initial, not a word. Only the LAST
+  letter is re-drawn, under a key scoped to that name, from a pool excluding
+  every completion that reads as a word — so the case-wide letter mapping
+  survives and "M & M" stays a repeated initial. `_PN_TWO_LETTER_WORDS` is
+  deliberately NOT the Scrabble list: the obscure entries (aa, ae, qi, xu)
+  forbid perfectly good-looking initials while protecting no reader from
+  anything. The same guard covers the bare-initialism path, which takes the
+  acronym of the entity's OWN fake so the long and short forms stay one firm —
+  when those initials spell a word that tie is worth less than the word costs,
+  and `registry.alnum(..., avoid=...)` settles it.
 - **Detectors** (`_PN_DETECTORS`: ssn/email/phone/address/url) run as regex over
   the text in `apply()`; `_detector_cands`/`_term_cands` produce candidates,
   highest-priority longest-non-overlapping wins.
