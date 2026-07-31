@@ -797,7 +797,13 @@ interpreter the LAST line names the file that did it. A line written afterwards
 is a line never written. That phase also reads the whole folder before writing
 anything, so without it a large folder simply went quiet for minutes.
 
-**One run per folder** (`_acquire_folder_lock`). Both launchers start the work
+**One run per folder** (`_acquire_folder_lock`; the lock file lives in TEMP,
+keyed by a hash of the folder path — `_folder_lock_file`, so the case folder
+never carries one. Kept in the folder it sat beside the exports, and since the
+file is removed only on a CLEAN exit — the OS having already dropped the lock
+itself when a run dies — every crash left one behind looking like debris. A
+stale temp file is harmless: the lock is the OS's, not the file's. An older
+build's in-folder `pdf_linker.lock` is swept up on sight). Both launchers start the work
 detached and silent, so "nothing happened, click it again" is easy — and a real
 log shows it done three times on one 34-file folder inside four minutes. Each
 run saves `<name>_temp.pdf` then REPLACES the original, and they share the
