@@ -15560,6 +15560,25 @@ def _require_pymupdf(log):
             "Run that line exactly as written — it targets THIS Python. A bare "
             "`pip install pymupdf` may install into a different Python on the "
             "same machine, which leaves this failing in exactly the same way.")
+        # The Microsoft Store build is a distinct and much likelier cause than a
+        # plain missing install, and it looks identical from here. It redirects
+        # site-packages into a sandboxed LocalCache folder, which pure-Python
+        # wheels survive and wheels carrying compiled extensions often do not —
+        # so openpyxl imports happily on the very interpreter PyMuPDF cannot
+        # load, which is exactly the shape of the report that produced this
+        # check. Worth naming outright: the install command above can succeed
+        # and the import still fail, and nothing else would explain that.
+        if "windowsapps" in str(exe).lower():
+            log.error(
+                "NOTE: this is the Microsoft Store build of Python (its path is "
+                "under WindowsApps). It sandboxes installed packages, and wheels "
+                "with compiled extensions — PyMuPDF is one — frequently fail to "
+                "install or import there while pure-Python ones like openpyxl "
+                "work fine. If the command above succeeds and this message comes "
+                "back anyway, install Python from python.org instead, `pip "
+                "install pymupdf openpyxl` into THAT one, and run this tool once "
+                "with it — the launcher rewrites itself to whichever interpreter "
+                "started it.")
         return False
 
 
