@@ -97,7 +97,7 @@ def _decision(value, fixcell, fake_values):
 
 def test_inherited_keep_still_protects_its_bracketed_fragment():
     # The half that DOES generalise survives: "Law" is never a name, anywhere.
-    strict, soft = P._pn_keep_values(
+    strict, soft, _nuclear = P._pn_keep_values(
         {"alder law, p.c.": _decision("Alder Law, P.C.", "[Law]", ["Alder"])})
     assert "Law" in strict
 
