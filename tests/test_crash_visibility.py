@@ -57,16 +57,17 @@ def test_a_second_run_on_the_same_folder_is_refused(tmp_path):
         """, tmp_path)
         assert "GOT False" in done.stdout, (done.stdout, done.stderr)
     finally:
-        pl._release_folder_lock(tmp_path / pl._LOCK_NAME)
+        pl._release_folder_lock(pl._folder_lock_file(tmp_path))
 
 
 def test_the_lock_is_released_and_its_file_removed(tmp_path):
     assert pl._acquire_folder_lock(tmp_path, log) is True
-    pl._release_folder_lock(tmp_path / pl._LOCK_NAME)
-    assert not (tmp_path / pl._LOCK_NAME).exists()
+    assert pl._folder_lock_file(tmp_path).exists()
+    pl._release_folder_lock(pl._folder_lock_file(tmp_path))
+    assert not pl._folder_lock_file(tmp_path).exists()
     # ...and the folder is free again for the next run.
     assert pl._acquire_folder_lock(tmp_path, log) is True
-    pl._release_folder_lock(tmp_path / pl._LOCK_NAME)
+    pl._release_folder_lock(pl._folder_lock_file(tmp_path))
 
 
 def test_a_dead_run_leaves_no_stale_lock(tmp_path):
@@ -81,7 +82,7 @@ def test_a_dead_run_leaves_no_stale_lock(tmp_path):
     """, tmp_path)
     assert done.returncode == 1
     assert pl._acquire_folder_lock(tmp_path, log) is True
-    pl._release_folder_lock(tmp_path / pl._LOCK_NAME)
+    pl._release_folder_lock(pl._folder_lock_file(tmp_path))
 
 
 def test_the_lock_fails_open_when_disabled(tmp_path):
@@ -91,7 +92,7 @@ def test_the_lock_fails_open_when_disabled(tmp_path):
     try:
         assert pl._acquire_folder_lock(tmp_path, log) is True
         assert pl._acquire_folder_lock(tmp_path, log) is True   # never refuses
-        assert not (tmp_path / pl._LOCK_NAME).exists()
+        assert not pl._folder_lock_file(tmp_path).exists()
     finally:
         del os.environ["PDF_LINKER_NO_LOCK"]
 
@@ -222,3 +223,33 @@ def test_an_ordinary_interpreter_gets_no_store_note(tmp_path):
     text = (tmp_path / "plain.log").read_text()
     assert "-m pip install pymupdf" in text, (text, done.stderr)
     assert "Microsoft Store" not in text
+
+
+def test_the_lock_never_litters_the_case_folder(tmp_path):
+    # The whole point of moving it to temp: the operator's folder stays clean,
+    # and it stays clean even while a run holds the lock.
+    assert pl._acquire_folder_lock(tmp_path, log) is True
+    try:
+        assert list(tmp_path.iterdir()) == []
+        assert str(pl._folder_lock_file(tmp_path)).startswith(
+            __import__("tempfile").gettempdir())
+    finally:
+        pl._release_folder_lock(pl._folder_lock_file(tmp_path))
+
+
+def test_two_folders_get_two_different_locks(tmp_path):
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir(); b.mkdir()
+    assert pl._folder_lock_file(a) != pl._folder_lock_file(b)
+    # ...and one folder always maps to the same lock, however it is spelled.
+    assert pl._folder_lock_file(a) == pl._folder_lock_file(tmp_path / "." / "a")
+
+
+def test_a_lock_left_in_the_case_folder_by_an_older_build_is_swept_up(tmp_path):
+    stale = tmp_path / pl._LOCK_NAME
+    stale.write_bytes(b"")
+    assert pl._acquire_folder_lock(tmp_path, log) is True
+    try:
+        assert not stale.exists()
+    finally:
+        pl._release_folder_lock(pl._folder_lock_file(tmp_path))

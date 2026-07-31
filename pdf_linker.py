@@ -15640,9 +15640,32 @@ def _install_crash_logging(log):
 # run saves "<name>_temp.pdf" and then REPLACES the original, and they share the
 # exports and the key, so concurrent runs can replace a PDF another one is
 # mid-read on.
-_LOCK_NAME = "pdf_linker.lock"
+_LOCK_NAME = "pdf_linker.lock"   # the OLD in-folder name, cleaned up on sight
 _folder_lock_fh = None          # module-level: closing the handle would release
 _folder_lock_path = None        # ...and which folder it is held for
+
+
+def _folder_lock_file(folder):
+    """Where `folder`'s lock lives — the system TEMP directory, not the case
+    folder itself.
+
+    An OS file lock needs a file, but nothing says the operator has to look at
+    it. Kept in the case folder it sat beside the exports, and because the file
+    is only removed on a CLEAN exit — the OS having already released the lock
+    itself when a run dies — every crash left one behind looking like debris
+    from a failure. In temp it is invisible, and a stale one is harmless: the
+    lock is the OS's, not the file's.
+
+    Keyed by a hash of the resolved, case-normalised path, so one folder always
+    maps to one lock and two folders never share. The trade is that two
+    different MACHINES working the same network folder no longer see each
+    other's lock — which was never really a promise, since the folders this runs
+    on are local and network file locking is unreliable anyway."""
+    import tempfile
+    key = _pn_hashlib.sha256(
+        os.path.normcase(str(Path(folder).resolve())).encode("utf-8", "replace")
+    ).hexdigest()[:16]
+    return Path(tempfile.gettempdir()) / f"pdf-linker-{key}.lock"
 
 
 def _acquire_folder_lock(folder, log):
@@ -15664,7 +15687,13 @@ def _acquire_folder_lock(folder, log):
     global _folder_lock_fh, _folder_lock_path
     if os.environ.get("PDF_LINKER_NO_LOCK"):
         return True
-    path = folder / _LOCK_NAME
+    # An earlier build kept the lock IN the case folder; sweep that away so a
+    # folder carrying one from a crashed run does not keep the litter forever.
+    try:
+        (folder / _LOCK_NAME).unlink()
+    except OSError:
+        pass
+    path = _folder_lock_file(folder)
     # RE-ENTRANT for the process that already holds it. The hazard is two
     # PROCESSES rewriting one folder's exports, never a single process reaching
     # here twice — and on POSIX a second flock from the same process, on a
