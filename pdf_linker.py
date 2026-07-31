@@ -12729,6 +12729,8 @@ _INK_ASPECT_LO, _INK_ASPECT_HI = 0.6, 1.7
 _INK_WIN_LEFT, _INK_WIN_RIGHT = 26.0, 1.5
 _INK_WIN_HALF = 9.0
 _INK_PROBE_DPI = 200        # a 9pt box is ~25px across: interior ~11px square
+_INK_MAX_PIXELS = 30_000_000   # ...but never more than this, whatever the page
+                               # size (mirrors _OCR_MAX_PIXELS)
 _INK_DARK = 170             # 0-255; at or below this a pixel is ink (catches
                             # pencil and a light-blue pen on an off-white scan)
 _INK_INSET = 0.28           # of the measured box, discarded as border
@@ -12823,6 +12825,19 @@ class _InkRaster:
 
     def __init__(self, page, dpi=_INK_PROBE_DPI):
         import fitz
+        # Cap the render the way the OCR path caps its own (_OCR_MAX_PIXELS). A
+        # bitmap scales with the page's AREA, so an oversized page — a scanned
+        # engineering drawing, a mis-sized exhibit — asks for an allocation no
+        # fixed dpi bounds. MuPDF failing that allocation is not an exception
+        # this can catch: it aborts the interpreter and takes the whole run with
+        # it, leaving the log ending mid-phase and no process behind. Dropping
+        # the dpi instead only costs box detection on a page that size, which
+        # then falls back to ordinary extraction — the safe direction.
+        rect = page.rect
+        scale = dpi / 72.0
+        px = (rect.width * scale) * (rect.height * scale)
+        if px > _INK_MAX_PIXELS:
+            dpi = max(36, int(dpi * (_INK_MAX_PIXELS / px) ** 0.5))
         self.pix = page.get_pixmap(dpi=dpi, colorspace=fitz.csGRAY, annots=False)
         try:
             self.buf = self.pix.samples_mv          # no copy
@@ -14608,7 +14623,23 @@ def _pn_prescan_folder(pdfs, pseudonymizer, log, extra_texts=()):
     import fitz
     before = len(pseudonymizer.terms)
     corpus = []
-    for pdf in pdfs:
+    total = len(pdfs) + len(extra_texts)
+    # This phase reads the WHOLE folder before writing anything, and used to log
+    # only when it finished — so a large folder went quiet for minutes and an
+    # operator with no other signal double-clicked the launcher again, starting
+    # a second run on the same files.
+    if total:
+        log.info(f"  Pseudonymize: pre-scanning {total} file(s) — the folder is "
+                 f"read in full before any export is written")
+    # Each name is logged BEFORE the file is opened, not after it is done. Some
+    # failures down here kill the interpreter outright rather than raising (a
+    # MuPDF fatal error calls abort(); so does a failed allocation on an
+    # oversized page), and a line written afterwards is a line never written.
+    # Logged ahead of the work, the last line in the log names the file that
+    # did it — which is the difference between a diagnosable crash and a run
+    # that "just stops".
+    for i, pdf in enumerate(pdfs, 1):
+        log.info(f"    Pre-scan {i}/{total}: {pdf.name}")
         try:
             with fitz.open(pdf) as doc:
                 text = "\n\f\n".join(_page_detect_text(page) for page in doc)
@@ -14617,7 +14648,8 @@ def _pn_prescan_folder(pdfs, pseudonymizer, log, extra_texts=()):
             continue
         corpus.append(text)
         _pn_learn_from_text(pseudonymizer, text, pdf.stem)
-    for stem, text in extra_texts:
+    for j, (stem, text) in enumerate(extra_texts, len(pdfs) + 1):
+        log.info(f"    Pre-scan {j}/{total}: {stem}")
         corpus.append(text)
         _pn_learn_from_text(pseudonymizer, text, stem)
     added = len(pseudonymizer.terms) - before
@@ -15497,6 +15529,146 @@ def _clear_eta_markers(folder):
                 pass
 
 
+def _install_crash_logging(log):
+    """Make a fatal failure VISIBLE in pdf_linker.log.
+
+    The tool's normal launch is `pythonw.exe`, which has NO console — so
+    `sys.stderr` is None and an uncaught exception's traceback is written
+    precisely nowhere. The process vanishes, the log simply stops wherever it
+    had got to, and Task Manager shows nothing running. That is
+    indistinguishable from a hang, which is what sent an operator back to
+    double-click the launcher two more times on a folder whose first run had
+    already died.
+
+    Two hooks, because the two ways this dies are not the same thing:
+
+      * `sys.excepthook` / `threading.excepthook` — an ordinary Python
+        exception. A dependency imported lazily mid-run (openpyxl, fitz,
+        pytesseract) is the usual one, and it is exactly the class of failure
+        that differs between two machines running the same folder.
+      * `faulthandler` — a C-level abort or segfault, which raises nothing at
+        all and so cannot be hooked. MuPDF calls `abort()` on a fatal error
+        (see `_repair_page_annots`), so this is the only thing that can leave a
+        trace of one. It writes into the log file's own stream.
+
+    Best-effort throughout: a diagnostic that fails must not itself end the run.
+    """
+    def _hook(exc_type, exc, tb):
+        try:
+            log.critical("Run ended on an unhandled error — the tool stopped "
+                         "here; nothing after this line was done.",
+                         exc_info=(exc_type, exc, tb))
+        except Exception:
+            pass
+    try:
+        sys.excepthook = _hook
+    except Exception:
+        pass
+    try:
+        import threading
+        threading.excepthook = lambda a: _hook(a.exc_type, a.exc_value,
+                                               a.exc_traceback)
+    except Exception:
+        pass
+    try:
+        import faulthandler
+        stream = next((h.stream for h in logging.getLogger().handlers
+                       if isinstance(h, logging.FileHandler)), None)
+        if stream is not None and hasattr(stream, "fileno"):
+            faulthandler.enable(file=stream, all_threads=True)
+    except Exception:
+        pass
+
+
+# ── One run per folder ──────────────────────────────────────────────────────
+# Both launchers start the work detached and silent, so "nothing happened, click
+# it again" is an easy mistake — and a real log shows it being made three times
+# on one 34-file folder inside four minutes. That is not merely wasteful: each
+# run saves "<name>_temp.pdf" and then REPLACES the original, and they share the
+# exports and the key, so concurrent runs can replace a PDF another one is
+# mid-read on.
+_LOCK_NAME = "pdf_linker.lock"
+_folder_lock_fh = None          # module-level: closing the handle would release
+_folder_lock_path = None        # ...and which folder it is held for
+
+
+def _acquire_folder_lock(folder, log):
+    """True when this process may work in `folder`; False when another run holds
+    it already.
+
+    An OS-held file lock, NOT a pid file, because this tool can die without
+    getting to clean anything up — a MuPDF fatal error calls abort() and takes
+    the interpreter with it (see `_repair_page_annots`). A lock the dying
+    process has to tidy would go stale on exactly those crashes and then block
+    every future run of the folder; the OS drops a file lock however the process
+    ends. That also means there is nothing to time out and no staleness to
+    guess at.
+
+    Fails OPEN. If the lock cannot be taken for any reason other than "someone
+    holds it" — a network share, a filesystem without locking — the run
+    proceeds: a lock that cannot be acquired must never stop legitimate work.
+    `PDF_LINKER_NO_LOCK=1` skips it entirely."""
+    global _folder_lock_fh, _folder_lock_path
+    if os.environ.get("PDF_LINKER_NO_LOCK"):
+        return True
+    path = folder / _LOCK_NAME
+    # RE-ENTRANT for the process that already holds it. The hazard is two
+    # PROCESSES rewriting one folder's exports, never a single process reaching
+    # here twice — and on POSIX a second flock from the same process, on a
+    # different descriptor, conflicts with the first, so without this a caller
+    # that ran two folders (or a test that runs main twice) would refuse itself.
+    if _folder_lock_fh is not None:
+        if _folder_lock_path == path:
+            return True
+        _release_folder_lock(_folder_lock_path)    # a different folder: hand over
+    try:
+        fh = open(path, "a+b")
+    except OSError:
+        return True                       # cannot even create it: fail open
+    try:
+        fh.seek(0)
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()
+        return False                      # held by another run
+    except Exception:
+        fh.close()
+        return True                       # locking unsupported here: fail open
+    _folder_lock_fh, _folder_lock_path = fh, path
+    import atexit
+    atexit.register(_release_folder_lock, path)
+    return True
+
+
+def _release_folder_lock(path):
+    """Drop the lock and remove its file. Best-effort — the OS has already
+    released the lock itself by the time this matters."""
+    global _folder_lock_fh, _folder_lock_path
+    fh, _folder_lock_fh, _folder_lock_path = _folder_lock_fh, None, None
+    if fh is None:
+        return
+    try:
+        if os.name == "nt":
+            import msvcrt
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+    except Exception:
+        pass
+    try:
+        fh.close()
+    except Exception:
+        pass
+    try:
+        Path(path).unlink()
+    except OSError:
+        pass
+
+
 def _write_eta_marker(folder, label):
     """Replace the live ETA marker with a fresh 0-byte file whose NAME is the
     estimate, e.g. 'ETA ~6.04PM (6 of 13).txt'. Best-effort: a marker that
@@ -16297,8 +16469,20 @@ def main():
         except Exception:
             pass
     log = logging.getLogger("pdf_linker")
+    _install_crash_logging(log)
     log.info("=" * 60)
     log.info(f"Run started for folder: {folder} (provider={args.provider})")
+
+    # One run per folder — see _acquire_folder_lock. A second double-click while
+    # the first is still working is not a second run, it is two runs fighting
+    # over the same files.
+    if not _acquire_folder_lock(folder, log):
+        log.warning(
+            "Another PDF-Linker run is already working in this folder — this "
+            "one is exiting rather than competing with it (both would rewrite "
+            "the same exports, key and PDFs). Watch pdf_linker.log; a "
+            '"DONE <time>.txt" file appears here when the first run finishes.')
+        sys.exit(0)
 
     # Resolve pseudonymization on/off: an explicit --pseudonymize /
     # --no-pseudonymize flag wins; otherwise the pdf_linker.config file next to
