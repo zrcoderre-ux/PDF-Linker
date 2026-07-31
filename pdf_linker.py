@@ -1368,11 +1368,38 @@ def _normalize_for_detection(text: str) -> str:
     return "".join(out)
 
 
-def find_all_citations(text: str):
-    """Find all citations in text, ordered by position."""
-    # Normalize line wraps so cites split across lines still match. Spans
-    # remain valid against the original text because length is preserved.
-    norm = _normalize_for_detection(text)
+# A pleading page is printed on NUMBERED paper, and the text export keeps the
+# gutter verbatim (`f"{num:>2}  " + body`), so a body line reads
+# "  25  Cal.App.5th 947". A citation that WRAPS across such a line therefore
+# carries a line number between its volume and its reporter — and the reporter
+# pattern, which tolerates whitespace there but not digits, stops matching. The
+# cite then parses as nothing at all, `_protected_citation_spans` hands back no
+# span, and the ordinary party-name terms rewrite the CITED DECISION. That is
+# this tool's cardinal failure (renaming an authority is worse than leaving a
+# party name in), so detection makes a SECOND pass with the gutter numbers
+# blanked and MERGES whatever that pass adds.
+#
+# Merge, never replace — which is what makes a loose heuristic safe here. Pass
+# two can only ADD a span, so blanking a digit run that was really a volume
+# number costs nothing: pass one already found every citation that reads
+# straight through. Blanking is length-preserving for the same reason the
+# newline normalization is — spans must keep indexing into the original text.
+_GUTTER_NUM_RE = re.compile(r"(?m)^[ \t]{0,8}\d{1,2}(?=[ \t]{2,}\S)")
+
+
+def _blank_gutter_line_numbers(text: str) -> str:
+    """`text` with pleading-paper line numbers blanked to spaces (same length).
+
+    A gutter number is a 1-2 digit run at the START of a line followed by two or
+    more spaces — the shape the export writer prints. Two spaces is what
+    separates it from a volume number that merely happens to open a line
+    ("13 Cal.App.5th"), and being wrong either way is harmless: see above.
+    """
+    return _GUTTER_NUM_RE.sub(lambda m: " " * len(m.group(0)), text)
+
+
+def _citation_pass(norm: str):
+    """Every citation `norm` yields, in one detection pass (unordered)."""
     full_cases = find_case_citations(norm)
     statutes = find_statute_citations(norm)
     # Bare section citations ("Section 1150 through 1179a") linked to the code
@@ -1385,21 +1412,36 @@ def find_all_citations(text: str):
     )
     statutes = statutes + bare_sections
     rules = find_rule_citations(norm)
-
-    # Update match_text to use the original text (preserves original
-    # whitespace for downstream page.search_for calls).
-    for c in full_cases + statutes + rules:
-        s, e = c["span"]
-        c["match_text"] = text[s:e]
-
     # Order full cases by position for supra resolution
     full_ordered = sorted(full_cases, key=lambda c: c["span"][0])
     supras = find_supra_citations(norm, full_ordered)
-    for c in supras:
+    return full_cases + statutes + rules + supras
+
+
+def find_all_citations(text: str):
+    """Find all citations in text, ordered by position."""
+    # Normalize line wraps so cites split across lines still match. Spans
+    # remain valid against the original text because length is preserved.
+    norm = _normalize_for_detection(text)
+    all_cites = _citation_pass(norm)
+
+    # Second pass over the same text with pleading line numbers blanked, so a
+    # cite that wraps across the gutter is still found. Additions only.
+    degut = _normalize_for_detection(_blank_gutter_line_numbers(text))
+    if degut != norm:
+        taken = [tuple(c["span"]) for c in all_cites]
+        for c in _citation_pass(degut):
+            s, e = c["span"]
+            if not any(s < te and ts < e for ts, te in taken):
+                all_cites.append(c)
+                taken.append((s, e))
+
+    # Update match_text to use the original text (preserves original
+    # whitespace for downstream page.search_for calls).
+    for c in all_cites:
         s, e = c["span"]
         c["match_text"] = text[s:e]
 
-    all_cites = full_cases + statutes + rules + supras
     all_cites.sort(key=lambda c: c["span"][0])
 
     # Deduplicate overlapping spans (e.g. "Smith, supra" inside a longer match)
@@ -9020,6 +9062,36 @@ def _pn_span_has_hard_seam(src, start, end):
 # standalone kept word would get faked, and the keep must win over them.
 _PN_PARTY_OVERRIDE_CATS = frozenset({"person", "entity", "case_number"})
 
+# ── Fail-closed authority guard ─────────────────────────────────────────────
+# Citation protection depends on a PARSER succeeding, and a parser that fails
+# fails silently: `_protected_citation_spans` hands back no span, `_substitute`
+# sees nothing to protect, and the cited decision is renamed. A pleading line
+# number landing between volume and reporter is one way to blind it (see
+# `_blank_gutter_line_numbers`, which fixes that shape) — but the next OCR
+# artefact, dropped year or unrecognised reporter is another, and the invariant
+# it breaks is the cardinal one.
+#
+# So the SHAPE of a citation is refused independently of the parse: a candidate
+# standing between a " v. " and a year-in-parens or a volume+reporter run is a
+# cited party name whether or not anything managed to read the cite. This is
+# protection-only, so its worst case is a real party left unfaked at that one
+# spot — which is precisely the trade the whole method is built on.
+_PN_AUTHORITY_WINDOW = 80
+_PN_AUTHORITY_V_RE = re.compile(r"(?<![A-Za-z])vs?\.?\s")
+_PN_AUTHORITY_YEAR_RE = re.compile(r"\((?:1[7-9]|20)\d\d\)")
+_PN_AUTHORITY_REPORTER_RE = re.compile(
+    rf"(?<!\w)\d{{1,4}}\s+(?:{REPORTER_PATTERN})")
+# Between the " v. " and the candidate there may only be more party name. A
+# semicolon, bracket or docket label means the "v." belongs to something else
+# (a string cite that already closed, a caption's own service block).
+_PN_AUTHORITY_BREAK_RE = re.compile(r"[;()\[\]]|(?<!\w)No\.", re.IGNORECASE)
+# Only a NAME-shaped candidate can rename an authority. A detector hit (an SSN,
+# a phone number) inside a citation is not a thing, and refusing one would be
+# pure leak.
+_PN_AUTHORITY_GUARD_CATS = frozenset({
+    "person", "entity", "person-token", "entity-token", "short-name",
+})
+
 
 def _pn_key_looks_like_ours(path):
     """True when `path` is a key THIS tool wrote (header row = _PN_KEY_HEADERS),
@@ -10909,8 +10981,65 @@ class Pseudonymizer:
         return toks
 
     def _side_is_trusted(self, side):
+        """True when `side` of a "X v. Y" names a party from THIS case's key —
+        the test the caption exemption is built on, so an over-generous answer
+        strips the protection off a real authority.
+
+        MOST of the side's identifying words must be trusted, not merely one.
+        Any single word used to clear it, so a case with a party named "North"
+        or "America" reported *BMW of North America* as its own caption and let
+        the entity terms rewrite the cited decision — the same class of failure
+        as a cite that fails to parse, arrived at from the other direction. A
+        genuine caption side is trusted nearly word for word ("GENERAL MOTORS,
+        LLC"), while an authority that merely shares a word is not (1 of the 3
+        identifying words in "BMW of North America").
+
+        Identifying words only: connectors, corporate suffixes and role words
+        are excluded on both sides of the ratio, exactly as
+        `_trusted_party_tokens` excludes them from the trusted set — otherwise
+        "Valencia Holding Co., LLC" would be diluted by its own furniture."""
         trusted = self._trusted_party_tokens()
-        return any(_pn_word_base(w) in trusted for w in side.split())
+        words = [w for w in side.split()
+                 if len(_pn_word_base(w)) >= 3
+                 and not _pn_is_entity_keep(_pn_word_base(w))
+                 and not _pn_is_role_token(w)]
+        hits = sum(1 for w in words if _pn_word_base(w) in trusted)
+        return bool(hits) and hits * 2 >= len(words)
+
+    def _in_authority_context(self, text, s, e):
+        """True when [s,e) sits where a CITED PARTY NAME sits — after a " v. "
+        and before a year-in-parens or a volume+reporter run — so it must not be
+        rewritten even though no citation parsed over it.
+
+        The belt to `_protected_citation_spans`' braces. That method protects
+        what the parser could READ; a parse that fails hands back nothing at all
+        and the authority is renamed with no warning anywhere, which is how six
+        cites shipped naming decisions that do not exist. Shape is checked
+        instead, so a blinded parser costs a link, never an invented authority.
+
+        Both anchors are required, which is what keeps this off the document's
+        own caption: a caption's defendant is followed by a case number and a
+        role word, never by "(2017)" or "13 Cal.App.5th". The caption exemption
+        is applied anyway, for the inline recital ("this action, Rasho v.
+        General Motors, LLC (2025)") where a year does follow — both sides
+        trusted means the parties are ours and the run is not an authority."""
+        left = text[max(0, s - _PN_AUTHORITY_WINDOW):s]
+        v = None
+        for v in _PN_AUTHORITY_V_RE.finditer(left):
+            pass                      # the nearest " v. " to the candidate
+        if v is None:
+            return False
+        if _PN_AUTHORITY_BREAK_RE.search(left[v.end():]):
+            return False
+        right = text[e:e + _PN_AUTHORITY_WINDOW]
+        if not (_PN_AUTHORITY_YEAR_RE.search(right)
+                or _PN_AUTHORITY_REPORTER_RE.search(right)):
+            return False
+        lead = re.search(r"([A-Za-z][A-Za-z.,'’&\- ]{0,60})$", left[:v.start()])
+        if (lead and self._side_is_trusted(lead.group(1))
+                and self._side_is_trusted(text[s:e])):
+            return False              # this case's own caption, recited inline
+        return True
 
     def _protected_citation_spans(self, text):
         """Spans of published-authority citations whose party names must NOT be
@@ -11047,6 +11176,9 @@ class Pseudonymizer:
     def _substitute(self, text, cands, reflow=False, count=True, protected=None):
         # Biggest / most-specific first; skip anything overlapping a chosen span.
         cands.sort(key=lambda c: (-c[0], -(c[2] - c[1])))
+        # Fail-closed authority guard, run only where the text has a "v." at all
+        # so an ordinary page pays one search.
+        guard = bool(_PN_AUTHORITY_V_RE.search(text))
         chosen, occ = [], []
         for _prio, s, e, rec in cands:
             if any(s < oe and os < e for os, oe in occ):
@@ -11055,6 +11187,11 @@ class Pseudonymizer:
             # overlapping a cited decision's name is dropped so the authority
             # survives byte-for-byte.
             if protected and any(s < pe and ps < e for ps, pe in protected):
+                continue
+            # …and never in a citation-SHAPED context either, whether or not a
+            # citation parsed there.
+            if (guard and rec["category"] in _PN_AUTHORITY_GUARD_CATS
+                    and self._in_authority_context(text, s, e)):
                 continue
             occ.append((s, e))
             chosen.append((s, e, rec))
