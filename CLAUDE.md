@@ -706,6 +706,26 @@ across all N — that was O(cites×pages)). `_repair_link_uris` fixes a PyMuPDF
 annotation-naming splice. Declarations/complaints skip linking
 (`should_skip_linking`).
 
+**A page must be APPENDABLE before anything is inserted into it**
+(`_repair_page_annots`, called once after the already-linked fast path so a
+document we would not have touched is never dirtied). `/Annots 175 0 R` is legal
+PDF — "my annotations are over there" — and Word's e-filing export writes
+exactly that, then emits `175 0 obj null` for a page that ended up with none.
+READING tolerates it (`get_links()` returns `[]`), so the document looks fine
+right up to the first `insert_link`: appending resolves the reference, gets a
+null, and MuPDF raises "not an array (null)" from OUTSIDE a `fz_try`, so its
+default handler calls **`abort()`**. There is no Python exception and nothing to
+catch — the run just stops mid-file, the log ending after "Found N citations",
+and on Windows leaves a python process at 0% CPU that looks hung. Four of the
+six pages of one opposition brief were like this, and every document after it in
+the folder went unprocessed. Nothing is lost by the repair: a null `/Annots` IS
+no annotations, so it becomes `[]`. Only an indirect reference that fails to
+resolve to an array is touched — an absent `/Annots`, a direct null, and an
+indirect reference to a REAL array are all things MuPDF already handles, and the
+last is both legal and common. Because the failure kills the interpreter, the
+end-to-end test asserts it from a SUBPROCESS; an in-process assertion could not
+survive to fail.
+
 ## OCR (the runtime bottleneck on scanned exhibits)
 
 - `_ocr_pdf` OCRs pages with **no** text; `_reocr_garbled_pages` rebuilds pages

@@ -14803,6 +14803,51 @@ def _pdf_is_stamped(doc):
 _PN_BAD_NM_RE = re.compile(r"/NM\(fitz-L\d+\)")
 
 
+def _repair_page_annots(doc, log=None):
+    """Make every page's /Annots something an annotation can be APPENDED to.
+
+    A page may legally say "my annotations are over there" — `/Annots 175 0 R`.
+    Word's e-filing export does exactly that and then emits `175 0 obj null`
+    for a page that ended up with none. READING tolerates it (`get_links()`
+    returns []), which is why the document looks perfectly fine right up to the
+    moment we link it. Appending resolves the reference, gets a null, and MuPDF
+    raises "not an array (null)" from OUTSIDE a fz_try — so its default handler
+    calls abort() and takes the whole interpreter with it. No Python exception
+    is raised and nothing can catch it: the run simply stops, mid-file, with the
+    log ending after "Found N citations" and (on Windows) a python process left
+    sitting at 0% CPU. Four of the six pages of one opposition brief were like
+    this, and every document after it in the folder went unprocessed.
+
+    Nothing is lost by the repair: a null /Annots IS no annotations, so it
+    becomes an empty array — what the page meant, and what MuPDF can append to.
+    An indirect reference to a REAL array is left alone; so is an absent or
+    directly-null /Annots, both of which MuPDF already handles.
+    """
+    fixed = 0
+    for page in doc:
+        try:
+            kind, val = doc.xref_get_key(page.xref, "Annots")
+        except Exception:
+            continue
+        if kind != "xref":
+            continue          # absent, direct null, or a direct array: all safe
+        try:
+            target = doc.xref_object(int(val.split()[0]), compressed=True)
+            if target.lstrip().startswith("["):
+                continue                          # a real array, just indirect
+        except Exception:
+            pass                                  # unreadable: repair it
+        try:
+            doc.xref_set_key(page.xref, "Annots", "[]")
+            fixed += 1
+        except Exception:
+            continue
+    if fixed and log:
+        log.info(f"  Repaired {fixed} page(s) whose /Annots pointed at no "
+                 f"array (inserting a link there aborts MuPDF outright)")
+    return fixed
+
+
 def _repair_link_uris(doc):
     """Remove the '/NM(fitz-Ln)' fragment PyMuPDF splices into a link URI that
     contains '/Link' (every Westlaw FullText URL). Works via xref surgery on
@@ -14943,6 +14988,16 @@ def process_pdf(pdf_path: Path, log: logging.Logger,
                  f".txt only (use --relink to force): {pdf_path.name}")
         doc.close()
         return True
+
+    # From here on the document WILL be written to, so make its pages
+    # appendable first: a page whose /Annots is an indirect reference to a null
+    # kills the process outright on the first insert_link, with no exception to
+    # catch (see _repair_page_annots). Placed after the already-linked fast path
+    # so a document we would not have touched is never dirtied by the repair.
+    try:
+        _repair_page_annots(doc, log)
+    except Exception as e:
+        log.warning(f"  /Annots repair failed (non-fatal): {e}")
 
     # Skip link insertion for declarations and separate statements: they
     # rarely contain citation-worthy material in Zachary's workflow, and
