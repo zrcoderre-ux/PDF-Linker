@@ -166,3 +166,36 @@ def test_a_real_caption_side_is_still_trusted():
     assert z._side_is_trusted("Valencia Holding Co., LLC"), (
         "corporate furniture must not dilute a side that IS ours")
     assert z._side_is_trusted("Helen Rasho")
+
+
+# ───── the scan must not report what the write side deliberately protects ────
+
+def test_a_protected_authority_is_not_reported_as_a_leak():
+    """The mirroring rule, and the reason it is not optional.
+
+    `_substitute` refuses a name-shaped candidate in a citation-SHAPED context
+    whether or not a citation parsed there. `_surviving_records` masks only what
+    the PARSER read — so for a cite the parser cannot read, the write side
+    protected the value and the read side reported it. A party-name leak
+    quarantines the export, and NO number of Apply-Leak-Fixes passes can ever
+    clear it: every pass refuses to scrub, every pass re-reports."""
+    z = _pz(["Helen Rasho", "General Motors, LLC"])
+    cite = "Accord, Silvio v. General Motors, LLC (2019) 33 Wn.App.2d 114, 120."
+    assert P.find_all_citations(cite) == [], "fixture must defeat the parser"
+    assert z.apply(cite) == cite, "the authority must survive byte-for-byte"
+    assert z.surviving_reals(cite) == [], (
+        "the scan reported a value the scrubber is required to leave alone")
+
+
+def test_the_same_value_standing_elsewhere_is_still_a_leak():
+    # The mirror must not become a blanket amnesty: one protected occurrence
+    # cannot excuse an unprotected one on the same page.
+    z = _pz(["Helen Rasho", "General Motors, LLC"])
+    cite = "Accord, Silvio v. General Motors, LLC (2019) 33 Wn.App.2d 114, 120."
+    assert z.surviving_reals(cite + " Defendant General Motors, LLC answered.") \
+        == ["General Motors, LLC"]
+
+
+def test_an_ordinary_survivor_is_unaffected():
+    z = _pz(["Helen Rasho"])
+    assert z.surviving_reals("Plaintiff Helen Rasho testified.")

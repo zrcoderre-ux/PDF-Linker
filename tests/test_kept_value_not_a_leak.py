@@ -54,3 +54,42 @@ def test_no_keeps_means_no_change_in_behaviour():
     z = _pz(["Michael Patrick Carroll"])
     assert "Michael Patrick Carroll" in z.surviving_reals(
         "Defendant Michael Patrick Carroll answered.")
+
+
+# ── a keep that WINS must not be reported either (the quarantine loop) ───────
+
+def test_a_local_bracket_keep_that_beats_a_party_match_is_not_reported():
+    """`--fix-leaks: applied 3 fix(es) to 0 file(s) ... 2 file(s) still carry a
+    party-name leak`, forever.
+
+    A LOCAL bracketed keep-spec beats even a full party match — that is what
+    `party_wins=False` means, and it is deliberate: the bracket already says how
+    to split the name. But `_surviving_records` only skipped a kept value for
+    NON-party categories, so a kept value whose record is a `person` was
+    refused by the scrubber and reported by the scan. The export is quarantined,
+    the operator marks the row `yes`, the fix pass changes nothing and
+    re-reports it, and the folder never resolves."""
+    reg = P._PnFakeRegistry()
+    terms = P._pn_build_terms(["Weishi Yang", "White"], ["26STCV08967"], [],
+                              registry=reg)
+    det = {k: P._PN_DETECTORS[k] for k in P._PN_DEFAULT_DETECTORS}
+    z = P.Pseudonymizer(terms, det, registry=reg)
+    z.keep_strict = {"White"}
+    z.keep_strict_local = {"White"}
+    text = "Declaration of White in support of the motion to quash."
+    out = z.apply(text)
+    assert out == text, "fixture must exercise a keep that WINS"
+    assert z.surviving_reals(out) == [], (
+        "the scan reported a value the scrubber is required to leave alone")
+
+
+def test_a_keep_released_by_a_party_match_is_still_reported():
+    """The safety rule is untouched: a keep YIELDS inside a full party match, so
+    a party still standing there was faked nowhere and IS a leak."""
+    reg = P._PnFakeRegistry()
+    terms = P._pn_build_terms(["Weishi Yang"], ["26STCV08967"], [],
+                              registry=reg)
+    det = {k: P._PN_DETECTORS[k] for k in P._PN_DEFAULT_DETECTORS}
+    z = P.Pseudonymizer(terms, det, registry=reg)
+    z.keep_soft = {"Weishi"}          # a soft keep, released in a name run
+    assert z.surviving_reals("Plaintiff Weishi Yang appeared.")
