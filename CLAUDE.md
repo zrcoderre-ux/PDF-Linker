@@ -281,6 +281,31 @@ the party), so its row stays reversible.
   repairs a stored composed fake on load, since a loaded row is applied
   literally and would otherwise keep reproducing the very output being
   bracketed away; it refuses any repair that would leave fake == real.
+- **An INITIAL agrees with the fake of the name it abbreviates.** A filing
+  writes one attorney both ways, and only one of the two forms was faked:
+  `STEVEN W. BURT -> AMBERLY W. YEARDLEY` beside
+  `Steven Wayne Burt -> Amberly Ondine Yeardley`. The initial is kept verbatim
+  on purpose (see the next bullet — faking "J." to a whole surname reads
+  "TOLLIVER. Forsythe Ivers"), but that left two middle names for one person,
+  the same confusion the compound-surname rule exists to prevent, AND the real
+  middle initial standing in the clear. Two halves, because the disagreement
+  arrives two ways. `_pn_align_initials` (run from `_pn_build_terms` and from
+  `_add_terms`, so a declarant harvested per-file lands the same) gives a kept
+  initial the FIRST LETTER OF THE FAKE its spelled-out form got — two terms
+  are one person when the fakes of one's faked words are a strict subset of the
+  other's, sharing ≥2; the registry is injective, so a shared fake means a
+  shared real word, never a coincidence. `_pn_initial_spellings` closes the
+  other half: bare tokens scrubbed what they knew and left the initial alone
+  ("Amberly W. Yeardley") wherever the TEXT abbreviated a name the key spells
+  out, so the abbreviated spellings are registered up front, with and without
+  the period, carrying the fake's letter. MIDDLE names only, and "middle" is
+  measured against the FAKED words, not word positions — the furniture of
+  "LAW OFFICES OF Scott C. Stratman" puts the first name at index 3, and
+  abbreviating it would invent the thin leading-initial pattern ("S. Stratman")
+  this deliberately does not register. A LOADED binding is never realigned, so
+  a reused key still reproduces what the delivered exports say. Residual, and
+  accepted: a person the key names ONLY with an initial ("Geoffrey A. Bowen")
+  has nothing to learn from, so that letter is still the real one.
 - **A stand-in for INITIALS is never an ordinary WORD** (`_pn_reads_as_word`).
   `_pn_fake_initials_name` draws each letter on its own, so nothing saw what
   they spelt together and "M.W." came back "A.T." — conspicuous, and

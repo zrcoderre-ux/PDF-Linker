@@ -6634,6 +6634,151 @@ def _pn_name_token_rows(real, fake):
         yield rtok, ftok
 
 
+def _pn_initial_spellings(real, fake):
+    """(abbreviated_real, abbreviated_fake) for each way a MIDDLE name of this
+    person can be written as an initial — "Steven Wayne Burt" also appears as
+    "Steven W. Burt" and "Steven W Burt", every one of them in the same filing.
+
+    Registered, the abbreviated spelling carries the FAKE middle name's letter
+    ("Amberly O. Yeardley"). Unregistered, the bare tokens scrubbed what they
+    knew and left the initial alone — "Amberly W. Yeardley" — which reads as a
+    second person and keeps the real middle initial in the clear.
+
+    MIDDLE names only. The first name and the surname anchor the match; a
+    leading-initial spelling ("S. Burt") is a much thinner pattern for a much
+    rarer form, and the alignment pass covers it wherever the key names it.
+    Skipped for a comma-inverted name, where the surname is not last."""
+    real, fake = str(real), str(fake)
+    if "," in real:
+        return
+    rw = _PN_WORD_RE.findall(real)
+    fw = _PN_WORD_RE.findall(fake)
+    if len(rw) != len(fw) or len(rw) < 3:
+        return
+    # "Middle" is measured against the FAKED words, not the word positions: the
+    # firm furniture in front of "LAW OFFICES OF Scott C. Stratman" is kept
+    # verbatim, so "Scott" sits at index 3 while being the first name — and
+    # abbreviating it would invent exactly the leading-initial spelling this
+    # deliberately does not register.
+    named = [i for i, r in enumerate(rw) if len(r) > 1 and r != fw[i] and fw[i]]
+    middles = named[1:-1]
+    if not middles or len(middles) > 3:
+        return
+    seen = set()
+    for bits in range(1, 1 << len(middles)):
+        picked = [middles[b] for b in range(len(middles)) if bits >> b & 1]
+        for dot in (".", ""):
+            r_out, f_out = list(rw), list(fw)
+            for i in picked:
+                r_out[i], f_out[i] = rw[i][0] + dot, fw[i][0] + dot
+            vr = _pn_rejoin_words(real, rw, r_out)
+            vf = _pn_rejoin_words(fake, fw, f_out)
+            # "Steven Wayne  Burt" -> the rejoin keeps the original spacing, so
+            # collapse the run a dropped period leaves behind.
+            vr, vf = re.sub(r"\s+", " ", vr).strip(), re.sub(r"\s+", " ", vf).strip()
+            if vr.lower() == real.lower() or vr.lower() in seen:
+                continue
+            if _pn_norm_map(vr) == _pn_norm_map(vf):
+                continue                  # nothing left to scrub — not a term
+            seen.add(vr.lower())
+            yield vr, vf
+
+
+def _pn_align_initials(terms, log=None):
+    """Make an INITIAL agree with the fake of the name it abbreviates, so one
+    person written both ways stays one person.
+
+    A single-letter initial is kept verbatim (`_pn_fake_person`) — faking "J." to
+    a whole surname renders "J. Brett Griffin" as "TOLLIVER. Forsythe Ivers" in
+    one place and "J. Forsythe Ivers" in another. But a filing writes the same
+    attorney both ways, and the spelled-out form DOES fake the middle name:
+
+        STEVEN W. BURT      ->  AMBERLY W. YEARDLEY
+        Steven Wayne Burt   ->  Amberly Ondine Yeardley
+
+    Two costs, both real. The reader meets two middle names for one person and
+    has no way to tell it is one — the exact confusion the compound-surname rule
+    exists to prevent. And the surviving "W." is the REAL middle initial, kept
+    in the clear beside a name that was otherwise scrubbed.
+
+    So where this run knows the fake for a person's spelled-out name, the
+    initialled form takes THAT word's first letter: "AMBERLY O. YEARDLEY". Two
+    terms are the same person when the fakes of one's faked words are a subset
+    of the other's, sharing at least two — the registry is injective, so a shared
+    fake means a shared real word, never a coincidence. With no spelled-out form
+    to learn from, the initial is left verbatim exactly as before.
+
+    Mutates `t.fake` in place; a LOADED term (a binding a reused key pinned) is
+    never touched, so exports already in circulation keep reading the same.
+    Returns [(term, old_fake)] for what changed. Idempotent."""
+    def split(t):
+        rw, fw = _PN_WORD_RE.findall(str(t.real)), _PN_WORD_RE.findall(str(t.fake))
+        return (rw, fw) if rw and len(rw) == len(fw) else (None, None)
+
+    people = [t for t in terms
+              if t.category == "person" and not getattr(t, "loaded", False)]
+    if not people:
+        return []
+    # Every person term's faked words, as a set of fakes — the identity key.
+    faked = {}
+    for t in people:
+        rw, fw = split(t)
+        if rw is None:
+            continue
+        faked[id(t)] = frozenset(f.lower() for r, f in zip(rw, fw) if r != f)
+    changed = []
+    for t in people:
+        rw, fw = split(t)
+        if rw is None:
+            continue
+        slots = [i for i, r in enumerate(rw) if len(r) == 1 and r == fw[i]]
+        mine = faked.get(id(t))
+        if not slots or not mine or len(mine) < 2:
+            continue
+        # Deterministic: whichever sibling sorts first by its real value wins,
+        # so the alignment does not depend on the order names were harvested in.
+        letters = {}
+        for u in sorted(people, key=lambda u: (str(u.real).lower(), id(u))):
+            if u is t or not (mine < faked.get(id(u), frozenset())):
+                continue
+            ru, fu = split(u)
+            if ru is None:
+                continue
+            for r, f in zip(ru, fu):
+                if len(r) > 1 and r != f and f:
+                    letters.setdefault(r[0].lower(), f[0])
+        if not letters:
+            continue
+        out, hit = list(fw), False
+        for i in slots:
+            letter = letters.get(rw[i][0].lower())
+            if letter and letter.lower() != rw[i].lower():
+                out[i] = letter.upper() if rw[i].isupper() else letter.lower()
+                hit = True
+        if not hit:
+            continue
+        old = t.fake
+        t.fake = _pn_rejoin_words(str(t.fake), fw, out)
+        changed.append((t, old))
+    if changed and log:
+        log.info("  Pseudonymize: aligned "
+                 + ", ".join(f"{t.real!r} -> {t.fake!r}" for t, _o in changed[:4])
+                 + " so an initial matches the fake of the name it stands for.")
+    return changed
+
+
+def _pn_rejoin_words(text, words, replacements):
+    """`text` with its `_PN_WORD_RE` words swapped for `replacements` one for
+    one, every separator (dots, commas, spacing) left exactly as it was."""
+    out, cursor, i = [], 0, 0
+    for m in _PN_WORD_RE.finditer(text):
+        out.append(text[cursor:m.start()])
+        out.append(replacements[i] if i < len(replacements) else m.group(0))
+        cursor, i = m.end(), i + 1
+    out.append(text[cursor:])
+    return "".join(out)
+
+
 def _pn_restore_furniture(real, fake, keep_words=frozenset()):
     """Repair a stored fake that an older build composed by faking the FURNITURE
     of a name — "Law Offices of Scott C. Stratman" -> "Braxton Mansffield
@@ -6927,6 +7072,13 @@ def _pn_append_person_terms(terms, raw, source, registry):
     fake_full, bare = _pn_fake_person(raw, registry)
     terms.append(_PnTerm("person", raw, fake_full, whole_word=False,
                          case_sensitive=False, priority=2, source=source))
+    # The same filing writes the middle name out and abbreviates it. Register
+    # the abbreviated spelling with the FAKE middle name's letter, or the bare
+    # tokens leave the real initial standing beside a scrubbed name.
+    for var_real, var_fake in _pn_initial_spellings(raw, fake_full):
+        terms.append(_PnTerm("person", var_real, var_fake, whole_word=True,
+                             case_sensitive=False, priority=2, source=source,
+                             derived=True))
     for real_tok, fake_tok, _is_surname in bare:
         # A generic word ("Legal" of a firm name, "Warranty", "Beach" of
         # "Long Beach") must never be a free-standing token — it rewrites
@@ -9117,7 +9269,11 @@ def _pn_build_terms(names, casenos, extra_terms, registry=None, _prewarm=True):
         k = (t.real.lower(), t.category)
         if k not in dedup or t.priority > dedup[k].priority:
             dedup[k] = t
-    return sorted(dedup.values(), key=lambda t: (-t.priority, -len(t.real)))
+    out = sorted(dedup.values(), key=lambda t: (-t.priority, -len(t.real)))
+    # "STEVEN W. BURT" and "Steven Wayne Burt" are one person; the initial takes
+    # the fake middle name's letter so they still read as one.
+    _pn_align_initials(out)
+    return out
 
 
 def _pn_find_folder_key(folder, log):
@@ -9888,6 +10044,13 @@ class Pseudonymizer:
                 "derived": getattr(t, "derived", False)}
             added = True
         if added:
+            # A declarant read off a signature block ("STEVEN W. BURT") routinely
+            # arrives AFTER the spreadsheet's spelled-out form, or before it —
+            # so the alignment runs over the whole term set whenever it grows.
+            for t, _old in _pn_align_initials(self.terms):
+                rec = self.records.get((t.category, t.real.lower()))
+                if rec is not None:
+                    rec["fake"] = t.fake
             # Keep terms ordered biggest/most-specific first for apply()'s
             # overlap resolution.
             self.terms.sort(key=lambda t: (-t.priority, -len(t.real)))
