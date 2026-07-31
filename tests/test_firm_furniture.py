@@ -99,7 +99,8 @@ def _write_and_reload(tmp_path, names, sample):
     pz.apply(sample)
     key = tmp_path / "pseudonym_key.xlsx"
     pz.write_key(key, log)
-    rows = [r for r in openpyxl.load_workbook(key).active.iter_rows(values_only=True)][1:]
+    rows = [r for ws in openpyxl.load_workbook(key).worksheets
+            for r in ws.iter_rows(min_row=2, values_only=True) if r and r[0]]
     reg2 = P._PnFakeRegistry()
     loaded, _dec = P._pn_load_key(key, reg2, log)
     return rows, loaded

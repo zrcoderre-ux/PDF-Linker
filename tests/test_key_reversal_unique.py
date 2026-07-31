@@ -46,10 +46,14 @@ WRAPPED = ("Declaration of Sara Ardeshirpour- Zartoshti in 24STCV23198. "
 
 
 def _key_rows(path):
-    ws = openpyxl.load_workbook(path).active
-    rows = list(ws.iter_rows(values_only=True))
-    head = [str(h).strip().lower() for h in rows[0]]
-    return [dict(zip(head, r)) for r in rows[1:] if r and r[0]]
+    # Both sheets: a binding no export carries is written to
+    # `_PN_KEY_PINNED_SHEET`, out of the reversal macro's reach, but it is still
+    # a binding and the one-row-per-fake invariant covers it.
+    wb = openpyxl.load_workbook(path)
+    head = [str(h).strip().lower()
+            for h in next(wb.active.iter_rows(max_row=1, values_only=True))]
+    return [dict(zip(head, r)) for ws in wb.worksheets
+            for r in ws.iter_rows(min_row=2, values_only=True) if r and r[0]]
 
 
 def _reversible(rows):

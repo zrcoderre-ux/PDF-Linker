@@ -1385,6 +1385,9 @@ def _normalize_for_detection(text: str) -> str:
 # straight through. Blanking is length-preserving for the same reason the
 # newline normalization is — spans must keep indexing into the original text.
 _GUTTER_NUM_RE = re.compile(r"(?m)^[ \t]{0,8}\d{1,2}(?=[ \t]{2,}\S)")
+# "Is there a citation on this page at all?" — one scan, used to keep a page
+# that cites nothing from paying for the second detection pass.
+_ANY_REPORTER_RE = re.compile(rf"(?:{REPORTER_PATTERN})")
 
 
 def _blank_gutter_line_numbers(text: str) -> str:
@@ -1427,8 +1430,16 @@ def find_all_citations(text: str):
 
     # Second pass over the same text with pleading line numbers blanked, so a
     # cite that wraps across the gutter is still found. Additions only.
+    #
+    # Gated on the page carrying a REPORTER at all, which is what makes the
+    # second pass affordable: it doubles detection cost, and most pages of a
+    # filing (declarations, exhibits, proofs of service) cite nothing, so they
+    # pay one extra scan instead of a whole extra pipeline. The gate cannot be
+    # tightened to "blanking created a new volume+reporter adjacency" — a line
+    # number that lands BEFORE the volume ("…(1995)\n12  38 Cal.App.4th") leaves
+    # that adjacency intact and still breaks the parse.
     degut = _normalize_for_detection(_blank_gutter_line_numbers(text))
-    if degut != norm:
+    if degut != norm and _ANY_REPORTER_RE.search(degut):
         taken = [tuple(c["span"]) for c in all_cites]
         for c in _citation_pass(degut):
             s, e = c["span"]
@@ -7655,6 +7666,17 @@ def _pn_fake_ssn(real):
                               real)
 
 
+# An "@" as printed, or as OCR read it. A scanned signature block gave
+# "shabib(a)erskinelaw.com": the email detector did not match, so the address
+# was left to the url/domain rule, which faked the HOST and left the local part
+# — the attorney's own name — standing in the export. Half-scrubbed is the worst
+# outcome available, so the at-sign is matched the way the page actually spells
+# it. Split out as a constant because the detector that FINDS an address and
+# `_fake_email`, which takes it apart, have to agree on what one looks like.
+_PN_AT_SIGN = r"(?:@|[(\[{][ \t]*[aA][ \t]*[)\]}])"
+_PN_AT_SIGN_RE = re.compile(_PN_AT_SIGN)
+
+
 def _pn_fake_email(real):
     r = _pn_rng("email", real.lower())
     return (f"{r.choice(_PN_NAME_WORDS).lower()}.{r.choice(_PN_NAME_WORDS).lower()}"
@@ -8154,9 +8176,20 @@ _PN_DETECTORS = {
     # indistinguishable from a Bates/account/reservation number) — it is caught
     # only behind an SSN label, in _PN_ID_RES below.
     "ssn": (re.compile(r"(?<!\d)\d{3}[-. ]\d{2}[-. ]\d{4}(?!\d)"), _pn_fake_ssn),
-    "email": (re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b"), _pn_fake_email),
+    "email": (re.compile(
+        rf"\b[A-Za-z0-9._%+\-]+{_PN_AT_SIGN}[A-Za-z0-9.\-]+\.[A-Za-z]{{2,}}\b"),
+        _pn_fake_email),
+    # An area code in brackets may be preceded by a stray digit and the brackets
+    # themselves may be OCR's idea of them: a scanned letterhead gave `4(818)
+    # 953-0150` and `1{818) 953-0150`, and the number survived both times. The
+    # `(?<!\d)` guard is there to stop a match inside a longer digit run, which
+    # is a real hazard for the BARE three-digit form and no hazard at all for
+    # the bracketed one — three digits inside brackets followed by seven more
+    # is a phone number whatever precedes it. So the guard moves onto the
+    # alternative that needs it.
     "phone": (re.compile(
-        r"(?<!\d)(?:\+?1[\s.\-]?)?(?:\(\d{3}\)|\d{3})[\s.\-]?\d{3}[\s.\-]?\d{4}(?!\d)"),
+        r"(?:\+?1[\s.\-]?)?(?:[(\[{]\d{3}[)\]}]|(?<!\d)\d{3})"
+        r"[\s.\-]?\d{3}[\s.\-]?\d{4}(?!\d)"),
         _pn_fake_phone),
     # Street address — anchored on a leading street number on the same row, then
     # 1-4 name words (capitalised, or an ordinal/directional), then a street-type
@@ -9166,6 +9199,20 @@ _PN_KEY_UNMATCHED_SOURCES = frozenset({"spreadsheet", "--term"})
 # pseudonym standing in the tentative. The marker tells the macro which of the
 # two rows owns the reversal so exactly one does. See write_key.
 _PN_KEY_ALT_STATUS = "alt spelling"
+# A binding no export has EVER carried lives on its own sheet. `write_key`
+# deliberately keeps a row the party template or a --term named even when this
+# batch never mentioned the party: the fake is already minted, and the row is
+# the only durable record of a binding the case needs the moment a later filing
+# finally names them. Right forward, and a hazard in reverse — the macro runs
+# the map backwards and would replace a Real Value that was never in the
+# document. Status "no match" documented the hazard without preventing it, and
+# 133 of the delivered key's 335 rows were of this kind.
+#
+# So they go on a second sheet: `DeAnonymize` reads the active one and cannot
+# reach them, while `_pn_load_key` reads BOTH and keeps pinning them. A row
+# earns its way onto the main sheet by being APPLIED — this run or any earlier
+# one, since a loaded row carries its occurrence count forward.
+_PN_KEY_PINNED_SHEET = "Pinned (never in text)"
 _PN_KEY_TOKEN_CATS = frozenset({"person-token", "entity-token", "short-name",
                                 "address_fragment"})
 
@@ -9369,6 +9416,13 @@ def _pn_load_key(path, registry, log):
     wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
     ws = wb.active
     rows = list(ws.iter_rows(values_only=True))
+    # A binding no export has ever carried sits on its own sheet, where the
+    # reversal macro cannot reach it (see `_PN_KEY_PINNED_SHEET`). It is still
+    # AUTHORITATIVE going forward — pinning it is the whole reason it was
+    # written — so it is read back here exactly like any other row. Both sheets
+    # share the header, so the body rows simply concatenate.
+    if _PN_KEY_PINNED_SHEET in wb.sheetnames:
+        rows += list(wb[_PN_KEY_PINNED_SHEET].iter_rows(values_only=True))[1:]
     header = [(_pn_norm_header(h)) for h in (rows[0] if rows else ())]
     idx = {name: header.index(name) for name in
            ("category", "real value", "replacement", "status", "source",
@@ -9554,7 +9608,11 @@ def _pn_load_key(path, registry, log):
             csens = (cat == "short-name" and real.isalpha()
                      and real == real.upper() and len(real) <= 5)
         elif cat in ("person", "entity"):
-            priority, whole, csens = 2, False, False
+            # Whole-word, matching what the forward pass built (see
+            # `_pn_append_person_terms`): a loaded row is applied literally, so
+            # a looser edge here would rewrite text the run that wrote the key
+            # did not touch.
+            priority, whole, csens = 2, True, False
         else:                       # case_number, identifiers, display-name
             priority, whole, csens = 2, True, False
         t = _PnTerm(cat, real, fake, whole_word=whole, case_sensitive=csens,
@@ -11641,7 +11699,11 @@ class Pseudonymizer:
         searchable handle. A piece with no known name in it is swapped for a
         stable word drawn from the registry (unique, so it can never collide
         with a party's fake)."""
-        local, sep, domain = real.partition("@")
+        # Split on the at-sign AS PRINTED — OCR's "(a)" is one too, and reading
+        # it as part of the local part left the whole address unrecognised.
+        at = _PN_AT_SIGN_RE.search(real)
+        local, sep, domain = ((real[:at.start()], at.group(0), real[at.end():])
+                              if at else (real, "", ""))
         if not sep:
             return _pn_fake_email(real)
         tokens = self.registry.tokens_for("nametok")
@@ -12539,13 +12601,43 @@ class Pseudonymizer:
             self._check_key_completeness(keyrows, log)
             return
 
+        # A binding no export has ever carried goes on its own sheet, out of the
+        # reverse pass's reach — see `_PN_KEY_PINNED_SHEET`.
+        #
+        # "Carried" is REACHABILITY, not this row's own occurrence count: the
+        # macro reverses a composed fake word by word, so the token rows of a
+        # party whose FULL name is the only form the export used are load-
+        # bearing even though they matched nothing themselves ("Gregory Yu" ->
+        # "Finnegan Harrell" is undone by the "Finnegan" and "Harrell" rows).
+        # Same rule the completeness gate applies, from the other side. The
+        # registry is injective, so a shared fake word is always the same
+        # word-level binding and never a coincidence.
+        live = {w for r in keyrows if r["count"] > 0
+                for w in _PN_FAKE_WORD_RE.findall(str(r["fake"]).lower())}
+
+        def in_play(r):
+            return (r["count"] > 0
+                    or any(w in live for w in
+                           _PN_FAKE_WORD_RE.findall(str(r["fake"]).lower())))
+
+        applied = [r for r in keyrows if in_play(r)]
+        pinned = [r for r in keyrows if not in_play(r)]
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = "Pseudonym Key"
         ws.append(headers)
-        for r in keyrows:
+        for r in applied:
             ws.append([r["category"], r["real"], r["fake"], row_status(r),
                        r["source"], r["count"]])
+        if pinned:
+            ps = wb.create_sheet(_PN_KEY_PINNED_SHEET)
+            ps.append(headers)
+            for r in pinned:
+                ps.append([r["category"], r["real"], r["fake"], row_status(r),
+                           r["source"], r["count"]])
+            log.info(f"  Pseudonymize: {len(pinned)} binding(s) no export "
+                     f"carries moved to the '{_PN_KEY_PINNED_SHEET}' sheet — "
+                     f"still pinned for a later run, never applied in reverse")
         wb.save(path)
         self._check_key_completeness(keyrows, log)
         for cluster in self.alias_candidates():
