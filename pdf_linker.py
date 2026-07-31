@@ -2579,6 +2579,62 @@ def _detect_line_anchors(page, desplice=False):
                 "segments": [(x, t) for x, _y, t in segs],
                 "y_mid": min(y for _x, y, _t in segs),
             })
+
+    # Step 7: text that belongs to NO gutter number is still CONTENT.
+    #
+    # Step 4 drops a row further than half a lead from any line number, and
+    # Step 3 never collected anything left of the gutter at all. Both were
+    # written to stop such text being ADOPTED onto a numbered line — a real bug
+    # (the running footer arriving as "28  ...OPPOSITION TO DEFENDANT'S MOTION
+    # TO STRIKE"). But the remedy was to discard it, and a pleading page carries
+    # real text outside its numbered band: an e-filing stamp above line 1, a
+    # left-margin exhibit label, and — on the last page of a filing — the whole
+    # SERVICE LIST, which sits above line 1 in its own block.
+    #
+    # Discarded, it never reaches the export, so it never reaches the scrubber
+    # OR the leak scan, and the run certifies a file it never read. The costs
+    # memo of one corpus lost its service list entire: the case caption naming
+    # the plaintiff, the case number, opposing counsel, a street address and
+    # four e-mail addresses — one of which then survived OCR-mangled elsewhere
+    # in the batch precisely because no pass had ever learned it. Same rule the
+    # form path already follows: detection reads what the export writes.
+    #
+    # Emitted as UNNUMBERED rows, which is what keeps the original fix intact —
+    # the text is back in the document without claiming a line number, so a
+    # pinpoint "p.3:7" still never lands on furniture.
+    claimed = {id(sp) for rs in rows_by_num.values()
+               for r in rs for sp in r["spans"]}
+    margin = [sp
+              for b in blocks if "lines" in b
+              for ln in b["lines"]
+              for sp in ln["spans"]
+              if sp["text"].strip()
+              and sp["bbox"][0] < body_x_min
+              and _span_baseline(sp) <= footer_top
+              # A bare small integer to the LEFT of the body column is a gutter
+              # number, full stop — including one the x-clustering left out of
+              # `line_col`. Pleading paper right-aligns the gutter, so the
+              # single digits sit in their own sub-column a few points right of
+              # the double digits, and a page whose 10-29 outnumber its 1-9 puts
+              # dominant_x on the wider run. Matching only near dominant_x let
+              # "1".."9" through as body text ("1 SERVICE LIST").
+              and not re.fullmatch(r"\d{1,2}", sp["text"].strip())]
+    stray = [sp for sp in body_spans if id(sp) not in claimed] + margin
+    for row in _cluster_rows(stray):
+        segs = []
+        for x, text in _split_row_columns(row["spans"]):
+            if _CAPTION_DIVIDER_RE.match(text):
+                continue
+            text = _CAPTION_DIVIDER_LEAD_RE.sub("", text)
+            if text:
+                segs.append((x, text))
+        if segs:
+            results.append({
+                "line_num": None,
+                "body_text": " ".join(t for _x, t in segs),
+                "segments": segs,
+                "y_mid": row["y"],
+            })
     return results
 
 
@@ -7241,6 +7297,24 @@ def _pn_authority_tokens(text):
     return out
 
 
+def _pn_depunct_spelling(raw):
+    """`raw` with the punctuation BETWEEN its words dropped — "General Motors,
+    LLC" -> "General Motors LLC" — or "" when that changes nothing.
+
+    A filing writes a corporate name both ways, and the two must both scrub.
+    The reduced weld pass used to cover this by accident: it folds text to bare
+    alphanumerics, so the comma simply vanished. That is no longer true — a span
+    holding a printed word boundary is now refused (`_pn_span_is_unbroken`),
+    because matching across one is what deleted the text between real words. The
+    rule is right and the coverage still has to come from somewhere, so the
+    variant is registered EXPLICITLY, the same way a wrap-split hyphen spelling
+    is. Better than the reduced pass ever was, in fact: a real term yields to an
+    operator KEEP and to citation protection, which that pass cannot see."""
+    out = re.sub(r"[,;]+(?=\s)", "", _NFKC(str(raw)))
+    out = re.sub(r"\s+", " ", out).strip()
+    return out if out and out != re.sub(r"\s+", " ", str(raw)).strip() else ""
+
+
 def _pn_strip_et_al(raw):
     """`raw` with an inline "et al." removed — "JUAN LOPEZ, ET AL." names one
     party, and tokenizing the tail registered "AL" as a name."""
@@ -7306,6 +7380,13 @@ def _pn_append_entity_terms(terms, raw, source, registry, prefer=None):
     terms.append(_PnTerm("entity", raw, fake,
                          whole_word=True, case_sensitive=False, priority=2,
                          source=source))
+    # The same name written without its internal punctuation ("GENERAL MOTORS
+    # LLC"), sharing this name's fake so both spellings scrub to one identity.
+    depunct = _pn_depunct_spelling(raw)
+    if depunct:
+        terms.append(_PnTerm("entity", depunct, fake, whole_word=True,
+                             case_sensitive=False, priority=2, source=source,
+                             derived=True))
     bare = _pn_entity_bare(raw, registry, prefer)
     if (bare and not _pn_is_party_role(bare[0])
             and not (len(bare[0].split()) <= 2
@@ -7347,6 +7428,9 @@ def _pn_append_person_terms(terms, raw, source, registry):
     # declarant, fired inside "Vatue" ("Agreed Vabennett of Property").
     terms.append(_PnTerm("person", raw, fake_full, whole_word=True,
                          case_sensitive=False, priority=2, source=source))
+    # No de-punctuated variant on the PERSON path: a comma in a person's name
+    # is structural, not decoration — "Burt, Steven Wayne" is surname-first, and
+    # "Burt Steven Wayne" is a name this tool would be inventing.
     # The same filing writes the middle name out and abbreviates it. Register
     # the abbreviated spelling with the FAKE middle name's letter, or the bare
     # tokens leave the real initial standing beside a scrubbed name.
@@ -9294,6 +9378,25 @@ def _pn_span_is_unbroken(src, start, end):
     newline is NOT allowed — between two words a line break is the separator, so
     admitting it reopens the same bug one line down."""
     return bool(_PN_WELD_INTERIOR_RE.fullmatch(src[start:end]))
+
+
+def _pn_span_is_whole_token(src, start, end):
+    """True when `src[start:end]` is a COMPLETE printed token — nothing
+    alphanumeric touches it on either side.
+
+    The other half of the narrow (non-splice-flagged) pass's evidence. A hard
+    seam says a boundary was lost where the span MEETS its neighbour; this says
+    the span has no neighbour at all, so the whole printed word is the value.
+    Paired with the long-core tier that is the plaintiff's full name with its
+    space gone — "HELENRASHO", which shipped in a complaint's export while the
+    leak scan called the file clean, because a page that carries no other splice
+    evidence is never flagged and the full tier never ran. A whole token that
+    reduces to exactly a tracked party's name is not a coincidence: it cannot be
+    a fragment of a longer word, and `_pn_span_is_unbroken` has already said it
+    holds no printed boundary inside."""
+    before = src[start - 1] if start > 0 else ""
+    after = src[end] if end < len(src) else ""
+    return not ((before and before.isalnum()) or (after and after.isalnum()))
 
 
 def _pn_span_has_hard_seam(src, start, end):
@@ -11911,7 +12014,12 @@ class Pseudonymizer:
         cores = []
         for rec in self.records.values():
             core, short = self._weld_core(rec)
-            if core and (spliced or short):
+            # Off a splice-flagged page BOTH tiers are collected: the short one
+            # needs a hard seam, the long one needs to be the whole printed
+            # token. The per-match checks below are what separate them — the old
+            # gate dropped the long tier here, so "HELENRASHO" was never even a
+            # candidate on a page nothing else had flagged.
+            if core:
                 cores.append((core, short, rec))
         if not cores:
             return []
@@ -11934,7 +12042,10 @@ class Pseudonymizer:
                 if (_pn_span_is_unbroken(masked, o_s, o_e)
                         and (not short or _pn_span_is_welded(masked, o_s, o_e))
                         and (spliced
-                             or _pn_span_has_hard_seam(masked, o_s, o_e))):
+                             or _pn_span_has_hard_seam(masked, o_s, o_e)
+                             or (not short
+                                 and _pn_span_is_whole_token(masked, o_s,
+                                                             o_e)))):
                     out.append(rec["real"])
                     break
                 k = red.find(core, k + 1)
@@ -11970,7 +12081,9 @@ class Pseudonymizer:
         cands = []
         for rec in self.records.values():
             core, short = self._weld_core(rec)
-            if core and (spliced or short):
+            # Mirror of `surviving_reals_reduced`: both tiers collected, the
+            # per-match checks below decide which may fire off a flagged page.
+            if core:
                 cands.append((core, _pn_fake_core_display(rec["fake"]), rec,
                               short))
         # Nothing to hunt for, or nothing present: leave before paying for
@@ -12015,7 +12128,15 @@ class Pseudonymizer:
                 # Off a splice-flagged page, only a HARD seam is evidence a
                 # boundary was lost here, so "Juanita" and "Carrollton" keep
                 # their letters while "MARIA46." and "JUANthe" are cured.
-                if not spliced and not _pn_span_has_hard_seam(src, o_s, o_e):
+                # Off a splice-flagged page the evidence must be positive:
+                # either a HARD SEAM where the span meets its neighbour, or —
+                # for a LONG core only — the span being the whole printed token,
+                # i.e. the party's full name with its space gone
+                # ("HELENRASHO"). Mirrored in `surviving_reals_reduced`.
+                if (not spliced
+                        and not _pn_span_has_hard_seam(src, o_s, o_e)
+                        and not (not short
+                                 and _pn_span_is_whole_token(src, o_s, o_e))):
                     start = k + 1
                     continue
                 if not any(taken[k:end]):
