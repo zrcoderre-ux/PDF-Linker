@@ -15529,6 +15529,40 @@ def _clear_eta_markers(folder):
                 pass
 
 
+def _require_pymupdf(log):
+    """True when PyMuPDF is importable; otherwise say exactly what to run.
+
+    Checked UP FRONT because `fitz` is imported lazily at each use site, so its
+    absence surfaced as a traceback 34 files into a run's setup — while the
+    other spreadsheet dependency, openpyxl, had always failed with a polite line
+    naming its pip command. Same failure, two very different experiences.
+
+    The message names THIS interpreter by full path on purpose. The launcher
+    runs the `pythonw.exe` beside `sys.executable`, a machine can easily have
+    several Pythons, and a bare `pip install pymupdf` typed at whichever one is
+    on PATH installs into the wrong one — which is precisely how a folder ends
+    up working on one machine and not another."""
+    try:
+        import fitz              # noqa: F401
+        return True
+    except ImportError:
+        exe = Path(sys.executable)
+        # Name the CONSOLE interpreter: pip run under pythonw.exe prints nothing.
+        if exe.name.lower().startswith("pythonw"):
+            cand = exe.with_name(exe.name.lower().replace("pythonw", "python", 1))
+            if cand.exists():
+                exe = cand
+        log.error(
+            "PyMuPDF is not installed for the interpreter this tool runs on, so "
+            "no PDF can be opened and nothing below would work. Install it with:")
+        log.error(f'    "{exe}" -m pip install pymupdf')
+        log.error(
+            "Run that line exactly as written — it targets THIS Python. A bare "
+            "`pip install pymupdf` may install into a different Python on the "
+            "same machine, which leaves this failing in exactly the same way.")
+        return False
+
+
 def _install_crash_logging(log):
     """Make a fatal failure VISIBLE in pdf_linker.log.
 
@@ -16503,6 +16537,12 @@ def main():
             _clear_eta_markers(folder)
             raise
         sys.exit(rc)
+
+    # Every path below opens PDFs. Checked HERE and not earlier so `--fix-leaks`
+    # — which is text-only and never reopens a PDF — still works on a machine
+    # without PyMuPDF.
+    if not _require_pymupdf(log):
+        sys.exit(1)
 
     if args.pseudonymize is None:
         args.pseudonymize = _config_bool(cfg, "pseudonymize", True)
