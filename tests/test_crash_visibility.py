@@ -148,3 +148,33 @@ def test_the_last_log_line_names_the_file_being_read(tmp_path):
 def test_installing_the_hooks_never_itself_fails():
     # A diagnostic that raises would end the very run it exists to explain.
     pl._install_crash_logging(logging.getLogger("no-handlers-at-all"))
+
+
+# ── the dependency check ────────────────────────────────────────────────────
+
+def test_pymupdf_is_present_here():
+    assert pl._require_pymupdf(log) is True
+
+
+def test_a_missing_pymupdf_names_this_interpreter(tmp_path):
+    # The failure that produced the traceback this file exists for: `fitz` is
+    # imported lazily at each use site, so its absence surfaced 34 files into a
+    # run's setup rather than at startup. The message has to name the
+    # interpreter by full path — a bare `pip install pymupdf` can land in a
+    # different Python on the same machine and leave this failing identically.
+    done = _child("""
+        import sys, builtins, logging
+        _real = builtins.__import__
+        def _no_fitz(name, *a, **k):
+            if name == "fitz":
+                raise ImportError("No module named 'fitz'")
+            return _real(name, *a, **k)
+        builtins.__import__ = _no_fitz
+        logging.basicConfig(filename="dep.log", level=logging.INFO,
+                            format="%(message)s")
+        print("OK", pl._require_pymupdf(logging.getLogger("d")))
+    """, tmp_path)
+    assert "OK False" in done.stdout, (done.stdout, done.stderr)
+    text = (tmp_path / "dep.log").read_text()
+    assert "-m pip install pymupdf" in text
+    assert sys.executable.replace("pythonw", "python") in text

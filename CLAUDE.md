@@ -781,6 +781,16 @@ log's own stream for a C-level abort, which raises nothing at all and so cannot
 be hooked — MuPDF calls `abort()` on a fatal error, so this is the only thing
 that leaves a trace of one.
 
+**A missing core dependency fails at STARTUP, by name**
+(`_require_pymupdf`). `fitz` is imported lazily at each use site, so its absence
+surfaced as a traceback 34 files into a run's setup — while openpyxl, the other
+spreadsheet dependency, had always failed with a polite line naming its pip
+command. The message names THIS interpreter by full path: the launcher runs the
+`pythonw.exe` beside `sys.executable`, a machine can have several Pythons, and a
+bare `pip install pymupdf` at whichever is on PATH is exactly how a folder ends
+up working on one machine and not another. Checked after the `--fix-leaks`
+branch, since that pass is text-only and needs no PDF.
+
 **Log the filename BEFORE the work, not after.** `_pn_prescan_folder` names each
 file as it opens it (`Pre-scan 17/34: X.pdf`), so when a death takes the
 interpreter the LAST line names the file that did it. A line written afterwards
