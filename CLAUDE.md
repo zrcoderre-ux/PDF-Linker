@@ -227,6 +227,33 @@ the party), so its row stays reversible.
   never registered as a term and never flagged — matched on an alphanumeric,
   case-folded reduction so spacing/dash variants all catch. Extend the set as
   more form boilerplate appears.
+- **The FURNITURE of a firm name is kept verbatim, and a KEY ROW IS A LIVE
+  TERM.** "LAW OFFICES OF SCOTT STRATMAN" names one person: Stratman. Composed
+  word for word it came out "BRAXTON MANSFFIELD BANCROFT MERRICK C WHITLOCK" —
+  a string no reader can place, where "LAW OFFICES OF MERRICK C WHITLOCK" says
+  exactly as much and hides exactly as much. `_PN_FIRM_WORDS` (law/office(s)/
+  firm/associates/attorney(s)/counsel/esq…) and `_PN_NAME_CONNECTORS`
+  (the/of/and/for/&, deliberately NOT "a"/"an" — An is a real surname — nor
+  "de"/"la") are kept by BOTH composing paths (`_pn_fake_person`,
+  `_pn_fake_entity_parts`, which also stops turning a lone INITIAL into a whole
+  entity word: "Philip Y Kim" was "Mercer SOLSTICE Whitby"). Kept only while a
+  distinctive word is still left to fake, or "The Law Firm" would map onto
+  itself and scrub nothing. `_pn_is_generic_token` reads the set too, so none of
+  them is ever a bare token.
+  **The loop that made this survive every KEEP the operator typed:** the term
+  builder already refused "Law"/"of" a bare term — but `write_key` harvests a
+  row per word of every composed name, and `_pn_load_key` reads EVERY key row
+  back as a live matching term. So the word declined at build time came straight
+  back through the key on the next run ("the" -> a surname, applied 19 times in
+  one folder), and no amount of bracketing could retire it: a keep is released
+  inside a full party match and the loaded row IS one. Both ends are closed —
+  `write_key` skips a `_pn_is_generic_token` word when harvesting, and
+  `_pn_load_key` builds no term for a single-word generic `*-token` row (the
+  registry memo is still seeded, exactly as for the judge's own surname, so a
+  delivered export stays reversible). `_pn_restore_furniture` additionally
+  repairs a stored composed fake on load, since a loaded row is applied
+  literally and would otherwise keep reproducing the very output being
+  bracketed away; it refuses any repair that would leave fake == real.
 - **A stand-in for INITIALS is never an ordinary WORD** (`_pn_reads_as_word`).
   `_pn_fake_initials_name` draws each letter on its own, so nothing saw what
   they spelt together and "M.W." came back "A.T." — conspicuous, and

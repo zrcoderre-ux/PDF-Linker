@@ -5607,6 +5607,36 @@ _PN_ENTITY_KEEP = {"the", "of", "and", "for", "a", "an", "&", "de", "la"} | _PN_
 # same key as "pc" / "llc" when deciding whether a token is a corporate suffix.
 _PN_ENTITY_SUFFIXES_NORM = {re.sub(r"[.\s]", "", s) for s in _PN_ENTITY_SUFFIXES}
 
+# ── The FURNITURE of a firm / party name ────────────────────────────────────
+# "LAW OFFICES OF SCOTT STRATMAN" names one person: Stratman. "Law", "Offices"
+# and "of" are the trade and a connector — every third caption in the county
+# carries them, so faking them protects nobody and costs a great deal:
+#
+#   * composed word-for-word, the firm came out "Braxton Mansffield bancroft
+#     Merrick C. Whitlock" — a string no reader can place, where "Law Offices
+#     of Merrick C. Whitlock" says exactly as much and hides exactly as much;
+#   * every one of those words then earned a bare token row in the key, and
+#     `_pn_load_key` re-instates a key row as a live term — so "the" -> a
+#     surname was applied 19 times in one folder, and the operator's KEEP on
+#     "Law"/"of"/"Offices" had to be re-typed in case after case because the
+#     poisoned key handed the term straight back on the next run.
+#
+# So these words are kept VERBATIM inside a composed fake (both the person and
+# the entity path), never registered as a bare token, and never harvested into
+# a key row. Only ever kept when the name has something distinctive left to
+# fake — "The Attorney Group" would otherwise map onto itself and scrub nothing.
+_PN_FIRM_WORDS = frozenset({
+    "law", "laws", "lawyer", "lawyers", "office", "offices", "firm", "firms",
+    "associates", "associate", "associated", "attorney", "attorneys",
+    "counsel", "counselor", "counselors", "counsellor", "counsellors",
+    "esq", "esquire", "apc", "aplc", "practice",
+})
+# Connectors a person's name can carry that are never themselves identity.
+# Deliberately NOT "a"/"an" (An is a real surname) nor "de"/"la" (Spanish name
+# particles the person pool has always faked as part of the surname).
+_PN_NAME_CONNECTORS = frozenset({"the", "of", "and", "for", "&"})
+_PN_NAME_FURNITURE = _PN_FIRM_WORDS | _PN_NAME_CONNECTORS
+
 # ── "dba" (fictitious business name) markers ────────────────────────────────
 # A caption cell routinely names one party twice: the legal entity and the
 # fictitious name it trades under ("SMITH AUTO GROUP, INC. dba TOYOTA OF
@@ -6512,8 +6542,18 @@ def _pn_fake_person(name, registry):
     def _keep(w):
         return (len(w) == 1 or _pn_is_suffix_token(w)
                 or w.strip(".,").lower() in _PN_DOC_ABBREV)
+    # Firm furniture and connectors ("LAW OFFICES OF Stratman", "the Waggoner")
+    # are kept verbatim — but only while a distinctive word is still left to
+    # fake, or the "fake" would be the name itself and scrub nothing.
+    furniture = {m.start() for m in words
+                 if _pn_word_base(m.group(0)) in _PN_NAME_FURNITURE}
+    if not [m for m in words
+            if not _keep(m.group(0)) and m.start() != trail_at
+            and m.start() not in furniture]:
+        furniture = set()
     mappable = [m for m in words
-                if not _keep(m.group(0)) and m.start() != trail_at]
+                if not _keep(m.group(0)) and m.start() != trail_at
+                and m.start() not in furniture]
     # An all-initials name ("M & M", "J&J", "A. B.") has no mappable token, so
     # the loop below would keep every character verbatim and return the input —
     # a self-map that never scrubs. Fake the initials distinctly instead.
@@ -6531,7 +6571,7 @@ def _pn_fake_person(name, registry):
     for m in words:
         w = m.group(0)
         parts.append(name[cursor:m.start()])
-        if _keep(w) or m.start() == trail_at:
+        if _keep(w) or m.start() == trail_at or m.start() in furniture:
             parts.append(w)
         else:
             fake = _pn_fake_name_token(w, registry)
@@ -6572,6 +6612,39 @@ def _pn_name_token_rows(real, fake):
         if len(rtok.strip(".'’-")) < 2:
             continue
         yield rtok, ftok
+
+
+def _pn_restore_furniture(real, fake):
+    """Repair a stored fake that an older build composed by faking the FURNITURE
+    of a name — "Law Offices of Scott C. Stratman" -> "Braxton Mansffield
+    bancroft Merrick C. Whitlock", "the Waggoner" -> "chetwood Atwater". Those
+    words are kept verbatim now, so the binding on disk is the only thing still
+    applying them; left alone it reproduces the exact output the operator has
+    been bracketing away, run after run.
+
+    Returns the repaired fake, or None when there is nothing to repair, when the
+    two sides don't align word for word (a fake not composed this way), or when
+    the repair would leave the fake equal to the real value — a name that is
+    ALL furniture ("The Law Firm") has to keep whatever distinct fake it has."""
+    rw = list(_PN_WORD_RE.finditer(str(real)))
+    fw = list(_PN_WORD_RE.finditer(str(fake)))
+    if not rw or len(rw) != len(fw):
+        return None
+    out, cursor, changed = [], 0, False
+    for rm, fm in zip(rw, fw):
+        out.append(fake[cursor:fm.start()])
+        rtok = rm.group(0)
+        if _pn_word_base(rtok) in _PN_NAME_FURNITURE and fm.group(0) != rtok:
+            out.append(rtok)
+            changed = True
+        else:
+            out.append(fm.group(0))
+        cursor = fm.end()
+    out.append(fake[cursor:])
+    repaired = "".join(out)
+    if not changed or _pn_norm_map(repaired) == _pn_norm_map(real):
+        return None
+    return repaired
 
 
 def _pn_word_affixes(tok):
@@ -6699,11 +6772,26 @@ def _pn_fake_entity_parts(name, registry, prefer=None):
     # A state / DC name is geography, not identity — keep it verbatim and fake
     # only the other words ("California Pizza Kitchen" -> "California <fake>").
     state_keep = _pn_state_keep_flags([_pn_word_affixes(t)[1].lower() for t in toks])
+
+    def _furniture(idx, core):
+        # Firm furniture ("LAW OFFICES OF ..."), and a lone INITIAL, which is
+        # identity a whole entity word cannot carry: "Law Offices of Philip Y
+        # Kim" came out "... of Mercer SOLSTICE Whitby", where the person path
+        # has always left an initial alone.
+        base = core.lower()
+        return (base in _PN_FIRM_WORDS or len(core) == 1) and not state_keep[idx]
+    # Kept only while a distinctive word is still left to fake, so a name made
+    # of nothing else ("The Law Firm", "M & M") never maps onto itself.
+    keep_furniture = any(
+        core and re.search(r"[A-Za-z]", core) and not _pn_is_entity_keep(core.lower())
+        and not state_keep[i] and not _furniture(i, core)
+        for i, core in enumerate(_pn_word_affixes(t)[1] for t in toks))
     for idx, tok in enumerate(toks):
         pre, core, post = _pn_word_affixes(tok)
         base = core.lower()
         if (not core or _pn_is_entity_keep(base) or state_keep[idx]
-                or not re.search(r"[A-Za-z]", core)):
+                or not re.search(r"[A-Za-z]", core)
+                or (keep_furniture and _furniture(idx, core))):
             out.append(tok)
             continue
         fake = prefer.get(base) or registry.token(base, _PN_ENTITY_WORDS, "enttok")
@@ -6718,13 +6806,25 @@ def _pn_fake_entity(name, registry, prefer=None):
 
 def _pn_person_token_map(name, registry):
     """{word_base: canonical_fake} for every mappable word of a person name,
-    using the same per-word fakes `_pn_fake_person` assigns."""
+    using the same per-word fakes `_pn_fake_person` assigns.
+
+    Firm furniture is skipped on the same terms `_pn_fake_person` keeps it, so
+    the two stay in step and no pool word is spent on "Law"/"of" — the pools are
+    drawn without replacement, and a case with three firms in its caption used
+    to burn a third of a dozen surnames on the word "Offices"."""
+    keep_furniture = any(
+        len(m.group(0)) > 1 and not _pn_is_suffix_token(m.group(0))
+        and m.group(0).strip(".,").lower() not in _PN_DOC_ABBREV
+        and _pn_word_base(m.group(0)) not in _PN_NAME_FURNITURE
+        for m in _PN_WORD_RE.finditer(name))
     out = {}
     for m in _PN_WORD_RE.finditer(name):
         w = m.group(0)
         if _pn_is_suffix_token(w):
             continue
         base = _pn_word_base(w)
+        if keep_furniture and base in _PN_NAME_FURNITURE:
+            continue
         if base:
             out[base] = registry.token(w, _PN_NAME_WORDS, "nametok")
     return out
@@ -7357,12 +7457,14 @@ def _pn_is_generic_token(base):
     "Legal", "Name" — the run that faked every 'warranty' as 'langley' and
     'Legal Standard' as 'Granite Standard' came from exactly these), a Judicial
     Council form's own field-label vocabulary ("Branch", "Zip Code"), an
-    institution word, or a word of a protected locality ("Beach"). The FULL
-    name a token came from is still registered; only the free-standing token
-    is withheld, so the cost is a missed bare occurrence (caught by the
-    unknown-name net), never a corrupted document."""
+    institution word, the furniture of a firm name ("Offices", "Associates"),
+    or a word of a protected locality ("Beach"). The FULL name a token came
+    from is still registered; only the free-standing token is withheld, so the
+    cost is a missed bare occurrence (caught by the unknown-name net), never a
+    corrupted document."""
     return (base in _PN_COMMON_WORDS or base in _PN_REVIEW_NAME_STOP
-            or base in _PN_LOCALITY_WORDS or base in _PN_FORM_LABEL_WORDS)
+            or base in _PN_LOCALITY_WORDS or base in _PN_FORM_LABEL_WORDS
+            or base in _PN_FIRM_WORDS)
 
 
 def _pn_is_protected_locality(city):
@@ -7882,6 +7984,10 @@ _PN_REVIEW_NAME_STOP = frozenset({
     "corporation", "avenue", "street", "boulevard", "road", "drive", "suite",
     "california", "angeles", "america", "united", "district", "division",
     "clerk", "judge", "honorable", "hon", "plaintiff", "defendant", "attorney",
+    # The singulars were here and the plurals were not, so "Offices" and
+    # "Associates" came back as name-shaped findings in folder after folder —
+    # a KEEP the operator had to re-type per spelling, forever.
+    "offices", "attorneys", "associates", "counsel", "esq",
     # E-filing form-field vocabulary: an LASC-generated notice prints stamps
     # like "NEW QUALIFIER" in the caption area, which is name-shaped to the
     # scanner ("New" + one distinctive word) but is a form label, not a person.
@@ -8791,6 +8897,19 @@ def _pn_load_key(path, registry, log):
                 continue
             # frags is None: bracketed text isn't a substring of the value — fall
             # through and treat the cell as an ordinary explicit replacement.
+        # Self-heal a key written before firm furniture was kept verbatim: the
+        # row still carries "Law Offices of X" -> "Braxton Mansffield bancroft
+        # Y", and a loaded row is applied literally, so the folder would keep
+        # producing it however the words are bracketed. Restore the furniture
+        # and keep the distinctive half of the binding, so the party stays
+        # scrubbed under the fake it already shipped under.
+        if cat in ("person", "entity", "short-name", "display-name"):
+            fixed = _pn_restore_furniture(real, fake)
+            if fixed:
+                log.info(f"  Pseudonymize: repaired key row {real!r} -> {fixed!r} "
+                         f"(was {fake!r}; firm/connector words are kept verbatim)")
+                fake = fixed
+
         # Self-heal a key written before the self-map guard existed: a row whose
         # replacement equals its real value ("M & M" -> "M & M") never scrubs and
         # loops --fix-leaks. Re-mint a distinct fake; the next write_key persists
@@ -8844,6 +8963,19 @@ def _pn_load_key(path, registry, log):
         # behind a judicial title). The registry memo above still carries the
         # binding, so re-derived fakes stay consistent; just no term.
         if cat == "person-token" and source in ("judge", "court-staff"):
+            continue
+
+        # Nor a bare token a current build would refuse outright: firm furniture
+        # and ordinary vocabulary ("Law", "Offices", "of", "the"). A key written
+        # by an older build harvested a row per word of every composed name, and
+        # a row read back is a LIVE term — so the word the term builder had
+        # already declined came straight back through the key, case after case,
+        # surviving every KEEP the operator typed (a keep is released inside a
+        # full party match, and the loaded row IS one). The registry memo above
+        # still carries the binding, so a previously delivered export stays
+        # reversible; it just does not match anything again.
+        if (cat in ("person-token", "entity-token") and len(real.split()) == 1
+                and _pn_is_generic_token(_pn_word_base(real))):
             continue
 
         if cat in _PN_KEY_DETECTOR_CATS:
@@ -11289,6 +11421,15 @@ class Pseudonymizer:
                 continue
             tokcat = f"{r['category']}-token"
             for rtok, ftok in _pn_name_token_rows(r["real"], r["fake"]):
+                # A GENERIC word never becomes a bare term (`_pn_is_generic_token`),
+                # so it has no bare occurrence to reverse — and a row here is not
+                # inert, because `_pn_load_key` reads every key row back as a live
+                # term. That is the whole loop behind "the" -> a surname 19 times
+                # in one folder: the word was correctly refused a term at build
+                # time, harvested into the key anyway, and handed back as a term
+                # on the next run, where no amount of bracketing could retire it.
+                if _pn_is_generic_token(_pn_word_base(rtok)):
+                    continue
                 dk = (tokcat, rtok.lower())
                 if dk in seen:
                     continue
