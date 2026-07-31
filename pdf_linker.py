@@ -5980,6 +5980,15 @@ class _PnFakeRegistry:
         return {real: fake for (tag, real), fake in self._memo.items()
                 if tag == want}
 
+    def minted_fakes(self):
+        """{fake_lower: real} for EVERY stand-in this registry has handed out,
+        whatever slot drew it — the input to the key-completeness gate, which
+        asks whether a fake standing in an export can be reversed. Wider than
+        `Pseudonymizer.records` on purpose: a draw with no record of its own
+        (an e-mail local part, a token folded onto another's fake) still puts
+        a word in the text that the reversal has to account for."""
+        return {fake.lower(): real for (_tag, real), fake in self._memo.items()}
+
     def token(self, real, words, seed_tag):
         """A single canonical-case stand-in word for `real`, never reused for a
         different real value. Draws from `words` in a per-value deterministic
@@ -9062,6 +9071,11 @@ def _pn_span_has_hard_seam(src, start, end):
 # standalone kept word would get faked, and the keep must win over them.
 _PN_PARTY_OVERRIDE_CATS = frozenset({"person", "entity", "case_number"})
 
+# The word units a REVERSAL is expressed in. A composed fake ("Ainsworth
+# Sackett", "tolliver@postbox4.org") is reversed word by word by the macro, so
+# the key-completeness gate reasons in these units too.
+_PN_FAKE_WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9]*")
+
 # ── Fail-closed authority guard ─────────────────────────────────────────────
 # Citation protection depends on a PARSER succeeding, and a parser that fails
 # fails silently: `_protected_citation_spans` hands back no span, `_substitute`
@@ -10115,6 +10129,11 @@ class Pseudonymizer:
                                  # human-triage worksheet (page:line located)
         self.suppressed = set()  # value_lowers the reviewer marked "no fix" in
                                  # the worksheet — never quarantine on these
+        self.unreversible = []   # (real, fake, category) applied this run that
+                                 # no key row reverses — see
+                                 # `unreversible_fakes`. Must stay empty; the
+                                 # end-of-run gate says so out loud if it does
+                                 # not, because the damage is otherwise silent.
         # KEEP protection comes in two tiers (from the LEAKS worksheet, the
         # pseudonym key OR the cross-folder master KEEP sheet):
         self.keep_soft = set()   # a `no` value — keep the EXACT word only where
@@ -10335,6 +10354,59 @@ class Pseudonymizer:
                 continue
             if ms and all(any(m.start() < e and s < m.end() for s, e in spans)
                           for m in ms):
+                doomed.append(t)
+        for t in doomed:
+            self.terms.remove(t)
+            self.records.pop((t.category, t.real.lower()), None)
+            self._pruned_reals.add(t.real.lower())
+        if doomed:
+            self._trusted_tok_cache = None
+        return [t.real for t in doomed]
+
+    def prune_prose_word_terms(self, text):
+        """Drop every DOCUMENT-harvested one-word name term that the corpus
+        itself writes as ORDINARY PROSE — the corpus-wide answer to "is this a
+        name or just a word?", asked of the evidence instead of a word list.
+
+        `draft` was replaced by "Ainsworth" 72 times and `review` by "Sterling"
+        84 across four documents of a fee motion, where a billing narrative
+        capitalises the first word of every task line ("Draft opposition",
+        "Review of file") and the harvester read that as a name. Neither word is
+        in `_PN_COMMON_WORDS`, and no hand-kept list ever will be complete —
+        that gazetteer has 583 entries and no dictionary behind it.
+
+        The document says which it is. A surname in a filing is capitalised
+        wherever it stands, in prose and caption alike; a verb is not. So a
+        harvested candidate whose occurrences are lower-case at least as often
+        as capitalised is prose and earns no term. Scoped hard:
+          * DOCUMENT-harvested only. A value on the operator's party template or
+            a --term is authoritative — a party really named Green or Short
+            keeps their term however the prose reads.
+          * never a value pinned by a reused key (`loaded`), which would change
+            what an already-delivered export says; and
+          * at least two lower-case occurrences, so one OCR slip cannot unbind a
+            real name.
+
+        Call with the FULL corpus text, beside `prune_citation_only_terms`."""
+        text = _NFKC(text)
+        self._pruned_reals = getattr(self, "_pruned_reals", set())
+        loaded = getattr(self, "_loaded_reals", ())
+        doomed = []
+        for t in list(self.terms):
+            if (t.source != "document"
+                    or t.real.lower() in loaded
+                    or t.category not in ("person", "entity", "person-token",
+                                          "entity-token", "short-name")
+                    or not re.fullmatch(r"[A-Za-z][A-Za-z'’\-]*", t.real)):
+                continue
+            low = cap = 0
+            for m in re.finditer(r"(?<!\w)" + re.escape(t.real) + r"(?!\w)",
+                                 text, re.IGNORECASE):
+                if m.group(0).islower():
+                    low += 1
+                else:
+                    cap += 1
+            if low >= 2 and low >= cap:
                 doomed.append(t)
         for t in doomed:
             self.terms.remove(t)
@@ -11846,6 +11918,93 @@ class Pseudonymizer:
                 rec["loaded"] = True
                 rec["source"] = "leak-fix"
 
+    def unreversible_fakes(self, keyrows, texts=()):
+        """Every stand-in this run put into an export that the key it is about
+        to write CANNOT reverse — the one assertion that catches the whole class
+        of silent, permanent damage.
+
+        A leak is visible: the real value is right there and a reader, a scan or
+        the operator can see it. An unreversible substitution is the opposite —
+        the document reads perfectly, and the mapping back to what it said is
+        simply gone. `draft` shipped as "Ainsworth" 72 times and `review` as
+        "Sterling" 84 times with no row for either, and nothing in the run said
+        a word about it.
+
+        Reachable means what `DeAnonymize.bas` can actually do: the fake is some
+        row's Replacement outright, or every WORD of it is (a composed fake like
+        "Ainsworth Sackett" reverses through its two token rows).
+
+        Two tiers, because a fake reaches an export two ways:
+          * a RECORD that replaced something (count > 0). Exact — a record's
+            fake is by definition in the text — so this tier is an error.
+          * a fake the REGISTRY minted standing as a bare word in an export with
+            no record at all. Wider net, and inexact: a pool surname can also be
+            an ordinary word of the source ("Sterling", "Stockton"), so this
+            tier only warns.
+        """
+        reach = set()
+        for r in keyrows:
+            f = str(r["fake"]).lower()
+            reach.add(f)
+            reach.update(_PN_FAKE_WORD_RE.findall(f))
+
+        def unreachable(fake):
+            f = str(fake).lower()
+            if f in reach:
+                return False
+            words = _PN_FAKE_WORD_RE.findall(f)
+            return not (words and all(w in reach for w in words))
+
+        applied, seen = [], set()
+        for r in self.records.values():
+            if r["count"] > 0 and unreachable(r["fake"]):
+                k = (str(r["real"]).lower(), str(r["fake"]).lower())
+                if k not in seen:
+                    seen.add(k)
+                    applied.append((r["real"], r["fake"], r["category"]))
+
+        stray = []
+        minted = self.registry.minted_fakes()
+        if minted and texts:
+            known = {(str(r["real"]).lower(), str(r["fake"]).lower())
+                     for r in self.records.values()}
+            for text in texts:
+                for w in set(_PN_FAKE_WORD_RE.findall(str(text).lower())):
+                    real = minted.get(w)
+                    if real is None or w in reach:
+                        continue
+                    k = (str(real).lower(), w)
+                    if k in seen or k in known:
+                        continue      # the record tier already answered for it
+                    seen.add(k)
+                    stray.append((real, w, "minted"))
+        return applied, stray
+
+    def _check_key_completeness(self, keyrows, log):
+        """Run `unreversible_fakes` over the key just written and SAY SO.
+
+        Reads the exports back off disk for the second tier — they are the
+        artifacts actually being delivered, so they are what the promise is
+        about. Records the failures on `self.unreversible` so the end-of-run
+        gate can refuse to call the batch clean."""
+        texts = []
+        for p in self.written:
+            try:
+                texts.append(Path(p).read_text(encoding="utf-8", errors="ignore"))
+            except OSError:
+                pass
+        applied, stray = self.unreversible_fakes(keyrows, texts)
+        self.unreversible = applied
+        for real, fake, cat in applied:
+            log.error(f"  !! Pseudonymize: {real!r} was replaced by {fake!r} "
+                      f"({cat}) and NO key row reverses it — the export cannot "
+                      f"be restored")
+        for real, fake, _cat in stray:
+            log.warning(f"  Pseudonymize: the stand-in {fake!r} (minted for "
+                        f"{real!r}) stands in an export with no key row; check "
+                        f"it is the ordinary word and not an unreversible fake")
+        return applied
+
     def write_key(self, path, log):
         """Write the REVERSAL key the Word macro consumes. A row is written when
         it MATCHED (Occurrences > 0), when it came from a REUSED key, or when it
@@ -11915,10 +12074,24 @@ class Pseudonymizer:
             # KEEP is left verbatim, so it has no fake to reverse — drop any
             # (e.g. harvested) row for it so the key doesn't show a fake that
             # was never applied.
+            #
+            # …UNLESS it WAS applied. "A kept value has no fake to reverse" is
+            # true only while the keep HELD, and a keep is released in two
+            # documented places: inside a full party match, and (for a soft
+            # `no`) inside a multi-word capitalized name run. A released keep
+            # is faked by the very row this filter was dropping, so the export
+            # carried a stand-in that nothing could reverse — `draft` went out
+            # as "Ainsworth" 72 times, `review` as "Sterling" 84 times, neither
+            # anywhere in the key. That is worse than the leak it came from: a
+            # leak is visible, an unreversible substitution is silent and
+            # permanent. The count settles it, because a LOCAL keep retires its
+            # binding (`_pn_retire_kept_key_terms`), so a kept value that was
+            # genuinely left verbatim still reaches this test with count 0.
             return ((r["count"] > 0 or r.get("loaded")
                      or (r.get("source") in _PN_KEY_UNMATCHED_SOURCES
                          and not r.get("derived")))
-                    and str(r["real"]).lower() not in keep_low
+                    and (r["count"] > 0
+                         or str(r["real"]).lower() not in keep_low)
                     and "\n" not in str(r["real"]) and "\n" not in str(r["fake"]))
         keyrows = [r for r in self.records.values() if _reversible(r)]
 
@@ -12059,6 +12232,7 @@ class Pseudonymizer:
                               for r in keyrows]}, indent=2), encoding="utf-8")
             log.info(f"  openpyxl not installed; reversal key written as JSON: "
                      f"{kp.name} ({len(keyrows)} mapping(s))")
+            self._check_key_completeness(keyrows, log)
             return
 
         wb = openpyxl.Workbook()
@@ -12069,6 +12243,7 @@ class Pseudonymizer:
             ws.append([r["category"], r["real"], r["fake"], row_status(r),
                        r["source"], r["count"]])
         wb.save(path)
+        self._check_key_completeness(keyrows, log)
         for cluster in self.alias_candidates():
             log.warning("  possible alias (same given name, different surname) "
                         "faked separately — add a --term to link: "
@@ -14800,6 +14975,11 @@ def _pn_prescan_folder(pdfs, pseudonymizer, log, extra_texts=()):
         log.info(f"  Pseudonymize: dropped {len(pruned)} harvested name(s) "
                  f"that appear only inside case citations "
                  f"({', '.join(sorted(pruned)[:6])})")
+    prose = pseudonymizer.prune_prose_word_terms(full)
+    if prose:
+        log.info(f"  Pseudonymize: dropped {len(prose)} harvested name(s) the "
+                 f"corpus writes as ordinary lower-case prose "
+                 f"({', '.join(sorted(prose)[:6])})")
     return full
 
 
@@ -17224,6 +17404,23 @@ def main():
                                  f"{_p.name}.")
                 except OSError:
                     pass
+
+    # Key-completeness gate. A leak is visible; a fake with no key row is not,
+    # and it is permanent — the export reads perfectly and nothing maps it back.
+    # So it is said out loud and the run exits non-zero, ahead of the leak gate
+    # (which may exit first on its own account). The exports are NOT
+    # quarantined: they are not dangerous, they are unrestorable, and holding
+    # them helps nobody — what the operator needs is to know, and to re-run once
+    # the binding is in the key.
+    if pseudonymizer is not None and getattr(pseudonymizer, "unreversible", None):
+        shown = ", ".join(f"{r!r}->{f!r}"
+                          for r, f, _c in pseudonymizer.unreversible[:8])
+        _warn(f"!! Pseudonymize: {len(pseudonymizer.unreversible)} replacement(s) "
+              f"have NO row in pseudonym_key.xlsx ({shown}) — those exports "
+              f"cannot be restored to the real values. Re-run after adding the "
+              f"value(s) with --term, or clear the KEEP decision that dropped "
+              f"the row.")
+        sys.exit(2)
 
     # Leak gate, TIERED (config `leak_gate`): the pseudonymization is a
     # precaution against casual recognition of a public filing, so only a
