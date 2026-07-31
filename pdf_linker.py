@@ -5725,6 +5725,38 @@ _PN_SHORT_TOKEN_STOP = frozenset({
     "as", "at", "am", "an", "be", "by", "do", "go", "he", "if", "in", "is",
     "it", "me", "my", "no", "of", "on", "or", "so", "to", "up", "us", "we",
 })
+# A DOCUMENT harvest is a guess, and these two screens are what a guess has to
+# clear. Neither applies to the operator's own party template or a --term: a
+# party really named Yu or June is authoritative, and second-guessing the
+# operator is how a real name goes unscrubbed.
+#
+# LENGTH. Every 2-letter candidate in the fee-motion corpus was junk: "AL" read
+# off "JUAN LOPEZ, ET AL. V. GENERAL MOTORS" rewrote every "et al." in the
+# batch ("et aldrin."), "RS" was an OCR fragment of "MOTORS", "NA" turned "CASE
+# NA.ME" into "CASE GG.ME". `_PN_SHORT_TOKEN_STOP` is a 24-word list and none of
+# the three was on it. A genuine two-letter surname (Yu, Ng, Le, Wu) needs the
+# party template to say so.
+_PN_HARVEST_TOKEN_MIN = 3
+# CALENDAR. "Tue" was harvested as a declarant and renamed every "Tue Dec 17,
+# 2024" timestamp in the repair-order exhibits — and, unbounded, fired inside
+# "Vatue" too. A weekday or month is never a harvested party. Kept out of
+# `_PN_COMMON_WORDS` on purpose: that gazetteer also decides what the leak scans
+# call boilerplate, so a party really named May or June must stay reportable.
+_PN_CALENDAR_WORDS = frozenset({
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday",
+    "sunday", "mon", "tue", "tues", "wed", "thu", "thur", "thurs", "fri",
+    "sat", "sun",
+    "january", "february", "march", "april", "june", "july", "august",
+    "september", "october", "november", "december",
+    "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sept", "sep", "oct",
+    "nov", "dec",
+})
+# "JUAN LOPEZ, ET AL." names one party. `_PN_SKIP_PARTY_RE` drops a cell that is
+# ENTIRELY "et al.", which is what a spreadsheet column holds — but a caption
+# line read out of a document carries it inline, and tokenizing that registered
+# "AL" as a name.
+_PN_ET_AL_RE = re.compile(r"[\s,]*\bet\.?\s+al\.?(?=$|[\s,;:)\]])",
+                          re.IGNORECASE)
 _PN_COMMON_WORD_SURNAMES = {
     "green", "brown", "white", "black", "gray", "grey", "young", "long",
     "short", "small", "rich", "best", "price", "king", "bell", "cook", "wood",
@@ -7118,11 +7150,60 @@ def _pn_entity_bare(name, registry, prefer=None):
     return bare, _pn_fake_entity(bare, registry, prefer)
 
 
+def _pn_strip_et_al(raw):
+    """`raw` with an inline "et al." removed — "JUAN LOPEZ, ET AL." names one
+    party, and tokenizing the tail registered "AL" as a name."""
+    return _PN_ET_AL_RE.sub("", _NFKC(str(raw))).strip(" ,;:")
+
+
+def _pn_name_words(raw):
+    """The DISTINCTIVE words of a name — corporate suffixes, connectors and role
+    labels dropped, so "RS, LLC" measures two characters and not seven."""
+    return [w for w in _NFKC(str(raw)).split()
+            if _pn_word_base(w)
+            and not _pn_is_entity_keep(_pn_word_base(w))
+            and not _pn_is_role_token(w)]
+
+
+def _pn_is_calendar_name(raw):
+    """True when every distinctive word is a weekday or month. Screened on EVERY
+    document harvest, structured or loose: no filing names a party "Tue"."""
+    words = _pn_name_words(raw)
+    return bool(words) and all(_pn_word_base(w) in _PN_CALENDAR_WORDS
+                               for w in words)
+
+
+def _pn_harvest_value_ok(raw, source):
+    """False when a candidate harvested from a DOCUMENT is too thin to be a
+    name: under `_PN_HARVEST_TOKEN_MIN` distinctive characters, or nothing but
+    calendar words. The operator's own party template always passes — see
+    `_PN_HARVEST_TOKEN_MIN`.
+
+    The LENGTH half is for a LOOSE harvest — a caption line, a capitalized run,
+    an OCR fragment — where the only evidence is that the characters were
+    capitalized. A STRUCTURED harvest carries its own corroboration ("Yu Dec."
+    is a declaration short cite, and nothing else has that shape), so those call
+    sites screen on `_pn_is_calendar_name` alone: refusing a real two-letter
+    surname there would leave a declarant standing in the export, which is the
+    failure the whole method exists to prevent."""
+    if source in _PN_KEY_UNMATCHED_SOURCES:
+        return True
+    words = _pn_name_words(raw)
+    if not words:
+        return False
+    if sum(len(_pn_word_base(w)) for w in words) < _PN_HARVEST_TOKEN_MIN:
+        return False
+    return not _pn_is_calendar_name(raw)
+
+
 def _pn_append_entity_terms(terms, raw, source, registry, prefer=None):
     """Register the full entity term plus, when safe, a suffix-stripped
     'bare' variant that catches the name written without its corporate
     suffix. Returns the {word_base: fake} map so a dba sharing words with this
     name can reuse the same fakes."""
+    raw = _pn_strip_et_al(raw)
+    if not _pn_harvest_value_ok(raw, source):
+        return {}
     fake, mapping = _pn_fake_entity_parts(raw, registry, prefer)
     # WHOLE WORD. Built without boundaries, an entity term matched inside a
     # longer printed word and ate the text around it: an OCR fragment "RS, LLC"
@@ -7166,6 +7247,9 @@ def _pn_append_person_terms(terms, raw, source, registry):
     priority, sharing each token's fake — its near-spelling variants, so a
     surname the key spells one way is still scrubbed where a document spells it
     another ("Roxane" vs "Roxanne")."""
+    raw = _pn_strip_et_al(raw)
+    if not _pn_harvest_value_ok(raw, source):
+        return {}
     fake_full, bare = _pn_fake_person(raw, registry)
     # WHOLE WORD, for the reason `_pn_append_entity_terms` is: unbounded, a
     # short person term matched inside a longer word — "Tue", harvested as a
@@ -7188,8 +7272,13 @@ def _pn_append_person_terms(terms, raw, source, registry):
             continue
         # A two-letter surname that spells an ordinary English word ("As", "Of",
         # "In") would rewrite that word throughout the brief; skip it. A short
-        # surname that is NOT a word (Yu, Ng, Le, Wu) still registers.
+        # surname that is NOT a word (Yu, Ng, Le, Wu) still registers — but only
+        # when the OPERATOR named it. Harvested from a document, every 2-letter
+        # candidate in the corpus was junk ("AL", "RS", "NA"); see
+        # `_PN_HARVEST_TOKEN_MIN`.
         if len(base) <= 2 and base in _PN_SHORT_TOKEN_STOP:
+            continue
+        if not _pn_harvest_value_ok(real_tok, source):
             continue
         terms.append(_PnTerm("person-token", real_tok, fake_tok,
                              whole_word=True, case_sensitive=False,
@@ -8759,14 +8848,22 @@ def _pn_address_adjacency(records):
     return warns
 
 
-def _pn_build_pattern(term, *, whole_word):
+def _pn_build_pattern(term, *, whole_word, follow=None):
     """Literal-match regex body (NFKC-normalized, escaped), with optional
     word-boundary guards. Runs of whitespace in the term match ANY whitespace
     run in the text, so a party name broken across a line wrap ("Toyota of\\n
-    Downtown") or double-spaced after a period is still caught."""
+    Downtown") or double-spaced after a period is still caught.
+
+    `follow` names ONE run the term may butt straight up against on its right,
+    for a place where a weld is expected and its shape is known: an extraction
+    that lost the space in "Smith Decl." leaves "SmithDecl.", and the declarant
+    reference is exactly what that harvester was reading. Everything else still
+    needs a word boundary — the LEFT one always holds, which is what stops a
+    short name firing inside a longer word ("Tue" in "Vatue")."""
     body = r"\s+".join(re.escape(p) for p in _NFKC(term).split())
     if whole_word:
-        body = rf"(?<!\w)(?:{body})(?!\w)"
+        right = rf"(?:(?!\w)|(?={follow}))" if follow else r"(?!\w)"
+        body = rf"(?<!\w)(?:{body}){right}"
     return body
 
 
@@ -8775,12 +8872,13 @@ class _PnTerm:
                  "source", "whole_word", "count", "loaded", "derived")
 
     def __init__(self, category, real, fake, *, whole_word, case_sensitive,
-                 priority, source, derived=False):
+                 priority, source, derived=False, follow=None):
         self.category = category
         self.real = real
         self.fake = fake
         self.whole_word = whole_word
-        self.pattern = _pn_build_pattern(real, whole_word=whole_word)
+        self.pattern = _pn_build_pattern(real, whole_word=whole_word,
+                                         follow=follow)
         self.flags = 0 if case_sensitive else re.IGNORECASE
         self.priority = priority
         self.source = source
@@ -9702,6 +9800,11 @@ _PN_DECL_DESCRIPTOR = frozenset({
 })
 
 
+# The declaration word a reference name may be welded straight onto, when
+# extraction lost the space: "SmithDecl.", "(YuDec.)".
+_PN_DECL_WELD_FOLLOW = r"[Dd]ec"
+
+
 def _pn_declarant_ref_names(text):
     """Clean declarant names cited before a "Declaration"/"Decl."/"Dec."
     reference in `text`. Leading signal/role/boilerplate words are trimmed
@@ -10457,6 +10560,40 @@ class Pseudonymizer:
             self._trusted_tok_cache = None
         return [t.real for t in doomed]
 
+    def prune_fragment_terms(self, text):
+        """Drop every DOCUMENT-harvested name term that the corpus only ever
+        writes INSIDE a longer alphanumeric run — the signature of an OCR
+        fragment, not of a name. "RS" was read off "MOTORS" and "aoasas" off
+        "Calabasas"; neither ever stands as a word anywhere in the batch.
+
+        Now that the term patterns are whole-word such a term matches nothing,
+        so this costs no scrubbing — what it buys is a key that does not promise
+        a reversal for a value the case never contained, and a leak report that
+        does not carry it. A term with NO occurrence at all is left alone: a
+        real party can simply be absent from the files scanned."""
+        text = _NFKC(text)
+        self._pruned_reals = getattr(self, "_pruned_reals", set())
+        loaded = getattr(self, "_loaded_reals", ())
+        doomed = []
+        for t in list(self.terms):
+            if (t.source != "document"
+                    or t.real.lower() in loaded
+                    or t.category not in ("person", "entity", "person-token",
+                                          "entity-token", "short-name")):
+                continue
+            body = re.escape(t.real)
+            if re.search(r"(?<!\w)" + body + r"(?!\w)", text, re.IGNORECASE):
+                continue                       # it stands as a word somewhere
+            if re.search(body, text, re.IGNORECASE):
+                doomed.append(t)
+        for t in doomed:
+            self.terms.remove(t)
+            self.records.pop((t.category, t.real.lower()), None)
+            self._pruned_reals.add(t.real.lower())
+        if doomed:
+            self._trusted_tok_cache = None
+        return [t.real for t in doomed]
+
     def register_entity_acronyms(self, text):
         """Register the bare initialism of every tracked multi-word entity that
         the document ACTUALLY USES — briefs adopt a firm's acronym ("SLP" for
@@ -10661,10 +10798,10 @@ class Pseudonymizer:
         declaration's own title and signature are scrubbed even when the
         declarant isn't in the spreadsheet key. Idempotent; call before apply()."""
         for raw in _pn_declarant_names(text):
-            if _pn_is_party_role(raw):
+            if _pn_is_party_role(raw) or _pn_is_calendar_name(raw):
                 continue
             fake_full, bare = _pn_fake_person(raw, self.registry)
-            new_terms = [_PnTerm("person", raw, fake_full, whole_word=False,
+            new_terms = [_PnTerm("person", raw, fake_full, whole_word=True,
                                  case_sensitive=False, priority=2,
                                  source="declarant")]
             new_terms += [_PnTerm("person-token", rt, ft, whole_word=True,
@@ -10685,7 +10822,8 @@ class Pseudonymizer:
         person and is skipped. Idempotent; call before apply()."""
         new = []
         for raw in _pn_declarant_ref_names(text):
-            if _pn_is_party_role(raw) or ("person", raw.lower()) in self.records:
+            if (_pn_is_party_role(raw) or ("person", raw.lower()) in self.records
+                    or _pn_is_calendar_name(raw)):
                 continue
             toks = raw.split()
             # The surname must look like a name, not ordinary vocabulary — auto-
@@ -10700,9 +10838,12 @@ class Pseudonymizer:
                     or not _pn_is_name_token(toks[-1])):
                 continue
             fake_full, bare = _pn_fake_person(raw, self.registry)
-            new.append(_PnTerm("person", raw, fake_full, whole_word=False,
+            # The weld this harvester exists to read ("SmithDecl.") is the
+            # one place the right boundary may be crossed; the left one still
+            # holds, so a short name can never fire inside a longer word.
+            new.append(_PnTerm("person", raw, fake_full, whole_word=True,
                                case_sensitive=False, priority=2,
-                               source="declarant"))
+                               source="declarant", follow=_PN_DECL_WELD_FOLLOW))
             new += [_PnTerm("person-token", rt, ft, whole_word=True,
                             case_sensitive=False, priority=1, source="declarant")
                     for rt, ft, _s in bare
@@ -10778,7 +10919,7 @@ class Pseudonymizer:
                 if ("person", full.lower()) not in self.records:
                     fake_full, _b = _pn_fake_person(full, self.registry)
                     new.append(_PnTerm("person", full, fake_full,
-                                       whole_word=False, case_sensitive=False,
+                                       whole_word=True, case_sensitive=False,
                                        priority=3, source="judge"))
         # Fake "<title> <surname>" wherever it appears, keeping the title and
         # faking only the surname; a bare surname elsewhere is left alone. The
@@ -10834,7 +10975,7 @@ class Pseudonymizer:
                 if ("person", raw.lower()) in self.records:
                     continue
                 fake_full, _bare = _pn_fake_person(raw, self.registry)
-                new.append(_PnTerm("person", raw, fake_full, whole_word=False,
+                new.append(_PnTerm("person", raw, fake_full, whole_word=True,
                                    case_sensitive=False, priority=2,
                                    source="court-staff"))
 
@@ -15034,6 +15175,11 @@ def _pn_prescan_folder(pdfs, pseudonymizer, log, extra_texts=()):
         log.info(f"  Pseudonymize: dropped {len(prose)} harvested name(s) the "
                  f"corpus writes as ordinary lower-case prose "
                  f"({', '.join(sorted(prose)[:6])})")
+    frags = pseudonymizer.prune_fragment_terms(full)
+    if frags:
+        log.info(f"  Pseudonymize: dropped {len(frags)} harvested name(s) that "
+                 f"only ever appear inside a longer word — an OCR fragment, "
+                 f"not a name ({', '.join(sorted(frags)[:6])})")
     return full
 
 
