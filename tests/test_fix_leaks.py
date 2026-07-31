@@ -91,7 +91,11 @@ def test_no_decision_scrubs_nothing_but_still_releases(tmp_path):
 def test_fix_launcher_spec_windows_and_frozen():
     n, c, _ = P._fix_launcher_spec(r"C:\Py\python.exe", r"C:\T\pdf_linker.py", True)
     assert n == "Apply Leak Fixes.bat"
-    assert "--fix-leaks" in c and '"%~dp0."' in c and c.endswith("pause\r\n")
+    assert "--fix-leaks" in c and '"%~dp0."' in c
+    # Detached and minimized, like the re-run: this pass used to run in the
+    # foreground and hold the window open on a `pause`.
+    assert 'start "PDF-Linker leak fixes" /min ' in c
+    assert "pause" not in c and c.endswith("exit /b\r\n")
     _n, cf, _e = P._fix_launcher_spec(r"C:\App\app.exe", r"C:\x.py", True, frozen=True)
     assert "x.py" not in cf and "--fix-leaks" in cf       # no script arg when frozen
 

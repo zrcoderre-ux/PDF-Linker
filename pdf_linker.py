@@ -15617,6 +15617,53 @@ def _save_fix_rate(rate):
 # (%~dp0 on Windows, $(dirname "$0") on POSIX) so it keeps working if the folder
 # is moved, and points --key at the folder's own key so the re-run reproduces
 # the same fakes (and applies the worksheet decisions on top).
+def _launcher_exe():
+    """The interpreter a double-click launcher should run.
+
+    BOTH launchers now hand the work to a detached, minimized process, so
+    neither wants a console of its own: prefer the WINDOWLESS pythonw.exe beside
+    sys.executable. If it isn't there the detached run still works — it just
+    shows a minimized console — and progress goes to pdf_linker.log either way.
+    A frozen build is its own entry point and is left alone."""
+    exe = Path(sys.executable)
+    if os.name == "nt" and not getattr(sys, "frozen", False):
+        low = exe.name.lower()
+        if low.startswith("python") and not low.startswith("pythonw"):
+            cand = exe.with_name("pythonw" + exe.name[len("python"):])
+            if cand.exists():
+                exe = cand
+    return exe
+
+
+def _bg_launcher_bat(title, comment_lines, command):
+    """A .bat that hands `command` to a DETACHED, MINIMIZED process and returns
+    at once — the shape both launchers use, so the two cannot drift.
+
+    `/min` and not `/b`: `/b` would attach the child to this launcher's console,
+    which is about to close, so a run without pythonw.exe available could take a
+    close event with it. A new minimized window is inert — with pythonw there is
+    no window at all, and without it a console sits minimized for the run
+    instead of in front of whatever the operator is doing.
+
+    Nothing is echoed and nothing is waited on: a window that closes in
+    milliseconds cannot be read anyway, and the feedback channel is the one the
+    folder already has — pdf_linker.log throughout, then a "DONE <time>.txt"
+    stamp when the run finishes."""
+    return ("@echo off\r\n"
+            + "".join(f"REM {ln}\r\n" for ln in comment_lines)
+            + f'start "{title}" /min {command}\r\n'
+            + "exit /b\r\n")
+
+
+def _bg_launcher_sh(comment_lines, command):
+    """The POSIX mirror: run detached with nohup so the work survives the
+    shell/Terminal window closing, and return immediately."""
+    return ("#!/bin/sh\n"
+            + "".join(f"# {ln}\n" for ln in comment_lines)
+            + f"nohup {command} >/dev/null 2>&1 &\n"
+            + "exit 0\n")
+
+
 def _rerun_launcher_spec(exe, script, provider, want_key, windows, frozen=False):
     """(filename, content, make_executable) for the re-run launcher.
 
@@ -15627,58 +15674,28 @@ def _rerun_launcher_spec(exe, script, provider, want_key, windows, frozen=False)
     script. A running banner and a trailing status line are always printed, so
     the window is never blank even if the interpreter writes nothing itself."""
     prog = f'"{exe}"' if frozen else f'"{exe}" "{script}"'
+    notes = ["PDF-Linker re-run - double-click to process this folder in the",
+             "background. Picks up any Fix? decisions saved in LEAKS.xlsx.",
+             "Nothing appears on screen: the run is detached and minimized.",
+             'Progress -> pdf_linker.log; a "DONE <time>.txt" file appears',
+             "in this folder when the run finishes."]
     if windows:
         key = ' --key "%~dp0pseudonym_key.xlsx"' if want_key else ""
-        # Detached background run: `start` hands the work to a separate process
-        # and the launcher returns immediately, so no console sits blocking on a
-        # `pause`. There is no blackout — the tool appends progress to
-        # pdf_linker.log throughout, and stamps a "DONE <time>.txt" file in the
-        # folder on a clean finish. The interpreter is the WINDOWLESS pythonw.exe
-        # where available (see _write_rerun_launcher), so nothing lingers on
-        # screen; a short timeout leaves the confirmation readable, then the
-        # launcher window closes on its own.
-        content = (
-            "@echo off\r\n"
-            "REM PDF-Linker re-run - double-click to process this folder in the\r\n"
-            "REM background. Picks up any Fix? decisions saved in LEAKS.xlsx.\r\n"
-            "REM Runs detached: the work continues after this window closes.\r\n"
-            'REM Progress -> pdf_linker.log; a "DONE <time>.txt" file appears\r\n'
-            "REM in this folder when the run finishes.\r\n"
-            "echo Re-running PDF-Linker in the background (this window closes; the\r\n"
-            "echo work keeps running)...\r\n"
-            "echo   Progress:  see pdf_linker.log in this folder\r\n"
-            'echo   When done: a "DONE ....txt" file appears here (not yet - it is\r\n'
-            "echo              still running when this window closes).\r\n"
-            f'start "PDF-Linker re-run" {prog} "%~dp0." --provider {provider}{key}\r\n'
-            "timeout /t 3 >nul 2>&1\r\n")
+        content = _bg_launcher_bat(
+            "PDF-Linker re-run", notes,
+            f'{prog} "%~dp0." --provider {provider}{key}')
         return "Re-run PDF-Linker.bat", content, False
     key = ' --key "$(dirname "$0")/pseudonym_key.xlsx"' if want_key else ""
-    content = (
-        "#!/bin/sh\n"
-        "# PDF-Linker re-run - double-click to process this folder again.\n"
-        "# Picks up any Fix? decisions saved in LEAKS.xlsx.\n"
-        'echo "Re-running PDF-Linker on this folder..."\n'
-        f'{prog} "$(dirname "$0")" --provider {provider}{key}\n'
-        'echo "Finished - exit code $?."\n')
+    content = _bg_launcher_sh(
+        notes, f'{prog} "$(dirname "$0")" --provider {provider}{key}')
     return "Re-run PDF-Linker.command", content, True
 
 
 def _write_rerun_launcher(folder, provider, want_key, log):
     """Write/refresh the double-click re-run launcher in `folder`. Best-effort;
     a failure is never fatal to the run."""
-    exe = Path(sys.executable)
+    exe = _launcher_exe()
     frozen = bool(getattr(sys, "frozen", False))
-    if os.name == "nt" and not frozen:
-        # The re-run .bat launches the tool DETACHED (via `start`), so it wants
-        # the WINDOWLESS interpreter — pythonw.exe — or a bare console flashes
-        # for the length of the run. Prefer the pythonw beside sys.executable;
-        # if it isn't there, keep whatever we have (the detached run still works,
-        # it just shows a console). Progress goes to pdf_linker.log regardless.
-        low = exe.name.lower()
-        if low.startswith("python") and not low.startswith("pythonw"):
-            cand = exe.with_name("pythonw" + exe.name[len("python"):])
-            if cand.exists():
-                exe = cand
     script = Path(__file__).resolve()
     name, content, make_exec = _rerun_launcher_spec(
         str(exe), str(script), provider, want_key, os.name == "nt", frozen=frozen)
@@ -15755,25 +15772,19 @@ def _fix_launcher_spec(exe, script, windows, frozen=False):
     """(filename, content, make_executable) for the 'Apply Leak Fixes' launcher —
     a double-clickable file that runs --fix-leaks on this folder."""
     prog = f'"{exe}"' if frozen else f'"{exe}" "{script}"'
+    notes = ["PDF-Linker - apply the Fix? decisions saved in LEAKS.xlsx to the",
+             ".txt/.LEAK exports (no PDFs touched).",
+             "Nothing appears on screen: the run is detached and minimized.",
+             'Progress -> pdf_linker.log; a "DONE <time>.txt" file appears',
+             "in this folder when the pass finishes."]
     if windows:
-        content = (
-            "@echo off\r\n"
-            "REM PDF-Linker - apply the Fix? decisions saved in\r\n"
-            "REM LEAKS.xlsx to the .txt/.LEAK exports (no PDFs touched).\r\n"
-            "echo Applying leak fixes to this folder...\r\n"
-            "echo.\r\n"
-            f'{prog} "%~dp0." --fix-leaks --key "%~dp0pseudonym_key.xlsx"\r\n'
-            "echo.\r\n"
-            "echo Finished - exit code %ERRORLEVEL%. You can close this window.\r\n"
-            "pause\r\n")
+        content = _bg_launcher_bat(
+            "PDF-Linker leak fixes", notes,
+            f'{prog} "%~dp0." --fix-leaks --key "%~dp0pseudonym_key.xlsx"')
         return "Apply Leak Fixes.bat", content, False
-    content = (
-        "#!/bin/sh\n"
-        "# PDF-Linker - apply LEAKS.xlsx Fix? decisions to the exports.\n"
-        'echo "Applying leak fixes to this folder..."\n'
-        f'{prog} "$(dirname "$0")" --fix-leaks '
-        '--key "$(dirname "$0")/pseudonym_key.xlsx"\n'
-        'echo "Finished - exit code $?."\n')
+    content = _bg_launcher_sh(
+        notes, f'{prog} "$(dirname "$0")" --fix-leaks '
+               '--key "$(dirname "$0")/pseudonym_key.xlsx"')
     return "Apply Leak Fixes.command", content, True
 
 
@@ -15805,11 +15816,12 @@ def _pn_remove_leak_workflow(folder, log):
 
 def _write_fix_launcher(folder, log):
     """Write/refresh the double-click 'Apply Leak Fixes' launcher. Best-effort."""
-    exe = Path(sys.executable)
+    # Was deliberately the CONSOLE interpreter, because this pass used to run in
+    # the foreground and print its exit code before a `pause`. It now runs
+    # detached and minimized like the re-run, so it wants the windowless one for
+    # the same reason: nothing should appear in front of the operator.
+    exe = _launcher_exe()
     frozen = bool(getattr(sys, "frozen", False))
-    if os.name == "nt" and not frozen and exe.stem.lower().startswith("pythonw"):
-        cand = exe.with_name(exe.name.lower().replace("pythonw", "python", 1))
-        exe = cand if cand.exists() else Path("python.exe")
     script = Path(__file__).resolve()
     name, content, make_exec = _fix_launcher_spec(
         str(exe), str(script), os.name == "nt", frozen)

@@ -27,9 +27,11 @@ def test_windows_bat_targets_own_folder_with_key():
     assert "--provider lexis" in content
     assert '--key "%~dp0pseudonym_key.xlsx"' in content
     assert "\r\n" in content                       # CRLF for cmd
-    # A visible banner so the window is never blank, even under a windowless
-    # interpreter that prints nothing of its own.
-    assert "echo Re-running PDF-Linker" in content
+    # Nothing is echoed and nothing is waited on: the launcher hands the work
+    # over and exits, so a window that closes in milliseconds is never in the
+    # operator's way. The durable signals are named in the REM header instead.
+    assert "echo " not in content.replace("@echo off", "")
+    assert "timeout" not in content and "pause" not in content
     # Non-frozen: the interpreter needs the script path.
     assert r'"C:\Tools\pdf_linker.py"' in content
 
@@ -38,18 +40,22 @@ def test_windows_bat_runs_detached_in_the_background():
     _n, content, _e = P._rerun_launcher_spec(
         r"C:\Py\pythonw.exe", r"C:\Tools\pdf_linker.py", "lexis",
         want_key=True, windows=True)
-    # Detached: launched via `start` so the launcher returns immediately …
-    assert 'start "PDF-Linker re-run" "C:\\Py\\pythonw.exe"' in content
-    # … and never blocks on a pause.
-    assert "pause" not in content
+    # Detached AND minimized: `start` returns at once, and /min keeps the run
+    # off the foreground instead of in front of whatever the operator is doing.
+    assert 'start "PDF-Linker re-run" /min "C:\\Py\\pythonw.exe"' in content
+    # /b would attach the child to this launcher's console, which is about to
+    # close — a run without pythonw.exe could take a close event with it.
+    assert "/b " not in content
+    # … and never blocks.
+    assert "pause" not in content and "timeout" not in content
     # The command (interpreter + script + folder + flags) is the started target.
     assert '"C:\\Tools\\pdf_linker.py" "%~dp0." --provider lexis' in content
-    # Tells the operator where the durable progress/finish signals are.
+    # The REM header names the durable progress/finish signals, since nothing
+    # is on screen long enough to read.
     assert "pdf_linker.log" in content and "DONE" in content
-    # The DONE line must read as a FUTURE signal, not a status: the detached
-    # run is still going when this window closes, so a bare "Finished:" misled
-    # operators into thinking the (often silently-failed) run was done.
-    assert "When done" in content
+    # It must read as a FUTURE signal, not a status: the detached run is still
+    # going when the launcher exits, so a bare "Finished:" misled operators into
+    # thinking the (often silently-failed) run was done.
     assert "Finished:" not in content
 
 
@@ -79,8 +85,11 @@ def test_posix_command_is_executable_and_self_locating():
     assert content.startswith("#!/bin/sh")
     assert '"$(dirname "$0")"' in content
     assert '--key "$(dirname "$0")/pseudonym_key.xlsx"' in content
-    # No `exec`, so the trailing status line still runs after the tool exits.
-    assert "Re-running PDF-Linker" in content and "Finished" in content
+    # Detached with nohup, so the work survives the Terminal window closing,
+    # and the launcher returns immediately rather than holding the shell.
+    assert content.rstrip().endswith("exit 0")
+    assert "nohup " in content and content.count(" &\n") == 1
+    assert "pdf_linker.log" in content and "DONE" in content
 
 
 def test_writer_creates_launcher_without_clobbering_other_markers(tmp_path):
