@@ -227,6 +227,14 @@ the party), so its row stays reversible.
   two. A **welded** token (a column-splice glued two names, "ADLERMICHAEL" =
   "ADLER"+"MICHAEL") folds onto the CONCATENATION of the two parts' fakes
   ("Darrow"+"Fenmore"), guarded so an ordinary long surname is never split.
+  A weld may carry a CONNECTOR, because a domain core is the party with its
+  spaces gone: "cadillacofcalabasas" folded on the bound prefix alone left an
+  11-char tail that drew ONE unrelated pool word ("eldridge"), tying the domain
+  neither to the party nor to the "cadiilac" beside it. The connector is kept
+  verbatim and the remainder folded, so the fake reads the same way
+  ("cransfonofmarlowe" = "Cransfon of Marlowe" with the spaces gone) — but only
+  when the post-connector remainder is ALREADY BOUND, or "smiththeodore" would
+  lose its "the" and fold onto a mangled "odore".
   Folding is **document-order-independent**: an edit-distance fold is symmetric,
   but a weld is strictly longer than its base, so `_pn_build_terms` runs a scratch
   pass (`_PnTokenOrderRecorder`) to enumerate the bare tokens and pre-binds them

@@ -144,3 +144,47 @@ def test_a_brace_naming_nothing_in_its_row_does_not_nuke_the_word(tmp_path,
     assert "law" not in reg.keep_words
     assert terms[0].fake == "{Law}"
     assert "does not name part of that value" in caplog.text
+
+
+# ── a run-together name keeps its connector ─────────────────────────────────
+
+def test_a_domain_core_folds_onto_the_partys_own_fake():
+    """A domain core is the party with its spaces gone. Folded on the bound
+    prefix alone, the connector's tail drew one unrelated pool word, so
+    "cadillacofcalabasas" came back "eldridge" — nothing tying it to the party
+    or to the "cadiilac" beside it."""
+    reg = P._PnFakeRegistry()
+    terms = P._pn_build_terms(["Cadillac of Calabasas"], [],
+                              ["cadillacofcalabasas"], registry=reg)
+    people = {t.real: t.fake for t in terms if t.category == "person"}
+    party = people["Cadillac of Calabasas"]
+    assert people["cadillacofcalabasas"] == party.replace(" ", "").lower()
+    assert " of " in party            # the connector is kept in both forms
+
+
+def test_the_plain_two_part_weld_still_folds():
+    reg = P._PnFakeRegistry()
+    terms = P._pn_build_terms(["Adler Michael"], [], ["ADLERMICHAEL"], registry=reg)
+    people = {t.real: t.fake for t in terms if t.category == "person"}
+    assert people["ADLERMICHAEL"] == people["Adler Michael"].replace(" ", "").upper()
+
+
+def test_a_name_that_merely_contains_a_connector_is_not_split():
+    """"smiththeodore" must not lose its "the" and fold onto a mangled "odore" —
+    the connector is only stripped when what remains is itself already bound."""
+    reg = P._PnFakeRegistry()
+    terms = P._pn_build_terms(["Smith Theodore"], [], ["smiththeodore"],
+                              registry=reg)
+    people = {t.real: t.fake for t in terms if t.category == "person"}
+    assert people["smiththeodore"] == people["Smith Theodore"].replace(" ", "").lower()
+
+
+def test_an_ocr_typo_still_folds_onto_a_typo_of_the_same_fake():
+    reg = P._PnFakeRegistry()
+    terms = P._pn_build_terms(["Cadillac of Calabasas"], [], ["cadiilac"],
+                              registry=reg)
+    people = {t.real: t.fake for t in terms if t.category == "person"}
+    bound = people["Cadillac of Calabasas"].split()[0]
+    typo = people["cadiilac"]
+    assert typo.lower() != bound.lower()                    # still distinct
+    assert P._pn_osa_distance(typo.lower(), bound.lower()) <= 2

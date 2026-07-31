@@ -6013,11 +6013,28 @@ class _PnFakeRegistry:
                     rest, is_prefix = low[:-len(prev)], False
                 else:
                     continue
+                # A run-together name routinely carries a CONNECTOR — a domain
+                # core is the party with its spaces gone ("cadillacofcalabasas").
+                # Keep the connector verbatim and fold what is left, so the fake
+                # reads the same way ("cransfonofmarlowe") instead of drawing one
+                # unrelated word for the whole tail. Only when the remainder is
+                # itself already bound: otherwise "smiththeodore" would lose its
+                # "the" and fold onto a mangled "odore".
+                conn = ""
+                for c in sorted(_PN_NAME_CONNECTORS, key=len, reverse=True):
+                    if not c.isalpha():
+                        continue
+                    trimmed = (rest[len(c):] if is_prefix and rest.startswith(c)
+                               else rest[:-len(c)] if not is_prefix
+                               and rest.endswith(c) else None)
+                    if trimmed and (tag, trimmed) in self._memo:
+                        conn, rest = c, trimmed
+                        break
                 if len(rest) < _PN_NAME_FOLD_MIN or not rest.isalpha():
                     continue
                 rest_fake = self.token(rest, words, seed_tag)
-                cand = (prev_fake + rest_fake if is_prefix
-                        else rest_fake + prev_fake)
+                cand = (prev_fake + conn + rest_fake if is_prefix
+                        else rest_fake + conn + prev_fake)
                 if cand.lower() not in self._used:
                     return self._take(key, cand)
                 break     # a weld was found but the joined fake was taken
