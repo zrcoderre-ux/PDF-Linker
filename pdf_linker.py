@@ -7124,8 +7124,15 @@ def _pn_append_entity_terms(terms, raw, source, registry, prefer=None):
     suffix. Returns the {word_base: fake} map so a dba sharing words with this
     name can reuse the same fakes."""
     fake, mapping = _pn_fake_entity_parts(raw, registry, prefer)
+    # WHOLE WORD. Built without boundaries, an entity term matched inside a
+    # longer printed word and ate the text around it: an OCR fragment "RS, LLC"
+    # fired inside "General Motors, LLC" eleven times, shipping "General
+    # Motocairnwood, LLC". Nothing was gained by the looser form — a possessive
+    # ("Nationstar Mortgage, LLC's") still matches, because `(?!\w)` is
+    # satisfied by an apostrophe, and a line-wrapped name still matches, because
+    # the pattern's whitespace runs already absorb the break.
     terms.append(_PnTerm("entity", raw, fake,
-                         whole_word=False, case_sensitive=False, priority=2,
+                         whole_word=True, case_sensitive=False, priority=2,
                          source=source))
     bare = _pn_entity_bare(raw, registry, prefer)
     if (bare and not _pn_is_party_role(bare[0])
@@ -7160,7 +7167,10 @@ def _pn_append_person_terms(terms, raw, source, registry):
     surname the key spells one way is still scrubbed where a document spells it
     another ("Roxane" vs "Roxanne")."""
     fake_full, bare = _pn_fake_person(raw, registry)
-    terms.append(_PnTerm("person", raw, fake_full, whole_word=False,
+    # WHOLE WORD, for the reason `_pn_append_entity_terms` is: unbounded, a
+    # short person term matched inside a longer word — "Tue", harvested as a
+    # declarant, fired inside "Vatue" ("Agreed Vabennett of Property").
+    terms.append(_PnTerm("person", raw, fake_full, whole_word=True,
                          case_sensitive=False, priority=2, source=source))
     # The same filing writes the middle name out and abbreviates it. Register
     # the abbreviated spelling with the FAKE middle name's letter, or the bare
@@ -9028,6 +9038,37 @@ def _pn_span_is_welded(src, start, end):
     before = src[start - 1] if start > 0 else ""
     after = src[end] if end < len(src) else ""
     return bool((before and before.isalnum()) or (after and after.isalnum()))
+
+
+# The INSIDE of a welded span: one unbroken run of alphanumerics, optionally
+# carrying an intra-word apostrophe or hyphen ("O'Brien", "Sedgwick-Linford"),
+# and optionally hyphenated across a line wrap ("Ardeshir-\npour").
+_PN_WELD_INTERIOR_RE = re.compile(
+    r"[^\W_]+(?:['’\-][^\W_]+|-[ \t]*\r?\n[ \t]*[^\W_]+)*", re.UNICODE)
+
+
+def _pn_span_is_unbroken(src, start, end):
+    """True when NO printed word boundary lies INSIDE `src[start:end]`.
+
+    `_pn_span_is_welded` inspects the characters OUTSIDE a match, and that was
+    the only boundary test the reduced passes had. It cannot see the one thing
+    that matters most: the reduction drops all whitespace and punctuation, so a
+    core can be found spanning several printed words, and the span is then
+    replaced WHOLE — deleting the text between them. Five terms did exactly that
+    to the fee-motion corpus: "Further, a substantial" shipped as "Furtthorpe
+    substantial" (the reduction of "Further, a substantial" contains "hera", a
+    four-letter party), "whether a party" as "whetthorpe party", and
+    "the length" / "the lender" as "tbrandtgth" / "tbrandtder", which ate two
+    entire lines, a newline and a bracket.
+
+    A weld means characters ran together with NO separator, so a span holding a
+    space, a comma or a bare line break proves the boundary was never lost and
+    the match is a coincidence of the reduction. Only two things may sit inside:
+    an intra-word apostrophe/hyphen, which is part of the printed word, and a
+    hyphen-then-wrap, which is a break the printer inserted mid-word. A bare
+    newline is NOT allowed — between two words a line break is the separator, so
+    admitting it reopens the same bug one line down."""
+    return bool(_PN_WELD_INTERIOR_RE.fullmatch(src[start:end]))
 
 
 def _pn_span_has_hard_seam(src, start, end):
@@ -11574,7 +11615,12 @@ class Pseudonymizer:
             k = red.find(core)
             while k >= 0:
                 o_s, o_e = idx[k], idx[k + len(core) - 1] + 1
-                if ((not short or _pn_span_is_welded(masked, o_s, o_e))
+                # Mirror of the same test in `scrub_welded`: a span holding a
+                # printed word boundary is a coincidence of the reduction, not
+                # a weld. The two must stay identical, or detection out-runs
+                # replacement and quarantines an export nothing can clean.
+                if (_pn_span_is_unbroken(masked, o_s, o_e)
+                        and (not short or _pn_span_is_welded(masked, o_s, o_e))
                         and (spliced
                              or _pn_span_has_hard_seam(masked, o_s, o_e))):
                     out.append(rec["real"])
@@ -11637,6 +11683,14 @@ class Pseudonymizer:
                 end = k + len(core)
                 o_s, o_e = idx[k], idx[end - 1] + 1
                 if any(o_s < pe and ps < o_e for ps, pe in protected):
+                    start = k + 1
+                    continue
+                # The reduction dropped every space and comma, so a core can be
+                # found spanning SEVERAL printed words — and replacing that span
+                # whole deletes the text between them ("Further, a substantial"
+                # -> "Furtthorpe substantial"). A weld has no separator inside
+                # it; anything else is a coincidence.
+                if not _pn_span_is_unbroken(src, o_s, o_e):
                     start = k + 1
                     continue
                 # A short name only earns a cure where it is genuinely WELDED —
