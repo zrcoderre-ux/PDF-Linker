@@ -11183,9 +11183,13 @@ class Pseudonymizer:
             "email", real.lower()).choice(_PN_NAME_WORDS).lower()
         return f"{local}@{_pn_fake_domain(domain, self.registry)}"
 
-    def surviving_reals(self, text):
-        """Real values that still appear in `text` — a leak the caller should
-        surface. Every tracked value is checked, including one that was replaced
+    def _surviving_records(self, text):
+        """The RECORDS whose real value still stands in `text` — the single
+        eligibility rule the leak scan (`surviving_reals`, which reports) and the
+        cure pass (`scrub_survivors`, which repairs) share, so the two can never
+        drift apart. That discipline is why `_weld_core` exists for the welded
+        pair: a value one pass reports and the other cannot touch quarantines an
+        export nothing is able to clean. Every tracked value is checked, including one that was replaced
         ZERO times: a term whose only occurrences were line-wrapped used to
         match nothing, so it had no replacement count, so the old count>0 guard
         skipped it and the leak was reported as clean."""
@@ -11216,10 +11220,60 @@ class Pseudonymizer:
                 continue
             try:
                 if self._compiled(rec["pattern"], rec["flags"]).search(text):
-                    out.append(rec["real"])
+                    out.append(rec)
             except re.error:
                 pass
         return out
+
+    def surviving_reals(self, text):
+        """The real VALUES `_surviving_records` found — the leak scan's answer."""
+        return [rec["real"] for rec in self._surviving_records(text)]
+
+    def scrub_survivors(self, text):
+        """Write-side mirror of `surviving_reals`: fake a tracked value the main
+        pass left standing, with the fake its record ALREADY carries.
+
+        A RECORD IS NOT A TERM — the same gap that let a display name be faked at
+        the "Name <addr>" pair and nowhere else. `_term_cands` iterates
+        `self.terms`, so anything minted into `self.records` during the run (a
+        display name, a declarant read off a signature block, a detector hit) is
+        substituted only where its own minting pass happened to look. And
+        `apply`'s overlap resolution drops a shorter candidate wherever a longer
+        one claimed the span — even when that longer one was then itself dropped
+        for overlapping a citation, leaving the span scrubbed by neither.
+
+        Both leave standing a value this case had ALREADY decided to fake and had
+        already minted a fake for, so a worksheet row asking "should I fake
+        this?" was never a decision — the binding exists, the key row exists, and
+        the answer can only be yes. Curing it here mints no fake, draws no pool
+        word and adds no key row: it applies the one already agreed. Same shape
+        as `scrub_emails`, generalised past the one category that had it.
+
+        Eligibility comes from `_surviving_records`, the SAME rule the scan uses,
+        so replacement can never lag detection (which quarantines an export the
+        substituter was never given a chance to clean) nor run ahead of it (which
+        would fake something the scan does not consider a leak). The main pass's
+        protections still hold — a citation stays byte-for-byte, an operator KEEP
+        stays verbatim — because `_substitute` is handed the same protected set.
+        """
+        src = _NFKC(text)
+        cands = []
+        for rec in self._surviving_records(src):
+            real, fake = str(rec["real"]), str(rec["fake"])
+            if not real or not fake or _pn_norm_map(real) == _pn_norm_map(fake):
+                continue          # nothing to apply, or a self-map: leave it
+            try:
+                rx = self._compiled(rec["pattern"], rec["flags"])
+            except re.error:
+                continue
+            for m in rx.finditer(src):
+                if m.start() != m.end():
+                    cands.append((0, m.start(), m.end(), rec))
+        if not cands:
+            return text
+        return self._substitute(
+            src, cands,
+            protected=self._protected_citation_spans(src) + self._keep_spans(src))
 
     def scrub_emails(self, text):
         """Write-side sweep for a tracked E-MAIL address the pattern pass left
@@ -14383,6 +14437,12 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         body = pseudonymizer.scrub_welded(body, spliced=bool(spliced))
         scrubbed_detect = pseudonymizer.scrub_welded(scrubbed_detect,
                                                      spliced=bool(spliced))
+        # ...and the plain survivor: a tracked value standing in ordinary,
+        # unprotected text that the main pass never claimed. Its fake is already
+        # minted and already in the key, so this is not a question for the
+        # worksheet — apply the binding rather than asking about it.
+        body = pseudonymizer.scrub_survivors(body)
+        scrubbed_detect = pseudonymizer.scrub_survivors(scrubbed_detect)
         if spliced:
             log.warning(f"  Pseudonymization REVIEW on {pdf_path.name}: caption "
                         f"on page(s) {spliced} appears column-spliced; term "
@@ -15983,6 +16043,7 @@ def _fix_leaks_mode(folder, args, cfg, log):
         # requires. An ordinary export gets the narrow hard-seam pass, the same
         # one every page gets in a full run.
         scrubbed = pz.scrub_welded(scrubbed, spliced=is_leak)
+        scrubbed = pz.scrub_survivors(scrubbed)
         # Compare against the NFKC form: apply() normalizes unconditionally, so
         # a file whose only difference is normalization has no actual fix in it
         # and is left untouched (not rewritten, not counted as changed).

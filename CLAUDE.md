@@ -368,6 +368,24 @@ the party), so its row stays reversible.
   the fake, so an ALL-CAPS letterhead is covered). It runs AFTER
   `_display_name_cands` in both `apply` and `apply_lines`, so a name first met in
   a text has its other occurrences covered on that same pass.
+- **An ALREADY-BOUND survivor is cured, not asked about** (`scrub_survivors`,
+  the write-side mirror of `surviving_reals`, run beside `scrub_emails` /
+  `scrub_welded`). A worksheet row asking "should I fake this?" for a value the
+  case has already bound is not a decision: the fake is minted, the key row
+  exists, and the answer can only be yes. Two things put one there, neither an
+  operator's call — **a RECORD IS NOT A TERM** (`_term_cands` iterates
+  `self.terms`, so anything minted into `self.records` during the run is
+  substituted only where its own minting pass looked — the same gap that faked a
+  display name at its `Name <addr>` pair and nowhere else), and `apply`'s
+  overlap resolution dropping a shorter candidate wherever a longer one claimed
+  the span, even when that longer one was then itself dropped for overlapping a
+  citation, leaving the span scrubbed by neither. Curing mints no fake, draws no
+  pool word and adds no key row. `_surviving_records` is the SINGLE eligibility
+  rule the scan and the cure share, for the reason `_weld_core` is shared: a
+  value one pass reports and the other cannot touch quarantines an export
+  nothing is able to clean. `_substitute` gets the same protected set the main
+  pass gets, so a cited authority still stays byte-for-byte and an operator KEEP
+  still stays verbatim. ~50 ms an export, early-outing when nothing survived.
 - **Two-tier leak detection**: `surviving_reals` (a tracked real still present)
   and the high-recall REVIEW scans (`review_scan`, `unknown_name_scan`,
   `reid_scan`) surface anything name-shaped for human triage in `LEAKS.xlsx`.
