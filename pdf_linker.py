@@ -11876,6 +11876,22 @@ class Pseudonymizer:
         # can never reveal anything, and the composing faker honours that inside
         # a party name too, so a survivor is the decision working — not a leak.
         nuclear = {str(v).lower() for v in self.keep_nuclear}
+        # Cheap gate for the authority mirror below: no "v." on the page, no
+        # citation-shaped context to be in.
+        guard = bool(_PN_AUTHORITY_V_RE.search(text))
+        # The spans `_substitute` will REFUSE to touch. A value this scan
+        # reports but that pass is required to leave alone is a leak nothing can
+        # ever clear: the export is quarantined, the operator marks the row
+        # `yes`, `--fix-leaks` changes nothing ("applied 3 fix(es) to 0 file(s)")
+        # and re-reports it, and the folder never resolves. Detection must never
+        # out-run replacement — the discipline `_weld_core` exists for, applied
+        # to the boundary-anchored tier.
+        #
+        # `_keep_spans` already encodes when a keep YIELDS (a full party match
+        # releases it), so a kept word standing where a party term matches is
+        # not in this set and is still reported. That is what keeps the rule
+        # "a keep must never leave a real party in the clear" intact.
+        keep = self._keep_spans(text)
         out = []
         for rec in self.records.values():
             if nuclear and str(rec["real"]).lower() in nuclear:
@@ -11884,10 +11900,30 @@ class Pseudonymizer:
                     and str(rec["real"]).lower() in kept):
                 continue
             try:
-                if self._compiled(rec["pattern"], rec["flags"]).search(text):
-                    out.append(rec)
+                ms = list(self._compiled(rec["pattern"],
+                                         rec["flags"]).finditer(text))
             except re.error:
-                pass
+                continue
+            # MIRROR `_substitute`. A name-shaped value standing in a citation-
+            # SHAPED context is deliberately refused by `_in_authority_context`,
+            # whether or not a citation parsed there — that is what stops the
+            # next OCR artefact renaming a cited decision. The mask above only
+            # covers what the PARSER read, so an unparseable cite left the write
+            # side protecting the value and this side reporting it: a party-name
+            # leak that quarantines the export and that NO number of
+            # Apply-Leak-Fixes passes can ever clear, because every pass refuses
+            # to scrub it and every pass re-reports it. Detection must never
+            # out-run replacement — the same discipline `_weld_core` exists for.
+            if guard and rec["category"] in _PN_AUTHORITY_GUARD_CATS:
+                ms = [m for m in ms
+                      if not self._in_authority_context(text, m.start(),
+                                                        m.end())]
+            if keep:
+                ms = [m for m in ms
+                      if not any(m.start() < ke and ks < m.end()
+                                 for ks, ke in keep)]
+            if ms:
+                out.append(rec)
         return out
 
     def surviving_reals(self, text):
