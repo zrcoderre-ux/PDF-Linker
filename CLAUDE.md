@@ -79,6 +79,33 @@ must also carry the marker back onto the term (`_PnTerm.derived`), or the re-run
 re-picks the owner by hit count, which the wrap-split spelling wins — it is the
 form the text actually carries — and ownership flips on the first re-run. A group
 that is ALL synthetic promotes one row, or the fake reverses to nothing.
+**EVERY fake in an export must be reversible, and the run says so out loud.**
+`draft` shipped as "Ainsworth" 72 times and `review` as "Sterling" 84, across
+four documents, with neither mapping anywhere in the key. That is worse than the
+leak that produced it: a leak is visible, an unreversible substitution is silent
+and permanent. The path was `write_key` dropping the row for a value the
+operator marked KEEP — true only while the keep HELD, and a soft `no` is
+deliberately RELEASED inside a multi-word capitalized name run and inside a full
+party match, after which the value is faked by the very row being dropped. The
+occurrence COUNT settles it, because a local keep retires its binding
+(`_pn_retire_kept_key_terms`), so a value really left verbatim still arrives
+with count 0. `unreversible_fakes` is the standing assertion: every fake a
+record applied, and every stand-in the registry minted that is found standing
+in an export (`registry.minted_fakes`, read back off disk), must be reachable
+from a written row — outright or word by word, which is what the macro can do.
+The end-of-run gate reports and exits non-zero; the exports are NOT quarantined,
+because they are not dangerous, they are unrestorable, and what the operator
+needs is to know.
+**A binding NO export has ever carried lives on its own sheet**
+(`_PN_KEY_PINNED_SHEET`). Keeping a row the template named but this batch never
+mentioned is right forward and a hazard in reverse — `ReAnonymizeTentative` runs
+the map backwards and would replace a Real Value that was never in the document
+(133 of the delivered key's 335 rows were of that kind). `DeAnonymize` reads the
+ACTIVE sheet and cannot reach the second one; `_pn_load_key` reads BOTH, so the
+pin still does its job. "Carried" is REACHABILITY, not the row's own count: the
+macro reverses a composed fake word by word, so the token rows of a party whose
+full name is the only form the export used are load-bearing even though they
+matched nothing themselves.
 
 `_pn_supplement_key_terms` is the fallback for what the key still cannot carry:
 a key written by an older version, or a template AMENDED between runs (a Doe
@@ -262,6 +289,56 @@ the party), so its row stays reversible.
 - **Terms** come from the spreadsheet key (E-Court `Order*.xlsx`), `--term`, and
   a folder **pre-scan** that harvests names/localities/identifiers. Built in
   `_pn_build_terms` / `_pn_append_name_terms` → person vs entity paths.
+- **A term matches WHOLE WORDS.** Built without boundaries, `person` and
+  `entity` terms matched inside longer printed words and ate the text around
+  them: an OCR fragment "RS, LLC" fired inside "General Motors, LLC" eleven
+  times ("General Motocairnwood, LLC") and a declarant "Tue" inside "Vatue"
+  ("Agreed Vabennett of Property"). The reason for the looser form does not
+  survive inspection — `(?!\w)` is satisfied by an apostrophe, so a possessive
+  still matches, and the pattern's whitespace runs already absorb a line wrap.
+  The ONE relaxation is `_pn_build_pattern(follow=…)`, for the single place a
+  weld is expected and its shape is known: extraction that lost the space in
+  "Smith Decl." leaves "SmithDecl.", and the declarant-reference harvester is
+  reading exactly that. The LEFT boundary always holds, which is the one that
+  stops a short name firing inside a longer word. `_pn_load_key` builds loaded
+  person/entity rows the same way, or a re-run would rewrite text the run that
+  wrote the key never touched.
+- **A DOCUMENT harvest is a GUESS, and has screens to clear** — none of which
+  ever apply to the operator's own party template, because refusing a real name
+  is the failure the whole method exists to prevent. A LOOSE harvest (a caption
+  line, a capitalized run, an OCR fragment) needs `_PN_HARVEST_TOKEN_MIN` = 3
+  distinctive characters: every 2-letter candidate in the fee-motion corpus was
+  junk ("AL" off "JUAN LOPEZ, ET AL. V. GENERAL MOTORS", so every "et al."
+  became "et aldrin."; "RS" off "MOTORS"; "NA", turning "CASE NA.ME" into "CASE
+  GG.ME"), and `_PN_SHORT_TOKEN_STOP` is a 24-word list with none of them on it.
+  A STRUCTURED harvest carries its own corroboration — "Yu Dec." is a
+  declaration short cite and nothing else has that shape — so those sites screen
+  on `_PN_CALENDAR_WORDS` alone (no filing names a party "Tue"), or a real
+  two-letter declarant would be left standing. `_pn_strip_et_al` runs first,
+  because `_PN_SKIP_PARTY_RE` only matches a cell that is ENTIRELY "et al.",
+  which is what a spreadsheet column holds and not what a caption line carries.
+  Two corpus-wide prunes run beside `prune_citation_only_terms`, with the full
+  folder text: `prune_prose_word_terms` (a surname is capitalized wherever it
+  stands and a verb is not, so a harvested word written in lower-case at least
+  as often as capitalized is prose — no hand-kept gazetteer is ever complete)
+  and `prune_fragment_terms` (a candidate the corpus only ever writes INSIDE a
+  longer word is an OCR fragment).
+- **A fake is never the name of an AUTHORITY the corpus cites.** "Stockton" is
+  in the name pool and the corpus cited *Stockton Theatres, Inc. v. Palermo*
+  (1956) 47 Cal.2d 469. The citation survives the forward pass — that is what
+  span protection is for — but `DeAnonymize` searches for FAKES
+  case-insensitively, so the first reversal rewrites the authority.
+  `_pn_authority_tokens` reads the party words of YEAR-BEARING cites only
+  (harvesting from every "X v. Y" scoops up the document's own caption, and then
+  no party can be replaced at all); `registry.avoid_words` refuses them at draw
+  time. It also RE-MINTS what was already drawn, which is what makes the screen
+  useful rather than merely prospective — the template's parties are bound
+  before a document has been read. The pre-scan is the one moment when every
+  file has been read and no export has been written, so it now READS everything
+  before LEARNING anything and calls `reserve_authority_names` in between.
+  A run that REUSED a key moves nothing: reproducing the delivered exports byte
+  for byte outranks it, and a fake already in circulation is a worse problem to
+  create than the one being avoided.
 - **Invariants that keep biting if broken** — a fake must never equal its real
   value (`_pn_guard_distinct_fake`, the `M & M` self-map loop); a state name is
   never faked inside a company name; a state-of-incorporation descriptor ("a
@@ -477,6 +554,19 @@ the party), so its row stays reversible.
   restricted to NAME-type records only (`_PN_WELD_CORE_CATS`), never structured
   identifiers (a domain core nests inside the party it belongs to). Such pages
   are also flagged `REVIEW ... appears column-spliced` for a human.
+  **A match must hold NO printed word boundary INSIDE it**
+  (`_pn_span_is_unbroken`). `_pn_span_is_welded` inspects the characters OUTSIDE
+  a match and was the only boundary test there was — so a core found spanning
+  several printed words was replaced WHOLE, deleting the text between them.
+  "Further, a substantial" shipped as "Furtthorpe substantial" (its reduction
+  contains "hera", a four-letter party), "whether a party" as "whetthorpe
+  party", and "the length" / "the lender" as "tbrandtgth" / "tbrandtder" —
+  that pair consuming two entire lines, a newline and a bracket. A weld means
+  characters ran together with NO separator, so a span holding a space, a comma
+  or a bare line break proves the boundary was never lost; only an intra-word
+  apostrophe/hyphen and a hyphen-then-wrap may sit inside. Applied in
+  `scrub_welded` and `surviving_reals_reduced` alike, per the mirroring rule
+  below.
   **The core-length gate is two-tier** (`_weld_core`, the single eligibility
   rule both passes share — they must stay mirrored, or detection out-runs
   replacement and quarantines an export nothing can clean). The default
@@ -723,6 +813,35 @@ citation whose text occurs once is linked only on its own page (not searched
 across all N — that was O(cites×pages)). `_repair_link_uris` fixes a PyMuPDF
 annotation-naming splice. Declarations/complaints skip linking
 (`should_skip_linking`).
+
+**A pleading GUTTER NUMBER blinds the parser, and the authority gets renamed.**
+The text export keeps the printed line number (`f"{num:>2}  "` + body), so a
+citation that WRAPS carries one between its volume and its reporter — and the
+reporter pattern tolerates whitespace there but not digits. The cite then parses
+as NOTHING, `_protected_citation_spans` returns no span, and the ordinary entity
+term rewrites the cited party: a fee-motion corpus shipped six citations naming
+decisions that do not exist (*Ewald v. Nationstar Mortgage, LLC* went out as
+*Ewald v. Sandpiper Monarch, LLC*), while the tables of authorities kept the
+right names so nothing downstream flagged it. `find_all_citations` makes a
+SECOND pass with `_blank_gutter_line_numbers` and MERGES what it adds. Merge,
+never replace, is what makes a loose heuristic safe: pass two can only ADD a
+span, so blanking a digit run that was really a volume costs nothing. Blanking
+is length-preserving, for the same reason the newline normalization is. Gated on
+`_ANY_REPORTER_RE` so a page that cites nothing pays one scan instead of a whole
+second pipeline; a cited page pays ~2×, which is the price of the invariant.
+
+**...and protection must not DEPEND on a parser succeeding.** A parse that fails
+fails silently, and the next OCR artefact or unrecognised reporter blinds it
+again. So `_substitute` refuses a name-shaped candidate (`_in_authority_context`)
+standing between a " v. " and a year-in-parens or a volume+reporter run, whether
+or not a citation parsed there. BOTH anchors are required, which is what keeps
+it off the document's own caption — a caption's defendant is followed by a case
+number and a role word, never by "(2017)" — and the caption exemption is applied
+anyway for an inline recital that does carry a year. Protection-only, so its
+worst case is a party name left unfaked at that one spot: the trade the whole
+method is built on. Relatedly, `_side_is_trusted` needs MOST of a side's
+identifying words, not any one — a case with a party named "North" cleared both
+sides of *BMW of North America* and stripped its protection outright.
 
 **A page must be APPENDABLE before anything is inserted into it**
 (`_repair_page_annots`, called once after the already-linked fast path so a

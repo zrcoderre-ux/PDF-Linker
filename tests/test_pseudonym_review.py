@@ -154,11 +154,17 @@ def test_reversal_key_zero_occurrence_rows_are_authoritative_only(tmp_path):
     header = [c.value for c in next(ws.iter_rows(max_row=1))]
     occ_i, real_i, stat_i = (header.index("Occurrences"),
                              header.index("Real Value"), header.index("Status"))
-    rows = list(ws.iter_rows(min_row=2, values_only=True))
+    rows = [r for s in wb.worksheets
+            for r in s.iter_rows(min_row=2, values_only=True) if r and r[0]]
     zero = [r for r in rows if r[occ_i] in (0, None)]
     assert all(r[stat_i] == "no match" for r in zero)
     reals = {str(r[real_i]) for r in rows}
     assert "Someone Neverpresent" in reals          # pinned though never seen
+    # …but OFF the sheet the reversal macro reads, or the reverse pass would
+    # rewrite a Real Value that was never in the document.
+    assert "Someone Neverpresent" not in {
+        str(r[real_i]) for r in ws.iter_rows(min_row=2, values_only=True)
+        if r and r[0]}
     # every variant spelling of a name that matched nothing stays out
     invented = {v for tok in ("Estrada", "Roxane", "Neverpresent")
                 for v in P._pn_name_variants(tok)}

@@ -1368,11 +1368,41 @@ def _normalize_for_detection(text: str) -> str:
     return "".join(out)
 
 
-def find_all_citations(text: str):
-    """Find all citations in text, ordered by position."""
-    # Normalize line wraps so cites split across lines still match. Spans
-    # remain valid against the original text because length is preserved.
-    norm = _normalize_for_detection(text)
+# A pleading page is printed on NUMBERED paper, and the text export keeps the
+# gutter verbatim (`f"{num:>2}  " + body`), so a body line reads
+# "  25  Cal.App.5th 947". A citation that WRAPS across such a line therefore
+# carries a line number between its volume and its reporter — and the reporter
+# pattern, which tolerates whitespace there but not digits, stops matching. The
+# cite then parses as nothing at all, `_protected_citation_spans` hands back no
+# span, and the ordinary party-name terms rewrite the CITED DECISION. That is
+# this tool's cardinal failure (renaming an authority is worse than leaving a
+# party name in), so detection makes a SECOND pass with the gutter numbers
+# blanked and MERGES whatever that pass adds.
+#
+# Merge, never replace — which is what makes a loose heuristic safe here. Pass
+# two can only ADD a span, so blanking a digit run that was really a volume
+# number costs nothing: pass one already found every citation that reads
+# straight through. Blanking is length-preserving for the same reason the
+# newline normalization is — spans must keep indexing into the original text.
+_GUTTER_NUM_RE = re.compile(r"(?m)^[ \t]{0,8}\d{1,2}(?=[ \t]{2,}\S)")
+# "Is there a citation on this page at all?" — one scan, used to keep a page
+# that cites nothing from paying for the second detection pass.
+_ANY_REPORTER_RE = re.compile(rf"(?:{REPORTER_PATTERN})")
+
+
+def _blank_gutter_line_numbers(text: str) -> str:
+    """`text` with pleading-paper line numbers blanked to spaces (same length).
+
+    A gutter number is a 1-2 digit run at the START of a line followed by two or
+    more spaces — the shape the export writer prints. Two spaces is what
+    separates it from a volume number that merely happens to open a line
+    ("13 Cal.App.5th"), and being wrong either way is harmless: see above.
+    """
+    return _GUTTER_NUM_RE.sub(lambda m: " " * len(m.group(0)), text)
+
+
+def _citation_pass(norm: str):
+    """Every citation `norm` yields, in one detection pass (unordered)."""
     full_cases = find_case_citations(norm)
     statutes = find_statute_citations(norm)
     # Bare section citations ("Section 1150 through 1179a") linked to the code
@@ -1385,21 +1415,44 @@ def find_all_citations(text: str):
     )
     statutes = statutes + bare_sections
     rules = find_rule_citations(norm)
-
-    # Update match_text to use the original text (preserves original
-    # whitespace for downstream page.search_for calls).
-    for c in full_cases + statutes + rules:
-        s, e = c["span"]
-        c["match_text"] = text[s:e]
-
     # Order full cases by position for supra resolution
     full_ordered = sorted(full_cases, key=lambda c: c["span"][0])
     supras = find_supra_citations(norm, full_ordered)
-    for c in supras:
+    return full_cases + statutes + rules + supras
+
+
+def find_all_citations(text: str):
+    """Find all citations in text, ordered by position."""
+    # Normalize line wraps so cites split across lines still match. Spans
+    # remain valid against the original text because length is preserved.
+    norm = _normalize_for_detection(text)
+    all_cites = _citation_pass(norm)
+
+    # Second pass over the same text with pleading line numbers blanked, so a
+    # cite that wraps across the gutter is still found. Additions only.
+    #
+    # Gated on the page carrying a REPORTER at all, which is what makes the
+    # second pass affordable: it doubles detection cost, and most pages of a
+    # filing (declarations, exhibits, proofs of service) cite nothing, so they
+    # pay one extra scan instead of a whole extra pipeline. The gate cannot be
+    # tightened to "blanking created a new volume+reporter adjacency" — a line
+    # number that lands BEFORE the volume ("…(1995)\n12  38 Cal.App.4th") leaves
+    # that adjacency intact and still breaks the parse.
+    degut = _normalize_for_detection(_blank_gutter_line_numbers(text))
+    if degut != norm and _ANY_REPORTER_RE.search(degut):
+        taken = [tuple(c["span"]) for c in all_cites]
+        for c in _citation_pass(degut):
+            s, e = c["span"]
+            if not any(s < te and ts < e for ts, te in taken):
+                all_cites.append(c)
+                taken.append((s, e))
+
+    # Update match_text to use the original text (preserves original
+    # whitespace for downstream page.search_for calls).
+    for c in all_cites:
         s, e = c["span"]
         c["match_text"] = text[s:e]
 
-    all_cites = full_cases + statutes + rules + supras
     all_cites.sort(key=lambda c: c["span"][0])
 
     # Deduplicate overlapping spans (e.g. "Smith, supra" inside a longer match)
@@ -5683,6 +5736,38 @@ _PN_SHORT_TOKEN_STOP = frozenset({
     "as", "at", "am", "an", "be", "by", "do", "go", "he", "if", "in", "is",
     "it", "me", "my", "no", "of", "on", "or", "so", "to", "up", "us", "we",
 })
+# A DOCUMENT harvest is a guess, and these two screens are what a guess has to
+# clear. Neither applies to the operator's own party template or a --term: a
+# party really named Yu or June is authoritative, and second-guessing the
+# operator is how a real name goes unscrubbed.
+#
+# LENGTH. Every 2-letter candidate in the fee-motion corpus was junk: "AL" read
+# off "JUAN LOPEZ, ET AL. V. GENERAL MOTORS" rewrote every "et al." in the
+# batch ("et aldrin."), "RS" was an OCR fragment of "MOTORS", "NA" turned "CASE
+# NA.ME" into "CASE GG.ME". `_PN_SHORT_TOKEN_STOP` is a 24-word list and none of
+# the three was on it. A genuine two-letter surname (Yu, Ng, Le, Wu) needs the
+# party template to say so.
+_PN_HARVEST_TOKEN_MIN = 3
+# CALENDAR. "Tue" was harvested as a declarant and renamed every "Tue Dec 17,
+# 2024" timestamp in the repair-order exhibits — and, unbounded, fired inside
+# "Vatue" too. A weekday or month is never a harvested party. Kept out of
+# `_PN_COMMON_WORDS` on purpose: that gazetteer also decides what the leak scans
+# call boilerplate, so a party really named May or June must stay reportable.
+_PN_CALENDAR_WORDS = frozenset({
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday",
+    "sunday", "mon", "tue", "tues", "wed", "thu", "thur", "thurs", "fri",
+    "sat", "sun",
+    "january", "february", "march", "april", "june", "july", "august",
+    "september", "october", "november", "december",
+    "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sept", "sep", "oct",
+    "nov", "dec",
+})
+# "JUAN LOPEZ, ET AL." names one party. `_PN_SKIP_PARTY_RE` drops a cell that is
+# ENTIRELY "et al.", which is what a spreadsheet column holds — but a caption
+# line read out of a document carries it inline, and tokenizing that registered
+# "AL" as a name.
+_PN_ET_AL_RE = re.compile(r"[\s,]*\bet\.?\s+al\.?(?=$|[\s,;:)\]])",
+                          re.IGNORECASE)
 _PN_COMMON_WORD_SURNAMES = {
     "green", "brown", "white", "black", "gray", "grey", "young", "long",
     "short", "small", "rich", "best", "price", "king", "bell", "cook", "wood",
@@ -5909,7 +5994,18 @@ class _PnFakeRegistry:
 
     def __init__(self):
         self._memo = {}     # (memo_tag, real_lower) -> fake
+        self._pool = {}     # (memo_tag, real_lower) -> (words, seed_tag) it was
+                            # DRAWN from, so a fake can be re-minted later; only
+                            # a straight pool draw is recorded (a composed or
+                            # folded fake follows its parts)
         self._used = set()  # every fake handed out, lower-cased (global)
+        # Words this run must never hand out as a stand-in: the party names of
+        # the authorities the corpus CITES. "Stockton" is in the name pool and
+        # the corpus cites Stockton Theatres, Inc. v. Palermo (1956) 47 Cal.2d
+        # 469 — the citation survives the forward pass, but `DeAnonymize`
+        # searches for FAKES case-insensitively, so the first reversal rewrites
+        # the authority. See `_pn_authority_tokens`.
+        self.avoid_words = set()
         self._domain_reals = {}  # real host -> fake, for OCR-typo folding
         # The operator's NUCLEAR keeps for this run (`{braced}` in a Fix? or
         # Replacement cell), lower-cased word bases. They ride on the registry
@@ -5937,6 +6033,15 @@ class _PnFakeRegistry:
         want = self._memo_tag(seed_tag)
         return {real: fake for (tag, real), fake in self._memo.items()
                 if tag == want}
+
+    def minted_fakes(self):
+        """{fake_lower: real} for EVERY stand-in this registry has handed out,
+        whatever slot drew it — the input to the key-completeness gate, which
+        asks whether a fake standing in an export can be reversed. Wider than
+        `Pseudonymizer.records` on purpose: a draw with no record of its own
+        (an e-mail local part, a token folded onto another's fake) still puts
+        a word in the text that the reversal has to account for."""
+        return {fake.lower(): real for (_tag, real), fake in self._memo.items()}
 
     def token(self, real, words, seed_tag):
         """A single canonical-case stand-in word for `real`, never reused for a
@@ -6041,13 +6146,48 @@ class _PnFakeRegistry:
         rng = _pn_rng(seed_tag, real.lower())
         order = list(words)
         rng.shuffle(order)
+        self._pool[key] = (words, seed_tag)
         for cand in order:
-            if cand.lower() not in self._used:
+            if cand.lower() not in self._used and not self.avoided(cand):
                 return self._take(key, cand)
         base, n = order[0], 2
-        while f"{base}{n}".lower() in self._used:
+        while f"{base}{n}".lower() in self._used or self.avoided(f"{base}{n}"):
             n += 1
         return self._take(key, f"{base}{n}")
+
+    def avoided(self, fake):
+        """True when `fake` names an authority this corpus cites, so handing it
+        out would put a stand-in on top of a real decision's name."""
+        return fake.lower() in self.avoid_words
+
+    def avoid(self, words, protected=()):
+        """Add `words` to the never-hand-out set, and RE-MINT anything already
+        drawn that collides. Returns [(old_fake, new_fake), ...].
+
+        The re-mint is what makes the screen useful rather than merely
+        prospective: the parties from the operator's template are bound before a
+        single document has been read, so by the time the corpus reveals which
+        authorities it cites, the most-used fakes of the run are already drawn.
+        Nothing has been substituted yet — the pre-scan runs before any export —
+        so moving a binding here costs nothing.
+
+        `protected` names word bases that must NOT move: anything pinned by a
+        reused key, since a re-run's whole job is to reproduce the already
+        delivered exports byte for byte."""
+        self.avoid_words |= {str(w).lower() for w in words}
+        swaps = []
+        for key, fake in list(self._memo.items()):
+            if not self.avoided(fake) or key[1] in protected:
+                continue
+            drawn = self._pool.get(key)
+            if drawn is None:
+                continue          # composed or folded — it follows its parts
+            del self._memo[key]
+            self._used.discard(fake.lower())
+            new = self.token(key[1], drawn[0], drawn[1])
+            if new.lower() != fake.lower():
+                swaps.append((fake, new))
+        return swaps
 
     def digits(self, real, seed_tag, keep_prefix=0):
         """A digit-for-digit fake of `real` (e.g. a case number), unique per
@@ -7067,14 +7207,104 @@ def _pn_entity_bare(name, registry, prefer=None):
     return bare, _pn_fake_entity(bare, registry, prefer)
 
 
+def _pn_authority_tokens(text):
+    """The party-name words of the published authorities `text` CITES, lower
+    cased — the words a stand-in must never be drawn from.
+
+    From YEAR-BEARING case citations only. Harvesting from every "X v. Y" scoops
+    up the document's own caption, and then no party could be replaced at all.
+    Corporate furniture and role words are dropped, and so is anything under
+    four characters, which cannot collide distinctively.
+
+    The forward pass already protects a cited authority. This is about the
+    REVERSE one: `DeAnonymize.bas` searches for FAKES case-insensitively, so a
+    fake that happens to be a cited decision's name rewrites that decision the
+    first time the key is applied. The corpus cited *Stockton Theatres, Inc. v.
+    Palermo* (1956) 47 Cal.2d 469 while the run minted "stockton" as a stand-in
+    — a loaded gun, and the pool cannot be made safe against a corpus it has
+    never seen."""
+    out = set()
+    try:
+        cites = find_all_citations(text)
+    except Exception:
+        return out
+    for c in cites:
+        if c.get("kind") != "case" or c.get("plaintiff") is None:
+            continue
+        if not re.search(r"\((?:1[7-9]|20)\d\d\)", str(c.get("key", ""))):
+            continue          # a bare "X v. Y" is as likely to be the caption
+        for side in (c.get("plaintiff", ""), c.get("defendant", "")):
+            for w in _pn_name_words(side):
+                base = _pn_word_base(w)
+                if len(base) >= 4 and base.isalpha():
+                    out.add(base)
+    return out
+
+
+def _pn_strip_et_al(raw):
+    """`raw` with an inline "et al." removed — "JUAN LOPEZ, ET AL." names one
+    party, and tokenizing the tail registered "AL" as a name."""
+    return _PN_ET_AL_RE.sub("", _NFKC(str(raw))).strip(" ,;:")
+
+
+def _pn_name_words(raw):
+    """The DISTINCTIVE words of a name — corporate suffixes, connectors and role
+    labels dropped, so "RS, LLC" measures two characters and not seven."""
+    return [w for w in _NFKC(str(raw)).split()
+            if _pn_word_base(w)
+            and not _pn_is_entity_keep(_pn_word_base(w))
+            and not _pn_is_role_token(w)]
+
+
+def _pn_is_calendar_name(raw):
+    """True when every distinctive word is a weekday or month. Screened on EVERY
+    document harvest, structured or loose: no filing names a party "Tue"."""
+    words = _pn_name_words(raw)
+    return bool(words) and all(_pn_word_base(w) in _PN_CALENDAR_WORDS
+                               for w in words)
+
+
+def _pn_harvest_value_ok(raw, source):
+    """False when a candidate harvested from a DOCUMENT is too thin to be a
+    name: under `_PN_HARVEST_TOKEN_MIN` distinctive characters, or nothing but
+    calendar words. The operator's own party template always passes — see
+    `_PN_HARVEST_TOKEN_MIN`.
+
+    The LENGTH half is for a LOOSE harvest — a caption line, a capitalized run,
+    an OCR fragment — where the only evidence is that the characters were
+    capitalized. A STRUCTURED harvest carries its own corroboration ("Yu Dec."
+    is a declaration short cite, and nothing else has that shape), so those call
+    sites screen on `_pn_is_calendar_name` alone: refusing a real two-letter
+    surname there would leave a declarant standing in the export, which is the
+    failure the whole method exists to prevent."""
+    if source in _PN_KEY_UNMATCHED_SOURCES:
+        return True
+    words = _pn_name_words(raw)
+    if not words:
+        return False
+    if sum(len(_pn_word_base(w)) for w in words) < _PN_HARVEST_TOKEN_MIN:
+        return False
+    return not _pn_is_calendar_name(raw)
+
+
 def _pn_append_entity_terms(terms, raw, source, registry, prefer=None):
     """Register the full entity term plus, when safe, a suffix-stripped
     'bare' variant that catches the name written without its corporate
     suffix. Returns the {word_base: fake} map so a dba sharing words with this
     name can reuse the same fakes."""
+    raw = _pn_strip_et_al(raw)
+    if not _pn_harvest_value_ok(raw, source):
+        return {}
     fake, mapping = _pn_fake_entity_parts(raw, registry, prefer)
+    # WHOLE WORD. Built without boundaries, an entity term matched inside a
+    # longer printed word and ate the text around it: an OCR fragment "RS, LLC"
+    # fired inside "General Motors, LLC" eleven times, shipping "General
+    # Motocairnwood, LLC". Nothing was gained by the looser form — a possessive
+    # ("Nationstar Mortgage, LLC's") still matches, because `(?!\w)` is
+    # satisfied by an apostrophe, and a line-wrapped name still matches, because
+    # the pattern's whitespace runs already absorb the break.
     terms.append(_PnTerm("entity", raw, fake,
-                         whole_word=False, case_sensitive=False, priority=2,
+                         whole_word=True, case_sensitive=False, priority=2,
                          source=source))
     bare = _pn_entity_bare(raw, registry, prefer)
     if (bare and not _pn_is_party_role(bare[0])
@@ -7108,8 +7338,14 @@ def _pn_append_person_terms(terms, raw, source, registry):
     priority, sharing each token's fake — its near-spelling variants, so a
     surname the key spells one way is still scrubbed where a document spells it
     another ("Roxane" vs "Roxanne")."""
+    raw = _pn_strip_et_al(raw)
+    if not _pn_harvest_value_ok(raw, source):
+        return {}
     fake_full, bare = _pn_fake_person(raw, registry)
-    terms.append(_PnTerm("person", raw, fake_full, whole_word=False,
+    # WHOLE WORD, for the reason `_pn_append_entity_terms` is: unbounded, a
+    # short person term matched inside a longer word — "Tue", harvested as a
+    # declarant, fired inside "Vatue" ("Agreed Vabennett of Property").
+    terms.append(_PnTerm("person", raw, fake_full, whole_word=True,
                          case_sensitive=False, priority=2, source=source))
     # The same filing writes the middle name out and abbreviates it. Register
     # the abbreviated spelling with the FAKE middle name's letter, or the bare
@@ -7127,8 +7363,13 @@ def _pn_append_person_terms(terms, raw, source, registry):
             continue
         # A two-letter surname that spells an ordinary English word ("As", "Of",
         # "In") would rewrite that word throughout the brief; skip it. A short
-        # surname that is NOT a word (Yu, Ng, Le, Wu) still registers.
+        # surname that is NOT a word (Yu, Ng, Le, Wu) still registers — but only
+        # when the OPERATOR named it. Harvested from a document, every 2-letter
+        # candidate in the corpus was junk ("AL", "RS", "NA"); see
+        # `_PN_HARVEST_TOKEN_MIN`.
         if len(base) <= 2 and base in _PN_SHORT_TOKEN_STOP:
+            continue
+        if not _pn_harvest_value_ok(real_tok, source):
             continue
         terms.append(_PnTerm("person-token", real_tok, fake_tok,
                              whole_word=True, case_sensitive=False,
@@ -7423,6 +7664,17 @@ def _pn_fake_ssn(real):
     # re-apply the original punctuation.
     return _pn_reapply_digits(_pn_ssn_digits(_pn_rng("ssn", re.sub(r"\D", "", real))),
                               real)
+
+
+# An "@" as printed, or as OCR read it. A scanned signature block gave
+# "shabib(a)erskinelaw.com": the email detector did not match, so the address
+# was left to the url/domain rule, which faked the HOST and left the local part
+# — the attorney's own name — standing in the export. Half-scrubbed is the worst
+# outcome available, so the at-sign is matched the way the page actually spells
+# it. Split out as a constant because the detector that FINDS an address and
+# `_fake_email`, which takes it apart, have to agree on what one looks like.
+_PN_AT_SIGN = r"(?:@|[(\[{][ \t]*[aA][ \t]*[)\]}])"
+_PN_AT_SIGN_RE = re.compile(_PN_AT_SIGN)
 
 
 def _pn_fake_email(real):
@@ -7924,9 +8176,20 @@ _PN_DETECTORS = {
     # indistinguishable from a Bates/account/reservation number) — it is caught
     # only behind an SSN label, in _PN_ID_RES below.
     "ssn": (re.compile(r"(?<!\d)\d{3}[-. ]\d{2}[-. ]\d{4}(?!\d)"), _pn_fake_ssn),
-    "email": (re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b"), _pn_fake_email),
+    "email": (re.compile(
+        rf"\b[A-Za-z0-9._%+\-]+{_PN_AT_SIGN}[A-Za-z0-9.\-]+\.[A-Za-z]{{2,}}\b"),
+        _pn_fake_email),
+    # An area code in brackets may be preceded by a stray digit and the brackets
+    # themselves may be OCR's idea of them: a scanned letterhead gave `4(818)
+    # 953-0150` and `1{818) 953-0150`, and the number survived both times. The
+    # `(?<!\d)` guard is there to stop a match inside a longer digit run, which
+    # is a real hazard for the BARE three-digit form and no hazard at all for
+    # the bracketed one — three digits inside brackets followed by seven more
+    # is a phone number whatever precedes it. So the guard moves onto the
+    # alternative that needs it.
     "phone": (re.compile(
-        r"(?<!\d)(?:\+?1[\s.\-]?)?(?:\(\d{3}\)|\d{3})[\s.\-]?\d{3}[\s.\-]?\d{4}(?!\d)"),
+        r"(?:\+?1[\s.\-]?)?(?:[(\[{]\d{3}[)\]}]|(?<!\d)\d{3})"
+        r"[\s.\-]?\d{3}[\s.\-]?\d{4}(?!\d)"),
         _pn_fake_phone),
     # Street address — anchored on a leading street number on the same row, then
     # 1-4 name words (capitalised, or an ordinal/directional), then a street-type
@@ -8698,14 +8961,22 @@ def _pn_address_adjacency(records):
     return warns
 
 
-def _pn_build_pattern(term, *, whole_word):
+def _pn_build_pattern(term, *, whole_word, follow=None):
     """Literal-match regex body (NFKC-normalized, escaped), with optional
     word-boundary guards. Runs of whitespace in the term match ANY whitespace
     run in the text, so a party name broken across a line wrap ("Toyota of\\n
-    Downtown") or double-spaced after a period is still caught."""
+    Downtown") or double-spaced after a period is still caught.
+
+    `follow` names ONE run the term may butt straight up against on its right,
+    for a place where a weld is expected and its shape is known: an extraction
+    that lost the space in "Smith Decl." leaves "SmithDecl.", and the declarant
+    reference is exactly what that harvester was reading. Everything else still
+    needs a word boundary — the LEFT one always holds, which is what stops a
+    short name firing inside a longer word ("Tue" in "Vatue")."""
     body = r"\s+".join(re.escape(p) for p in _NFKC(term).split())
     if whole_word:
-        body = rf"(?<!\w)(?:{body})(?!\w)"
+        right = rf"(?:(?!\w)|(?={follow}))" if follow else r"(?!\w)"
+        body = rf"(?<!\w)(?:{body}){right}"
     return body
 
 
@@ -8714,12 +8985,13 @@ class _PnTerm:
                  "source", "whole_word", "count", "loaded", "derived")
 
     def __init__(self, category, real, fake, *, whole_word, case_sensitive,
-                 priority, source, derived=False):
+                 priority, source, derived=False, follow=None):
         self.category = category
         self.real = real
         self.fake = fake
         self.whole_word = whole_word
-        self.pattern = _pn_build_pattern(real, whole_word=whole_word)
+        self.pattern = _pn_build_pattern(real, whole_word=whole_word,
+                                         follow=follow)
         self.flags = 0 if case_sensitive else re.IGNORECASE
         self.priority = priority
         self.source = source
@@ -8927,6 +9199,20 @@ _PN_KEY_UNMATCHED_SOURCES = frozenset({"spreadsheet", "--term"})
 # pseudonym standing in the tentative. The marker tells the macro which of the
 # two rows owns the reversal so exactly one does. See write_key.
 _PN_KEY_ALT_STATUS = "alt spelling"
+# A binding no export has EVER carried lives on its own sheet. `write_key`
+# deliberately keeps a row the party template or a --term named even when this
+# batch never mentioned the party: the fake is already minted, and the row is
+# the only durable record of a binding the case needs the moment a later filing
+# finally names them. Right forward, and a hazard in reverse — the macro runs
+# the map backwards and would replace a Real Value that was never in the
+# document. Status "no match" documented the hazard without preventing it, and
+# 133 of the delivered key's 335 rows were of this kind.
+#
+# So they go on a second sheet: `DeAnonymize` reads the active one and cannot
+# reach them, while `_pn_load_key` reads BOTH and keeps pinning them. A row
+# earns its way onto the main sheet by being APPLIED — this run or any earlier
+# one, since a loaded row carries its occurrence count forward.
+_PN_KEY_PINNED_SHEET = "Pinned (never in text)"
 _PN_KEY_TOKEN_CATS = frozenset({"person-token", "entity-token", "short-name",
                                 "address_fragment"})
 
@@ -8979,6 +9265,37 @@ def _pn_span_is_welded(src, start, end):
     return bool((before and before.isalnum()) or (after and after.isalnum()))
 
 
+# The INSIDE of a welded span: one unbroken run of alphanumerics, optionally
+# carrying an intra-word apostrophe or hyphen ("O'Brien", "Sedgwick-Linford"),
+# and optionally hyphenated across a line wrap ("Ardeshir-\npour").
+_PN_WELD_INTERIOR_RE = re.compile(
+    r"[^\W_]+(?:['’\-][^\W_]+|-[ \t]*\r?\n[ \t]*[^\W_]+)*", re.UNICODE)
+
+
+def _pn_span_is_unbroken(src, start, end):
+    """True when NO printed word boundary lies INSIDE `src[start:end]`.
+
+    `_pn_span_is_welded` inspects the characters OUTSIDE a match, and that was
+    the only boundary test the reduced passes had. It cannot see the one thing
+    that matters most: the reduction drops all whitespace and punctuation, so a
+    core can be found spanning several printed words, and the span is then
+    replaced WHOLE — deleting the text between them. Five terms did exactly that
+    to the fee-motion corpus: "Further, a substantial" shipped as "Furtthorpe
+    substantial" (the reduction of "Further, a substantial" contains "hera", a
+    four-letter party), "whether a party" as "whetthorpe party", and
+    "the length" / "the lender" as "tbrandtgth" / "tbrandtder", which ate two
+    entire lines, a newline and a bracket.
+
+    A weld means characters ran together with NO separator, so a span holding a
+    space, a comma or a bare line break proves the boundary was never lost and
+    the match is a coincidence of the reduction. Only two things may sit inside:
+    an intra-word apostrophe/hyphen, which is part of the printed word, and a
+    hyphen-then-wrap, which is a break the printer inserted mid-word. A bare
+    newline is NOT allowed — between two words a line break is the separator, so
+    admitting it reopens the same bug one line down."""
+    return bool(_PN_WELD_INTERIOR_RE.fullmatch(src[start:end]))
+
+
 def _pn_span_has_hard_seam(src, start, end):
     """True when `src[start:end]` meets a neighbour across a letter<->digit
     transition or a case flip — positive evidence that a printed boundary was
@@ -9019,6 +9336,41 @@ def _pn_span_has_hard_seam(src, start, end):
 # NOT the bare *-token / short-name / display-name categories — those are how a
 # standalone kept word would get faked, and the keep must win over them.
 _PN_PARTY_OVERRIDE_CATS = frozenset({"person", "entity", "case_number"})
+
+# The word units a REVERSAL is expressed in. A composed fake ("Ainsworth
+# Sackett", "tolliver@postbox4.org") is reversed word by word by the macro, so
+# the key-completeness gate reasons in these units too.
+_PN_FAKE_WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9]*")
+
+# ── Fail-closed authority guard ─────────────────────────────────────────────
+# Citation protection depends on a PARSER succeeding, and a parser that fails
+# fails silently: `_protected_citation_spans` hands back no span, `_substitute`
+# sees nothing to protect, and the cited decision is renamed. A pleading line
+# number landing between volume and reporter is one way to blind it (see
+# `_blank_gutter_line_numbers`, which fixes that shape) — but the next OCR
+# artefact, dropped year or unrecognised reporter is another, and the invariant
+# it breaks is the cardinal one.
+#
+# So the SHAPE of a citation is refused independently of the parse: a candidate
+# standing between a " v. " and a year-in-parens or a volume+reporter run is a
+# cited party name whether or not anything managed to read the cite. This is
+# protection-only, so its worst case is a real party left unfaked at that one
+# spot — which is precisely the trade the whole method is built on.
+_PN_AUTHORITY_WINDOW = 80
+_PN_AUTHORITY_V_RE = re.compile(r"(?<![A-Za-z])vs?\.?\s")
+_PN_AUTHORITY_YEAR_RE = re.compile(r"\((?:1[7-9]|20)\d\d\)")
+_PN_AUTHORITY_REPORTER_RE = re.compile(
+    rf"(?<!\w)\d{{1,4}}\s+(?:{REPORTER_PATTERN})")
+# Between the " v. " and the candidate there may only be more party name. A
+# semicolon, bracket or docket label means the "v." belongs to something else
+# (a string cite that already closed, a caption's own service block).
+_PN_AUTHORITY_BREAK_RE = re.compile(r"[;()\[\]]|(?<!\w)No\.", re.IGNORECASE)
+# Only a NAME-shaped candidate can rename an authority. A detector hit (an SSN,
+# a phone number) inside a citation is not a thing, and refusing one would be
+# pure leak.
+_PN_AUTHORITY_GUARD_CATS = frozenset({
+    "person", "entity", "person-token", "entity-token", "short-name",
+})
 
 
 def _pn_key_looks_like_ours(path):
@@ -9064,6 +9416,13 @@ def _pn_load_key(path, registry, log):
     wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
     ws = wb.active
     rows = list(ws.iter_rows(values_only=True))
+    # A binding no export has ever carried sits on its own sheet, where the
+    # reversal macro cannot reach it (see `_PN_KEY_PINNED_SHEET`). It is still
+    # AUTHORITATIVE going forward — pinning it is the whole reason it was
+    # written — so it is read back here exactly like any other row. Both sheets
+    # share the header, so the body rows simply concatenate.
+    if _PN_KEY_PINNED_SHEET in wb.sheetnames:
+        rows += list(wb[_PN_KEY_PINNED_SHEET].iter_rows(values_only=True))[1:]
     header = [(_pn_norm_header(h)) for h in (rows[0] if rows else ())]
     idx = {name: header.index(name) for name in
            ("category", "real value", "replacement", "status", "source",
@@ -9249,7 +9608,11 @@ def _pn_load_key(path, registry, log):
             csens = (cat == "short-name" and real.isalpha()
                      and real == real.upper() and len(real) <= 5)
         elif cat in ("person", "entity"):
-            priority, whole, csens = 2, False, False
+            # Whole-word, matching what the forward pass built (see
+            # `_pn_append_person_terms`): a loaded row is applied literally, so
+            # a looser edge here would rewrite text the run that wrote the key
+            # did not touch.
+            priority, whole, csens = 2, True, False
         else:                       # case_number, identifiers, display-name
             priority, whole, csens = 2, True, False
         t = _PnTerm(cat, real, fake, whole_word=whole, case_sensitive=csens,
@@ -9573,6 +9936,11 @@ _PN_DECL_DESCRIPTOR = frozenset({
     "foundational", "initial", "final", "corrected", "additional", "further",
     "supplemental", "amended", "joint", "declarant", "moving", "responsive",
 })
+
+
+# The declaration word a reference name may be welded straight onto, when
+# extraction lost the space: "SmithDecl.", "(YuDec.)".
+_PN_DECL_WELD_FOLLOW = r"[Dd]ec"
 
 
 def _pn_declarant_ref_names(text):
@@ -10043,6 +10411,11 @@ class Pseudonymizer:
                                  # human-triage worksheet (page:line located)
         self.suppressed = set()  # value_lowers the reviewer marked "no fix" in
                                  # the worksheet — never quarantine on these
+        self.unreversible = []   # (real, fake, category) applied this run that
+                                 # no key row reverses — see
+                                 # `unreversible_fakes`. Must stay empty; the
+                                 # end-of-run gate says so out loud if it does
+                                 # not, because the damage is otherwise silent.
         # KEEP protection comes in two tiers (from the LEAKS worksheet, the
         # pseudonym key OR the cross-folder master KEEP sheet):
         self.keep_soft = set()   # a `no` value — keep the EXACT word only where
@@ -10272,6 +10645,122 @@ class Pseudonymizer:
             self._trusted_tok_cache = None
         return [t.real for t in doomed]
 
+    def prune_prose_word_terms(self, text):
+        """Drop every DOCUMENT-harvested one-word name term that the corpus
+        itself writes as ORDINARY PROSE — the corpus-wide answer to "is this a
+        name or just a word?", asked of the evidence instead of a word list.
+
+        `draft` was replaced by "Ainsworth" 72 times and `review` by "Sterling"
+        84 across four documents of a fee motion, where a billing narrative
+        capitalises the first word of every task line ("Draft opposition",
+        "Review of file") and the harvester read that as a name. Neither word is
+        in `_PN_COMMON_WORDS`, and no hand-kept list ever will be complete —
+        that gazetteer has 583 entries and no dictionary behind it.
+
+        The document says which it is. A surname in a filing is capitalised
+        wherever it stands, in prose and caption alike; a verb is not. So a
+        harvested candidate whose occurrences are lower-case at least as often
+        as capitalised is prose and earns no term. Scoped hard:
+          * DOCUMENT-harvested only. A value on the operator's party template or
+            a --term is authoritative — a party really named Green or Short
+            keeps their term however the prose reads.
+          * never a value pinned by a reused key (`loaded`), which would change
+            what an already-delivered export says; and
+          * at least two lower-case occurrences, so one OCR slip cannot unbind a
+            real name.
+
+        Call with the FULL corpus text, beside `prune_citation_only_terms`."""
+        text = _NFKC(text)
+        self._pruned_reals = getattr(self, "_pruned_reals", set())
+        loaded = getattr(self, "_loaded_reals", ())
+        doomed = []
+        for t in list(self.terms):
+            if (t.source != "document"
+                    or t.real.lower() in loaded
+                    or t.category not in ("person", "entity", "person-token",
+                                          "entity-token", "short-name")
+                    or not re.fullmatch(r"[A-Za-z][A-Za-z'’\-]*", t.real)):
+                continue
+            low = cap = 0
+            for m in re.finditer(r"(?<!\w)" + re.escape(t.real) + r"(?!\w)",
+                                 text, re.IGNORECASE):
+                if m.group(0).islower():
+                    low += 1
+                else:
+                    cap += 1
+            if low >= 2 and low >= cap:
+                doomed.append(t)
+        for t in doomed:
+            self.terms.remove(t)
+            self.records.pop((t.category, t.real.lower()), None)
+            self._pruned_reals.add(t.real.lower())
+        if doomed:
+            self._trusted_tok_cache = None
+        return [t.real for t in doomed]
+
+    def reserve_authority_names(self, text, log=None):
+        """Take the authorities `text` cites out of the fake pools, re-minting
+        any stand-in already drawn on one. Returns [(old, new), ...].
+
+        Call with the FULL corpus and BEFORE anything is substituted — the
+        pre-scan is the one moment when every document has been read and no
+        export has been written, so a binding can still move for free.
+
+        A run that REUSED a key does not move anything: its whole job is to
+        reproduce the delivered exports byte for byte, and a fake already in
+        circulation is a worse problem to create than the one being avoided."""
+        tokens = _pn_authority_tokens(text)
+        if not tokens:
+            return []
+        if getattr(self, "_loaded_reals", None):
+            self.registry.avoid_words |= tokens     # prospective only
+            return []
+        swaps = self.registry.avoid(tokens)
+        for old, new in swaps:
+            rx = re.compile(r"(?<!\w)" + re.escape(old) + r"(?!\w)")
+            for t in self.terms:
+                t.fake = rx.sub(new, t.fake)
+            for r in self.records.values():
+                r["fake"] = rx.sub(new, r["fake"])
+            if log:
+                log.info(f"  Pseudonymize: re-minted the stand-in {old!r} -> "
+                         f"{new!r} — the corpus cites an authority of that name")
+        return swaps
+
+    def prune_fragment_terms(self, text):
+        """Drop every DOCUMENT-harvested name term that the corpus only ever
+        writes INSIDE a longer alphanumeric run — the signature of an OCR
+        fragment, not of a name. "RS" was read off "MOTORS" and "aoasas" off
+        "Calabasas"; neither ever stands as a word anywhere in the batch.
+
+        Now that the term patterns are whole-word such a term matches nothing,
+        so this costs no scrubbing — what it buys is a key that does not promise
+        a reversal for a value the case never contained, and a leak report that
+        does not carry it. A term with NO occurrence at all is left alone: a
+        real party can simply be absent from the files scanned."""
+        text = _NFKC(text)
+        self._pruned_reals = getattr(self, "_pruned_reals", set())
+        loaded = getattr(self, "_loaded_reals", ())
+        doomed = []
+        for t in list(self.terms):
+            if (t.source != "document"
+                    or t.real.lower() in loaded
+                    or t.category not in ("person", "entity", "person-token",
+                                          "entity-token", "short-name")):
+                continue
+            body = re.escape(t.real)
+            if re.search(r"(?<!\w)" + body + r"(?!\w)", text, re.IGNORECASE):
+                continue                       # it stands as a word somewhere
+            if re.search(body, text, re.IGNORECASE):
+                doomed.append(t)
+        for t in doomed:
+            self.terms.remove(t)
+            self.records.pop((t.category, t.real.lower()), None)
+            self._pruned_reals.add(t.real.lower())
+        if doomed:
+            self._trusted_tok_cache = None
+        return [t.real for t in doomed]
+
     def register_entity_acronyms(self, text):
         """Register the bare initialism of every tracked multi-word entity that
         the document ACTUALLY USES — briefs adopt a firm's acronym ("SLP" for
@@ -10476,10 +10965,10 @@ class Pseudonymizer:
         declaration's own title and signature are scrubbed even when the
         declarant isn't in the spreadsheet key. Idempotent; call before apply()."""
         for raw in _pn_declarant_names(text):
-            if _pn_is_party_role(raw):
+            if _pn_is_party_role(raw) or _pn_is_calendar_name(raw):
                 continue
             fake_full, bare = _pn_fake_person(raw, self.registry)
-            new_terms = [_PnTerm("person", raw, fake_full, whole_word=False,
+            new_terms = [_PnTerm("person", raw, fake_full, whole_word=True,
                                  case_sensitive=False, priority=2,
                                  source="declarant")]
             new_terms += [_PnTerm("person-token", rt, ft, whole_word=True,
@@ -10500,7 +10989,8 @@ class Pseudonymizer:
         person and is skipped. Idempotent; call before apply()."""
         new = []
         for raw in _pn_declarant_ref_names(text):
-            if _pn_is_party_role(raw) or ("person", raw.lower()) in self.records:
+            if (_pn_is_party_role(raw) or ("person", raw.lower()) in self.records
+                    or _pn_is_calendar_name(raw)):
                 continue
             toks = raw.split()
             # The surname must look like a name, not ordinary vocabulary — auto-
@@ -10515,9 +11005,12 @@ class Pseudonymizer:
                     or not _pn_is_name_token(toks[-1])):
                 continue
             fake_full, bare = _pn_fake_person(raw, self.registry)
-            new.append(_PnTerm("person", raw, fake_full, whole_word=False,
+            # The weld this harvester exists to read ("SmithDecl.") is the
+            # one place the right boundary may be crossed; the left one still
+            # holds, so a short name can never fire inside a longer word.
+            new.append(_PnTerm("person", raw, fake_full, whole_word=True,
                                case_sensitive=False, priority=2,
-                               source="declarant"))
+                               source="declarant", follow=_PN_DECL_WELD_FOLLOW))
             new += [_PnTerm("person-token", rt, ft, whole_word=True,
                             case_sensitive=False, priority=1, source="declarant")
                     for rt, ft, _s in bare
@@ -10593,7 +11086,7 @@ class Pseudonymizer:
                 if ("person", full.lower()) not in self.records:
                     fake_full, _b = _pn_fake_person(full, self.registry)
                     new.append(_PnTerm("person", full, fake_full,
-                                       whole_word=False, case_sensitive=False,
+                                       whole_word=True, case_sensitive=False,
                                        priority=3, source="judge"))
         # Fake "<title> <surname>" wherever it appears, keeping the title and
         # faking only the surname; a bare surname elsewhere is left alone. The
@@ -10649,7 +11142,7 @@ class Pseudonymizer:
                 if ("person", raw.lower()) in self.records:
                     continue
                 fake_full, _bare = _pn_fake_person(raw, self.registry)
-                new.append(_PnTerm("person", raw, fake_full, whole_word=False,
+                new.append(_PnTerm("person", raw, fake_full, whole_word=True,
                                    case_sensitive=False, priority=2,
                                    source="court-staff"))
 
@@ -10909,8 +11402,65 @@ class Pseudonymizer:
         return toks
 
     def _side_is_trusted(self, side):
+        """True when `side` of a "X v. Y" names a party from THIS case's key —
+        the test the caption exemption is built on, so an over-generous answer
+        strips the protection off a real authority.
+
+        MOST of the side's identifying words must be trusted, not merely one.
+        Any single word used to clear it, so a case with a party named "North"
+        or "America" reported *BMW of North America* as its own caption and let
+        the entity terms rewrite the cited decision — the same class of failure
+        as a cite that fails to parse, arrived at from the other direction. A
+        genuine caption side is trusted nearly word for word ("GENERAL MOTORS,
+        LLC"), while an authority that merely shares a word is not (1 of the 3
+        identifying words in "BMW of North America").
+
+        Identifying words only: connectors, corporate suffixes and role words
+        are excluded on both sides of the ratio, exactly as
+        `_trusted_party_tokens` excludes them from the trusted set — otherwise
+        "Valencia Holding Co., LLC" would be diluted by its own furniture."""
         trusted = self._trusted_party_tokens()
-        return any(_pn_word_base(w) in trusted for w in side.split())
+        words = [w for w in side.split()
+                 if len(_pn_word_base(w)) >= 3
+                 and not _pn_is_entity_keep(_pn_word_base(w))
+                 and not _pn_is_role_token(w)]
+        hits = sum(1 for w in words if _pn_word_base(w) in trusted)
+        return bool(hits) and hits * 2 >= len(words)
+
+    def _in_authority_context(self, text, s, e):
+        """True when [s,e) sits where a CITED PARTY NAME sits — after a " v. "
+        and before a year-in-parens or a volume+reporter run — so it must not be
+        rewritten even though no citation parsed over it.
+
+        The belt to `_protected_citation_spans`' braces. That method protects
+        what the parser could READ; a parse that fails hands back nothing at all
+        and the authority is renamed with no warning anywhere, which is how six
+        cites shipped naming decisions that do not exist. Shape is checked
+        instead, so a blinded parser costs a link, never an invented authority.
+
+        Both anchors are required, which is what keeps this off the document's
+        own caption: a caption's defendant is followed by a case number and a
+        role word, never by "(2017)" or "13 Cal.App.5th". The caption exemption
+        is applied anyway, for the inline recital ("this action, Rasho v.
+        General Motors, LLC (2025)") where a year does follow — both sides
+        trusted means the parties are ours and the run is not an authority."""
+        left = text[max(0, s - _PN_AUTHORITY_WINDOW):s]
+        v = None
+        for v in _PN_AUTHORITY_V_RE.finditer(left):
+            pass                      # the nearest " v. " to the candidate
+        if v is None:
+            return False
+        if _PN_AUTHORITY_BREAK_RE.search(left[v.end():]):
+            return False
+        right = text[e:e + _PN_AUTHORITY_WINDOW]
+        if not (_PN_AUTHORITY_YEAR_RE.search(right)
+                or _PN_AUTHORITY_REPORTER_RE.search(right)):
+            return False
+        lead = re.search(r"([A-Za-z][A-Za-z.,'’&\- ]{0,60})$", left[:v.start()])
+        if (lead and self._side_is_trusted(lead.group(1))
+                and self._side_is_trusted(text[s:e])):
+            return False              # this case's own caption, recited inline
+        return True
 
     def _protected_citation_spans(self, text):
         """Spans of published-authority citations whose party names must NOT be
@@ -11047,6 +11597,9 @@ class Pseudonymizer:
     def _substitute(self, text, cands, reflow=False, count=True, protected=None):
         # Biggest / most-specific first; skip anything overlapping a chosen span.
         cands.sort(key=lambda c: (-c[0], -(c[2] - c[1])))
+        # Fail-closed authority guard, run only where the text has a "v." at all
+        # so an ordinary page pays one search.
+        guard = bool(_PN_AUTHORITY_V_RE.search(text))
         chosen, occ = [], []
         for _prio, s, e, rec in cands:
             if any(s < oe and os < e for os, oe in occ):
@@ -11055,6 +11608,11 @@ class Pseudonymizer:
             # overlapping a cited decision's name is dropped so the authority
             # survives byte-for-byte.
             if protected and any(s < pe and ps < e for ps, pe in protected):
+                continue
+            # …and never in a citation-SHAPED context either, whether or not a
+            # citation parsed there.
+            if (guard and rec["category"] in _PN_AUTHORITY_GUARD_CATS
+                    and self._in_authority_context(text, s, e)):
                 continue
             occ.append((s, e))
             chosen.append((s, e, rec))
@@ -11141,7 +11699,11 @@ class Pseudonymizer:
         searchable handle. A piece with no known name in it is swapped for a
         stable word drawn from the registry (unique, so it can never collide
         with a party's fake)."""
-        local, sep, domain = real.partition("@")
+        # Split on the at-sign AS PRINTED — OCR's "(a)" is one too, and reading
+        # it as part of the local part left the whole address unrecognised.
+        at = _PN_AT_SIGN_RE.search(real)
+        local, sep, domain = ((real[:at.start()], at.group(0), real[at.end():])
+                              if at else (real, "", ""))
         if not sep:
             return _pn_fake_email(real)
         tokens = self.registry.tokens_for("nametok")
@@ -11365,7 +11927,12 @@ class Pseudonymizer:
             k = red.find(core)
             while k >= 0:
                 o_s, o_e = idx[k], idx[k + len(core) - 1] + 1
-                if ((not short or _pn_span_is_welded(masked, o_s, o_e))
+                # Mirror of the same test in `scrub_welded`: a span holding a
+                # printed word boundary is a coincidence of the reduction, not
+                # a weld. The two must stay identical, or detection out-runs
+                # replacement and quarantines an export nothing can clean.
+                if (_pn_span_is_unbroken(masked, o_s, o_e)
+                        and (not short or _pn_span_is_welded(masked, o_s, o_e))
                         and (spliced
                              or _pn_span_has_hard_seam(masked, o_s, o_e))):
                     out.append(rec["real"])
@@ -11428,6 +11995,14 @@ class Pseudonymizer:
                 end = k + len(core)
                 o_s, o_e = idx[k], idx[end - 1] + 1
                 if any(o_s < pe and ps < o_e for ps, pe in protected):
+                    start = k + 1
+                    continue
+                # The reduction dropped every space and comma, so a core can be
+                # found spanning SEVERAL printed words — and replacing that span
+                # whole deletes the text between them ("Further, a substantial"
+                # -> "Furtthorpe substantial"). A weld has no separator inside
+                # it; anything else is a coincidence.
+                if not _pn_span_is_unbroken(src, o_s, o_e):
                     start = k + 1
                     continue
                 # A short name only earns a cure where it is genuinely WELDED —
@@ -11709,6 +12284,93 @@ class Pseudonymizer:
                 rec["loaded"] = True
                 rec["source"] = "leak-fix"
 
+    def unreversible_fakes(self, keyrows, texts=()):
+        """Every stand-in this run put into an export that the key it is about
+        to write CANNOT reverse — the one assertion that catches the whole class
+        of silent, permanent damage.
+
+        A leak is visible: the real value is right there and a reader, a scan or
+        the operator can see it. An unreversible substitution is the opposite —
+        the document reads perfectly, and the mapping back to what it said is
+        simply gone. `draft` shipped as "Ainsworth" 72 times and `review` as
+        "Sterling" 84 times with no row for either, and nothing in the run said
+        a word about it.
+
+        Reachable means what `DeAnonymize.bas` can actually do: the fake is some
+        row's Replacement outright, or every WORD of it is (a composed fake like
+        "Ainsworth Sackett" reverses through its two token rows).
+
+        Two tiers, because a fake reaches an export two ways:
+          * a RECORD that replaced something (count > 0). Exact — a record's
+            fake is by definition in the text — so this tier is an error.
+          * a fake the REGISTRY minted standing as a bare word in an export with
+            no record at all. Wider net, and inexact: a pool surname can also be
+            an ordinary word of the source ("Sterling", "Stockton"), so this
+            tier only warns.
+        """
+        reach = set()
+        for r in keyrows:
+            f = str(r["fake"]).lower()
+            reach.add(f)
+            reach.update(_PN_FAKE_WORD_RE.findall(f))
+
+        def unreachable(fake):
+            f = str(fake).lower()
+            if f in reach:
+                return False
+            words = _PN_FAKE_WORD_RE.findall(f)
+            return not (words and all(w in reach for w in words))
+
+        applied, seen = [], set()
+        for r in self.records.values():
+            if r["count"] > 0 and unreachable(r["fake"]):
+                k = (str(r["real"]).lower(), str(r["fake"]).lower())
+                if k not in seen:
+                    seen.add(k)
+                    applied.append((r["real"], r["fake"], r["category"]))
+
+        stray = []
+        minted = self.registry.minted_fakes()
+        if minted and texts:
+            known = {(str(r["real"]).lower(), str(r["fake"]).lower())
+                     for r in self.records.values()}
+            for text in texts:
+                for w in set(_PN_FAKE_WORD_RE.findall(str(text).lower())):
+                    real = minted.get(w)
+                    if real is None or w in reach:
+                        continue
+                    k = (str(real).lower(), w)
+                    if k in seen or k in known:
+                        continue      # the record tier already answered for it
+                    seen.add(k)
+                    stray.append((real, w, "minted"))
+        return applied, stray
+
+    def _check_key_completeness(self, keyrows, log):
+        """Run `unreversible_fakes` over the key just written and SAY SO.
+
+        Reads the exports back off disk for the second tier — they are the
+        artifacts actually being delivered, so they are what the promise is
+        about. Records the failures on `self.unreversible` so the end-of-run
+        gate can refuse to call the batch clean."""
+        texts = []
+        for p in self.written:
+            try:
+                texts.append(Path(p).read_text(encoding="utf-8", errors="ignore"))
+            except OSError:
+                pass
+        applied, stray = self.unreversible_fakes(keyrows, texts)
+        self.unreversible = applied
+        for real, fake, cat in applied:
+            log.error(f"  !! Pseudonymize: {real!r} was replaced by {fake!r} "
+                      f"({cat}) and NO key row reverses it — the export cannot "
+                      f"be restored")
+        for real, fake, _cat in stray:
+            log.warning(f"  Pseudonymize: the stand-in {fake!r} (minted for "
+                        f"{real!r}) stands in an export with no key row; check "
+                        f"it is the ordinary word and not an unreversible fake")
+        return applied
+
     def write_key(self, path, log):
         """Write the REVERSAL key the Word macro consumes. A row is written when
         it MATCHED (Occurrences > 0), when it came from a REUSED key, or when it
@@ -11778,10 +12440,24 @@ class Pseudonymizer:
             # KEEP is left verbatim, so it has no fake to reverse — drop any
             # (e.g. harvested) row for it so the key doesn't show a fake that
             # was never applied.
+            #
+            # …UNLESS it WAS applied. "A kept value has no fake to reverse" is
+            # true only while the keep HELD, and a keep is released in two
+            # documented places: inside a full party match, and (for a soft
+            # `no`) inside a multi-word capitalized name run. A released keep
+            # is faked by the very row this filter was dropping, so the export
+            # carried a stand-in that nothing could reverse — `draft` went out
+            # as "Ainsworth" 72 times, `review` as "Sterling" 84 times, neither
+            # anywhere in the key. That is worse than the leak it came from: a
+            # leak is visible, an unreversible substitution is silent and
+            # permanent. The count settles it, because a LOCAL keep retires its
+            # binding (`_pn_retire_kept_key_terms`), so a kept value that was
+            # genuinely left verbatim still reaches this test with count 0.
             return ((r["count"] > 0 or r.get("loaded")
                      or (r.get("source") in _PN_KEY_UNMATCHED_SOURCES
                          and not r.get("derived")))
-                    and str(r["real"]).lower() not in keep_low
+                    and (r["count"] > 0
+                         or str(r["real"]).lower() not in keep_low)
                     and "\n" not in str(r["real"]) and "\n" not in str(r["fake"]))
         keyrows = [r for r in self.records.values() if _reversible(r)]
 
@@ -11922,16 +12598,48 @@ class Pseudonymizer:
                               for r in keyrows]}, indent=2), encoding="utf-8")
             log.info(f"  openpyxl not installed; reversal key written as JSON: "
                      f"{kp.name} ({len(keyrows)} mapping(s))")
+            self._check_key_completeness(keyrows, log)
             return
 
+        # A binding no export has ever carried goes on its own sheet, out of the
+        # reverse pass's reach — see `_PN_KEY_PINNED_SHEET`.
+        #
+        # "Carried" is REACHABILITY, not this row's own occurrence count: the
+        # macro reverses a composed fake word by word, so the token rows of a
+        # party whose FULL name is the only form the export used are load-
+        # bearing even though they matched nothing themselves ("Gregory Yu" ->
+        # "Finnegan Harrell" is undone by the "Finnegan" and "Harrell" rows).
+        # Same rule the completeness gate applies, from the other side. The
+        # registry is injective, so a shared fake word is always the same
+        # word-level binding and never a coincidence.
+        live = {w for r in keyrows if r["count"] > 0
+                for w in _PN_FAKE_WORD_RE.findall(str(r["fake"]).lower())}
+
+        def in_play(r):
+            return (r["count"] > 0
+                    or any(w in live for w in
+                           _PN_FAKE_WORD_RE.findall(str(r["fake"]).lower())))
+
+        applied = [r for r in keyrows if in_play(r)]
+        pinned = [r for r in keyrows if not in_play(r)]
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = "Pseudonym Key"
         ws.append(headers)
-        for r in keyrows:
+        for r in applied:
             ws.append([r["category"], r["real"], r["fake"], row_status(r),
                        r["source"], r["count"]])
+        if pinned:
+            ps = wb.create_sheet(_PN_KEY_PINNED_SHEET)
+            ps.append(headers)
+            for r in pinned:
+                ps.append([r["category"], r["real"], r["fake"], row_status(r),
+                           r["source"], r["count"]])
+            log.info(f"  Pseudonymize: {len(pinned)} binding(s) no export "
+                     f"carries moved to the '{_PN_KEY_PINNED_SHEET}' sheet — "
+                     f"still pinned for a later run, never applied in reverse")
         wb.save(path)
+        self._check_key_completeness(keyrows, log)
         for cluster in self.alias_candidates():
             log.warning("  possible alias (same given name, different surname) "
                         "faked separately — add a --term to link: "
@@ -14646,23 +15354,40 @@ def _pn_prescan_folder(pdfs, pseudonymizer, log, extra_texts=()):
         except Exception as e:  # a corrupt file must not abort the whole run
             log.warning(f"  Pseudonymize: could not pre-scan {pdf.name}: {e}")
             continue
-        corpus.append(text)
-        _pn_learn_from_text(pseudonymizer, text, pdf.stem)
+        corpus.append((pdf.stem, text))
     for j, (stem, text) in enumerate(extra_texts, len(pdfs) + 1):
         log.info(f"    Pre-scan {j}/{total}: {stem}")
-        corpus.append(text)
+        corpus.append((stem, text))
+    # READ everything before LEARNING anything, so the authorities this batch
+    # cites are known before a single further stand-in is drawn — and while the
+    # ones already drawn can still be moved (nothing is substituted yet).
+    full = "\n\f\n".join(t for _stem, t in corpus)
+    swaps = pseudonymizer.reserve_authority_names(full, log)
+    if swaps:
+        log.info(f"  Pseudonymize: {len(swaps)} stand-in(s) re-minted off the "
+                 f"names of authorities this batch cites")
+    for stem, text in corpus:
         _pn_learn_from_text(pseudonymizer, text, stem)
     added = len(pseudonymizer.terms) - before
     if added:
         log.info(f"  Pseudonymize: pre-scan of "
                  f"{len(pdfs) + len(extra_texts)} file(s) added "
                  f"{added} term(s) from names, localities and identifiers")
-    full = "\n\f\n".join(corpus)
     pruned = pseudonymizer.prune_citation_only_terms(full)
     if pruned:
         log.info(f"  Pseudonymize: dropped {len(pruned)} harvested name(s) "
                  f"that appear only inside case citations "
                  f"({', '.join(sorted(pruned)[:6])})")
+    prose = pseudonymizer.prune_prose_word_terms(full)
+    if prose:
+        log.info(f"  Pseudonymize: dropped {len(prose)} harvested name(s) the "
+                 f"corpus writes as ordinary lower-case prose "
+                 f"({', '.join(sorted(prose)[:6])})")
+    frags = pseudonymizer.prune_fragment_terms(full)
+    if frags:
+        log.info(f"  Pseudonymize: dropped {len(frags)} harvested name(s) that "
+                 f"only ever appear inside a longer word — an OCR fragment, "
+                 f"not a name ({', '.join(sorted(frags)[:6])})")
     return full
 
 
@@ -17087,6 +17812,23 @@ def main():
                                  f"{_p.name}.")
                 except OSError:
                     pass
+
+    # Key-completeness gate. A leak is visible; a fake with no key row is not,
+    # and it is permanent — the export reads perfectly and nothing maps it back.
+    # So it is said out loud and the run exits non-zero, ahead of the leak gate
+    # (which may exit first on its own account). The exports are NOT
+    # quarantined: they are not dangerous, they are unrestorable, and holding
+    # them helps nobody — what the operator needs is to know, and to re-run once
+    # the binding is in the key.
+    if pseudonymizer is not None and getattr(pseudonymizer, "unreversible", None):
+        shown = ", ".join(f"{r!r}->{f!r}"
+                          for r, f, _c in pseudonymizer.unreversible[:8])
+        _warn(f"!! Pseudonymize: {len(pseudonymizer.unreversible)} replacement(s) "
+              f"have NO row in pseudonym_key.xlsx ({shown}) — those exports "
+              f"cannot be restored to the real values. Re-run after adding the "
+              f"value(s) with --term, or clear the KEEP decision that dropped "
+              f"the row.")
+        sys.exit(2)
 
     # Leak gate, TIERED (config `leak_gate`): the pseudonymization is a
     # precaution against casual recognition of a public filing, so only a

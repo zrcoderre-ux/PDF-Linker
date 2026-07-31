@@ -89,9 +89,9 @@ def test_already_sent_documents_are_byte_identical(folder):
 
 def test_every_keyed_fake_is_reused_exactly(folder):
     z1, _ = _first_run(folder)
-    rows = {str(r[1]): str(r[2]) for r in
-            openpyxl.load_workbook(folder / "pseudonym_key.xlsx").active
-            .iter_rows(min_row=2, values_only=True) if r[1]}
+    rows = {str(r[1]): str(r[2]) for ws in
+            openpyxl.load_workbook(folder / "pseudonym_key.xlsx").worksheets
+            for r in ws.iter_rows(min_row=2, values_only=True) if r[1]}
     z2 = _rerun(folder)
     z2.apply(ADDED)                       # the new document draws its own fakes
     for real, fake in rows.items():
@@ -119,9 +119,9 @@ def test_party_named_only_in_the_added_document_is_scrubbed(folder):
     z1, _ = _first_run(folder)
     # She matched nothing, but the party template names her, so the key pins
     # her binding ("no match") instead of discarding it.
-    rows = {str(r[1]): (str(r[2]), r[3]) for r in
-            openpyxl.load_workbook(folder / "pseudonym_key.xlsx").active
-            .iter_rows(min_row=2, values_only=True) if r[1]}
+    rows = {str(r[1]): (str(r[2]), r[3]) for ws in
+            openpyxl.load_workbook(folder / "pseudonym_key.xlsx").worksheets
+            for r in ws.iter_rows(min_row=2, values_only=True) if r[1]}
     assert rows["Jane Roe"][1] == "no match"
     out = _rerun(folder).apply(ADDED)
     assert "Jane Roe" not in out
