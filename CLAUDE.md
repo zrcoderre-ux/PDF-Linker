@@ -765,6 +765,47 @@ survive to fail.
 - Env vars: `PDF_LINKER_OCR_WORKERS` (default cores-1, cap 10),
   `PDF_LINKER_OCR_TIMEOUT` (default 600s).
 
+## Diagnosing a run that just stops
+
+**A fatal failure must be VISIBLE** (`_install_crash_logging`, installed before
+the first log line). The normal launch is `pythonw.exe`, which has NO console:
+`sys.stderr` is None, so an uncaught exception's traceback is written precisely
+nowhere. The process vanishes, `pdf_linker.log` stops wherever it had got to,
+and Task Manager shows nothing running — indistinguishable from a hang, and what
+sent an operator back to double-click the launcher two more times on a folder
+whose first run had already died. Two hooks, because the two deaths differ:
+`sys.excepthook`/`threading.excepthook` catch an ordinary exception (a
+lazily-imported dependency is the usual one, and the usual reason the SAME
+folder works on one machine and not another), and `faulthandler` writes into the
+log's own stream for a C-level abort, which raises nothing at all and so cannot
+be hooked — MuPDF calls `abort()` on a fatal error, so this is the only thing
+that leaves a trace of one.
+
+**Log the filename BEFORE the work, not after.** `_pn_prescan_folder` names each
+file as it opens it (`Pre-scan 17/34: X.pdf`), so when a death takes the
+interpreter the LAST line names the file that did it. A line written afterwards
+is a line never written. That phase also reads the whole folder before writing
+anything, so without it a large folder simply went quiet for minutes.
+
+**One run per folder** (`_acquire_folder_lock`). Both launchers start the work
+detached and silent, so "nothing happened, click it again" is easy — and a real
+log shows it done three times on one 34-file folder inside four minutes. Each
+run saves `<name>_temp.pdf` then REPLACES the original, and they share the
+exports and the key, so concurrent runs can replace a PDF another is mid-read
+on. An OS-held file lock, NOT a pid file: the tool can die without cleaning up,
+and a lock the dying process had to tidy would go stale on exactly those crashes
+and block the folder forever — the OS drops a file lock however the process
+ends. RE-ENTRANT per process (the hazard is two processes) and it FAILS OPEN: if
+the lock cannot be taken for any reason other than "someone holds it", the run
+proceeds, because a lock that cannot be acquired must never stop legitimate
+work. `PDF_LINKER_NO_LOCK=1` skips it.
+
+**`_InkRaster` caps its render** (`_INK_MAX_PIXELS`, mirroring
+`_OCR_MAX_PIXELS`). A bitmap scales with page AREA, so an oversized page asks
+for an allocation no fixed dpi bounds, and MuPDF failing that allocation aborts
+the interpreter. Dropping the dpi only costs box detection on a page that size,
+which then falls back to ordinary extraction.
+
 ## Performance notes
 
 - Term/record regex patterns are **compiled once** per run via a
