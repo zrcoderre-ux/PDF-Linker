@@ -6127,7 +6127,26 @@ class _PnFakeRegistry:
 
 
 def _pn_fake_name_token(word, registry):
-    return _pn_titlecase_like(registry.token(word, _PN_NAME_WORDS, "nametok"), word)
+    """The fake for one name word, drawn on the word's CORE — outer punctuation
+    and a trailing POSSESSIVE stripped — and reassembled around it.
+
+    The registry memoizes on the string it is handed, so drawing on the raw
+    token made "RASHO'S" a different real value from "Rasho" and it drew a
+    second, unrelated fake:
+
+        Rasho    ->  ARCLIGHT
+        RASHO'S  ->  BALFOUR
+
+    One party, two names, and nothing in the export says they are the same
+    person. The entity path has always drawn on the core (`_pn_fake_entity_parts`);
+    this is the person path doing the same, so a possessive is now the party's own
+    fake with the possessive kept ("CLEARY'S"). An apostrophe INSIDE a name
+    ("O'Brien") is not a possessive and is left in the core."""
+    pre, core, post = _pn_word_affixes(word)
+    if not core:
+        return word
+    return pre + _pn_titlecase_like(
+        registry.token(core, _PN_NAME_WORDS, "nametok"), core) + post
 
 
 # Words that mark a business even with no corporate suffix attached. Without
@@ -6996,7 +7015,10 @@ def _pn_person_token_map(name, registry):
         if keep_furniture and registry.keeps_word(base):
             continue
         if base:
-            out[base] = registry.token(w, _PN_NAME_WORDS, "nametok")
+            # Drawn on the BASE, exactly as `_pn_fake_name_token` does — keyed
+            # by base and drawn on the raw token, a possessive ("Rasho's") asked
+            # the registry for a second fake under its own name.
+            out[base] = registry.token(base, _PN_NAME_WORDS, "nametok")
     return out
 
 
@@ -9024,14 +9046,44 @@ def _pn_load_key(path, registry, log):
     import openpyxl
     wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
     ws = wb.active
-    rows = ws.iter_rows(values_only=True)
-    header = [(_pn_norm_header(h)) for h in next(rows, ())]
+    rows = list(ws.iter_rows(values_only=True))
+    header = [(_pn_norm_header(h)) for h in (rows[0] if rows else ())]
     idx = {name: header.index(name) for name in
            ("category", "real value", "replacement", "status", "source",
             "occurrences")
            if name in header}
+
+    def at(row, name):
+        i = idx.get(name)
+        return row[i] if i is not None and i < len(row) else None
+
+    # A `{braced}` keep is a decision about a WORD, not about the row it was
+    # typed in — and it is enforced while a fake is COMPOSED, so it has to be
+    # on the registry before ANY row of this key is read back. Otherwise a brace
+    # typed against one row left every OTHER row still applying its stored
+    # composed fake for the same word, and the operator had to run twice (the
+    # decision only reached the registry via the master sheet on the next run).
+    nuke = set()
+    for row in rows[1:]:
+        real, fake = at(row, "real value"), at(row, "replacement")
+        if real in (None, "") or fake in (None, "") or "{" not in str(fake):
+            continue
+        # Only a genuine keep-spec counts: braced text that is not part of the
+        # value falls through as an explicit replacement (warned below), and
+        # must not silently nuke a word it never described.
+        if _pn_bracket_keep(str(real), str(fake)) is None:
+            continue
+        for part in _pn_keep_spec_parts(str(fake))[1]:
+            nuke.update(b for b in (_pn_word_base(w)
+                                    for w in _PN_WORD_RE.findall(part)) if b)
+    if nuke - set(registry.keep_words):
+        registry.keep_words = frozenset(registry.keep_words | nuke)
+        log.info(f"  Pseudonym key: {len(nuke)} brace-kept word(s) will never be "
+                 f"faked, in any row — {', '.join(sorted(nuke)[:8])}"
+                 + (" …" if len(nuke) > 8 else ""))
+
     terms, seen, key_decisions = [], set(), {}
-    for row in rows:
+    for row in rows[1:]:
         def cell(name):
             i = idx.get(name)
             return row[i] if i is not None and i < len(row) else None
@@ -9061,6 +9113,16 @@ def _pn_load_key(path, registry, log):
         if "[" in ctrl or "{" in ctrl:
             frags = _pn_bracket_keep(real, ctrl)
             nuke = bool(_pn_keep_spec_parts(ctrl)[1])
+            if frags is None:
+                # The kept text is not part of this row's Real Value, so it
+                # cannot say which part to keep. Falling through silently makes
+                # the cell an EXPLICIT replacement — which would write the
+                # literal "{Law}" into the export — so say so.
+                log.warning(
+                    f"  Pseudonym key: {ctrl!r} in the Replacement cell for "
+                    f"{real!r} does not name part of that value, so it is being "
+                    f"taken as a literal replacement. To keep a word everywhere, "
+                    f"brace it on a row whose Real Value contains it.")
             if frags == []:               # whole value kept -> keep all of it
                 key_decisions[real.lower()] = {
                     "value": real,
@@ -9187,6 +9249,29 @@ def _pn_load_key(path, registry, log):
                      == _PN_KEY_ALT_STATUS)
         terms.append(t)
     wb.close()
+
+    # A POSSESSIVE row that drew its own unrelated fake — "Rasho -> ARCLIGHT"
+    # beside "RASHO'S -> BALFOUR" — is one party reading as two, and a loaded
+    # row is applied literally, so the folder would keep producing both. The
+    # base binding is authoritative: the possessive takes it and keeps the
+    # apostrophe. (Fixed at the source in `_pn_fake_name_token`; this repairs a
+    # key an older build already wrote.)
+    for t in terms:
+        if len(str(t.real).split()) != 1:
+            continue
+        pre, core, post = _pn_word_affixes(str(t.real))
+        if not post or core.lower() == str(t.real).lower():
+            continue
+        want = registry._memo.get(("name_or_entity", core.lower()))
+        if not want:
+            continue
+        fixed = pre + _pn_titlecase_like(want, core) + post
+        if fixed == t.fake or _pn_norm_map(fixed) == _pn_norm_map(t.real):
+            continue
+        log.info(f"  Pseudonymize: repaired key row {t.real!r} -> {fixed!r} "
+                 f"(was {t.fake!r}; a possessive takes the party's own fake)")
+        t.fake = fixed
+
     terms.sort(key=lambda t: (-t.priority, -len(t.real)))
     log.info(f"  Pseudonym key REUSED: loaded {len(terms)} binding(s) from "
              f"{path.name} — fakes will match the original run")
@@ -16283,6 +16368,11 @@ def main():
         # column ('no' or a [bracketed] keep-spec): a key edit is authoritative
         # for THIS run, so it overrides an inherited decision for the same value.
         if key_decisions:
+            # `_pn_load_key` already put a key-typed brace on the registry (it
+            # has to, to read its own rows back); carry it here too so anything
+            # built AFTER the key sees the same set.
+            _pn_set_keep_words(registry,
+                               {**leak_decisions, **key_decisions})
             key_frags = []
             for d in key_decisions.values():
                 if d.get("fake_values"):
