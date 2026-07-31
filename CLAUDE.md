@@ -566,7 +566,21 @@ the party), so its row stays reversible.
   or a bare line break proves the boundary was never lost; only an intra-word
   apostrophe/hyphen and a hyphen-then-wrap may sit inside. Applied in
   `scrub_welded` and `surviving_reals_reduced` alike, per the mirroring rule
-  below.
+  below. Losing the punctuation-variant coverage the reduction used to give by
+  accident ("GENERAL MOTORS LLC" for "General Motors, LLC") is why
+  `_pn_depunct_spelling` registers that spelling as a real ENTITY term instead —
+  better than the reduced pass ever was, since a term yields to an operator KEEP
+  and to citation protection. Not on the person path: a comma there is
+  structural ("Burt, Steven Wayne" is surname-first).
+  **Off a splice-flagged page the LONG tier fires on a WHOLE TOKEN**
+  (`_pn_span_is_whole_token`). `_pn_span_has_hard_seam` sees a boundary lost
+  where a span MEETS its neighbour; a token with no neighbour at all has no
+  seam to find, so "HELENRASHO" — the plaintiff's full name with its space gone,
+  alone on its line — shipped in a complaint's export while the leak scan called
+  the file clean. A whole printed token reducing to exactly a tracked party's
+  name cannot be a fragment of a longer word, and `_pn_span_is_unbroken` has
+  already said it holds no boundary inside. Both tiers are COLLECTED on every
+  page now; the per-match checks decide which may fire.
   **The core-length gate is two-tier** (`_weld_core`, the single eligibility
   rule both passes share — they must stay mirrored, or detection out-runs
   replacement and quarantines an export nothing can clean). The default
@@ -804,6 +818,31 @@ extraction, which is what keeps the numbering.
   nobody should take on trust, so it is never presented as equal to a widget's.
 - Cost of the widget path: one `doc.is_form_pdf` check per document, and a
   ~0.02 ms per-page widget probe.
+
+## Pleading-page extraction (what reaches the export at all)
+
+**Text OUTSIDE the numbered band is still CONTENT** (`_detect_line_anchors`
+Step 7). Step 3 collected body spans only to the RIGHT of the gutter and Step 4
+kept only rows within half a lead of a line number — both written to stop such
+text being ADOPTED onto a numbered line, which was a real bug (the running
+footer arriving as `28  ...OPPOSITION TO DEFENDANT'S MOTION TO STRIKE`). But the
+remedy was to DISCARD it, and a pleading page carries real text outside its
+band: an e-filing stamp above line 1, a left-margin label, and — on the last
+page of a filing — the whole SERVICE LIST, which sits above line 1 in its own
+block. A Song-Beverly costs memo lost its service list entire: the case caption
+naming the plaintiff, the case number, opposing counsel, a street address and
+four e-mail addresses, one of which then survived OCR-mangled elsewhere in the
+batch precisely because no pass had ever learned it. Discarded text never
+reaches the export, so it never reaches the scrubber OR the leak scan, and the
+run certifies a file it never read — the same reason `_page_detect_text` takes
+the DECIDED form text. Emitted as UNNUMBERED rows, which keeps the original fix
+intact: the text is back without claiming a line number, so a pinpoint "p.3:7"
+still never lands on furniture. A bare 1-2 digit number LEFT of the body column
+is a gutter number whatever the x-clustering decided — pleading paper
+right-aligns the gutter, so the single digits sit in their own sub-column and a
+page whose 10-29 outnumber its 1-9 puts `dominant_x` on the wider run
+("1 SERVICE LIST"). `_FOOTER_MASK_PT` still masks the running footer, which
+repeats the document title on every page and carries nothing else.
 
 ## Citation linking
 

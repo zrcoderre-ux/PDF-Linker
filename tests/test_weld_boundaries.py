@@ -126,3 +126,67 @@ def test_person_term_still_matches_a_possessive():
     z = _pz(["Helen Rasho"])
     out = z.apply("Helen Rasho's declaration is attached.")
     assert "Rasho" not in out, out
+
+
+# ───────── D7: a whole printed token that IS the party's name ───────────────
+
+def test_a_whole_token_weld_is_cured_off_a_flagged_page():
+    # "HELENRASHO" — the plaintiff's full name with its space gone — shipped in
+    # a complaint's export while the leak scan called the file clean: the page
+    # carried no other splice evidence, so it was never flagged, and the long
+    # tier only ran on flagged pages. A whole printed token that reduces to
+    # exactly a tracked party's name is not a coincidence.
+    z = _pz(["Helen Rasho"])
+    assert z.scrub_welded("HELENRASHO", spliced=False) != "HELENRASHO"
+    assert z.surviving_reals_reduced("HELENRASHO", spliced=False), (
+        "detection must mirror the cure or the export is uncleanable")
+
+
+def test_the_whole_token_rule_does_not_fire_inside_a_longer_word():
+    z = _pz(["Helen Rasho"])
+    assert z.scrub_welded("HELENRASHOWITZ", spliced=False) == "HELENRASHOWITZ"
+
+
+def test_the_whole_token_rule_does_not_cross_a_printed_boundary():
+    # The properly-spaced form belongs to the boundary-anchored pass, which
+    # yields to keeps and citations this one cannot see.
+    z = _pz(["Helen Rasho"])
+    text = "the helen rasho matter"
+    assert z.scrub_welded(text, spliced=False) == text
+
+
+def test_a_short_core_still_needs_a_hard_seam():
+    # The relaxation is for the LONG tier only; a 5-char person token standing
+    # as its own token is ordinary text ("Helen" in prose), not a weld.
+    z = _pz(["Helen Rasho"])
+    text = "Helen"
+    assert z.scrub_welded(text, spliced=False) == text
+
+
+# ───── an entity written without its internal punctuation still scrubs ──────
+
+def test_a_comma_less_corporate_name_still_scrubs():
+    # A filing writes it both ways. The reduced pass used to cover this by
+    # accident (it drops all punctuation); now that a span holding a printed
+    # boundary is refused, the variant is registered explicitly instead.
+    z = _pz(["General Motors, LLC"])
+    out = z.apply("Attorneys for GENERAL MOTORS LLC")
+    assert "GENERAL MOTORS" not in out, out
+
+
+def test_both_spellings_share_one_identity():
+    z = _pz(["General Motors, LLC"])
+    a = z.apply("General Motors, LLC answered.")
+    b = z.apply("GENERAL MOTORS LLC answered.")
+    assert a.split()[0].lower() == b.split()[0].lower(), (a, b)
+
+
+def test_a_comma_inverted_person_name_invents_no_spelling():
+    # A comma in a PERSON's name is structural, not decoration: "Burt, Steven
+    # Wayne" is surname-first, and "Burt Steven Wayne" is a name the tool would
+    # be inventing.
+    reg = P._PnFakeRegistry()
+    terms = []
+    P._pn_append_person_terms(terms, "Burt, Steven Wayne", "spreadsheet", reg)
+    people = [t.real for t in terms if t.category == "person"]
+    assert people == ["Burt, Steven Wayne"], people
