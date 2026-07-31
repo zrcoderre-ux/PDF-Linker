@@ -775,6 +775,21 @@ survive to fail.
 
 ## Folder artifacts (what a finished folder should contain)
 
+**Both launchers run the work DETACHED AND MINIMIZED** and return at once
+(`_bg_launcher_bat` / `_bg_launcher_sh`, shared so the pair cannot drift). The
+re-run was already detached but echoed a five-line banner and sat on a
+`timeout /t 3`; Apply-Leak-Fixes ran in the FOREGROUND and held its console open
+on a `pause`. Both now echo nothing and wait for nothing: a window that closes
+in milliseconds cannot be read anyway, so the notes live in the file's own `REM`
+header and the feedback channel is the one the folder already has —
+`pdf_linker.log` throughout, then a `DONE <time>.txt` stamp. `_launcher_exe`
+gives BOTH the windowless `pythonw.exe` where it exists; Apply-Leak-Fixes used
+to force the console interpreter on purpose (it printed an exit code), and that
+reason is gone. `/min` and NOT `/b`: `/b` attaches the child to the launcher's
+console, which is about to close, so a run that fell back to `python.exe` could
+take a close event with it — a new minimized window is inert. POSIX uses
+`nohup … &` so the work survives the Terminal window closing.
+
 `Re-run PDF-Linker.bat` (`_write_rerun_launcher`), `Apply Leak Fixes.bat`
 (`_write_fix_launcher` — it needs `pseudonym_key.xlsx`, which is what
 `--fix-leaks` reads, AND a `LEAKS.xlsx` to apply: it is that worksheet's
