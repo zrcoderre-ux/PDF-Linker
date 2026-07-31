@@ -138,8 +138,17 @@ fragment terms and so no local/inherited split: unlike a `[bracket]`'s faking
 half, a brace applies in **every** folder. `_pn_set_keep_words` must run BEFORE
 terms are built or a key is loaded (both run sites do; `--fix-leaks` reads the
 master/folder decisions ahead of `_pn_load_key` for exactly this reason), or a
-fake minted first would carry the very word that was braced. The master KEEP
-sheet types such a row `KEEP-ALWAYS` (`_PN_KEEP_NUCLEAR_TYPE`).
+fake minted first would carry the very word that was braced. A brace typed into
+the KEY is the circular case — the decision is inside the file being read — so
+`_pn_load_key` PRE-SCANS its own Replacement column for keep-specs and seeds
+`registry.keep_words` before processing any row. Without it a brace was a
+per-ROW edit for one run: every other row kept applying its stored composed fake
+for the same word, and the decision only took effect on the NEXT run, via the
+master sheet. A brace whose text is not part of its row's Real Value cannot say
+what to keep, so it neither seeds a word nor is silently applied — it falls
+through as an explicit replacement (which would write a literal "{Law}" into the
+export) and is WARNED about. The master KEEP sheet types a braced row
+`KEEP-ALWAYS` (`_PN_KEEP_NUCLEAR_TYPE`).
 
 **The KEEP store is a SINGLE cross-folder sheet**, the `KEEP` tab of the master
 workbook (`_pn_master_path`, next to the config or `PDF_LINKER_MASTER` /
@@ -281,6 +290,17 @@ the party), so its row stays reversible.
   repairs a stored composed fake on load, since a loaded row is applied
   literally and would otherwise keep reproducing the very output being
   bracketed away; it refuses any repair that would leave fake == real.
+- **A POSSESSIVE is the party's own fake, not a second party.** The registry
+  memoizes on the string it is handed, so `_pn_fake_name_token` drawing on the
+  RAW token made "RASHO'S" a different real value from "Rasho" and it drew an
+  unrelated fake (`Rasho -> ARCLIGHT` beside `RASHO'S -> BALFOUR`) — one party,
+  two names, nothing saying they are the same person. Both the person path and
+  `_pn_person_token_map` now draw on the `_pn_word_affixes` CORE and reassemble
+  around it ("CLEARY'S"), which is what the entity path
+  (`_pn_fake_entity_parts`) has always done. An apostrophe INSIDE a name
+  ("O'Brien") is not a possessive and stays in the core. `_pn_load_key` repairs
+  a divergent possessive row an older build wrote, folding it onto the base
+  binding — but only when the base row is there to be authoritative.
 - **An INITIAL agrees with the fake of the name it abbreviates.** A filing
   writes one attorney both ways, and only one of the two forms was faked:
   `STEVEN W. BURT -> AMBERLY W. YEARDLEY` beside
