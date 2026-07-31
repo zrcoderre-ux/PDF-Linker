@@ -178,3 +178,47 @@ def test_a_missing_pymupdf_names_this_interpreter(tmp_path):
     text = (tmp_path / "dep.log").read_text()
     assert "-m pip install pymupdf" in text
     assert sys.executable.replace("pythonw", "python") in text
+
+
+def test_the_store_python_gets_its_own_note(tmp_path):
+    # The Microsoft Store build looks identical to a plain missing install from
+    # here, but it is a different problem: it sandboxes site-packages, so a
+    # pure-Python wheel (openpyxl) imports on the very interpreter a compiled
+    # one (PyMuPDF) cannot load. The install command can succeed and the import
+    # still fail, so the note has to be explicit.
+    done = _child("""
+        import sys, builtins, logging
+        sys.executable = ("C:\\\\Users\\\\Z\\\\AppData\\\\Local\\\\Microsoft\\\\WindowsApps"
+                          "\\\\PythonSoftwareFoundation.Python.3.13_qbz5n2\\\\pythonw.exe")
+        _real = builtins.__import__
+        def _no_fitz(name, *a, **k):
+            if name == "fitz":
+                raise ImportError("No module named 'fitz'")
+            return _real(name, *a, **k)
+        builtins.__import__ = _no_fitz
+        logging.basicConfig(filename="store.log", level=logging.INFO,
+                            format="%(message)s")
+        pl._require_pymupdf(logging.getLogger("d"))
+    """, tmp_path)
+    text = (tmp_path / "store.log").read_text()
+    assert "Microsoft Store build" in text, (text, done.stderr)
+    assert "python.org" in text
+
+
+def test_an_ordinary_interpreter_gets_no_store_note(tmp_path):
+    done = _child("""
+        import sys, builtins, logging
+        sys.executable = "C:\\\\Python313\\\\pythonw.exe"
+        _real = builtins.__import__
+        def _no_fitz(name, *a, **k):
+            if name == "fitz":
+                raise ImportError("No module named 'fitz'")
+            return _real(name, *a, **k)
+        builtins.__import__ = _no_fitz
+        logging.basicConfig(filename="plain.log", level=logging.INFO,
+                            format="%(message)s")
+        pl._require_pymupdf(logging.getLogger("d"))
+    """, tmp_path)
+    text = (tmp_path / "plain.log").read_text()
+    assert "-m pip install pymupdf" in text, (text, done.stderr)
+    assert "Microsoft Store" not in text
