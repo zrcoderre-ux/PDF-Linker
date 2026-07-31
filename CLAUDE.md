@@ -90,12 +90,13 @@ not come back to life just because it is also a template row.
 
 **Correcting the key in place / durable KEEP store.** The `Replacement` column
 of `pseudonym_key.xlsx` accepts the same operator control words the LEAKS `Fix?`
-column does — `no` (keep this Real Value verbatim) and a `[bracketed]` keep-spec
-(keep the bracketed part, auto-fake the rest) — so a mistake baked into the key
+column does — `no` (keep this Real Value verbatim), a `[bracketed]` keep-spec
+(keep the bracketed part, auto-fake the rest) and a `{braced}` one (same cut,
+stronger promise) — so a mistake baked into the key
 that never surfaced as a leak can be fixed where it lives (`_pn_load_key` returns
 these as `key_decisions`). KEEP protection (`Pseudonymizer._keep_spans`, spans
-added to `_substitute`'s `protected` set; records `kept_hits`) comes in **two
-tiers**, both matched on **word boundaries** (never a substring, so `no` on "Cal"
+added to `_substitute`'s `protected` set; records `kept_hits`) comes in **three
+tiers**, all matched on **word boundaries** (never a substring, so `no` on "Cal"
 never touches "California"):
 
 - **`keep_soft`** (a `no` value) — keep the exact word ONLY where it stands
@@ -105,6 +106,8 @@ never touches "California"):
 - **`keep_strict`** (a bracketed keep-spec part) — "this fragment is never a
   name": kept even next to names, so `[Plaintiff]` stays in "Plaintiff John Doe"
   and `[Attached]` stays in "Jack Gerlach Attached".
+- **`keep_nuclear`** (a `{braced}` part) — "this can never reveal anything":
+  never faked in ANY folder, not even inside a party name. See below.
 
 A keep normally loses to a **full party match** — a kept word inside a
 `_PN_PARTY_OVERRIDE_CATS` (person/entity/case_number) term is released so the real
@@ -113,6 +116,30 @@ The ONE exception is `keep_strict_local`, a bracket typed in THIS folder: see th
 keep-spec rule below — the bracket already says how to split the name and its
 remainder is a term, so honouring it still scrubs the party. Bare
 `*-token`/short-name terms and detectors do NOT release a keep.
+
+**The NUCLEAR keep is enforced where it cannot cost anything: at COMPOSITION
+time.** `{Law}` must survive inside "Alder Law, P.C." — but protecting the span
+outright would drop the party candidate that overlaps it and leave the firm
+standing in full, the exact failure the party override exists to prevent. So a
+brace does not fight the override; it removes the need for one.
+`_pn_nuclear_words` puts each braced WORD on `registry.keep_words`, and
+`registry.keeps_word` is what `_pn_fake_person` / `_pn_fake_entity_parts` /
+`_pn_person_token_map` consult — the same hook `_PN_FIRM_WORDS` uses, which a
+brace only ever ADDS to. The party's fake is therefore composed with the word
+left verbatim ("Kaldor Law, P.C."), the word is never a bare token, never
+harvested into a key row (`write_key`), never re-instated as one
+(`_pn_load_key`), and `_pn_restore_furniture` repairs the binding an older key
+baked in. `keep_nuclear` is still collected in `_keep_spans` (yielding to the
+party match, which now costs nothing) so the word also survives every detector,
+near-miss variant and bare token, and `surviving_reals` never flags it — with no
+party-category exception, unlike the other two tiers. Because a keep the
+composing faker honours can never leave a party in the clear, it needs no
+fragment terms and so no local/inherited split: unlike a `[bracket]`'s faking
+half, a brace applies in **every** folder. `_pn_set_keep_words` must run BEFORE
+terms are built or a key is loaded (both run sites do; `--fix-leaks` reads the
+master/folder decisions ahead of `_pn_load_key` for exactly this reason), or a
+fake minted first would carry the very word that was braced. The master KEEP
+sheet types such a row `KEEP-ALWAYS` (`_PN_KEEP_NUCLEAR_TYPE`).
 
 **The KEEP store is a SINGLE cross-folder sheet**, the `KEEP` tab of the master
 workbook (`_pn_master_path`, next to the config or `PDF_LINKER_MASTER` /

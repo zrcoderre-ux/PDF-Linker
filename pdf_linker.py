@@ -33,8 +33,9 @@ For each *.pdf in the folder (processed from shortest to longest by file size):
      A mistake baked into the pseudonym_key.xlsx (a value it should not have
      faked) can be corrected in place in the key's Replacement column, using the
      same words the LEAKS worksheet's Fix? column accepts: "no" leaves that Real
-     Value verbatim, and a [bracketed] keep-spec keeps the bracketed part and
-     fakes the rest. These no/bracket KEEP decisions are recorded to a SINGLE
+     Value verbatim, a [bracketed] keep-spec keeps the bracketed part and
+     fakes the rest, and a {braced} keep-spec does the same but with a stronger
+     promise (below). These KEEP decisions are recorded to a SINGLE
      cross-folder sheet — the KEEP tab of master_leaks.xlsx — so they are applied
      on every future run in EVERY folder (accumulating Times Seen / Cases /
      dates), letting the screening learn from real history. A KEEP matches on
@@ -43,7 +44,12 @@ For each *.pdf in the folder (processed from shortest to longest by file size):
      released inside a detected name run like "Cal Equipment", while a
      [bracketed] keep ("this fragment is never a name") stays even beside a name
      ("[Plaintiff]" in "Plaintiff John Doe"). A keep never leaves a party in the
-     clear.
+     clear. A {braced} keep is NUCLEAR — "this can never reveal anything" — so
+     it is never faked in any folder, not even inside a party name: the party's
+     fake is composed with the braced word left verbatim, so "{Law}" turns
+     "Alder Law, P.C." into "Kaldor Law, P.C." rather than letting the firm
+     through. It adds to the tool's own built-in list of name furniture
+     ("Law Offices of", "& Associates", "the"/"of"), which applies regardless.
   1a. Writes a plain-text companion (.txt) for each PDF that has a real text
      layer into a "Text Files" subfolder of the case folder (name overridable
      via text_subfolder in pdf_linker.config), so a text-only copy can be
@@ -5905,6 +5911,19 @@ class _PnFakeRegistry:
         self._memo = {}     # (memo_tag, real_lower) -> fake
         self._used = set()  # every fake handed out, lower-cased (global)
         self._domain_reals = {}  # real host -> fake, for OCR-typo folding
+        # The operator's NUCLEAR keeps for this run (`{braced}` in a Fix? or
+        # Replacement cell), lower-cased word bases. They ride on the registry
+        # because every composing faker already receives one, so the run's
+        # extension of `_PN_FIRM_WORDS` reaches them without a new parameter on
+        # a dozen call sites. Set once per run by `_pn_set_keep_words`.
+        self.keep_words = frozenset()
+
+    def keeps_word(self, base):
+        """True when a word must be left verbatim inside a composed fake: the
+        built-in furniture of a firm/party name, or a `{braced}` keep the
+        operator added. The built-in list is the floor — a brace only ever adds
+        to it."""
+        return base in _PN_NAME_FURNITURE or base in self.keep_words
 
     def _take(self, key, fake):
         self._memo[key] = fake
@@ -6542,11 +6561,12 @@ def _pn_fake_person(name, registry):
     def _keep(w):
         return (len(w) == 1 or _pn_is_suffix_token(w)
                 or w.strip(".,").lower() in _PN_DOC_ABBREV)
-    # Firm furniture and connectors ("LAW OFFICES OF Stratman", "the Waggoner")
-    # are kept verbatim — but only while a distinctive word is still left to
-    # fake, or the "fake" would be the name itself and scrub nothing.
+    # Firm furniture, connectors ("LAW OFFICES OF Stratman", "the Waggoner") and
+    # the operator's own `{braced}` keeps are kept verbatim — but only while a
+    # distinctive word is still left to fake, or the "fake" would be the name
+    # itself and scrub nothing.
     furniture = {m.start() for m in words
-                 if _pn_word_base(m.group(0)) in _PN_NAME_FURNITURE}
+                 if registry.keeps_word(_pn_word_base(m.group(0)))}
     if not [m for m in words
             if not _keep(m.group(0)) and m.start() != trail_at
             and m.start() not in furniture]:
@@ -6614,7 +6634,7 @@ def _pn_name_token_rows(real, fake):
         yield rtok, ftok
 
 
-def _pn_restore_furniture(real, fake):
+def _pn_restore_furniture(real, fake, keep_words=frozenset()):
     """Repair a stored fake that an older build composed by faking the FURNITURE
     of a name — "Law Offices of Scott C. Stratman" -> "Braxton Mansffield
     bancroft Merrick C. Whitlock", "the Waggoner" -> "chetwood Atwater". Those
@@ -6625,7 +6645,10 @@ def _pn_restore_furniture(real, fake):
     Returns the repaired fake, or None when there is nothing to repair, when the
     two sides don't align word for word (a fake not composed this way), or when
     the repair would leave the fake equal to the real value — a name that is
-    ALL furniture ("The Law Firm") has to keep whatever distinct fake it has."""
+    ALL furniture ("The Law Firm") has to keep whatever distinct fake it has.
+
+    `keep_words` adds the run's `{braced}` nuclear keeps, so bracing a word also
+    corrects the binding a previous run baked into the key for it."""
     rw = list(_PN_WORD_RE.finditer(str(real)))
     fw = list(_PN_WORD_RE.finditer(str(fake)))
     if not rw or len(rw) != len(fw):
@@ -6634,7 +6657,8 @@ def _pn_restore_furniture(real, fake):
     for rm, fm in zip(rw, fw):
         out.append(fake[cursor:fm.start()])
         rtok = rm.group(0)
-        if _pn_word_base(rtok) in _PN_NAME_FURNITURE and fm.group(0) != rtok:
+        base = _pn_word_base(rtok)
+        if (base in _PN_NAME_FURNITURE or base in keep_words) and fm.group(0) != rtok:
             out.append(rtok)
             changed = True
         else:
@@ -6774,12 +6798,13 @@ def _pn_fake_entity_parts(name, registry, prefer=None):
     state_keep = _pn_state_keep_flags([_pn_word_affixes(t)[1].lower() for t in toks])
 
     def _furniture(idx, core):
-        # Firm furniture ("LAW OFFICES OF ..."), and a lone INITIAL, which is
-        # identity a whole entity word cannot carry: "Law Offices of Philip Y
-        # Kim" came out "... of Mercer SOLSTICE Whitby", where the person path
-        # has always left an initial alone.
-        base = core.lower()
-        return (base in _PN_FIRM_WORDS or len(core) == 1) and not state_keep[idx]
+        # Firm furniture ("LAW OFFICES OF ..."), an operator `{braced}` keep,
+        # and a lone INITIAL, which is identity a whole entity word cannot
+        # carry: "Law Offices of Philip Y Kim" came out "... of Mercer SOLSTICE
+        # Whitby", where the person path has always left an initial alone.
+        base = _pn_word_base(core)
+        return ((base in _PN_FIRM_WORDS or base in registry.keep_words
+                 or len(core) == 1) and not state_keep[idx])
     # Kept only while a distinctive word is still left to fake, so a name made
     # of nothing else ("The Law Firm", "M & M") never maps onto itself.
     keep_furniture = any(
@@ -6815,7 +6840,7 @@ def _pn_person_token_map(name, registry):
     keep_furniture = any(
         len(m.group(0)) > 1 and not _pn_is_suffix_token(m.group(0))
         and m.group(0).strip(".,").lower() not in _PN_DOC_ABBREV
-        and _pn_word_base(m.group(0)) not in _PN_NAME_FURNITURE
+        and not registry.keeps_word(_pn_word_base(m.group(0)))
         for m in _PN_WORD_RE.finditer(name))
     out = {}
     for m in _PN_WORD_RE.finditer(name):
@@ -6823,7 +6848,7 @@ def _pn_person_token_map(name, registry):
         if _pn_is_suffix_token(w):
             continue
         base = _pn_word_base(w)
-        if keep_furniture and base in _PN_NAME_FURNITURE:
+        if keep_furniture and registry.keeps_word(base):
             continue
         if base:
             out[base] = registry.token(w, _PN_NAME_WORDS, "nametok")
@@ -6907,7 +6932,7 @@ def _pn_append_person_terms(terms, raw, source, registry):
         # "Long Beach") must never be a free-standing token — it rewrites
         # ordinary prose and the venue everywhere. The full name still scrubs.
         base = _pn_word_base(real_tok)
-        if _pn_is_generic_token(base):
+        if _pn_is_generic_token(base) or base in registry.keep_words:
             continue
         # A two-letter surname that spells an ordinary English word ("As", "Of",
         # "In") would rewrite that word throughout the brief; skip it. A short
@@ -8881,21 +8906,24 @@ def _pn_load_key(path, registry, log):
                 "value": real, "type": "KEEP", "fix": "no", "replacement": None,
                 "fake_values": None, "fixcell": None, "notes": "pseudonym key"}
             continue
-        if "[" in ctrl:
+        if "[" in ctrl or "{" in ctrl:
             frags = _pn_bracket_keep(real, ctrl)
-            if frags == []:               # whole value bracketed -> keep all
+            nuke = bool(_pn_keep_spec_parts(ctrl)[1])
+            if frags == []:               # whole value kept -> keep all of it
                 key_decisions[real.lower()] = {
-                    "value": real, "type": "KEEP", "fix": "no",
-                    "replacement": None, "fake_values": None,
+                    "value": real,
+                    "type": _PN_KEEP_NUCLEAR_TYPE if nuke else "KEEP",
+                    "fix": "no", "replacement": None, "fake_values": None,
                     "fixcell": ctrl, "notes": "pseudonym key"}
                 continue
-            if frags:                     # keep bracketed part(s), fake the rest
+            if frags:                     # keep the spec'd part(s), fake the rest
                 key_decisions[real.lower()] = {
-                    "value": real, "type": "KEEP-PART", "fix": "yes",
-                    "replacement": None, "fake_values": frags,
+                    "value": real,
+                    "type": _PN_KEEP_NUCLEAR_TYPE if nuke else "KEEP-PART",
+                    "fix": "yes", "replacement": None, "fake_values": frags,
                     "fixcell": ctrl, "notes": "pseudonym key"}
                 continue
-            # frags is None: bracketed text isn't a substring of the value — fall
+            # frags is None: the kept text isn't a substring of the value — fall
             # through and treat the cell as an ordinary explicit replacement.
         # Self-heal a key written before firm furniture was kept verbatim: the
         # row still carries "Law Offices of X" -> "Braxton Mansffield bancroft
@@ -8904,10 +8932,11 @@ def _pn_load_key(path, registry, log):
         # and keep the distinctive half of the binding, so the party stays
         # scrubbed under the fake it already shipped under.
         if cat in ("person", "entity", "short-name", "display-name"):
-            fixed = _pn_restore_furniture(real, fake)
+            fixed = _pn_restore_furniture(real, fake, registry.keep_words)
             if fixed:
                 log.info(f"  Pseudonymize: repaired key row {real!r} -> {fixed!r} "
-                         f"(was {fake!r}; firm/connector words are kept verbatim)")
+                         f"(was {fake!r}; firm/connector and brace-kept words "
+                         f"are kept verbatim)")
                 fake = fixed
 
         # Self-heal a key written before the self-map guard existed: a row whose
@@ -8975,7 +9004,8 @@ def _pn_load_key(path, registry, log):
         # still carries the binding, so a previously delivered export stays
         # reversible; it just does not match anything again.
         if (cat in ("person-token", "entity-token") and len(real.split()) == 1
-                and _pn_is_generic_token(_pn_word_base(real))):
+                and (_pn_is_generic_token(_pn_word_base(real))
+                     or _pn_word_base(real) in registry.keep_words)):
             continue
 
         if cat in _PN_KEY_DETECTOR_CATS:
@@ -9052,6 +9082,7 @@ def _pn_build_terms(names, casenos, extra_terms, registry=None, _prewarm=True):
         registry = _PnFakeRegistry()
     if _prewarm:
         rec = _PnTokenOrderRecorder()
+        rec.keep_words = registry.keep_words   # the dry run must mint the same
         _pn_build_terms(names, casenos, extra_terms, rec, _prewarm=False)
         for tok in sorted(rec.pool_of, key=lambda s: (len(s), s)):
             pool, tag = rec.pool_of[tok]
@@ -9772,6 +9803,15 @@ class Pseudonymizer:
                                  # never a name": kept verbatim even next to
                                  # names ("[Plaintiff]" stays in "Plaintiff X").
                                  # Both still yield to a full party-name match.
+        # A `{braced}` NUCLEAR keep — "this can never reveal anything", so it is
+        # never faked at all, in any folder, not even inside a party name. It
+        # yields to a full party match like the others, and that costs nothing:
+        # its words are on `registry.keep_words`, so the party's own fake is
+        # COMPOSED with them left verbatim ("Alder Law, P.C." -> "Kaldor Law,
+        # P.C."). That is what makes it safe to inherit globally — a keep the
+        # composing faker honours can never leave a party in the clear, so there
+        # is no cross-case inference to guard against.
+        self.keep_nuclear = set()
         self.kept_hits = set()   # kept strings (lowercased) that ACTUALLY matched
                                  # text this run — so the master KEEP log can bump
                                  # only the decisions a run really used
@@ -10659,8 +10699,13 @@ class Pseudonymizer:
             person/entity/case_number term (a real party this case fakes) is
             RELEASED so the party is still faked. So "Cal" is kept on its own but
             "CAL EQUIPMENT FE RANCH, LLC" is faked whole; "Doe" is kept alone but
-            "John Doe" is faked. Bare tokens and detectors do NOT release a keep."""
-        if not self.keep_soft and not self.keep_strict:
+            "John Doe" is faked. Bare tokens and detectors do NOT release a keep.
+
+        A `{braced}` NUCLEAR keep is released by a party match too — and loses
+        nothing by it, because the party's fake was COMPOSED with the braced word
+        kept verbatim (see `_pn_nuclear_words`). It is collected here so the word
+        also survives every bare token, detector and near-miss variant."""
+        if not self.keep_soft and not self.keep_strict and not self.keep_nuclear:
             return []
         # Spans of full party-name matches, which override EITHER kind of keep.
         party = []
@@ -10702,6 +10747,7 @@ class Pseudonymizer:
 
         local_strict = self.keep_strict_local & self.keep_strict
         collect(local_strict, soft=False, party_wins=False)
+        collect(self.keep_nuclear, soft=False)
         collect(self.keep_strict - local_strict, soft=False)
         collect(self.keep_soft, soft=True)
         return spans
@@ -10892,8 +10938,14 @@ class Pseudonymizer:
         # nowhere and IS a leak — the safety rule that stops a keep leaving a
         # party in the clear must not be undone here.
         kept = {str(v).lower() for v in (self.keep_soft | self.keep_strict)}
+        # A NUCLEAR keep has no such exception: the operator declared the value
+        # can never reveal anything, and the composing faker honours that inside
+        # a party name too, so a survivor is the decision working — not a leak.
+        nuclear = {str(v).lower() for v in self.keep_nuclear}
         out = []
         for rec in self.records.values():
+            if nuclear and str(rec["real"]).lower() in nuclear:
+                continue
             if (kept and rec["category"] not in _PN_PARTY_OVERRIDE_CATS
                     and str(rec["real"]).lower() in kept):
                 continue
@@ -11378,13 +11430,18 @@ class Pseudonymizer:
         #   * an INHERITED keep (another case's, via the master sheet) never
         #     retires this case's binding — a current-case party is faked anyway
         #     (see _pn_retire_kept_key_terms), so its row MUST stay or the export
-        #     carries a fake nothing can reverse.
+        #     carries a fake nothing can reverse; but
+        #   * a NUCLEAR `{braced}` keep qualifies wherever it came from. It is
+        #     never faked in any folder — the composing faker keeps it verbatim
+        #     — so a row promising a reversal would name a fake that was never
+        #     applied.
         decisions = getattr(self, "_keep_decisions", None)
         if decisions is None:
-            keep_low = {str(k).lower() for k in (self.keep_soft | self.keep_strict)}
+            keep_low = {str(k).lower() for k in (self.keep_soft | self.keep_strict
+                                                 | self.keep_nuclear)}
         else:
             local = getattr(self, "_keep_local", ())
-            keep_low = set()
+            keep_low = {str(k).lower() for k in self.keep_nuclear}
             for vl, d in decisions.items():
                 if vl not in local:
                     continue
@@ -11428,7 +11485,8 @@ class Pseudonymizer:
                 # in one folder: the word was correctly refused a term at build
                 # time, harvested into the key anyway, and handed back as a term
                 # on the next run, where no amount of bracketing could retire it.
-                if _pn_is_generic_token(_pn_word_base(rtok)):
+                if (_pn_is_generic_token(_pn_word_base(rtok))
+                        or self.registry.keeps_word(_pn_word_base(rtok))):
                     continue
                 dk = (tokcat, rtok.lower())
                 if dk in seen:
@@ -13029,22 +13087,41 @@ def _pn_existing_leak_xlsx(folder):
     return current
 
 
+# Type shown on the master KEEP sheet for a `{braced}` decision.
+_PN_KEEP_NUCLEAR_TYPE = "KEEP-ALWAYS"
+_PN_KEEP_BRACKET_RE = re.compile(r"\[([^\[\]]*)\]")
+# The NUCLEAR keep-spec: `{Law}` on "Alder Law, P.C.". Same shape as a bracket
+# and parsed by the same code, but a different promise — see
+# `_pn_nuclear_words`.
+_PN_KEEP_BRACE_RE = re.compile(r"\{([^{}]*)\}")
+
+
+def _pn_keep_spec_parts(cell):
+    """([bracketed parts], {braced} parts) of a keep-spec cell, each stripped and
+    emptied of blanks. Both kinds are cut out of the value the same way; they
+    differ only in how hard the kept text is protected."""
+    cell = str(cell)
+    return ([k.strip() for k in _PN_KEEP_BRACKET_RE.findall(cell) if k.strip()],
+            [k.strip() for k in _PN_KEEP_BRACE_RE.findall(cell) if k.strip()])
+
+
 def _pn_bracket_keep(value, cell):
     """Parse a Fix? cell that BRACKETS the part(s) of `value` to KEEP verbatim,
     faking only the rest — the operator's way of saying "this fragment isn't a
     name, but the remainder is". `[Human Resources] Information` on the leak
     "Raytheon's Human Resources Information" keeps "Human Resources" and auto-
-    fakes the rest.
+    fakes the rest. `{braces}` mean the same cut, with a stronger promise about
+    the kept text (`_pn_nuclear_words`), and the two may be mixed in one cell.
 
     Returns the list of value fragments that DO need faking (the value with each
-    bracketed keep-part cut out), or None when the cell is not a bracket spec or
-    a bracketed part is not actually a substring of the value (so the caller
-    falls back to treating the whole cell as an explicit replacement). An empty
-    list means the operator bracketed the entire value — keep all of it."""
-    keeps = [k.strip() for k in re.findall(r"\[([^\[\]]*)\]", cell)]
-    keeps = [k for k in keeps if k]
+    kept part cut out), or None when the cell is not a keep-spec or a kept part
+    is not actually a substring of the value (so the caller falls back to
+    treating the whole cell as an explicit replacement). An empty list means the
+    operator bracketed the entire value — keep all of it."""
+    brackets, braces = _pn_keep_spec_parts(cell)
+    keeps = brackets + braces
     if not keeps:
-        return None                       # no brackets — not this rule
+        return None                       # no keep-spec — not this rule
     work = value
     for k in keeps:
         i = work.lower().find(k.lower())
@@ -13057,15 +13134,56 @@ def _pn_bracket_keep(value, cell):
 
 def _pn_decision_keep_parts(d):
     """The substrings a KEEP/KEEP-PART decision protects verbatim: the whole
-    value for a `no`, or the bracketed part(s) for a keep-spec. Shared by the
+    value for a `no`, or the kept part(s) of a keep-spec. Shared by the
     LEAKS worksheet and the pseudonym key so both feed `Pseudonymizer.keep_values`
     identically. Returns [] for any other decision (yes / explicit / blank)."""
     if d.get("fix") == "no":
         return [d["value"]]
     if d.get("fake_values") is not None and d.get("fixcell"):
-        keeps = [k.strip() for k in re.findall(r"\[([^\[\]]*)\]", str(d["fixcell"]))]
-        return [k for k in keeps if k]
+        brackets, braces = _pn_keep_spec_parts(d["fixcell"])
+        return brackets + braces
     return []
+
+
+def _pn_decision_nuclear_parts(d):
+    """The `{braced}` part(s) of a decision — the NUCLEAR keep: text the operator
+    has declared can never reveal anything, so it is never faked in ANY folder,
+    not even inside a party name. `{...}` around the whole value means the whole
+    value. Returns [] when the decision brace-keeps nothing."""
+    cell = d.get("fixcell")
+    if not cell:
+        return []
+    braces = _pn_keep_spec_parts(cell)[1]
+    if not braces:
+        return []
+    # The whole value braced parses as an ordinary `no` (nothing left to fake),
+    # so the parts list is the value itself.
+    if d.get("fake_values") is None and d.get("fix") == "no":
+        return [d["value"]]
+    return braces
+
+
+def _pn_nuclear_words(decisions):
+    """Lower-cased WORDS that a `{braced}` keep protects, gathered across every
+    decision — the operator's own extension of `_PN_FIRM_WORDS`.
+
+    A nuclear keep is enforced where it cannot cost anything: the composing
+    faker keeps the word verbatim, so "Alder Law, P.C." with `{Law}` becomes
+    "Kaldor Law, P.C." — the word survives and the PARTY IS STILL SCRUBBED.
+    That is what lets a brace apply in every folder, unlike a `[bracket]`'s
+    faking half: keeping a word inside a composed fake can never leave a party
+    in the clear, so there is no cross-case inference to guard against.
+
+    A multi-word brace ("{Human Resources}") contributes each of its words, since
+    composition is per word. The full phrase is still protected as a span."""
+    out = set()
+    for d in decisions.values():
+        for part in _pn_decision_nuclear_parts(d):
+            for w in _PN_WORD_RE.findall(str(part)):
+                base = _pn_word_base(w)
+                if base:
+                    out.add(base)
+    return frozenset(out)
 
 
 def _pn_decision_is_keep(d):
@@ -13155,24 +13273,42 @@ def _pn_decision_is_ours(d, folder_name):
     return len(cases) == 1 and cases[0] == name
 
 
+def _pn_set_keep_words(registry, decisions, log=None):
+    """Put the run's `{braced}` NUCLEAR keeps on `registry` so every composing
+    faker leaves those words verbatim. Must run BEFORE terms are built or a key
+    is loaded — a nuclear keep is enforced at composition time, so a fake minted
+    before it lands would carry the very word the operator brace-kept."""
+    words = _pn_nuclear_words(decisions)
+    registry.keep_words = words
+    if words and log:
+        log.info(f"  KEEP (nuclear): {len(words)} brace-kept word(s) will never "
+                 f"be faked, in this or any name — "
+                 f"{', '.join(sorted(words)[:8])}"
+                 f"{' …' if len(words) > 8 else ''}")
+    return words
+
+
 def _pn_keep_values(decisions):
-    """Return (strict, soft) sets of exact strings to leave verbatim, gathered
-    from every KEEP decision. A `no` value is a SOFT keep — the whole value, kept
-    only where the word stands alone. A bracketed keep-spec part is a STRICT keep
-    — "this fragment is never a name", kept even next to names. Both are matched
-    on WORD BOUNDARIES and both lose to a full party match (see
-    Pseudonymizer._keep_spans), so a keep never leaves a real party un-faked."""
-    strict, soft = set(), set()
+    """Return (strict, soft, nuclear) sets of exact strings to leave verbatim,
+    gathered from every KEEP decision. A `no` value is a SOFT keep — the whole
+    value, kept only where the word stands alone. A `[bracketed]` keep-spec part
+    is a STRICT keep — "this fragment is never a name", kept even next to names.
+    A `{braced}` part is NUCLEAR — never faked at all (`_pn_nuclear_words`), so
+    it is also kept while COMPOSING a party's fake and not merely protected
+    afterwards. All three are matched on WORD BOUNDARIES and all three yield to
+    a full party match (see Pseudonymizer._keep_spans) — for the first two that
+    is what stops a keep leaving a party un-faked, and for a nuclear keep it
+    costs nothing, because the party's own fake already carries the word."""
+    strict, soft, nuclear = set(), set(), set()
     for d in decisions.values():
+        braces = _pn_decision_nuclear_parts(d)
+        nuclear.update(braces)
         if d.get("fix") == "no":
-            if d.get("value"):
+            if d.get("value") and not braces:
                 soft.add(d["value"])
         elif d.get("fake_values") is not None and d.get("fixcell"):
-            for k in re.findall(r"\[([^\[\]]*)\]", str(d["fixcell"])):
-                k = k.strip()
-                if k:
-                    strict.add(k)
-    return strict, soft
+            strict.update(_pn_keep_spec_parts(d["fixcell"])[0])
+    return strict, soft, nuclear
 
 
 def _pn_prior_fake_words(terms):
@@ -13562,7 +13698,13 @@ def _pn_update_master_keep(cfg, record_map, case_name, today, log):
 
     for vl, d in record_map.items():
         instruction = d.get("fixcell") or ("no" if d.get("fix") == "no" else "no")
-        vtype = d.get("type") or ("KEEP-PART" if d.get("fake_values") else "KEEP")
+        # A `{braced}` keep is a different promise from a `[bracket]` — it holds
+        # in every folder and inside a party name — so the sheet says so plainly
+        # rather than filing it as an ordinary KEEP-PART.
+        if _pn_decision_nuclear_parts(d):
+            vtype = _PN_KEEP_NUCLEAR_TYPE
+        else:
+            vtype = d.get("type") or ("KEEP-PART" if d.get("fake_values") else "KEEP")
         g = rows.get(vl)
         if g is None:
             # First folder to record a value is the one that decided it — an
@@ -15327,19 +15469,29 @@ def _fix_leaks_mode(folder, args, cfg, log):
         return 1
 
     registry = _PnFakeRegistry()
+    # Read the durable decisions FIRST: a `{braced}` nuclear keep is enforced
+    # while a fake is composed, and `_pn_load_key` both repairs stored composed
+    # fakes and decides which token rows come back as terms — so the brace has
+    # to be on the registry before the key is opened, or this pass would re-apply
+    # the very binding the operator brace-kept away.
+    master_keep = _pn_read_master_keep(cfg)
+    folder_decisions = _pn_read_leak_decisions(folder)
+    decisions = {**master_keep, **folder_decisions}
+    _pn_set_keep_words(registry, decisions, log)
     try:
         terms, key_decisions = _pn_load_key(key_path, registry, log)
     except RuntimeError as e:
         _warn(f"--fix-leaks: could not read key {key_path.name}: {e}")
         return 1
 
-    master_keep = _pn_read_master_keep(cfg)
-    folder_decisions = _pn_read_leak_decisions(folder)
-    decisions = {**master_keep, **folder_decisions}
     # KEEP / KEEP-PART edits from the key's Replacement column ('no' or a
     # [bracketed] keep-spec) are authoritative for this run.
     for vl, d in key_decisions.items():
         decisions[vl] = d
+    # A brace typed into the KEY this run joins the set too (the rows above were
+    # read with the pre-key set, which is right — their own row is retired
+    # separately by `_pn_retire_kept_key_terms`).
+    _pn_set_keep_words(registry, decisions)
     # A master row this folder authored is still OURS: the local LEAKS.xlsx is
     # consumed once resolved, so a decision made here survives only there.
     local_vls = (set(key_decisions) | set(folder_decisions)
@@ -15437,7 +15589,7 @@ def _fix_leaks_mode(folder, args, cfg, log):
     # (party names + the flagged values) is wanted.
     pz = Pseudonymizer(terms, [], registry)
     pz.suppressed = suppressed
-    pz.keep_strict, pz.keep_soft = _pn_keep_values(decisions)
+    pz.keep_strict, pz.keep_soft, pz.keep_nuclear = _pn_keep_values(decisions)
     pz.keep_strict_local = _pn_keep_values(
         {vl: d for vl, d in decisions.items() if vl in local_vls})[0]
     pz._keep_decisions = {vl: d for vl, d in decisions.items()
@@ -15851,6 +16003,10 @@ def main():
         if master_keep:
             log.info(f"  Master KEEP: {len(master_keep)} durable no/bracket "
                      f"decision(s) loaded from the cross-folder log.")
+        # A `{braced}` NUCLEAR keep must reach the registry BEFORE any term is
+        # built or any key row is read back, because it is enforced while the
+        # fake is COMPOSED — not merely protected afterwards.
+        _pn_set_keep_words(registry, leak_decisions, log)
         # A bracketed keep-spec auto-fakes only its non-bracketed fragment(s);
         # every other Fix?=yes scrubs the whole flagged value.
         #
@@ -15984,7 +16140,8 @@ def main():
         # leaves a real party in the clear, whether learned here or globally.
         local_vls = set(key_decisions) | set(folder_decisions) | ours
         (pseudonymizer.keep_strict,
-         pseudonymizer.keep_soft) = _pn_keep_values(leak_decisions)
+         pseudonymizer.keep_soft,
+         pseudonymizer.keep_nuclear) = _pn_keep_values(leak_decisions)
         # A bracket THIS folder typed also beats the party override: its
         # non-bracketed remainder is registered as its own term, so the party
         # is scrubbed either way and the operator's split is honoured.
