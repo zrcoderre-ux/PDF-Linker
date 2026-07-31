@@ -5983,7 +5983,18 @@ class _PnFakeRegistry:
 
     def __init__(self):
         self._memo = {}     # (memo_tag, real_lower) -> fake
+        self._pool = {}     # (memo_tag, real_lower) -> (words, seed_tag) it was
+                            # DRAWN from, so a fake can be re-minted later; only
+                            # a straight pool draw is recorded (a composed or
+                            # folded fake follows its parts)
         self._used = set()  # every fake handed out, lower-cased (global)
+        # Words this run must never hand out as a stand-in: the party names of
+        # the authorities the corpus CITES. "Stockton" is in the name pool and
+        # the corpus cites Stockton Theatres, Inc. v. Palermo (1956) 47 Cal.2d
+        # 469 — the citation survives the forward pass, but `DeAnonymize`
+        # searches for FAKES case-insensitively, so the first reversal rewrites
+        # the authority. See `_pn_authority_tokens`.
+        self.avoid_words = set()
         self._domain_reals = {}  # real host -> fake, for OCR-typo folding
         # The operator's NUCLEAR keeps for this run (`{braced}` in a Fix? or
         # Replacement cell), lower-cased word bases. They ride on the registry
@@ -6124,13 +6135,48 @@ class _PnFakeRegistry:
         rng = _pn_rng(seed_tag, real.lower())
         order = list(words)
         rng.shuffle(order)
+        self._pool[key] = (words, seed_tag)
         for cand in order:
-            if cand.lower() not in self._used:
+            if cand.lower() not in self._used and not self.avoided(cand):
                 return self._take(key, cand)
         base, n = order[0], 2
-        while f"{base}{n}".lower() in self._used:
+        while f"{base}{n}".lower() in self._used or self.avoided(f"{base}{n}"):
             n += 1
         return self._take(key, f"{base}{n}")
+
+    def avoided(self, fake):
+        """True when `fake` names an authority this corpus cites, so handing it
+        out would put a stand-in on top of a real decision's name."""
+        return fake.lower() in self.avoid_words
+
+    def avoid(self, words, protected=()):
+        """Add `words` to the never-hand-out set, and RE-MINT anything already
+        drawn that collides. Returns [(old_fake, new_fake), ...].
+
+        The re-mint is what makes the screen useful rather than merely
+        prospective: the parties from the operator's template are bound before a
+        single document has been read, so by the time the corpus reveals which
+        authorities it cites, the most-used fakes of the run are already drawn.
+        Nothing has been substituted yet — the pre-scan runs before any export —
+        so moving a binding here costs nothing.
+
+        `protected` names word bases that must NOT move: anything pinned by a
+        reused key, since a re-run's whole job is to reproduce the already
+        delivered exports byte for byte."""
+        self.avoid_words |= {str(w).lower() for w in words}
+        swaps = []
+        for key, fake in list(self._memo.items()):
+            if not self.avoided(fake) or key[1] in protected:
+                continue
+            drawn = self._pool.get(key)
+            if drawn is None:
+                continue          # composed or folded — it follows its parts
+            del self._memo[key]
+            self._used.discard(fake.lower())
+            new = self.token(key[1], drawn[0], drawn[1])
+            if new.lower() != fake.lower():
+                swaps.append((fake, new))
+        return swaps
 
     def digits(self, real, seed_tag, keep_prefix=0):
         """A digit-for-digit fake of `real` (e.g. a case number), unique per
@@ -7148,6 +7194,40 @@ def _pn_entity_bare(name, registry, prefer=None):
     if bare.lower() == re.sub(r"[.,;]+$", "", name.strip()).lower():
         return None  # nothing was stripped; the full-name term already covers it
     return bare, _pn_fake_entity(bare, registry, prefer)
+
+
+def _pn_authority_tokens(text):
+    """The party-name words of the published authorities `text` CITES, lower
+    cased — the words a stand-in must never be drawn from.
+
+    From YEAR-BEARING case citations only. Harvesting from every "X v. Y" scoops
+    up the document's own caption, and then no party could be replaced at all.
+    Corporate furniture and role words are dropped, and so is anything under
+    four characters, which cannot collide distinctively.
+
+    The forward pass already protects a cited authority. This is about the
+    REVERSE one: `DeAnonymize.bas` searches for FAKES case-insensitively, so a
+    fake that happens to be a cited decision's name rewrites that decision the
+    first time the key is applied. The corpus cited *Stockton Theatres, Inc. v.
+    Palermo* (1956) 47 Cal.2d 469 while the run minted "stockton" as a stand-in
+    — a loaded gun, and the pool cannot be made safe against a corpus it has
+    never seen."""
+    out = set()
+    try:
+        cites = find_all_citations(text)
+    except Exception:
+        return out
+    for c in cites:
+        if c.get("kind") != "case" or c.get("plaintiff") is None:
+            continue
+        if not re.search(r"\((?:1[7-9]|20)\d\d\)", str(c.get("key", ""))):
+            continue          # a bare "X v. Y" is as likely to be the caption
+        for side in (c.get("plaintiff", ""), c.get("defendant", "")):
+            for w in _pn_name_words(side):
+                base = _pn_word_base(w)
+                if len(base) >= 4 and base.isalpha():
+                    out.add(base)
+    return out
 
 
 def _pn_strip_et_al(raw):
@@ -10559,6 +10639,35 @@ class Pseudonymizer:
         if doomed:
             self._trusted_tok_cache = None
         return [t.real for t in doomed]
+
+    def reserve_authority_names(self, text, log=None):
+        """Take the authorities `text` cites out of the fake pools, re-minting
+        any stand-in already drawn on one. Returns [(old, new), ...].
+
+        Call with the FULL corpus and BEFORE anything is substituted — the
+        pre-scan is the one moment when every document has been read and no
+        export has been written, so a binding can still move for free.
+
+        A run that REUSED a key does not move anything: its whole job is to
+        reproduce the delivered exports byte for byte, and a fake already in
+        circulation is a worse problem to create than the one being avoided."""
+        tokens = _pn_authority_tokens(text)
+        if not tokens:
+            return []
+        if getattr(self, "_loaded_reals", None):
+            self.registry.avoid_words |= tokens     # prospective only
+            return []
+        swaps = self.registry.avoid(tokens)
+        for old, new in swaps:
+            rx = re.compile(r"(?<!\w)" + re.escape(old) + r"(?!\w)")
+            for t in self.terms:
+                t.fake = rx.sub(new, t.fake)
+            for r in self.records.values():
+                r["fake"] = rx.sub(new, r["fake"])
+            if log:
+                log.info(f"  Pseudonymize: re-minted the stand-in {old!r} -> "
+                         f"{new!r} — the corpus cites an authority of that name")
+        return swaps
 
     def prune_fragment_terms(self, text):
         """Drop every DOCUMENT-harvested name term that the corpus only ever
@@ -15153,18 +15262,25 @@ def _pn_prescan_folder(pdfs, pseudonymizer, log, extra_texts=()):
         except Exception as e:  # a corrupt file must not abort the whole run
             log.warning(f"  Pseudonymize: could not pre-scan {pdf.name}: {e}")
             continue
-        corpus.append(text)
-        _pn_learn_from_text(pseudonymizer, text, pdf.stem)
+        corpus.append((pdf.stem, text))
     for j, (stem, text) in enumerate(extra_texts, len(pdfs) + 1):
         log.info(f"    Pre-scan {j}/{total}: {stem}")
-        corpus.append(text)
+        corpus.append((stem, text))
+    # READ everything before LEARNING anything, so the authorities this batch
+    # cites are known before a single further stand-in is drawn — and while the
+    # ones already drawn can still be moved (nothing is substituted yet).
+    full = "\n\f\n".join(t for _stem, t in corpus)
+    swaps = pseudonymizer.reserve_authority_names(full, log)
+    if swaps:
+        log.info(f"  Pseudonymize: {len(swaps)} stand-in(s) re-minted off the "
+                 f"names of authorities this batch cites")
+    for stem, text in corpus:
         _pn_learn_from_text(pseudonymizer, text, stem)
     added = len(pseudonymizer.terms) - before
     if added:
         log.info(f"  Pseudonymize: pre-scan of "
                  f"{len(pdfs) + len(extra_texts)} file(s) added "
                  f"{added} term(s) from names, localities and identifiers")
-    full = "\n\f\n".join(corpus)
     pruned = pseudonymizer.prune_citation_only_terms(full)
     if pruned:
         log.info(f"  Pseudonymize: dropped {len(pruned)} harvested name(s) "
