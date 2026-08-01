@@ -190,3 +190,56 @@ def test_full_run_keys_the_real_name_not_the_flagged_phrase(tmp_path, monkeypatc
     assert "Melissa Penuela" in reals
     assert "Melissa Sable" not in reals and "Sable" not in reals
     assert not (reals & {str(r[2]) for r in rows})
+
+
+# ── ...and the half-scrub must be REPORTED, not only handled once flagged ───
+# The scans above were structurally blind to it. `_pn_person_review_findings`
+# suppresses a phrase carrying one of our fakes unless TWO real name words
+# still stand — a rule written to stop re-reporting a fake dragged along by a
+# non-name prefix ("ASIC Pruett Keswick"), which by construction is exactly
+# one real word. So the one shape that matters most ("Xiaoxia Ingersoll", 102
+# times in one batch) was the one shape guaranteed to be filtered out.
+
+_DET = {k: P._PN_DETECTORS[k] for k in P._PN_DEFAULT_DETECTORS}
+
+
+def _pz(*names):
+    reg = P._PnFakeRegistry()
+    return P.Pseudonymizer(P._pn_build_terms(list(names), [], [], registry=reg),
+                           _DET, registry=reg)
+
+
+def test_a_half_scrubbed_pair_is_reported_as_its_real_remainder():
+    z = _pz("Deng")          # only the surname was ever keyed
+    out = z.apply("Plaintiff Xiaoxia Deng filed the complaint.")
+    assert z.half_scrubbed_scan(out) == [("half-scrubbed name?", "Xiaoxia")], (
+        "the row must ask about the REAL word, not about our own output")
+
+
+def test_a_fully_scrubbed_pair_is_silent():
+    z = _pz("Xiaoxia Deng")
+    out = z.apply("Plaintiff Xiaoxia Deng filed the complaint.")
+    assert z.half_scrubbed_scan(out) == []
+
+
+def test_ordinary_prose_beside_a_fake_is_not_a_half_scrub():
+    # A fake standing next to a role word, a heading word or a document type
+    # is the case the older suppression was written for; it must stay silent.
+    z = _pz("Helen Rasho")
+    out = z.apply("Plaintiff Helen Rasho filed this Opposition.\n"
+                  "The Court DENIES the Motion To Quash Service of Summons.\n"
+                  "Dr. Rasho testified at Deposition Volume II.")
+    assert z.half_scrubbed_scan(out) == []
+
+
+def test_a_cited_authority_beside_a_fake_is_not_a_half_scrub():
+    z = _pz("Helen Rasho")
+    out = z.apply("Rasho relies on Kremerman v. White (2021) 71 Cal.App.5th 358.")
+    assert z.half_scrubbed_scan(out) == []
+
+
+def test_one_row_per_survivor_however_often_the_pair_repeats():
+    z = _pz("Deng")
+    out = z.apply("Xiaoxia Deng filed it. Xiaoxia Deng served it. "
+                  "Xiaoxia Deng appeared.")
+    assert len(z.half_scrubbed_scan(out)) == 1

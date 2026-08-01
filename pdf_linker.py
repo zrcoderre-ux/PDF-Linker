@@ -7780,14 +7780,27 @@ def _pn_fake_ssn(real):
 # was left to the url/domain rule, which faked the HOST and left the local part
 # — the attorney's own name — standing in the export. Half-scrubbed is the worst
 # outcome available, so the at-sign is matched the way the page actually spells
-# it. Split out as a constant because the detector that FINDS an address and
+# it. A fax-generation scan also SPACES the at-sign out ("barrylaw7 @gmail.com"),
+# which missed the detector the same way and shipped the real address in clear
+# text, so a step of horizontal whitespace on either side is part of the sign.
+# Split out as a constant because the detector that FINDS an address and
 # `_fake_email`, which takes it apart, have to agree on what one looks like.
-_PN_AT_SIGN = r"(?:@|[(\[{][ \t]*[aA][ \t]*[)\]}])"
+_PN_AT_SIGN = r"(?:[ \t]{0,2}(?:@|[(\[{][ \t]*[aA][ \t]*[)\]}])[ \t]{0,2})"
 _PN_AT_SIGN_RE = re.compile(_PN_AT_SIGN)
 
 
+def _pn_email_canon(real):
+    """The ONE identity of an e-mail address, however the page spelled it:
+    whitespace the scan inserted removed, the at-sign as OCR rendered it
+    ("(a)") folded to "@", case folded. Every fake derivation seeds on this,
+    so "barrylaw7 @gmail.com", "BARRYLAW7@GMAIL. COM" and the clean form all
+    draw the SAME fake — one real address must never ship under three."""
+    canon = _PN_AT_SIGN_RE.sub("@", _NFKC(str(real)))
+    return re.sub(r"\s+", "", canon).lower()
+
+
 def _pn_fake_email(real):
-    r = _pn_rng("email", real.lower())
+    r = _pn_rng("email", _pn_email_canon(real))
     return (f"{r.choice(_PN_NAME_WORDS).lower()}.{r.choice(_PN_NAME_WORDS).lower()}"
             f"@{r.choice(_PN_EMAIL_DOMAINS)}")
 
@@ -8054,6 +8067,19 @@ _PN_FORM_LABEL_WORDS = frozenset({
     "check", "form", "forms", "declarant", "deponent", "amount", "amounts",
 })
 
+# Service-of-process vocabulary that is ALSO a plausible surname (a real party
+# can be named Bond, Branch or Store). Same contract as the form-label words —
+# never a bare token ("The UPS Store" must not mint "Store" -> a surname, the
+# way "Process Server Institute" minted "Server" -> "radley"), but kept OUT of
+# `_PN_COMMON_WORDS` so a party who really carries the name stays reportable
+# by the leak scans. "Manager"/"custodian" are here rather than in the role
+# words because a role word anchors the unknown-name scan, and these label a
+# third party's JOB inside prose, not a caption role.
+_PN_SERVICE_GENERIC_WORDS = frozenset({
+    "store", "stores", "bond", "bonds", "manager", "managers", "custodian",
+    "custodians",
+})
+
 
 def _pn_is_generic_token(base):
     """True for a word that must never become a BARE pseudonym token, however
@@ -8068,7 +8094,7 @@ def _pn_is_generic_token(base):
     corrupted document."""
     return (base in _PN_COMMON_WORDS or base in _PN_REVIEW_NAME_STOP
             or base in _PN_LOCALITY_WORDS or base in _PN_FORM_LABEL_WORDS
-            or base in _PN_FIRM_WORDS)
+            or base in _PN_SERVICE_GENERIC_WORDS or base in _PN_FIRM_WORDS)
 
 
 def _pn_is_protected_locality(city):
@@ -8312,8 +8338,13 @@ _PN_DETECTORS = {
     # indistinguishable from a Bates/account/reservation number) — it is caught
     # only behind an SSN label, in _PN_ID_RES below.
     "ssn": (re.compile(r"(?<!\d)\d{3}[-. ]\d{2}[-. ]\d{4}(?!\d)"), _pn_fake_ssn),
+    # The TLD tail tolerates ONE step of OCR whitespace after the final dot
+    # ("BARRYLAW7@GMAIL. COM" shipped in clear text because of it) — but only
+    # for a KNOWN TLD, or the first word of the next sentence would be read as
+    # one ("bob@acme. Next" must not swallow "Next").
     "email": (re.compile(
-        rf"\b[A-Za-z0-9._%+\-]+{_PN_AT_SIGN}[A-Za-z0-9.\-]+\.[A-Za-z]{{2,}}\b"),
+        rf"\b[A-Za-z0-9._%+\-]+{_PN_AT_SIGN}[A-Za-z0-9.\-]+"
+        rf"\.(?:[A-Za-z]{{2,}}|[ \t](?i:com|net|org|law|gov|edu|us|biz|info))\b"),
         _pn_fake_email),
     # An area code in brackets may be preceded by a stray digit and the brackets
     # themselves may be OCR's idea of them: a scanned letterhead gave `4(818)
@@ -8380,6 +8411,17 @@ _PN_ID_RES = {
         r"\s*:?\s*(\d{8,})"),
     "file number": re.compile(
         r"(?i)\b(?:my\s+)?file\s+no\.?\s*:?\s*([\w\-]{3,})"),
+    # A process server's REGISTRATION number and a bond number. Each resolves
+    # to a name and an address in the issuing county's public registry — "a
+    # registered California process server, Registration No. 833, San
+    # Bernardino County" names one person — and a motion-to-quash batch shipped
+    # the pair sixteen times because no class covered it. The label is what
+    # makes a 3-digit value safe to track (see `_pn_identifier_values`: a bare
+    # short number is a page/exhibit/paragraph counter far more often than an
+    # identifier, so a SHORT value is registered only in its labelled form).
+    "registration number": re.compile(
+        r"(?i)\b(?:registration|registrant|bond)\s*"
+        r"(?:no\.?|number|#)?\s*:?\s*(\d{2,})\b"),
     # A run-together 9-digit SSN, caught ONLY when an SSN label anchors it, so an
     # ordinary 9-digit Bates/account number is never mistaken for one. Grouped
     # SSNs (with dashes/dots/spaces) are handled by the "ssn" detector instead.
@@ -8558,6 +8600,16 @@ def _pn_identifier_values(text):
             if (cls == "account id" and not re.search(r"[A-Za-z]", val)
                     and len(re.sub(r"\D", "", val)) < 4):
                 continue
+            # Same reasoning, one step softer, for a registration/bond number:
+            # the value re-identifies but a SHORT bare number is a page,
+            # exhibit or paragraph counter far more often than an identifier,
+            # so the LABELLED phrase becomes the term ("Registration No. 833"
+            # -> "Registration No. 417"). The label is the part a public
+            # registry lookup needs anyway, and the bare repeats are left to
+            # the review scan rather than rewritten across the document.
+            if (cls == "registration number"
+                    and len(re.sub(r"\D", "", val)) < 4):
+                val = re.sub(r"\s+", " ", m.group(0)).strip()
             if val.lower() in seen:
                 continue
             seen.add(val.lower())
@@ -8703,8 +8755,10 @@ def _pn_is_email_value(value):
     if v.count("@") != 1:
         return False
     local, _, host = v.partition("@")
+    # OCR whitespace inside the host ("GMAIL. COM") is spelling, not identity.
     return bool(local.strip()
-                and re.fullmatch(r"[A-Za-z0-9.\-_]+\.[A-Za-z]{2,}", host.strip()))
+                and re.fullmatch(r"[A-Za-z0-9.\-_]+\.[A-Za-z]{2,}",
+                                 re.sub(r"\s+", "", host)))
 
 
 def _pn_is_procedural_phrase(value):
@@ -8923,7 +8977,23 @@ fax telephone number numbers reservation date cure confer floor suite
 owner builder builders membership arrangement unincorporated
 interindemnity helpdesk
 hospital hospitals medical center centers surgery surgical physician
-physicians clinic clinics healthcare""".split())
+physicians clinic clinics healthcare
+quash quashes quashing quashed summons subpoena subpoenas duces tecum
+server servers serve serves process processes proof proofs diligence
+diligent diligently substituted substitute substitution personal personally
+mail mailings mailbox mailboxes delivery deliver delivered attempt
+attempts attempted receiving receive received recipient recipients
+registered registration registrant perfected effected commercial agency
+agencies household dwelling abode domicile counties departments
+confirmation portal institute institutes google scholar""".split())
+# The first service-of-process batch (above, from the motion-to-quash corpus
+# that shipped "Motion to Mabry", "Eldridge of Service" and "process radley"):
+# procedural vocabulary that is never anyone's name, so it belongs in the
+# gazetteer proper — the leak scans may treat it as boilerplate. Vocabulary
+# from the same corpus that DOUBLES as a real surname (Bond, Branch, Store)
+# goes in _PN_SERVICE_GENERIC_WORDS below instead, for the reason
+# _PN_FORM_LABEL_WORDS states: withheld from ever becoming a bare token,
+# still reportable when a party really carries the name.
 
 
 def _pn_unknown_name_findings(text, neutral_words):
@@ -9755,6 +9825,22 @@ def _pn_load_key(path, registry, log):
                 and (_pn_is_generic_token(_pn_word_base(real))
                      or _pn_word_base(real) in registry.keep_words)):
             continue
+        # The same rule for a single-word HARVESTED person/entity row. A
+        # motion-to-quash corpus harvested "Quash", "Proof", "Server" and
+        # "Google" as names, and the key then reproduced "Motion to Mabry" /
+        # "Eldridge of Service" / "process radley" on every re-run — purging
+        # the gazetteer alone could not retire the rows. An AUTHORITATIVE row
+        # (the operator's template or --term) is never refused: declining a
+        # real party name is the failure the whole method exists to prevent.
+        # Seed the memo so the binding stays consistent (and a delivered
+        # export reversible); just build no matching term.
+        if (cat in ("person", "entity") and len(real.split()) == 1
+                and source not in _PN_KEY_UNMATCHED_SOURCES
+                and _pn_is_generic_token(_pn_word_base(real))):
+            registry._memo.setdefault(("name_or_entity", real.lower()), fake)
+            log.info(f"  Pseudonym key: retiring harvested common-word row "
+                     f"{real!r} -> {fake!r} (ordinary vocabulary, not a name)")
+            continue
 
         if cat in _PN_KEY_DETECTOR_CATS:
             priority, whole, csens = 4, True, False
@@ -10262,6 +10348,32 @@ _PN_LABEL_RES = (
     # zero-false-positive anchor.
     re.compile(r"(?P<n>" + _PN_LABEL_NAME + r")\s*,?\s*(?:Esq\.?\s*,?\s*)?"
                r"\(?(?i:State\s+Bar\s+No|SBN|S\.\s*B\.?\s*(?:N|#))"),
+    # The third-party humans a SERVICE document names, who carry no party-role
+    # anchor at all: the process server the motion turns on and the mailbox-
+    # store manager who accepted the papers. A motion-to-quash batch shipped
+    # the server's name 51 times and the manager's 10 — never keyed, because
+    # every harvest anchor was a party role. Name-first is how declarations
+    # write them ("Michael Rodgers, a registered California process server";
+    # "Lupe Lopez, the store manager"); label-first is how a POS-010 does
+    # ("PROCESS SERVER: ...").
+    re.compile(r"(?P<n>" + _PN_LABEL_NAME + r")[ \t]*,[ \t]*"
+               r"(?:(?i:a|an|the)[ \t]+)?(?:(?i:duly[ \t]+)?(?i:registered)[ \t]+)?"
+               r"(?:(?i:california)[ \t]+)?"
+               r"(?i:process[ \t]+server|notary[ \t]+public|"
+               r"(?:(?:store|branch|office|general)[ \t]+)?manager|"
+               r"custodian[ \t]+of[ \t]+(?:the[ \t]+)?records?|"
+               r"certified[ \t]+interpreter|interpreter)s?(?![\w])"),
+    re.compile(r"(?i:(?:registered[ \t]+)?(?:california[ \t]+)?"
+               r"process[ \t]+server|notary[ \t]+public|"
+               r"(?:store|branch|office|general)[ \t]+manager|"
+               r"custodian[ \t]+of[ \t]+(?:the[ \t]+)?records?)s?"
+               r"[ \t]*[,:][ \t]*\n?[ \t]*(?P<n>" + _PN_LABEL_NAME + r")"),
+    # The POS-010 field that names the server: "Person who served papers:"
+    # then its "a. Name:" sub-field. A bare "Name:" label is far too broad to
+    # anchor on; the compound is not.
+    re.compile(r"(?i:person[ \t]+who[ \t]+served[ \t]+papers)[ \t]*:?[ \t]*\n?"
+               r"[ \t]*(?:[a-z]\.[ \t]*)?(?i:name)[ \t]*:?" + _PN_LABEL_GAP +
+               r"(?P<n>" + _PN_LABEL_NAME + r")"),
 )
 
 
@@ -10313,6 +10425,84 @@ def _pn_label_names(text):
     return out
 
 
+# A LASC case-summary / docket roster row: a name, then the party's role, with
+# nothing else on the line — "DENG XIAOXIA          Plaintiff",
+# "Shi Fiona aka Yaqin Shi | Defendant", "Tomassian Serge   Attorney for
+# Defendant". Every existing harvest anchor is a role PREFIX ("Defendant
+# Travelers"), so a role-SUFFIXED roster matched none of them and a Reply's
+# Exhibit A docket shipped fourteen parties of a prior case untouched — or,
+# worse, half-scrubbed, where one token happened to be keyed from elsewhere
+# ("Xiaoxia Deng" -> "Xiaoxia Ingersoll", 102 times).
+#
+# The row is surname-first, which is why the alias is written the same way and
+# why the whole run is registered as one name: `_pn_append_person_terms`
+# registers every token, so word order costs nothing.
+#
+# The anchor is deliberately narrow — the role word must CLOSE the line, and
+# the name run must be the whole rest of it — because a role word is common in
+# prose and this shape is not. A separator column ("|") is optional; a docket
+# printed as a table extracts with one, a PDF text layer usually with runs of
+# spaces.
+_PN_DOCKET_ROLE = (
+    r"(?:Cross[- ]?)?(?:Plaintiff|Defendant|Petitioner|Respondent|Complainant|"
+    r"Claimant|Appellant|Movant)s?"
+    r"|Attorney[ \t]+for[ \t]+[A-Za-z][\w \t-]*"
+    r"|Judicial[ \t]+Officer|Deputy[ \t]+Clerk|Court[ \t]+Reporter")
+_PN_DOCKET_ROW_RE = re.compile(
+    r"(?m)^[ \t]*(?P<n>[A-Z][A-Za-z.'’-]+(?:[ \t]+[A-Za-z][A-Za-z.'’-]*){1,4})"
+    r"[ \t]*(?:\|[ \t]*|[ \t]{2,})"
+    rf"(?:{_PN_DOCKET_ROLE})[ \t]*\|?[ \t]*$")
+
+
+def _pn_docket_roster_names(text):
+    """['Deng Xiaoxia', 'Shi Fiona aka Yaqin Shi', …] — the party names a
+    docket/case-summary roster lists with their role in the trailing column.
+
+    Screened like any other DOCUMENT harvest: a role word is never a name
+    word, a calendar word is never a party, and every token must be able to
+    stand as a name token on its own. An `aka` run is handed over whole —
+    `_pn_append_name_terms` splits it, and the alias needing its own binding
+    is exactly the half-scrub this exists to prevent."""
+    out, seen = [], set()
+    for m in _PN_DOCKET_ROW_RE.finditer(text):
+        raw = _pn_strip_et_al(re.sub(r"\s+", " ", m.group("n")).strip())
+        words = [w for w in raw.split() if re.search(r"[A-Za-z]", w)]
+        if len(words) < 2:
+            continue
+        if _pn_is_party_role(raw) or _pn_is_public_entity(raw):
+            continue
+        if _pn_is_protected_locality(raw) or _pn_is_never_fake(raw):
+            continue
+        # Every word must be able to be a name: a role word, a calendar word,
+        # a procedural word or a form label anywhere in the run means this is
+        # a heading the column layout happened to leave alone, not a roster.
+        ok, distinctive = True, False
+        for w in words:
+            base = _pn_word_base(w)
+            if base in ("aka", "fka", "dba", "akas"):
+                continue        # an alias joiner, kept for the splitter below
+            if re.fullmatch(r"[A-Za-z]\.?", w):
+                continue        # a middle initial ("Weisskopf Stephen D.")
+            if (not _pn_is_name_token(w) or _pn_is_role_token(w)
+                    or base in _PN_CALENDAR_WORDS
+                    or _pn_is_generic_token(base) or len(base) < 2):
+                ok = False
+                break
+            distinctive = distinctive or len(base) >= _PN_HARVEST_TOKEN_MIN
+        # The LOOSE-harvest length screen (`_PN_HARVEST_TOKEN_MIN`) applies to
+        # the ROW, not to each token: a roster row carries its own
+        # corroboration — a role column and nothing else on the line — the way
+        # a declaration short cite does, and a real two-letter surname is
+        # commonplace ("WU JING", "Yu", "Ng"). One distinctive word is enough
+        # to say this is a name and not the "ET AL." wreckage the screen was
+        # written for.
+        if not ok or not distinctive or raw.lower() in seen:
+            continue
+        seen.add(raw.lower())
+        out.append(raw)
+    return out
+
+
 # ── Court personnel: presiding judge, court staff, department number ─────────
 # A judicial title — the cue that lets a BARE surname be faked ("Judge Whitaker"
 # -> "Judge <fake>"). "hon/honorable/justice/commissioner/referee" are never
@@ -10342,6 +10532,12 @@ _PN_COURT_STAFF_NAME_FIRST_RE = re.compile(
     r"(?P<n>" + _PN_LABEL_NAME + r")[ \t]*,[ \t]*"
     r"(?i:judicial\s+assistant|courtroom\s+assistant|court(?:room)?\s+clerk|"
     r"deputy\s+clerk|court\s+reporter|bailiff|court\s+attendant|"
+    # The e-filing stamp names the Executive Officer/Clerk of Court and the
+    # deputy who accepted the filing. The deputy signs "By: N. Lachikian,
+    # Deputy Clerk" and was covered; the Executive Officer signs with a role
+    # this list did not carry, so that name shipped on every stamped page.
+    r"executive\s+officer(?:\s*/\s*clerk\s+of\s+(?:the\s+)?court)?|"
+    r"clerk\s+of\s+(?:the\s+)?court|"
     r"research\s+attorney|law\s+clerk)(?![\w])")
 
 # A department / courtroom number ("Department 515", "Dept. 515", "Dept 72",
@@ -10743,6 +10939,7 @@ class Pseudonymizer:
             # overlap resolution.
             self.terms.sort(key=lambda t: (-t.priority, -len(t.real)))
             self._trusted_tok_cache = None   # recompute over the new term set
+            self._fuzzy_idx = None
         return added
 
     def register_short_names(self, text):
@@ -10857,6 +11054,7 @@ class Pseudonymizer:
             self._pruned_reals.add(t.real.lower())
         if doomed:
             self._trusted_tok_cache = None
+            self._fuzzy_idx = None
         return [t.real for t in doomed]
 
     def prune_prose_word_terms(self, text):
@@ -10914,6 +11112,7 @@ class Pseudonymizer:
             self._pruned_reals.add(t.real.lower())
         if doomed:
             self._trusted_tok_cache = None
+            self._fuzzy_idx = None
         return [t.real for t in doomed]
 
     def note_authority_cites(self, text):
@@ -11011,6 +11210,7 @@ class Pseudonymizer:
             self._pruned_reals.add(t.real.lower())
         if doomed:
             self._trusted_tok_cache = None
+            self._fuzzy_idx = None
         return [t.real for t in doomed]
 
     def prune_fragment_terms(self, text):
@@ -11045,6 +11245,7 @@ class Pseudonymizer:
             self._pruned_reals.add(t.real.lower())
         if doomed:
             self._trusted_tok_cache = None
+            self._fuzzy_idx = None
         return [t.real for t in doomed]
 
     def register_entity_acronyms(self, text):
@@ -11110,6 +11311,17 @@ class Pseudonymizer:
         one place real names appear off the spreadsheet AND off the pleading
         anchors. Idempotent; call before apply()."""
         for raw in _pn_label_names(text):
+            new = []
+            _pn_append_name_terms(new, raw, "document", self.registry)
+            self._add_terms(new)
+
+    def register_docket_names(self, text):
+        """Register the parties a DOCKET / case-summary roster lists with their
+        role in a trailing column ("DENG XIAOXIA    Plaintiff"). Every other
+        harvest anchors on a role PREFIX, so this shape reached no pass at all
+        and a Reply's Exhibit A shipped a prior case's whole party list.
+        Idempotent; call before apply()."""
+        for raw in _pn_docket_roster_names(text):
             new = []
             _pn_append_name_terms(new, raw, "document", self.registry)
             self._add_terms(new)
@@ -11850,6 +12062,23 @@ class Pseudonymizer:
                 spans.append(m.span())
         return spans
 
+    def _whitelisted_url_spans(self, text):
+        """Spans of WHITELISTED URLs — the citation hosts the authorities
+        appendix emits on purpose, e-filing infrastructure, and `.gov`/`.mil`.
+        The url DETECTOR already skips them, but a bare TOKEN term sees no URL
+        context: a batch that harvested "Google" as an entity rewrote the host
+        of every appendix verification link ("https://scholar.denholm.com/…").
+        Nothing about that is provider-specific — any provider host that is
+        also a name-shaped token ("lexis", "westlaw") is one minted fake away
+        from the same corruption — so the whole whitelisted span joins the
+        protected set. Protection-only: the worst case is a value left
+        unfaked inside a URL the whitelist already calls public."""
+        spans = []
+        for m in _PN_DETECTORS["url"][0].finditer(text):
+            if _pn_url_whitelisted(m.group(0)):
+                spans.append(m.span())
+        return spans
+
     def _keep_spans(self, text):
         """Spans of operator-KEPT values in `text` — a value marked `no` (keep
         the whole value) or the bracketed part of a keep-spec. A candidate
@@ -11933,7 +12162,20 @@ class Pseudonymizer:
         LEAK scans: a party name correctly preserved inside a cited authority
         ("Silvio v. Ford Motor Co.") is the protection working, not a leak —
         counting it quarantined ten clean exports over text that was required
-        to stay."""
+        to stay.
+
+        One-entry memo, because the mask runs the whole citation parser (~115
+        ms on a long export) and every scan over one export asks for the same
+        masked body: `surviving_reals`, then the fuzzy sweep, then the
+        half-scrub sweep. Keyed on the text itself and holding one entry, so
+        it cannot grow with the folder."""
+        if getattr(self, "_mask_memo", (None, None))[0] == text:
+            return self._mask_memo[1]
+        masked = self._mask_uncached(text)
+        self._mask_memo = (text, masked)
+        return masked
+
+    def _mask_uncached(self, text):
         spans = self._protected_citation_spans(text)
         if not spans:
             return text
@@ -12005,7 +12247,8 @@ class Pseudonymizer:
                  + self._display_name_repeat_cands(text))
         return self._substitute(
             text, cands, count=count,
-            protected=self._protected_citation_spans(text) + self._keep_spans(text))
+            protected=self._protected_citation_spans(text) + self._keep_spans(text)
+            + self._whitelisted_url_spans(text))
 
     def apply_lines(self, bodies):
         """Pseudonymize a pleading page's line BODIES as one text, returning one
@@ -12031,7 +12274,8 @@ class Pseudonymizer:
         out = self._substitute(
             joined, cands, reflow=True,
             protected=self._protected_citation_spans(joined)
-            + self._keep_spans(joined)).split("\n")
+            + self._keep_spans(joined)
+            + self._whitelisted_url_spans(joined)).split("\n")
         # _pn_reflow preserves every newline, so this holds; fall back rather
         # than ever hand back the wrong number of lines.
         return out if len(out) == len(bodies) else [self.apply(b) for b in bodies]
@@ -12056,6 +12300,12 @@ class Pseudonymizer:
                               if at else (real, "", ""))
         if not sep:
             return _pn_fake_email(real)
+        # Whatever whitespace the scan inserted is spelling, not identity: the
+        # spaced form and the clean form must take apart to the SAME pieces, or
+        # one address ships under two fakes ("abernathylaw@…" in the caption,
+        # "braddock@…" in the proof of service, both for barrylaw7@gmail.com).
+        local = local.strip()
+        domain = re.sub(r"\s+", "", domain)
         tokens = self.registry.tokens_for("nametok")
         # Only distinctive tokens (>=4 chars) so short/common fragments don't
         # rewrite unrelated letters; longest-first for greedy, non-overlapping
@@ -12138,7 +12388,10 @@ class Pseudonymizer:
         # releases it), so a kept word standing where a party term matches is
         # not in this set and is still reported. That is what keeps the rule
         # "a keep must never leave a real party in the clear" intact.
-        keep = self._keep_spans(text)
+        # Whitelisted URL spans are in the set for the same mirroring reason:
+        # `_substitute` refuses to rewrite inside a verification link, so a
+        # tracked value standing there must not be reported as a leak.
+        keep = self._keep_spans(text) + self._whitelisted_url_spans(text)
         out = []
         for rec in self.records.values():
             if nuclear and str(rec["real"]).lower() in nuclear:
@@ -12221,7 +12474,8 @@ class Pseudonymizer:
             return text
         return self._substitute(
             src, cands,
-            protected=self._protected_citation_spans(src) + self._keep_spans(src))
+            protected=self._protected_citation_spans(src) + self._keep_spans(src)
+            + self._whitelisted_url_spans(src))
 
     def scrub_emails(self, text):
         """Write-side sweep for a tracked E-MAIL address the pattern pass left
@@ -12768,6 +13022,165 @@ class Pseudonymizer:
                 seen.add((c, s.lower()))
                 self.review.append((c, s))
                 out.append((c, s))
+        return out
+
+    def _tracked_name_token_index(self):
+        """{3-gram: {token}} over every tracked PERSON name token, plus the set
+        itself. The index is what makes the fuzzy sweep affordable: comparing
+        every output word against every tracked token is a product, and a
+        single edit inside a token of length >= `_PN_NAME_FOLD_MIN` always
+        leaves at least one 3-gram intact, so a shared shingle is a necessary
+        condition for being within the fold distance. Cached; `_add_terms`
+        drops the cache."""
+        if getattr(self, "_fuzzy_idx", None) is not None:
+            return self._fuzzy_idx
+        toks, idx = set(), {}
+        for (cat, _rl), rec in self.records.items():
+            if cat not in ("person", "person-token", "declarant",
+                           "display-name"):
+                continue
+            for w in str(rec["real"]).split():
+                base = _pn_word_base(w)
+                if len(base) < _PN_NAME_FOLD_MIN or not base.isalpha():
+                    continue
+                toks.add(base)
+                for i in range(len(base) - 2):
+                    idx.setdefault(base[i:i + 3], set()).add(base)
+        self._fuzzy_idx = (idx, toks)
+        return self._fuzzy_idx
+
+    def fuzzy_survivor_scan(self, text):
+        """A word in the FINISHED output that is one OCR slip away from a real
+        name this case tracks — "Michale"/"Miachael" for Michael, "Bivd" in a
+        street the exact pass could not match.
+
+        The exact sweep (`surviving_reals`) answers "is this value still
+        here?", and a scan is only as good as the spelling it was given: a
+        fax-generation scan mangles precisely the values that matter, so a
+        name the tool bound and scrubbed everywhere it was spelled correctly
+        still shipped three times in one batch under the scanner's spellings.
+
+        REPORTED, never repaired. A fuzzy match is a guess, and the whole
+        method is built on the trade that a name left standing costs less than
+        a wrongly rewritten word — a near-miss substitution would rename a
+        cited authority the moment the OCR mangled one. The near-spelling
+        variants the tool is CONFIDENT about are already registered as terms
+        (`_pn_name_variants`); this is the net under them.
+
+        Fold distance scales with token length exactly as the registry's own
+        typo fold does (`_pn_name_fold_dist`), so two genuinely different
+        short surnames are never linked."""
+        idx, toks = self._tracked_name_token_index()
+        if not toks:
+            return []
+        known = self.known_fake_words()
+        src = self._mask_protected_citations(_NFKC(text))
+        out, seen = [], {s.lower() for _c, s in self.review}
+        for m in re.finditer(r"(?<![\w'’])[A-Z][A-Za-z'’-]+(?![\w'’])", src):
+            word = m.group(0)
+            base = _pn_word_base(word)
+            if (len(base) < _PN_NAME_FOLD_MIN or not base.isalpha()
+                    or base in toks          # exact: the other scan's finding
+                    or base in seen
+                    or base in known or _pn_word_is_own_fake(word, known)
+                    or _pn_review_is_neutral(word, known)
+                    or _pn_is_never_fake(word)):
+                continue
+            near = set()
+            for i in range(len(base) - 2):
+                near |= idx.get(base[i:i + 3], set())
+            hit = next((t for t in sorted(near)
+                        if _pn_edit_distance_within(
+                            base, t, _pn_name_fold_dist(base, t),
+                            min_len=_PN_NAME_FOLD_MIN)), None)
+            if hit is None:
+                continue
+            # The ORIGINAL text is EVIDENCE where the run has it: a word that
+            # is not in the source cannot have survived from it.
+            if not self._finding_is_in_original(word):
+                continue
+            seen.add(base)
+            self.review.append(("misspelled name?", word))
+            out.append(("misspelled name?", word))
+        return out
+
+    def name_fake_words(self):
+        """The stand-in words this run minted for PEOPLE — the words a
+        half-scrubbed pair is built out of. Scoped to the person categories on
+        purpose: an entity's fake word ("Relations", "Operations") sits beside
+        ordinary capitalised prose all the time, and reading that as a
+        half-scrub would flag half the document."""
+        words = set()
+        for (cat, _rl), rec in self.records.items():
+            if cat not in ("person", "person-token", "display-name",
+                           "declarant"):
+                continue
+            for w in str(rec["fake"]).split():
+                base = _pn_word_base(w)
+                if base and len(base) >= 3:
+                    words.add(base)
+        return words
+
+    def half_scrubbed_scan(self, text):
+        """A real name word left standing IMMEDIATELY BESIDE one of our own
+        person fakes — "Xiaoxia Ingersoll", "Jiayin Sterling", "Ashely
+        Yeardley". One token of a person's name was bound and the other was
+        not, so the pair reads as fully scrubbed and ships.
+
+        This is the most dangerous shape the tool can emit, and the review
+        scans were structurally blind to it: `_pn_person_review_findings`
+        SUPPRESSES a phrase carrying one of our fakes unless two real name
+        words still stand — a rule written to stop re-reporting a fake dragged
+        along by a non-name prefix ("ASIC Pruett Keswick", "Nolan Relations"),
+        which by construction is exactly one real word too. So the one shape
+        that matters most was the one shape guaranteed to be filtered out.
+
+        Reported, never repaired: which token is real and which is our own is
+        a question only the operator's key can settle, and a `yes` on the row
+        fakes the real remainder alone (`_pn_strip_prior_fakes`) so the pair
+        reverses to the real name instead of growing a second generation.
+
+        The value on the row is the REAL WORD ALONE, for the reason
+        `_real_remainder` exists: "Xiaoxia Ingersoll" reads like the tool
+        flagging its own output, and the question actually in it is
+        "Xiaoxia"."""
+        fakes = self.name_fake_words()
+        if not fakes:
+            return []
+        known = self.known_fake_words()
+        src = self._mask_protected_citations(_NFKC(text))
+        out, seen = [], {s.lower() for _c, s in self.review}
+        # Every ADJACENT pair inside a capitalised run, which `finditer` over a
+        # two-word pattern cannot give: the pairs overlap, so a leading role
+        # word ("Plaintiff Xiaoxia Ingersoll") consumed the survivor and the
+        # pair that mattered was never examined.
+        pairs = []
+        for run in re.finditer(r"(?<![\w'’])[A-Z][A-Za-z'’-]+"
+                               r"(?:[ \t]+[A-Z][A-Za-z'’-]+)+(?![\w'’])", src):
+            ws = run.group(0).split()
+            pairs += list(zip(ws, ws[1:]))
+        for words in pairs:
+            bases = [_pn_word_base(w) for w in words]
+            ours = [b in fakes for b in bases]
+            if sum(ours) != 1:
+                continue        # both ours (clean) or neither (another scan's)
+            real = words[0] if ours[1] else words[1]
+            base = _pn_word_base(real)
+            # The survivor must look like a NAME and not like our own output:
+            # ordinary vocabulary, a role word, a corporate suffix or any word
+            # this run minted anywhere is the "fake dragged by a neighbour"
+            # case the suppression above was written for.
+            if (len(base) < 3 or base in fakes or base in known
+                    or _pn_review_is_neutral(real, known)
+                    or _pn_is_name_token(real) is False
+                    or _pn_is_never_fake(real)
+                    or _pn_is_protected_locality(real)):
+                continue
+            if base in seen:
+                continue
+            seen.add(base)
+            self.review.append(("half-scrubbed name?", real))
+            out.append(("half-scrubbed name?", real))
         return out
 
     def _status(self, rec):
@@ -15640,6 +16053,7 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         pseudonymizer.register_declarant_refs(detect_full)
         pseudonymizer.register_court_names(detect_full)
         pseudonymizer.register_dba_names(detect_full)
+        pseudonymizer.register_docket_names(detect_full)
         pseudonymizer.register_firm_names(detect_full)
         pseudonymizer.register_label_names(detect_full)
         pseudonymizer.register_short_names(detect_full)
@@ -15747,6 +16161,13 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         # High-recall tier: role-anchored name shapes in the output that are
         # neither our fakes nor common words — the "unknown name" net.
         review = list(review) + pseudonymizer.unknown_name_scan(body)
+        # A word one OCR slip away from a real name this case tracks. Runs
+        # BEFORE the half-scrub scan so the more specific class owns the row
+        # when a mangled survivor also stands beside one of our fakes.
+        review = list(review) + pseudonymizer.fuzzy_survivor_scan(body)
+        # A real name word standing beside one of our own person fakes — the
+        # half-scrub, which the scans above are structurally blind to.
+        review = list(review) + pseudonymizer.half_scrubbed_scan(body)
         # Adversarial re-identification pass: a bar number / VIN / reservation
         # shape in the OUTPUT that isn't one of our own fakes. Sorted first —
         # these invert the map in one lookup, so they outrank ordinary review.
@@ -15869,6 +16290,7 @@ def _pn_learn_from_text(pseudonymizer, text, stem=None):
     if stem:
         pseudonymizer.register_declarant_refs(re.sub(r"[_\-]+", " ", stem))
     pseudonymizer.register_dba_names(text)
+    pseudonymizer.register_docket_names(text)
     pseudonymizer.register_firm_names(text)
     pseudonymizer.register_label_names(text)
     pseudonymizer.register_short_names(text)
@@ -16090,6 +16512,8 @@ def _write_word_text_version(src_path, text, log, pseudonymizer=None,
         review = list(pseudonymizer.review_scan(body))
         review += pseudonymizer.review_definition_survivors(text, body)
         review += pseudonymizer.unknown_name_scan(body)
+        review += pseudonymizer.fuzzy_survivor_scan(body)
+        review += pseudonymizer.half_scrubbed_scan(body)
         review = pseudonymizer.reid_scan(body) + review
         if review:
             shown = "; ".join(f"{c}: {s}" for c, s in review[:8])

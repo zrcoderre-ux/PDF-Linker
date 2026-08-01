@@ -323,6 +323,38 @@ the party), so its row stays reversible.
   as often as capitalized is prose — no hand-kept gazetteer is ever complete)
   and `prune_fragment_terms` (a candidate the corpus only ever writes INSIDE a
   longer word is an OCR fragment).
+- **The people a SERVICE document names carry no party role, and a DOCKET names
+  its parties role-LAST.** Every harvest anchor was a role PREFIX ("Defendant
+  Travelers", "Attorneys for X"), so two whole populations reached no pass at
+  all. A motion-to-quash batch shipped the process server's name 51 times and
+  the mailbox-store manager's 10 — neither is a party, and nothing else in the
+  document says who they are except their JOB. `_PN_LABEL_RES` now carries both
+  orders of the service roles (name-first, "Michael Rodgers, a registered
+  California process server"; label-first, "PROCESS SERVER:") plus the POS-010
+  "Person who served papers" → "a. Name:" pair; a bare "Name:" is far too broad
+  to anchor on and the compound is not. `_pn_docket_roster_names` reads the
+  LASC case-summary shape (`DENG XIAOXIA<tab>Plaintiff`), where the anchor is
+  deliberately narrow — the role word must CLOSE the line and the name run must
+  be the whole rest of it — because a role word is common in prose and that
+  shape is not. The row's own structure is the corroboration, so the
+  `_PN_HARVEST_TOKEN_MIN` screen applies to the ROW and not to each token: one
+  distinctive word is enough, and a real two-letter surname ("WU JING") is not
+  refused. Missing these is how a Reply's Exhibit A shipped a prior case's
+  whole party list — or worse, HALF of each name, wherever one token happened
+  to be keyed from elsewhere.
+- **A REGISTRATION number is only safe to track behind its LABEL.** "a
+  registered California process server, Registration No. 833, San Bernardino
+  County" names one person in the county's public registry, and the pair
+  shipped sixteen times. But a bare 3-digit number is a page, an exhibit or a
+  paragraph counter far more often than an identifier — the reasoning the
+  account-id screen already states — so a SHORT value registers as the LABELLED
+  PHRASE ("Registration No. 833" -> "Registration No. 417"), which is the form
+  a registry lookup needs anyway, and a 4+ digit bond number still registers
+  bare. The e-filing stamp is the same shape of miss: the deputy who accepted
+  the filing signs "By: N. Lachikian, Deputy Clerk" and was covered, while the
+  Executive Officer/Clerk of Court signs with a role
+  `_PN_COURT_STAFF_NAME_FIRST_RE` did not carry, so that name shipped on every
+  stamped page.
 - **A fake is never the name of an AUTHORITY the corpus cites.** "Stockton" is
   in the name pool and the corpus cited *Stockton Theatres, Inc. v. Palermo*
   (1956) 47 Cal.2d 469. The citation survives the forward pass — that is what
@@ -450,6 +482,30 @@ the party), so its row stays reversible.
 - **Detectors** (`_PN_DETECTORS`: ssn/email/phone/address/url) run as regex over
   the text in `apply()`; `_detector_cands`/`_term_cands` produce candidates,
   highest-priority longest-non-overlapping wins.
+- **Every OCR spelling of one E-MAIL address is ONE address.** A fax scan
+  spaced the at-sign out ("barrylaw7 @gmail.com"), split the TLD
+  ("BARRYLAW7@GMAIL. COM") and read `g` as `q`; the detector missed the first
+  two outright, so the real address shipped in clear text — and the spellings
+  it did catch each seeded their own fake, so ONE address went out under three
+  ("abernathylaw@", "braddock@", and itself). Half-scrubbed and
+  multiply-mapped at once, which is the pair of failures the whole email path
+  exists to prevent. `_PN_AT_SIGN` now absorbs a step of horizontal
+  whitespace; the TLD tolerates one after the final dot but only for a KNOWN
+  TLD, or "bob@acme. Next" would swallow the next sentence's first word; and
+  `_pn_email_canon` is what every fake derivation seeds on, so spelling can no
+  longer fork identity. `_fake_email` strips the same whitespace before taking
+  the address apart, since the two must agree on what one looks like.
+- **A whitelisted URL is protected as a SPAN, not merely skipped by the
+  detector** (`_whitelisted_url_spans`, in `_substitute`'s protected set beside
+  the citation spans). `_detector_cands` always refused a whitelisted host, but
+  a bare TOKEN term sees no URL context: a batch that harvested "Google" as a
+  name rewrote the host of every appendix verification link
+  ("scholar.denholm.com"), and nothing about that is provider-specific — any
+  provider host that is also a name-shaped token ("lexis", "westlaw",
+  "justia") is one minted fake away from the same corruption. Per the mirroring
+  rule, `_surviving_records` ignores the same spans: a value standing where
+  `_substitute` refuses to touch must never be REPORTED, or the export is
+  quarantined by a leak nothing can ever clear.
 - **A `display-name` record is a record, not a term.** `_display_name_cands`
   recognises the NAME in a "Name <addr@domain>" pair and mints it into
   `self.records` — enough for `surviving_reals` to report it and `write_key` to
@@ -555,12 +611,61 @@ the party), so its row stays reversible.
   the pre-scan re-reads the real name from the PDF. An EXPLICIT typed
   replacement is left as the operator's deliberate choice, but warns when its
   value carries one of our fakes. The
-  distinctness gate is the `_PN_COMMON_WORDS` gazetteer (~500 words: high-
+  distinctness gate is the `_PN_COMMON_WORDS` gazetteer (~600 words: high-
   frequency English plus motion-practice vocabulary), so a title-case argument
   heading ("Defendant Cannot Establish...", "For Age Discrimination",
   "Voluntarily Resigned") reads as boilerplate, not a party — but it must never
   swallow a word that is also a real surname in the case (green/smart/raven/
   moore all leaked here) or a fake-pool word.
+  **The gazetteer is only ever as wide as the motion types it was built from.**
+  It grew out of demurrer / summary-judgment / arbitration / employment corpora
+  and carried NO service-of-process vocabulary, so a motion to quash had the
+  vocabulary of its own subject matter replaced by surnames: "NOTICE AND MOTION
+  TO MABRY SERVICE OF SUMMONS" (Quash), "ELDRIDGE OF SERVICE" (Proof), "a
+  registered California process radley" (Server, harvested from a capitalized
+  "Process Server Institute" and then applied case-insensitively across four
+  files), and `scholar.denholm.com` (Google). Adding the vocabulary is
+  necessary and NOT sufficient — a loaded key row is a LIVE term, so the words
+  came straight back on every re-run, the same loop the generic `*-token` rule
+  exists for. `_pn_load_key` now declines a single-word HARVESTED person/entity
+  row whose word is generic (memo still seeded, so a delivered export stays
+  reversible); an AUTHORITATIVE row is never declined. Vocabulary that DOUBLES
+  as a real surname (Bond, Branch, Store, Manager) goes in
+  `_PN_SERVICE_GENERIC_WORDS`, not `_PN_COMMON_WORDS`, for the reason
+  `_PN_FORM_LABEL_WORDS` states: withheld from ever becoming a bare token, still
+  reportable when a party really carries the name. Expect the next motion type
+  to reveal the next missing block.
+- **A HALF-SCRUBBED pair is the most dangerous thing the tool can emit, and the
+  scans were structurally blind to it** (`half_scrubbed_scan`). "Xiaoxia
+  Ingersoll" shipped 102 times in one batch, "Jiayin Sterling" in all seven
+  files: one token of a person's name bound, the other not, so the pair READS
+  as fully scrubbed and a reviewer skimming for leaks moves on. The blindness
+  is structural, not incidental — the suppression above drops a phrase carrying
+  one of our fakes unless TWO real name words still stand, a rule written for a
+  fake dragged along by a non-name prefix, which by construction leaves exactly
+  one. So the shape that matters most was the one guaranteed to be filtered
+  out. The scan reports the pair as its REAL REMAINDER alone (the reason
+  `_real_remainder` exists: "Xiaoxia Ingersoll" reads like the tool flagging its
+  own output, and the question actually in it is "Xiaoxia"), scoped to PERSON
+  fakes because an entity's fake word ("Relations", "Operations") stands beside
+  capitalized prose constantly. Reported, never repaired — which token is real
+  is a question only the key can settle, and a `yes` fakes the remainder alone.
+- **A sweep is only as good as the SPELLING it was handed**
+  (`fuzzy_survivor_scan`). `surviving_reals` answers "is this value still
+  here?", and a fax-generation scan mangles precisely the values that matter: a
+  process server's name, bound and scrubbed everywhere the page spelled it
+  correctly, still shipped as "Michale Rodgers" and "Miachael Rodgers". The
+  near spellings the tool is CONFIDENT about are already terms
+  (`_pn_name_variants`); this is the net under them, at the same length-scaled
+  fold distance the registry's own typo fold uses (`_pn_name_fold_dist`).
+  REPORTED, never repaired — a near-miss substitution would rename a cited
+  authority the moment the OCR mangled one, which is the trade the whole method
+  refuses. Affordable via a 3-gram index over tracked tokens: a single edit in
+  a token of length ≥ `_PN_NAME_FOLD_MIN` always leaves one shingle intact, so
+  a shared shingle is a necessary condition and the comparison is never a
+  product. The citation mask is now memoized (one entry, keyed on the text)
+  because three scans over one export ask for the same masked body and the mask
+  runs the whole citation parser.
   (worksheet tab `LEAKS`; the old `pdf_linker_leaks.xlsx` name is still READ so
   a folder triaged under a prior version keeps its decisions). Columns lead
   with the flagged **Value** then its **Fix?** decision, with File/Type/Where/

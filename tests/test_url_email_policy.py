@@ -157,3 +157,85 @@ def test_scrub_emails_is_idempotent_and_leaves_other_text_alone():
     body = pz.apply("Contact rsmith@smithassoc.com; see www.courts.ca.gov.")
     assert pz.scrub_emails(pz.scrub_emails(body)) == pz.scrub_emails(body)
     assert "www.courts.ca.gov" in pz.scrub_emails(body)
+
+
+# ── a whitelisted URL is protected from TOKEN passes too ────────────────────
+# The url detector always skipped whitelisted hosts, but a bare token term
+# sees no URL context: a batch that harvested "Google" as an entity rewrote
+# every appendix verification link ("https://scholar.denholm.com/…"). The
+# whole whitelisted span now joins the protected set, exactly like a citation.
+
+def _pz_with_names(*names):
+    reg = P._PnFakeRegistry()
+    terms = P._pn_build_terms(list(names), [], [], registry=reg)
+    return P.Pseudonymizer(terms, DET, registry=reg)
+
+
+def test_google_never_binds_a_bare_token_at_all():
+    # First line of defence is the gazetteer: "google"/"scholar" are ordinary
+    # vocabulary now, so no harvest can mint the token that rewrote the links.
+    z = _pz_with_names("Google Scholar Institute")
+    assert not any(t.real.lower() in ("google", "scholar") for t in z.terms)
+
+
+def test_a_whitelisted_link_survives_a_name_shaped_token():
+    # Second line: even when a real party's own token appears inside a
+    # whitelisted host (a declarant named "Justia" / law.justia.com), the span
+    # is protected like a citation, so the verification link stays
+    # byte-for-byte. Without the protection this exact text shipped as
+    # "law.aldous.com" — the bare person-token fired inside the host.
+    z = _pz_with_names("Justia Ramirez")
+    assert any(t.real.lower() == "justia" for t in z.terms)  # token really binds
+    url = "https://law.justia.com/cases/california/court-of-appeal/"
+    out = z.apply(f"Declarant Justia Ramirez cites {url} in support.")
+    assert url in out, "a whitelisted verification link must never be rewritten"
+    assert "Justia Ramirez" not in out  # the declarant is still faked
+
+
+def test_a_protected_url_survivor_is_not_reported_as_a_leak():
+    # The scan must stay mirrored with the substitution side: a value standing
+    # inside a span _substitute refuses to touch must not be reported, or the
+    # export is quarantined by a leak nothing can ever clear.
+    z = _pz_with_names("Justia Ramirez")
+    out = z.apply("See https://law.justia.com/cases/california/ for the cite.")
+    survivors = {s.lower() for s in z.surviving_reals(out)}
+    assert not any("justia" in s for s in survivors), survivors
+
+
+# ── OCR spellings of one address are ONE address ────────────────────────────
+# A fax-generation scan shipped "barrylaw7 @gmail.com" in clear text (space
+# before the @ missed the detector), "BARRYLAW7@GMAIL. COM" (TLD split), and
+# minted THREE different fakes for the one address across the batch. The
+# at-sign tolerates a step of whitespace, the TLD tolerates one after the dot
+# (known TLDs only), and every fake derivation seeds on the canonical form.
+
+def _email_fakes(*spellings):
+    reg = P._PnFakeRegistry()
+    z = P.Pseudonymizer([], DET, registry=reg)
+    outs = [z.apply(f"Contact {s} today.") for s in spellings]
+    return z, outs
+
+
+@pytest.mark.parametrize("spelling", [
+    "barrylaw7 @gmail.com",
+    "barrylaw7@ gmail.com",
+    "BARRYLAW7@GMAIL. COM",
+    "barrylaw7(a)gmail.com",
+])
+def test_an_ocr_spelling_of_an_address_is_still_faked(spelling):
+    _z, (out,) = _email_fakes(spelling)
+    assert "barrylaw7" not in out.lower(), out
+
+
+def test_every_spelling_of_one_address_draws_one_fake():
+    z, _outs = _email_fakes("barrylaw7@gmail.com", "barrylaw7 @gmail.com",
+                            "BARRYLAW7@GMAIL. COM", "barrylaw7(a)gmail.com")
+    fakes = {r["fake"].lower() for r in z.records.values()
+             if r["category"] == "email"}
+    assert len(fakes) == 1, f"one real address shipped under {sorted(fakes)}"
+
+
+def test_a_sentence_boundary_is_not_read_as_a_spaced_tld():
+    # "bob@acme. Next sentence" — "Next" must not be swallowed as a TLD.
+    _z, (out,) = _email_fakes("bob@acme. Next sentence follows.")
+    assert "Next sentence follows." in out
