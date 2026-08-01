@@ -244,7 +244,13 @@ the party), so its row stays reversible.
   like "Adler"/"Alder" is ONE slip, not two subs) and the allowed distance
   **scales with length** (`_pn_name_fold_dist`: 1 for short names, 2 at ≥10 chars,
   3 at ≥16 — a long token plausibly carries more typos, and two genuinely
-  different long surnames rarely sit that close). A multi-character length delta
+  different long surnames rarely sit that close). Note what widening the
+  distance DOES to an export: a variant that no longer draws a clean pool word
+  now draws a deliberately misspelled one, so the count of misspelled-looking
+  words in the delivered text goes UP with the fold's reach. That is the design
+  working, and it is also indistinguishable from the scan getting it wrong —
+  see `_report_minted_misspellings` in the OCR section, which is what tells the
+  two apart. A multi-character length delta
   is mirrored (`reps`), so a real that gained two letters gets a fake that grew by
   two. A **welded** token (a column-splice glued two names, "ADLERMICHAEL" =
   "ADLER"+"MICHAEL") folds onto the CONCATENATION of the two parts' fakes
@@ -1145,6 +1151,28 @@ survive to fail.
   resolution and retried, never skipped, never hangs (the earlier 0%-CPU hang).
 - Env vars: `PDF_LINKER_OCR_WORKERS` (default cores-1, cap 10),
   `PDF_LINKER_OCR_TIMEOUT` (default 600s).
+- **A misspelling in an export has TWO possible authors, and the run says which
+  one wrote each** (`_report_minted_misspellings`). The typo fold mints one on
+  purpose — a source that spells a party several ways gives each spelling its
+  own reversible stand-in, and a typo of the one fake is what keeps them
+  reading as one person — while the scan mangling a word means the page wants
+  re-scanning. Opposite remedies, identical shape in the export. Worse, the two
+  converge on ONE letter: `_PN_CONFUSABLES` maps `u`, `w` AND `y` onto `v`, the
+  only letter three others collapse to (and only `v -> u` goes back), so "a y
+  came out as a v" is simultaneously the commonest thing the fold emits and the
+  signature of a page recognised below `_OCR_LOW_DPI`, where a thin descender
+  is the first stroke lost. Measured on this repo's own settings — Tesseract
+  5.3.4, `_ocr_base_dpi`, `_OCR_CONFIG` — a clean or lightly-degraded render is
+  error-free at 300 and 198 dpi and stays so at 150; a degraded one breaks down
+  at 150 (21 words wrong) and collapses at 99 (24-43, the wrong words being
+  exactly "Ververty" for Beverly, "Vurtiey" for Yardley, "Vextesday's" for
+  Yesterday's). So the grind's own low-dpi REVIEW line and this report are, in
+  combination, the whole diagnosis: a misspelling NAMED here is ours and
+  correct, one that is not came off the page. Reported at INFO — nothing in it
+  is a fault, and saying so is the entire point. The same A/B measured
+  `preserve_interword_spaces=1` as **exactly neutral** on character
+  recognition (identical error counts in every dpi × degradation cell); it
+  buys the spacing it is there for and costs no accuracy.
 
 ## Diagnosing a run that just stops
 

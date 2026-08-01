@@ -6166,6 +6166,18 @@ class _PnFakeRegistry:
         # the authority. See `_pn_authority_tokens`.
         self.avoid_words = set()
         self._domain_reals = {}  # real host -> fake, for OCR-typo folding
+        # Every stand-in this run minted as a DELIBERATE MISSPELLING of another
+        # stand-in: (real, fake, base_real, base_fake, op). The typo fold below
+        # is working as designed when it does this — a source that spells one
+        # name several ways must get a distinct, reversible stand-in for each,
+        # and mirroring the slip is what keeps them reading as one person. But
+        # the result is indistinguishable, in the export, from the scan getting
+        # it wrong: `_PN_CONFUSABLES` turns a y into a v, and so does a 150-dpi
+        # recognition of the same letter. An operator reading "Yeardlev" cannot
+        # tell which produced it, and the two have opposite remedies — one is
+        # correct output, the other means the page needs re-scanning. So the
+        # run SAYS which words are its own (see `_check_key_completeness`).
+        self.typo_folds = []
         # The operator's NUCLEAR keeps for this run (`{braced}` in a Fix? or
         # Replacement cell), lower-cased word bases. They ride on the registry
         # because every composing faker already receives one, so the run's
@@ -6241,6 +6253,8 @@ class _PnFakeRegistry:
                     reps = 1
                 for cand in _pn_typo_variants(prev_fake, op, low, reps):
                     if cand.lower() not in self._used:
+                        self.typo_folds.append(
+                            (real, cand, prev, prev_fake, op))
                         return self._take(key, cand)
                 break     # a near-variant was found but yielded no free typo
         # A HYPHENATED compound surname is two name components, not one word,
@@ -13498,7 +13512,47 @@ class Pseudonymizer:
             log.warning(f"  Pseudonymize: the stand-in {fake!r} (minted for "
                         f"{real!r}) stands in an export with no key row; check "
                         f"it is the ordinary word and not an unreversible fake")
+        self._report_minted_misspellings(log)
         return applied
+
+    def _report_minted_misspellings(self, log):
+        """Name every stand-in this run minted as a DELIBERATE MISSPELLING.
+
+        **A misspelling in the export has two possible authors, and they have
+        opposite remedies.** The typo fold mints one on purpose: a source that
+        spells a party several ways — "Palladino", "Palladina", "Pallading" —
+        must give each spelling its own reversible stand-in, and folding them
+        onto typos of the one fake ("Paget", "Pagct", "Poget") is what keeps
+        them reading as one person instead of three. That is correct output.
+        The scan mangling a word is not, and means the page wants re-scanning
+        or a higher-resolution pass.
+
+        In the export the two are the same shape. `_PN_CONFUSABLES` maps y, u
+        and w all onto `v` — it is the only letter three others collapse to —
+        so "a y came out as a v" is the commonest thing the fold produces AND
+        the signature of a page recognised below `_OCR_LOW_DPI`, where a thin
+        descender is the first thing lost. Reading the export, an operator
+        cannot tell "Yeardlev" from "Yeardlev". Reading the log, they can: what
+        is named here is OURS, and a misspelling that is NOT named here came
+        off the page.
+
+        Reported at INFO — nothing here is a fault, and saying so is the whole
+        point."""
+        folds = getattr(self.registry, "typo_folds", [])
+        if not folds:
+            return
+        log.info(f"  Pseudonymize: {len(folds)} stand-in(s) minted as a "
+                 f"deliberate misspelling of another stand-in — the source "
+                 f"spells one name more than one way, so each spelling gets "
+                 f"its own reversible typo. These misspellings are OURS; one "
+                 f"NOT listed here came off the page (a page recognised below "
+                 f"{_OCR_LOW_DPI} dpi is named in this log too).")
+        for real, fake, base_real, base_fake, _op in folds[:8]:
+            log.info(f"      {fake!r} (for {real!r}) is a typo of {base_fake!r} "
+                     f"(for {base_real!r})")
+        if len(folds) > 8:
+            log.info(f"      (+{len(folds) - 8} more; every one is a row in "
+                     f"the key)")
 
     def write_key(self, path, log):
         """Write the REVERSAL key the Word macro consumes. A row is written when
