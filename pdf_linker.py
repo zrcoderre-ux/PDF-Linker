@@ -11556,8 +11556,26 @@ class Pseudonymizer:
         if _PN_AUTHORITY_BREAK_RE.search(left[v.end():]):
             return False
         right = text[e:e + _PN_AUTHORITY_WINDOW]
-        if not (_PN_AUTHORITY_YEAR_RE.search(right)
-                or _PN_AUTHORITY_REPORTER_RE.search(right)):
+        anchors = [m for m in (_PN_AUTHORITY_YEAR_RE.search(right),
+                               _PN_AUTHORITY_REPORTER_RE.search(right)) if m]
+        if not anchors:
+            return False
+        # The anchor must belong to THIS name's citation. Both windows are 80
+        # characters wide, so they happily straddle two different cites — and a
+        # real party name sitting between them was read as a cited party and
+        # left in the clear. A brief's own argument heading does exactly that:
+        #
+        #   E. Kremerman v. White Is Inapposite — and Actually Supports…
+        #   Liu leans heavily on Kremerman v. White (2021) 71 Cal.App.5th 358
+        #
+        # "Liu" is the DEFENDANT's real name. It has a " v. " to its left (from
+        # the heading) and a "(2021)" to its right (from the cite that follows),
+        # and on that evidence the guard refused to scrub it — the export shipped
+        # the defendant's name, the leak scan reported it, and Apply Leak Fixes
+        # could never clear it. Another " v. " between the name and the anchor
+        # proves the anchor is a LATER citation's, not this name's.
+        anchor = min(anchors, key=lambda m: m.start())
+        if _PN_AUTHORITY_V_RE.search(right[:anchor.start()]):
             return False
         lead = re.search(r"([A-Za-z][A-Za-z.,'’&\- ]{0,60})$", left[:v.start()])
         if (lead and self._side_is_trusted(lead.group(1))
@@ -11599,6 +11617,38 @@ class Pseudonymizer:
         # token welded into one otherwise gets rewritten inside the cite.
         # Protection-only, same as the WL run above.
         for rx in (_PN_INRE_LITIG_RE, _PN_CASES_RUN_RE):
+            for m in rx.finditer(text):
+                spans.append(m.span())
+        # A SHORT-FORM repeat of a case cited in full elsewhere in this same
+        # text. A brief names an authority again in an argument heading and in
+        # prose, without the reporter — "E. Kremerman v. White Is Inapposite" —
+        # and there is nothing there for the parser to read and no year or
+        # reporter for `_in_authority_context` to anchor on, so the ordinary
+        # party term renamed the decision: one opposition shipped a heading
+        # reading "Kremerman v. Yardley" while the full cite two lines below
+        # kept the real name. Nothing downstream can catch that; the tables of
+        # authorities are built from the full cites.
+        #
+        # The full cite is the evidence, so this costs no guesswork: the pair
+        # is protected only where the SAME text already spells it out with a
+        # reporter. Protection-only, and the caption exemption above applies
+        # equally — a "X v. Y" whose sides are both this case's parties is the
+        # document's own caption and is still replaced.
+        for c in cites:
+            if c.get("kind") != "case" or c.get("plaintiff") is None:
+                continue
+            p, d = c.get("plaintiff", ""), c.get("defendant", "")
+            if not p or not d:
+                continue
+            if self._side_is_trusted(p) and self._side_is_trusted(d):
+                continue
+            body = (r"\s+".join(re.escape(w) for w in p.split())
+                    + r"\s+vs?\.?\s+"
+                    + r"\s+".join(re.escape(w) for w in d.split()))
+            try:
+                rx = re.compile(rf"(?<!\w)(?:{body})(?!\w)", re.IGNORECASE)
+            except re.error:
+                continue
             for m in rx.finditer(text):
                 spans.append(m.span())
         return spans
