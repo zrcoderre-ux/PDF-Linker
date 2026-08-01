@@ -12367,39 +12367,93 @@ class Pseudonymizer:
                 return True
         return False
 
-    def confirm_findings(self, log=None):
-        """Drop every leak / review finding the ORIGINAL text disproves, and say
-        how many. Returns the dropped values.
+    def _real_remainder(self, value):
+        """`value` with this run's OWN STAND-INS removed — the part that is
+        actually a question for the operator. "" when nothing real is left.
 
-        This is the one check that can tell the tool's own output from the
-        document's, by evidence rather than inference — so it also stops such a
-        value being marked `yes` and minted into an authoritative term, which is
-        how one folder came to rename a cited decision."""
+        Only a word that is BOTH one of our fakes AND absent from the original
+        is removed, which is what makes the removal safe: a stand-in that does
+        appear in the source is not this run's doing and stays. Checking only
+        our own fakes (rather than every word) is also the whole search — a word
+        that was never minted here cannot be our output whatever the original
+        says.
+
+        Reporting the remainder, rather than keeping or dropping the phrase
+        whole, is what makes the worksheet answerable. "Ashely Langley" is our
+        fake beside the complaint's own typo of the defendant's given name: as
+        printed it reads like the tool flagging its own output, and the operator
+        cannot see that the real question is "Ashely". Same for the half-
+        scrubbed pair the key-poisoning rule exists for — "Melissa Sable" is a
+        row about "Melissa"."""
+        known = self.known_fake_words()
+        # No original recorded is NO EVIDENCE, not evidence of absence — without
+        # it every stand-in would look absent and every finding would be gutted.
+        if not known or not self._orig_words:
+            return str(value)
+        out, removed = [], False
+        for piece in re.split(r"(\W+)", _NFKC(str(value))):
+            base = _pn_word_base(piece)
+            if (base and _pn_word_is_own_fake(piece, known)
+                    and base not in self._orig_words):
+                removed = True
+                continue
+            out.append(piece)
+        rest = re.sub(r"\s+", " ", "".join(out)).strip(" \t,.;:'\"()[]-")
+        if not removed:
+            return str(value)
+        return rest if re.search(r"[A-Za-z0-9]", rest) else ""
+
+    def confirm_findings(self, log=None):
+        """Reduce every leak / review finding to the part the ORIGINAL text can
+        account for, and drop the ones it disproves entirely. Returns the values
+        that went away.
+
+        The one check that can tell the tool's own output from the document's by
+        EVIDENCE rather than inference — so it also stops such a value being
+        marked `yes` and minted into an authoritative term, which is how one
+        folder came to rename a cited decision."""
         if not self._orig_words:
             return []
-        dropped = set()
+        dropped, seen = set(), set()
         keep_rows = []
         for row in self.leak_report:
-            if self._finding_is_in_original(row.get("value", "")):
-                keep_rows.append(row)
-            else:
-                dropped.add(str(row.get("value", "")))
+            value = str(row.get("value", ""))
+            rest = self._real_remainder(value)
+            if not rest:
+                dropped.add(value)
+                continue
+            if rest != value:
+                dropped.add(value)          # the old phrasing is gone either way
+                row = {**row, "value": rest}
+            key = (row.get("file"), rest.lower())
+            if key in seen:
+                continue                    # two phrasings reduced to one row
+            seen.add(key)
+            keep_rows.append(row)
         self.leak_report = keep_rows
-        keep_review = []
+        keep_review, seen_r = [], set()
         for c, s in self.review:
-            if self._finding_is_in_original(s):
-                keep_review.append((c, s))
-            else:
+            rest = self._real_remainder(str(s))
+            if not rest:
                 dropped.add(str(s))
+                continue
+            if (c, rest.lower()) in seen_r:
+                continue
+            seen_r.add((c, rest.lower()))
+            keep_review.append((c, rest))
         self.review = keep_review
-        gone = {v.lower() for v in dropped}
+        # `leaked` holds tracked REAL values, so a remainder makes no sense
+        # there — but a value the original never had must not gate delivery.
+        gone = {v.lower() for v in dropped
+                if not self._real_remainder(v)}
         self.leaked -= gone
         for f, vals in list(self.leaked_by_file.items()):
             self.leaked_by_file[f] = vals - gone
         if dropped and log:
-            log.info(f"  Pseudonymize: {len(dropped)} flagged value(s) dropped — "
-                     f"absent from the ORIGINAL text, so they are this run's own "
-                     f"output and not a leak ({', '.join(sorted(dropped)[:6])})")
+            log.info(f"  Pseudonymize: {len(dropped)} flagged value(s) reduced to "
+                     f"their real part or dropped — this run's own stand-ins are "
+                     f"absent from the ORIGINAL text and are not leaks "
+                     f"({', '.join(sorted(dropped)[:6])})")
         return sorted(dropped)
 
     def note_leaks(self, reals):

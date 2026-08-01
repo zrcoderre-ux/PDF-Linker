@@ -472,13 +472,23 @@ the party), so its row stays reversible.
   triage worksheet twice, once dragged along by a real misspelling and once
   inside an argument heading. A worksheet row can be marked `yes`, which mints
   the value into an authoritative `--term`, which is how a cited decision came
-  to be renamed. Checked WORD BY WORD, never on the whole phrase, because the
-  finding that matters most is HALF-scrubbed ("Ashely Langley" is our fake
-  beside the complaint's own typo of the defendant's given name, and "Ashely" IS
-  in the original) — plus an alnum-reduced whole-value check so a welded
-  original still counts. Fed by the "original text files" option on a full run
-  and read back off that folder by `--fix-leaks`, which never reopens the PDFs.
-  With no original recorded there is no evidence and nothing is dropped.
+  to be renamed. The finding is REDUCED to its real remainder
+  (`_real_remainder`), not kept-or-dropped whole, because that is what makes the
+  worksheet answerable: "Ashely Langley" reads like the tool flagging its own
+  output, and the question actually in it is "Ashely" — the complaint's own typo
+  of the defendant's given name, which is why it survived the scrub.
+  ("Langley" alone reduces to nothing and the row goes; "Langley Submitted No"
+  reduces to "Submitted No".) A word is removed only when it is BOTH one of our
+  fakes AND absent from the original, so a stand-in the source happens to
+  contain is never stripped; and checking only our OWN fakes is the whole
+  search, since a word this run never minted cannot be its output whatever the
+  original says. A row left with nothing real stops gating delivery, and two
+  phrasings that reduce to the same remainder merge into one row. Fed by the
+  "original text files" option on a full run and read back off that folder by
+  `--fix-leaks`, which never reopens the PDFs. With no original recorded
+  `_real_remainder` returns the value untouched — no evidence is not evidence of
+  absence, and without that guard every stand-in would look absent and every
+  finding would be gutted.
 - **Two-tier leak detection**: `surviving_reals` (a tracked real still present)
   and the high-recall REVIEW scans (`review_scan`, `unknown_name_scan`,
   `reid_scan`) surface anything name-shaped for human triage in `LEAKS.xlsx`.
