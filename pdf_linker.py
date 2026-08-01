@@ -15303,6 +15303,8 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
     if not rows:
         _remove((xlsx, txt, *stale))
         log.info("  No potential leaks flagged — no review worksheet written.")
+        # Nothing to triage, so the unscrubbed cache has done its job.
+        _clear_originals_cache(folder)
         return
 
     def _attention(r):        # 0 = needs a look, 2 = resolved -> bottom
@@ -15693,25 +15695,33 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
     log.info(f"  Wrote {'pseudonymized ' if pseudonymizer else ''}text "
              f"version: {text_subdir}/{txt_path.name}")
 
-    # Optional UNSCRUBBED reference copy in a sibling folder, under the real
-    # filename. Real names by design → never tracked for the leak gate, never
-    # quarantined. Written only when pseudonymization is actually running (with
-    # it off, the single export above already IS the original).
-    if original_subdir and pseudonymizer is not None:
-        orig_dir = pdf_path.parent / original_subdir
-        orig_path = orig_dir / (pdf_path.stem + ".txt")
-        try:
-            orig_dir.mkdir(parents=True, exist_ok=True)
-            original = build_body(None)
-            orig_path.write_text(original, encoding="utf-8", newline="\n")
-            # …and keep it as EVIDENCE: a flagged value absent from here is this
-            # run's own output, not a leak (`confirm_findings`).
-            pseudonymizer.note_original(original)
-            log.info(f"  Wrote original text version: "
-                     f"{original_subdir}/{orig_path.name}")
-        except OSError as e:
-            log.warning(f"  Could not write original text version "
-                        f"(non-fatal): {e}")
+    # The UNSCRUBBED text, ALWAYS built when pseudonymization is running. It is
+    # pure string assembly over pages already extracted — no OCR, no second
+    # read — and it is the evidence `confirm_findings` needs to tell this run's
+    # own stand-ins from the document's own words. Whether a READABLE COPY goes
+    # into the case folder stays exactly what `original_text_subfolder` says;
+    # the check must not depend on an output preference.
+    if pseudonymizer is not None:
+        original = build_body(None)
+        pseudonymizer.note_original(original)
+        # …and cached in TEMP, because `--fix-leaks` never reopens the PDFs and
+        # would otherwise have no evidence at all. Never in the case folder:
+        # that is the thing that gets synced and shared.
+        _cache_original(pdf_path.parent, pdf_path.stem, original)
+        # Optional reference copy in a sibling folder, under the real filename.
+        # Real names by design → never tracked for the leak gate, never
+        # quarantined.
+        if original_subdir:
+            orig_dir = pdf_path.parent / original_subdir
+            orig_path = orig_dir / (pdf_path.stem + ".txt")
+            try:
+                orig_dir.mkdir(parents=True, exist_ok=True)
+                orig_path.write_text(original, encoding="utf-8", newline="\n")
+                log.info(f"  Wrote original text version: "
+                         f"{original_subdir}/{orig_path.name}")
+            except OSError as e:
+                log.warning(f"  Could not write original text version "
+                            f"(non-fatal): {e}")
     return True
 
 
@@ -15999,19 +16009,21 @@ def _write_word_text_version(src_path, text, log, pseudonymizer=None,
 
     # Optional UNSCRUBBED reference copy, under the real filename — same policy
     # as the PDF path (real names by design, never gated, must not be shared).
-    if original_subdir and pseudonymizer is not None:
-        orig_dir = src_path.parent / original_subdir
-        orig_path = orig_dir / (src_path.stem + ".txt")
-        try:
-            orig_dir.mkdir(parents=True, exist_ok=True)
-            orig_path.write_text(text.rstrip("\n") + "\n",
-                                 encoding="utf-8", newline="\n")
-            pseudonymizer.note_original(text)
-            log.info(f"  Wrote original text version: "
-                     f"{original_subdir}/{orig_path.name}")
-        except OSError as e:
-            log.warning(f"  Could not write original Word text version "
-                        f"(non-fatal): {e}")
+    if pseudonymizer is not None:
+        pseudonymizer.note_original(text)
+        _cache_original(src_path.parent, src_path.stem, text)
+        if original_subdir:
+            orig_dir = src_path.parent / original_subdir
+            orig_path = orig_dir / (src_path.stem + ".txt")
+            try:
+                orig_dir.mkdir(parents=True, exist_ok=True)
+                orig_path.write_text(text.rstrip("\n") + "\n",
+                                     encoding="utf-8", newline="\n")
+                log.info(f"  Wrote original text version: "
+                         f"{original_subdir}/{orig_path.name}")
+            except OSError as e:
+                log.warning(f"  Could not write original Word text version "
+                            f"(non-fatal): {e}")
     return True
 
 
@@ -16826,6 +16838,71 @@ def _folder_lock_file(folder):
     return Path(tempfile.gettempdir()) / f"pdf-linker-{key}.lock"
 
 
+def _originals_cache_dir(folder):
+    """Where this folder's UNSCRUBBED export text is cached, for the leak
+    check's benefit only — the system TEMP directory, keyed by a hash of the
+    folder path exactly as `_folder_lock_file` is.
+
+    `confirm_findings` needs the original to tell the run's own stand-ins from
+    the document's words, and a full run has it in memory for free. `--fix-leaks`
+    does not: it never reopens the PDFs. Persisting it here is what makes the
+    check available to that pass WITHOUT making the operator turn on an output
+    option — whether a readable copy is written into the CASE FOLDER stays
+    exactly what `original_text_subfolder` says it is.
+
+    In TEMP rather than the case folder on purpose. This is unscrubbed text, and
+    the case folder is the thing that gets synced and shared; TEMP is local to
+    the machine that already holds the PDFs, so it adds no exposure the
+    originals do not already have. Cleared by `_clear_originals_cache` as soon
+    as the folder comes out clean."""
+    import tempfile
+    key = _pn_hashlib.sha256(
+        os.path.normcase(str(Path(folder).resolve())).encode("utf-8", "replace")
+    ).hexdigest()[:16]
+    return Path(tempfile.gettempdir()) / f"pdf-linker-{key}-orig"
+
+
+def _cache_original(folder, stem, text):
+    """Cache one export's unscrubbed text. Best-effort: the check degrades to
+    "no evidence" if this fails, and no evidence never drops a finding."""
+    try:
+        d = _originals_cache_dir(folder)
+        d.mkdir(parents=True, exist_ok=True)
+        (d / (_pn_hashlib.sha256(str(stem).encode("utf-8", "replace"))
+              .hexdigest()[:16] + ".txt")).write_text(
+            text, encoding="utf-8", newline="\n")
+    except OSError:
+        pass
+
+
+def _load_cached_originals(folder, pz, log=None):
+    """Feed `pz` every cached original for `folder`. Returns how many."""
+    d = _originals_cache_dir(folder)
+    if not d.is_dir():
+        return 0
+    n = 0
+    for f in sorted(d.glob("*.txt")):
+        try:
+            pz.note_original(f.read_text(encoding="utf-8", errors="ignore"))
+            n += 1
+        except OSError:
+            pass
+    return n
+
+
+def _clear_originals_cache(folder):
+    """Drop the cache once the folder is delivered clean — the unscrubbed text
+    has no reason to outlive the triage it existed for."""
+    try:
+        d = _originals_cache_dir(folder)
+        if d.is_dir():
+            for f in d.glob("*.txt"):
+                f.unlink()
+            d.rmdir()
+    except OSError:
+        pass
+
+
 def _acquire_folder_lock(folder, log):
     """True when this process may work in `folder`; False when another run holds
     it already.
@@ -17533,17 +17610,23 @@ def _fix_leaks_mode(folder, args, cfg, log):
     # output, so it must not hold the export hostage.
     orig_dir = folder / (cfg.get("original_text_subfolder", "").strip()
                          or "Original Text (real names - do not share)")
+    n, where = 0, ""
     if orig_dir.is_dir():
-        n = 0
         for o in sorted(orig_dir.glob("*.txt")):
             try:
                 pz.note_original(o.read_text(encoding="utf-8", errors="ignore"))
                 n += 1
             except OSError:
                 pass
-        if n:
-            log.info(f"  --fix-leaks: confirming findings against {n} original "
-                     f"text file(s) in {orig_dir.name}")
+        where = orig_dir.name
+    if not n:
+        # No in-folder copy — the operator has that option off. The full run
+        # cached the same text in TEMP for exactly this pass.
+        n = _load_cached_originals(folder, pz, log)
+        where = "the run's cached originals"
+    if n:
+        log.info(f"  --fix-leaks: confirming findings against {n} original "
+                 f"text file(s) from {where}")
     pz.confirm_findings(log)
 
     # Un-quarantine every *.LEAK that no longer carries a party-name leak.
@@ -17600,6 +17683,9 @@ def _fix_leaks_mode(folder, args, cfg, log):
         if removed:
             log.info("  --fix-leaks: all leaks resolved — removed "
                      + ", ".join(removed) + ".")
+        # The unscrubbed cache has no reason to outlive the triage it existed
+        # for.
+        _clear_originals_cache(folder)
 
     log.info(f"--fix-leaks: applied {len(fix_terms)} fix(es) to {changed} "
              f"file(s); {unq} export(s) un-quarantined (*.LEAK -> .txt)"

@@ -139,3 +139,34 @@ def test_two_phrasings_that_reduce_to_one_row_are_merged():
     ]
     z.confirm_findings(log)
     assert [r["value"] for r in z.leak_report] == ["Ashely"], z.leak_report
+
+
+# ───────── the evidence is available whether or not the option is on ────────
+
+def test_the_cache_round_trips(tmp_path):
+    """The check must not depend on an output preference. A full run caches the
+    unscrubbed text in TEMP — keyed by folder, never in the case folder, which
+    is the thing that gets synced — so `--fix-leaks`, which never reopens the
+    PDFs, has evidence too."""
+    folder = tmp_path / "case"
+    folder.mkdir()
+    P._cache_original(folder, "Complaint", ORIGINAL)
+    reg = P._PnFakeRegistry()
+    z = P.Pseudonymizer(P._pn_build_terms(["Ashley Liu"], [], [], registry=reg),
+                        {}, registry=reg)
+    assert P._load_cached_originals(folder, z) == 1
+    surname = z.records[("person", "ashley liu")]["fake"].split()[1]
+    assert z._real_remainder(surname) == "", "the cached original is evidence"
+    P._clear_originals_cache(folder)
+    assert P._load_cached_originals(folder, P.Pseudonymizer([], {})) == 0
+
+
+def test_the_cache_never_lands_in_the_case_folder(tmp_path):
+    folder = tmp_path / "case"
+    folder.mkdir()
+    P._cache_original(folder, "Complaint", ORIGINAL)
+    try:
+        assert list(folder.iterdir()) == [], (
+            "unscrubbed text must never be written into the case folder")
+    finally:
+        P._clear_originals_cache(folder)
