@@ -134,3 +134,56 @@ def test_a_non_roster_line_is_not_harvested(text):
 def test_a_public_entity_roster_row_is_kept():
     got = P._pn_docket_roster_names("County of Los Angeles     Defendant\n")
     assert not got, got
+
+
+# ─────────────────── identifiers a public registry inverts ──────────────────
+
+def test_a_labelled_registration_number_is_faked():
+    # "a registered California process server, Registration No. 833, San
+    # Bernardino County" names one person in the county's public registry.
+    z = _pz()
+    text = ("a registered California process server, Registration No. 833, "
+            "San Bernardino County.")
+    z.register_identifiers(text)
+    out = z.apply(text)
+    assert "833" not in out
+    assert "Registration No." in out          # the label stays
+    assert "San Bernardino County" in out     # the venue stays
+
+
+def test_a_long_bond_number_is_faked_bare():
+    z = _pz()
+    text = "Bond Number 4429117 was posted with the county."
+    z.register_identifiers(text)
+    assert "4429117" not in z.apply(text)
+
+
+def test_a_short_bare_counter_is_not_rewritten():
+    # The reason a SHORT registration number is registered only in its
+    # labelled form: a bare 3-digit number is a page, exhibit or paragraph
+    # counter far more often than an identifier.
+    z = _pz()
+    text = ("Registration No. 833. See Response No. 101, Material Fact "
+            "No. 110, and Exhibit 833 at page 833.")
+    z.register_identifiers(text)
+    out = z.apply(text)
+    assert "Response No. 101" in out
+    assert "Material Fact No. 110" in out
+    assert "Exhibit 833 at page 833" in out
+
+
+# ─────────────────── the e-filing stamp names two clerks ────────────────────
+
+def test_the_filing_stamp_clerks_are_scrubbed():
+    z = _pz()
+    stamp = ("Electronically FILED 6/01/2026 9:42 AM\n"
+             "David W. Slayton, Executive Officer/Clerk of Court\n"
+             "By: V. Sino-Cruz, Deputy Clerk\n"
+             "Superior Court of California, County of Los Angeles\n")
+    z.register_court_names(stamp)
+    out = z.apply(stamp)
+    assert "Slayton" not in out, "the Executive Officer signs every stamp"
+    assert "Sino-Cruz" not in out
+    assert "Executive Officer/Clerk of Court" in out   # the role stays
+    assert "County of Los Angeles" in out              # the venue stays
+    assert "6/01/2026 9:42 AM" in out                  # the filing date stays

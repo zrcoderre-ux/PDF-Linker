@@ -8411,6 +8411,17 @@ _PN_ID_RES = {
         r"\s*:?\s*(\d{8,})"),
     "file number": re.compile(
         r"(?i)\b(?:my\s+)?file\s+no\.?\s*:?\s*([\w\-]{3,})"),
+    # A process server's REGISTRATION number and a bond number. Each resolves
+    # to a name and an address in the issuing county's public registry — "a
+    # registered California process server, Registration No. 833, San
+    # Bernardino County" names one person — and a motion-to-quash batch shipped
+    # the pair sixteen times because no class covered it. The label is what
+    # makes a 3-digit value safe to track (see `_pn_identifier_values`: a bare
+    # short number is a page/exhibit/paragraph counter far more often than an
+    # identifier, so a SHORT value is registered only in its labelled form).
+    "registration number": re.compile(
+        r"(?i)\b(?:registration|registrant|bond)\s*"
+        r"(?:no\.?|number|#)?\s*:?\s*(\d{2,})\b"),
     # A run-together 9-digit SSN, caught ONLY when an SSN label anchors it, so an
     # ordinary 9-digit Bates/account number is never mistaken for one. Grouped
     # SSNs (with dashes/dots/spaces) are handled by the "ssn" detector instead.
@@ -8589,6 +8600,16 @@ def _pn_identifier_values(text):
             if (cls == "account id" and not re.search(r"[A-Za-z]", val)
                     and len(re.sub(r"\D", "", val)) < 4):
                 continue
+            # Same reasoning, one step softer, for a registration/bond number:
+            # the value re-identifies but a SHORT bare number is a page,
+            # exhibit or paragraph counter far more often than an identifier,
+            # so the LABELLED phrase becomes the term ("Registration No. 833"
+            # -> "Registration No. 417"). The label is the part a public
+            # registry lookup needs anyway, and the bare repeats are left to
+            # the review scan rather than rewritten across the document.
+            if (cls == "registration number"
+                    and len(re.sub(r"\D", "", val)) < 4):
+                val = re.sub(r"\s+", " ", m.group(0)).strip()
             if val.lower() in seen:
                 continue
             seen.add(val.lower())
@@ -10511,6 +10532,12 @@ _PN_COURT_STAFF_NAME_FIRST_RE = re.compile(
     r"(?P<n>" + _PN_LABEL_NAME + r")[ \t]*,[ \t]*"
     r"(?i:judicial\s+assistant|courtroom\s+assistant|court(?:room)?\s+clerk|"
     r"deputy\s+clerk|court\s+reporter|bailiff|court\s+attendant|"
+    # The e-filing stamp names the Executive Officer/Clerk of Court and the
+    # deputy who accepted the filing. The deputy signs "By: N. Lachikian,
+    # Deputy Clerk" and was covered; the Executive Officer signs with a role
+    # this list did not carry, so that name shipped on every stamped page.
+    r"executive\s+officer(?:\s*/\s*clerk\s+of\s+(?:the\s+)?court)?|"
+    r"clerk\s+of\s+(?:the\s+)?court|"
     r"research\s+attorney|law\s+clerk)(?![\w])")
 
 # A department / courtroom number ("Department 515", "Dept. 515", "Dept 72",
