@@ -12979,6 +12979,85 @@ class Pseudonymizer:
                 out.append((c, s))
         return out
 
+    def name_fake_words(self):
+        """The stand-in words this run minted for PEOPLE — the words a
+        half-scrubbed pair is built out of. Scoped to the person categories on
+        purpose: an entity's fake word ("Relations", "Operations") sits beside
+        ordinary capitalised prose all the time, and reading that as a
+        half-scrub would flag half the document."""
+        words = set()
+        for (cat, _rl), rec in self.records.items():
+            if cat not in ("person", "person-token", "display-name",
+                           "declarant"):
+                continue
+            for w in str(rec["fake"]).split():
+                base = _pn_word_base(w)
+                if base and len(base) >= 3:
+                    words.add(base)
+        return words
+
+    def half_scrubbed_scan(self, text):
+        """A real name word left standing IMMEDIATELY BESIDE one of our own
+        person fakes — "Xiaoxia Ingersoll", "Jiayin Sterling", "Ashely
+        Yeardley". One token of a person's name was bound and the other was
+        not, so the pair reads as fully scrubbed and ships.
+
+        This is the most dangerous shape the tool can emit, and the review
+        scans were structurally blind to it: `_pn_person_review_findings`
+        SUPPRESSES a phrase carrying one of our fakes unless two real name
+        words still stand — a rule written to stop re-reporting a fake dragged
+        along by a non-name prefix ("ASIC Pruett Keswick", "Nolan Relations"),
+        which by construction is exactly one real word too. So the one shape
+        that matters most was the one shape guaranteed to be filtered out.
+
+        Reported, never repaired: which token is real and which is our own is
+        a question only the operator's key can settle, and a `yes` on the row
+        fakes the real remainder alone (`_pn_strip_prior_fakes`) so the pair
+        reverses to the real name instead of growing a second generation.
+
+        The value on the row is the REAL WORD ALONE, for the reason
+        `_real_remainder` exists: "Xiaoxia Ingersoll" reads like the tool
+        flagging its own output, and the question actually in it is
+        "Xiaoxia"."""
+        fakes = self.name_fake_words()
+        if not fakes:
+            return []
+        known = self.known_fake_words()
+        src = self._mask_protected_citations(_NFKC(text))
+        out, seen = [], {s.lower() for _c, s in self.review}
+        # Every ADJACENT pair inside a capitalised run, which `finditer` over a
+        # two-word pattern cannot give: the pairs overlap, so a leading role
+        # word ("Plaintiff Xiaoxia Ingersoll") consumed the survivor and the
+        # pair that mattered was never examined.
+        pairs = []
+        for run in re.finditer(r"(?<![\w'’])[A-Z][A-Za-z'’-]+"
+                               r"(?:[ \t]+[A-Z][A-Za-z'’-]+)+(?![\w'’])", src):
+            ws = run.group(0).split()
+            pairs += list(zip(ws, ws[1:]))
+        for words in pairs:
+            bases = [_pn_word_base(w) for w in words]
+            ours = [b in fakes for b in bases]
+            if sum(ours) != 1:
+                continue        # both ours (clean) or neither (another scan's)
+            real = words[0] if ours[1] else words[1]
+            base = _pn_word_base(real)
+            # The survivor must look like a NAME and not like our own output:
+            # ordinary vocabulary, a role word, a corporate suffix or any word
+            # this run minted anywhere is the "fake dragged by a neighbour"
+            # case the suppression above was written for.
+            if (len(base) < 3 or base in fakes or base in known
+                    or _pn_review_is_neutral(real, known)
+                    or _pn_is_name_token(real) is False
+                    or _pn_is_never_fake(real)
+                    or _pn_is_protected_locality(real)):
+                continue
+            if base in seen:
+                continue
+            seen.add(base)
+            self.review.append(("half-scrubbed name?", real))
+            out.append(("half-scrubbed name?", real))
+        return out
+
     def _status(self, rec):
         if rec["real"].lower() in self.leaked:
             return "leaked"
@@ -15957,6 +16036,9 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         # High-recall tier: role-anchored name shapes in the output that are
         # neither our fakes nor common words — the "unknown name" net.
         review = list(review) + pseudonymizer.unknown_name_scan(body)
+        # A real name word standing beside one of our own person fakes — the
+        # half-scrub, which the scans above are structurally blind to.
+        review = list(review) + pseudonymizer.half_scrubbed_scan(body)
         # Adversarial re-identification pass: a bar number / VIN / reservation
         # shape in the OUTPUT that isn't one of our own fakes. Sorted first —
         # these invert the map in one lookup, so they outrank ordinary review.
@@ -16301,6 +16383,7 @@ def _write_word_text_version(src_path, text, log, pseudonymizer=None,
         review = list(pseudonymizer.review_scan(body))
         review += pseudonymizer.review_definition_survivors(text, body)
         review += pseudonymizer.unknown_name_scan(body)
+        review += pseudonymizer.half_scrubbed_scan(body)
         review = pseudonymizer.reid_scan(body) + review
         if review:
             shown = "; ".join(f"{c}: {s}" for c, s in review[:8])
