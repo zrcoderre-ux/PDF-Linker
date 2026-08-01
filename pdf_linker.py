@@ -10912,6 +10912,7 @@ class Pseudonymizer:
             # overlap resolution.
             self.terms.sort(key=lambda t: (-t.priority, -len(t.real)))
             self._trusted_tok_cache = None   # recompute over the new term set
+            self._fuzzy_idx = None
         return added
 
     def register_short_names(self, text):
@@ -11026,6 +11027,7 @@ class Pseudonymizer:
             self._pruned_reals.add(t.real.lower())
         if doomed:
             self._trusted_tok_cache = None
+            self._fuzzy_idx = None
         return [t.real for t in doomed]
 
     def prune_prose_word_terms(self, text):
@@ -11083,6 +11085,7 @@ class Pseudonymizer:
             self._pruned_reals.add(t.real.lower())
         if doomed:
             self._trusted_tok_cache = None
+            self._fuzzy_idx = None
         return [t.real for t in doomed]
 
     def note_authority_cites(self, text):
@@ -11180,6 +11183,7 @@ class Pseudonymizer:
             self._pruned_reals.add(t.real.lower())
         if doomed:
             self._trusted_tok_cache = None
+            self._fuzzy_idx = None
         return [t.real for t in doomed]
 
     def prune_fragment_terms(self, text):
@@ -11214,6 +11218,7 @@ class Pseudonymizer:
             self._pruned_reals.add(t.real.lower())
         if doomed:
             self._trusted_tok_cache = None
+            self._fuzzy_idx = None
         return [t.real for t in doomed]
 
     def register_entity_acronyms(self, text):
@@ -12130,7 +12135,20 @@ class Pseudonymizer:
         LEAK scans: a party name correctly preserved inside a cited authority
         ("Silvio v. Ford Motor Co.") is the protection working, not a leak —
         counting it quarantined ten clean exports over text that was required
-        to stay."""
+        to stay.
+
+        One-entry memo, because the mask runs the whole citation parser (~115
+        ms on a long export) and every scan over one export asks for the same
+        masked body: `surviving_reals`, then the fuzzy sweep, then the
+        half-scrub sweep. Keyed on the text itself and holding one entry, so
+        it cannot grow with the folder."""
+        if getattr(self, "_mask_memo", (None, None))[0] == text:
+            return self._mask_memo[1]
+        masked = self._mask_uncached(text)
+        self._mask_memo = (text, masked)
+        return masked
+
+    def _mask_uncached(self, text):
         spans = self._protected_citation_spans(text)
         if not spans:
             return text
@@ -12977,6 +12995,86 @@ class Pseudonymizer:
                 seen.add((c, s.lower()))
                 self.review.append((c, s))
                 out.append((c, s))
+        return out
+
+    def _tracked_name_token_index(self):
+        """{3-gram: {token}} over every tracked PERSON name token, plus the set
+        itself. The index is what makes the fuzzy sweep affordable: comparing
+        every output word against every tracked token is a product, and a
+        single edit inside a token of length >= `_PN_NAME_FOLD_MIN` always
+        leaves at least one 3-gram intact, so a shared shingle is a necessary
+        condition for being within the fold distance. Cached; `_add_terms`
+        drops the cache."""
+        if getattr(self, "_fuzzy_idx", None) is not None:
+            return self._fuzzy_idx
+        toks, idx = set(), {}
+        for (cat, _rl), rec in self.records.items():
+            if cat not in ("person", "person-token", "declarant",
+                           "display-name"):
+                continue
+            for w in str(rec["real"]).split():
+                base = _pn_word_base(w)
+                if len(base) < _PN_NAME_FOLD_MIN or not base.isalpha():
+                    continue
+                toks.add(base)
+                for i in range(len(base) - 2):
+                    idx.setdefault(base[i:i + 3], set()).add(base)
+        self._fuzzy_idx = (idx, toks)
+        return self._fuzzy_idx
+
+    def fuzzy_survivor_scan(self, text):
+        """A word in the FINISHED output that is one OCR slip away from a real
+        name this case tracks — "Michale"/"Miachael" for Michael, "Bivd" in a
+        street the exact pass could not match.
+
+        The exact sweep (`surviving_reals`) answers "is this value still
+        here?", and a scan is only as good as the spelling it was given: a
+        fax-generation scan mangles precisely the values that matter, so a
+        name the tool bound and scrubbed everywhere it was spelled correctly
+        still shipped three times in one batch under the scanner's spellings.
+
+        REPORTED, never repaired. A fuzzy match is a guess, and the whole
+        method is built on the trade that a name left standing costs less than
+        a wrongly rewritten word — a near-miss substitution would rename a
+        cited authority the moment the OCR mangled one. The near-spelling
+        variants the tool is CONFIDENT about are already registered as terms
+        (`_pn_name_variants`); this is the net under them.
+
+        Fold distance scales with token length exactly as the registry's own
+        typo fold does (`_pn_name_fold_dist`), so two genuinely different
+        short surnames are never linked."""
+        idx, toks = self._tracked_name_token_index()
+        if not toks:
+            return []
+        known = self.known_fake_words()
+        src = self._mask_protected_citations(_NFKC(text))
+        out, seen = [], {s.lower() for _c, s in self.review}
+        for m in re.finditer(r"(?<![\w'’])[A-Z][A-Za-z'’-]+(?![\w'’])", src):
+            word = m.group(0)
+            base = _pn_word_base(word)
+            if (len(base) < _PN_NAME_FOLD_MIN or not base.isalpha()
+                    or base in toks          # exact: the other scan's finding
+                    or base in seen
+                    or base in known or _pn_word_is_own_fake(word, known)
+                    or _pn_review_is_neutral(word, known)
+                    or _pn_is_never_fake(word)):
+                continue
+            near = set()
+            for i in range(len(base) - 2):
+                near |= idx.get(base[i:i + 3], set())
+            hit = next((t for t in sorted(near)
+                        if _pn_edit_distance_within(
+                            base, t, _pn_name_fold_dist(base, t),
+                            min_len=_PN_NAME_FOLD_MIN)), None)
+            if hit is None:
+                continue
+            # The ORIGINAL text is EVIDENCE where the run has it: a word that
+            # is not in the source cannot have survived from it.
+            if not self._finding_is_in_original(word):
+                continue
+            seen.add(base)
+            self.review.append(("misspelled name?", word))
+            out.append(("misspelled name?", word))
         return out
 
     def name_fake_words(self):
@@ -16036,6 +16134,10 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         # High-recall tier: role-anchored name shapes in the output that are
         # neither our fakes nor common words — the "unknown name" net.
         review = list(review) + pseudonymizer.unknown_name_scan(body)
+        # A word one OCR slip away from a real name this case tracks. Runs
+        # BEFORE the half-scrub scan so the more specific class owns the row
+        # when a mangled survivor also stands beside one of our fakes.
+        review = list(review) + pseudonymizer.fuzzy_survivor_scan(body)
         # A real name word standing beside one of our own person fakes — the
         # half-scrub, which the scans above are structurally blind to.
         review = list(review) + pseudonymizer.half_scrubbed_scan(body)
@@ -16383,6 +16485,7 @@ def _write_word_text_version(src_path, text, log, pseudonymizer=None,
         review = list(pseudonymizer.review_scan(body))
         review += pseudonymizer.review_definition_survivors(text, body)
         review += pseudonymizer.unknown_name_scan(body)
+        review += pseudonymizer.fuzzy_survivor_scan(body)
         review += pseudonymizer.half_scrubbed_scan(body)
         review = pseudonymizer.reid_scan(body) + review
         if review:
