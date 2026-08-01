@@ -11895,6 +11895,23 @@ class Pseudonymizer:
                 spans.append(m.span())
         return spans
 
+    def _whitelisted_url_spans(self, text):
+        """Spans of WHITELISTED URLs — the citation hosts the authorities
+        appendix emits on purpose, e-filing infrastructure, and `.gov`/`.mil`.
+        The url DETECTOR already skips them, but a bare TOKEN term sees no URL
+        context: a batch that harvested "Google" as an entity rewrote the host
+        of every appendix verification link ("https://scholar.denholm.com/…").
+        Nothing about that is provider-specific — any provider host that is
+        also a name-shaped token ("lexis", "westlaw") is one minted fake away
+        from the same corruption — so the whole whitelisted span joins the
+        protected set. Protection-only: the worst case is a value left
+        unfaked inside a URL the whitelist already calls public."""
+        spans = []
+        for m in _PN_DETECTORS["url"][0].finditer(text):
+            if _pn_url_whitelisted(m.group(0)):
+                spans.append(m.span())
+        return spans
+
     def _keep_spans(self, text):
         """Spans of operator-KEPT values in `text` — a value marked `no` (keep
         the whole value) or the bracketed part of a keep-spec. A candidate
@@ -12050,7 +12067,8 @@ class Pseudonymizer:
                  + self._display_name_repeat_cands(text))
         return self._substitute(
             text, cands, count=count,
-            protected=self._protected_citation_spans(text) + self._keep_spans(text))
+            protected=self._protected_citation_spans(text) + self._keep_spans(text)
+            + self._whitelisted_url_spans(text))
 
     def apply_lines(self, bodies):
         """Pseudonymize a pleading page's line BODIES as one text, returning one
@@ -12076,7 +12094,8 @@ class Pseudonymizer:
         out = self._substitute(
             joined, cands, reflow=True,
             protected=self._protected_citation_spans(joined)
-            + self._keep_spans(joined)).split("\n")
+            + self._keep_spans(joined)
+            + self._whitelisted_url_spans(joined)).split("\n")
         # _pn_reflow preserves every newline, so this holds; fall back rather
         # than ever hand back the wrong number of lines.
         return out if len(out) == len(bodies) else [self.apply(b) for b in bodies]
@@ -12183,7 +12202,10 @@ class Pseudonymizer:
         # releases it), so a kept word standing where a party term matches is
         # not in this set and is still reported. That is what keeps the rule
         # "a keep must never leave a real party in the clear" intact.
-        keep = self._keep_spans(text)
+        # Whitelisted URL spans are in the set for the same mirroring reason:
+        # `_substitute` refuses to rewrite inside a verification link, so a
+        # tracked value standing there must not be reported as a leak.
+        keep = self._keep_spans(text) + self._whitelisted_url_spans(text)
         out = []
         for rec in self.records.values():
             if nuclear and str(rec["real"]).lower() in nuclear:
@@ -12266,7 +12288,8 @@ class Pseudonymizer:
             return text
         return self._substitute(
             src, cands,
-            protected=self._protected_citation_spans(src) + self._keep_spans(src))
+            protected=self._protected_citation_spans(src) + self._keep_spans(src)
+            + self._whitelisted_url_spans(src))
 
     def scrub_emails(self, text):
         """Write-side sweep for a tracked E-MAIL address the pattern pass left
