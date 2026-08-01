@@ -7,11 +7,13 @@ what keeps them reading as one person. A scan mangling a word is a different
 thing entirely — it means the page wants re-scanning — and in the export the
 two are the same shape.
 
-`_PN_CONFUSABLES` is why the collision is not theoretical: y, u and w ALL map
-onto `v`, the only letter three others collapse to, so "a y came out as a v" is
-both the commonest thing the fold emits and the signature of a page recognised
-below `_OCR_LOW_DPI`, where the descender is the first stroke lost. Reading the
-export an operator cannot tell them apart; reading the log they can.
+Every `_PN_CONFUSABLES` pair is a plausible scan slip — that is why the fold
+uses it — so reading the export an operator cannot tell the two apart; reading
+the log they can. The one collision that mattered most is closed at the source:
+"a y came out as a v" is the signature of a page recognised below
+`_OCR_LOW_DPI` (the descender is the first stroke lost), so the map is an
+involution that mints a `v` only from a `u`, and a v-for-y is now always the
+scan's work.
 
 Run:  cd PDF-Linker && python3 -m pytest tests/test_minted_misspelling_report.py -v
 """
@@ -108,15 +110,45 @@ def test_the_report_points_at_the_other_author():
     assert str(P._OCR_LOW_DPI) in log.text
 
 
-def test_v_is_the_letter_three_others_collapse_to():
-    """Pins the asymmetry the report exists to explain. Not a rule this test
-    endorses — a change here changes every folded fake, so it must be a
-    deliberate decision and not a silent edit."""
-    sinks = {}
-    for src, dst in P._PN_CONFUSABLES.items():
-        sinks.setdefault(dst, set()).add(src)
-    assert sinks["v"] == {"u", "w", "y"}
-    assert all(len(v) <= 2 for k, v in sinks.items() if k != "v")
+def test_the_confusable_map_is_an_involution():
+    """The map used to funnel u, w AND y onto `v` — the one letter whose
+    appearance-in-place-of-a-y is the signature of a low-dpi scan, so the fold
+    was deliberately minting the artifact an operator most needs to read as
+    scan damage. Now every letter swaps with exactly one partner: injective
+    (each substituted letter has ONE possible source, so the report can name
+    the letter it bent) and involutory (the pair reads as one confusion in
+    both directions). A change here changes every folded fake, so it must stay
+    a deliberate decision and not a silent edit."""
+    m = P._PN_CONFUSABLES
+    for src, dst in m.items():
+        assert m[dst] == src, f"{src}->{dst} is not a symmetric pair"
+        assert src != dst
+    # Injective follows from the involution, but say it outright — no sinks.
+    targets = list(m.values())
+    assert len(targets) == len(set(targets))
+
+
+def test_a_v_can_only_come_from_a_u():
+    """The specific collision the redesign closes: `y -> v` belongs to the
+    scanner. A fold must never produce it, so a v-for-y in an export now has
+    exactly one author and the operator needs no log line to know which."""
+    sources_of_v = {s for s, d in P._PN_CONFUSABLES.items() if d == "v"}
+    assert sources_of_v == {"u"}
+    assert P._PN_CONFUSABLES.get("y") != "v"
+    assert P._PN_CONFUSABLES.get("w") != "v"
+
+
+def test_a_folded_fake_never_bends_y_into_v():
+    """End to end: bind a y-heavy fake's real, hand the registry a
+    one-substitution variant, and check the minted typo — whatever letter it
+    bends — did not turn a y into a v."""
+    reg = P._PnFakeRegistry()
+    base = reg.token("yancey", P._PN_NAME_WORDS, "nametok")
+    got = reg.token("yancoy", P._PN_NAME_WORDS, "nametok")   # o->a slip
+    assert got != base
+    for i, (b, g) in enumerate(zip(base, got)):
+        if b != g:
+            assert not (b.lower() == "y" and g.lower() == "v"), (base, got)
 
 
 def test_the_registry_survives_a_pseudonymizer_without_folds():

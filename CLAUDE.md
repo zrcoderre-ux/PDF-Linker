@@ -1213,12 +1213,19 @@ survive to fail.
   purpose — a source that spells a party several ways gives each spelling its
   own reversible stand-in, and a typo of the one fake is what keeps them
   reading as one person — while the scan mangling a word means the page wants
-  re-scanning. Opposite remedies, identical shape in the export. Worse, the two
-  converge on ONE letter: `_PN_CONFUSABLES` maps `u`, `w` AND `y` onto `v`, the
-  only letter three others collapse to (and only `v -> u` goes back), so "a y
-  came out as a v" is simultaneously the commonest thing the fold emits and the
-  signature of a page recognised below `_OCR_LOW_DPI`, where a thin descender
-  is the first stroke lost. Measured on this repo's own settings — Tesseract
+  re-scanning. Opposite remedies, identical shape in the export — every
+  `_PN_CONFUSABLES` pair is a plausible scan slip, which is exactly why the
+  fold uses it. The worst collision is closed at the SOURCE: "a y came out as
+  a v" is the signature of a page recognised below `_OCR_LOW_DPI`, where a
+  thin descender is the first stroke lost — and the map used to funnel `u`,
+  `w` AND `y` all onto `v`, so the fold was deliberately minting that exact
+  artifact (43 of the 192 pool surnames carry a `y`). The map is now an
+  INVOLUTION — every letter swaps with exactly one partner, so it is injective
+  and a `v` is minted only from a `u`: a v-for-y in an export is ALWAYS the
+  scan's work. (A reused key still reproduces delivered exports byte for byte
+  — the memo pins every binding — but a re-run WITHOUT its key re-derives
+  folded fakes under the new map, which is the standing rule for any change to
+  the fold.) Measured on this repo's own settings — Tesseract
   5.3.4, `_ocr_base_dpi`, `_OCR_CONFIG` — a clean or lightly-degraded render is
   error-free at 300 and 198 dpi and stays so at 150; a degraded one breaks down
   at 150 (21 words wrong) and collapses at 99 (24-43, the wrong words being

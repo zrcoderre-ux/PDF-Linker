@@ -6170,11 +6170,34 @@ _PN_NAME_FOLD_MIN = 5
 
 # Letter-only visual confusables for deriving a substitution typo of a fake —
 # the result must stay a name-shaped token, so a glyph never maps to a digit.
+#
+# **An INVOLUTION, by rule: every letter swaps with exactly one partner.** The
+# first shape of this map was looser — `u`, `w` AND `y` all mapped onto `v`
+# (with only `v -> u` going back), plus two smaller sinks on `n` and `b` — and
+# the wide end of the funnel was load-bearing in the worst way. A `v` where the
+# real text had a `y` is the SIGNATURE of a page recognised below
+# `_OCR_LOW_DPI` (the thin descender is the first stroke lost), so the fold was
+# deliberately minting the one artifact an operator most needs to read as scan
+# damage. 43 of the 192 pool surnames carry a `y`; every folded variant of one
+# was a coin-flip away from a spurious "this page scanned badly" signal.
+#
+# Symmetric pairs fix that twice over. Injective: each substituted letter has
+# exactly ONE possible source, so `_report_minted_misspellings` can say not
+# just "this word is ours" but which letter it bent — and a `v` standing where
+# the real had a `y` is now ALWAYS the scan's work, never ours. Involutory: the
+# pair reads as one confusion in both directions, the way a reader experiences
+# it. The pairs are the classic single-glyph confusions: mirror forms (b/d),
+# lost or gained strokes (i/l, t/f, e/c, n/r — an `r` is an `n` missing its
+# leg, u/v, h/k), open-vs-closed bowls (o/a, g/q), flipped arches (m/w), s/z,
+# and y/j (two descenders; also a live spelling variant — Yulia/Julia — so the
+# result still reads as a name). `p` and `x` have no honest partner left and
+# get no entry: minting an IMPLAUSIBLE typo is worse than letting that one
+# variant fall through to a clean pool draw.
 _PN_CONFUSABLES = {
-    "i": "l", "l": "i", "o": "a", "a": "o", "m": "n", "n": "m", "u": "v",
-    "v": "u", "e": "c", "c": "e", "s": "z", "z": "s", "b": "h", "h": "b",
-    "g": "q", "q": "g", "t": "f", "f": "t", "r": "n", "d": "b", "w": "v",
-    "y": "v",
+    "i": "l", "l": "i", "o": "a", "a": "o", "e": "c", "c": "e", "s": "z",
+    "z": "s", "t": "f", "f": "t", "g": "q", "q": "g", "u": "v", "v": "u",
+    "b": "d", "d": "b", "h": "k", "k": "h", "m": "w", "w": "m", "n": "r",
+    "r": "n", "y": "j", "j": "y",
 }
 
 
@@ -6308,11 +6331,15 @@ class _PnFakeRegistry:
         # name several ways must get a distinct, reversible stand-in for each,
         # and mirroring the slip is what keeps them reading as one person. But
         # the result is indistinguishable, in the export, from the scan getting
-        # it wrong: `_PN_CONFUSABLES` turns a y into a v, and so does a 150-dpi
-        # recognition of the same letter. An operator reading "Yeardlev" cannot
+        # it wrong: `_PN_CONFUSABLES` bends one letter, and so does a 150-dpi
+        # recognition of the same word. An operator reading "Fenwore" cannot
         # tell which produced it, and the two have opposite remedies — one is
         # correct output, the other means the page needs re-scanning. So the
         # run SAYS which words are its own (see `_check_key_completeness`).
+        # (The map is injective on purpose — a `v` where the real had a `y` is
+        # now always the SCAN's work — but every other pair still collides
+        # with a plausible scan slip, which is what makes this list worth
+        # keeping.)
         self.typo_folds = []
         # The operator's NUCLEAR keeps for this run (`{braced}` in a Fix? or
         # Replacement cell), lower-cased word bases. They ride on the registry
@@ -13747,14 +13774,16 @@ class Pseudonymizer:
         The scan mangling a word is not, and means the page wants re-scanning
         or a higher-resolution pass.
 
-        In the export the two are the same shape. `_PN_CONFUSABLES` maps y, u
-        and w all onto `v` — it is the only letter three others collapse to —
-        so "a y came out as a v" is the commonest thing the fold produces AND
-        the signature of a page recognised below `_OCR_LOW_DPI`, where a thin
-        descender is the first thing lost. Reading the export, an operator
-        cannot tell "Yeardlev" from "Yeardlev". Reading the log, they can: what
-        is named here is OURS, and a misspelling that is NOT named here came
-        off the page.
+        In the export the two are the same shape: every `_PN_CONFUSABLES` pair
+        is a plausible scan slip, which is exactly why the fold uses it.
+        Reading the export, an operator cannot tell "Fenwore" the fold minted
+        from "Fenwore" the scanner produced. Reading the log, they can: what is
+        named here is OURS, and a misspelling that is NOT named here came off
+        the page. One collision is closed at the SOURCE instead: `y -> v` is
+        the signature of a page recognised below `_OCR_LOW_DPI` (the thin
+        descender is the first stroke lost), so the map is injective and mints
+        a `v` only from a `u` — a `v` standing where the real text had a `y`
+        is always the scan's work, never this tool's.
 
         Reported at INFO — nothing here is a fault, and saying so is the whole
         point."""
