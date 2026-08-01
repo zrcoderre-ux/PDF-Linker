@@ -6648,6 +6648,10 @@ def _pn_name_variants(word):
         return set()
     low = core.lower()
     out = set()
+    # Filled below, then screened: a variant that spells an ordinary word would
+    # rewrite that word throughout the brief ("Silver" transposes to "Sliver").
+    def _keep(v):
+        return v.lower() != low and _pn_word_base(v) not in _PN_COMMON_WORDS
     # collapse a doubled consonant ("Purscelley" has none; "Bennett"->"Benet")
     for i in range(1, len(core)):
         if core[i].lower() == core[i - 1].lower() and core[i].lower() in _PN_VOWEL_CONS:
@@ -6658,6 +6662,14 @@ def _pn_name_variants(word):
         if (c in _PN_VOWEL_CONS and core[i].lower() != core[i - 1].lower()
                 and core[i].lower() != core[i + 1].lower()):
             out.add(core[:i + 1] + core[i] + core[i + 1:])
+    # An ADJACENT TRANSPOSITION ("Ashley" -> "Ashely"), the commonest typo there
+    # is — the registry's own OCR fold already counts one as a SINGLE slip
+    # (`_pn_osa_distance`), so the matching side should see it too. A complaint
+    # wrote its own defendant's given name that way, and the export shipped
+    # "Ashely" beside the faked surname: a half-scrubbed pair naming the party.
+    for i in range(len(core) - 1):
+        if core[i].lower() != core[i + 1].lower():
+            out.add(core[:i] + core[i + 1] + core[i] + core[i + 2:])
     # y <-> ie
     if low.endswith("ie"):
         out.add(core[:-2] + "y")
@@ -6668,10 +6680,10 @@ def _pn_name_variants(word):
         out.add(core[:-1])
     elif low.endswith("e") and not low.endswith("ee"):
         out.add(core + "e")
-    # Only variants that are themselves plausible name tokens, and never the
-    # word itself.
+    # Only variants that are themselves plausible name tokens, never the word
+    # itself, and never an ordinary English word (see `_keep`).
     return {v for v in out
-            if v.lower() != low and len(v) >= 4 and _pn_is_name_token(v)}
+            if _keep(v) and len(v) >= 4 and _pn_is_name_token(v)}
 
 
 _PN_INITIAL_POOL = tuple("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
@@ -10100,7 +10112,22 @@ def _pn_declarant_ref_findings(text, known_fakes=()):
         # once the fakes are removed, what remains is not a declarant name.
         if any(_pn_word_is_own_fake(w, known) for w in toks):
             rest = [w for w in toks if not _pn_word_is_own_fake(w, known)]
-            if not _pn_is_personlike_declarant(" ".join(rest)):
+            # …and what remains must be NAME-shaped, not merely two words long.
+            # "F. Langley Submitted No Declaration" is an argument heading: strip
+            # the fake and "Submitted No" is left, which cleared the old
+            # two-words test and put this run's own stand-in in front of the
+            # operator as an unscrubbed declarant.
+            # …and EVERY word of what remains must be name-shaped. Two words
+            # was the old bar, and an argument heading clears it: strip the fake
+            # from "F. Langley Submitted No Declaration" and "Submitted No" is
+            # left, which put this run's own stand-in in front of the operator
+            # as an unscrubbed declarant. Naming "submitted" in a stop list does
+            # not scale — no hand-kept gazetteer is ever complete — but a
+            # declarant is proper nouns all the way through, and "No" is not
+            # one. Leading connectors are already stripped upstream, so a real
+            # name beside a fake ("Keswick and Alarcón Decl.") still reports.
+            if not (_pn_is_personlike_declarant(" ".join(rest))
+                    and rest and all(_pn_is_name_word(w) for w in rest)):
                 continue
         out.append(("unscrubbed declarant name?", name))
     return out
@@ -10779,7 +10806,11 @@ class Pseudonymizer:
         loaded = getattr(self, "_loaded_reals", ())
         doomed = []
         for t in list(self.terms):
-            if (t.source != "document"
+            # A DERIVED spelling is one this tool invented, so it is screened
+            # whatever its source: a transposition variant of a party's name can
+            # land on an ordinary word ("Silver" -> "Sliver"), and the corpus
+            # writing it in lower-case is the proof.
+            if ((t.source != "document" and not t.derived)
                     or t.real.lower() in loaded
                     or t.category not in ("person", "entity", "person-token",
                                           "entity-token", "short-name")
@@ -10830,6 +10861,49 @@ class Pseudonymizer:
                 log.info(f"  Pseudonymize: re-minted the stand-in {old!r} -> "
                          f"{new!r} — the corpus cites an authority of that name")
         return swaps
+
+    def prune_authority_party_terms(self, text, log=None):
+        """Drop every DOCUMENT-harvested name term that names a PARTY OF AN
+        AUTHORITY this corpus cites.
+
+        `prune_citation_only_terms` catches the easy shape — a name that never
+        appears outside a citation. It cannot catch the one that actually bites:
+        a brief DISCUSSES the facts of the case it cites, so the cited party is
+        named in ordinary prose too. A motion to quash argued *Kremerman v.
+        White* (2021) 71 Cal.App.5th 358 at length and named Angela White — the
+        defendant IN THAT DECISION — throughout. The pre-scan read her as a
+        party of this case, her bare token "White" was applied 210 times, and
+        the argument heading shipped as "Kremerman v. Yardley".
+
+        She is a party of a published opinion: public record, and not this
+        case's information to protect. The operator's own party template is
+        never second-guessed — a real party who happens to share a cited
+        decision's surname keeps their term — so this only ever refuses a
+        GUESS, which is the trade the cardinal invariant already sets: renaming
+        an authority is worse than leaving a name in.
+
+        Call with the FULL corpus text, beside `prune_citation_only_terms`."""
+        tokens = _pn_authority_tokens(_NFKC(text))
+        if not tokens:
+            return []
+        self._pruned_reals = getattr(self, "_pruned_reals", set())
+        loaded = getattr(self, "_loaded_reals", ())
+        doomed = []
+        for t in list(self.terms):
+            if (t.source != "document"
+                    or t.real.lower() in loaded
+                    or t.category not in ("person", "entity", "person-token",
+                                          "entity-token", "short-name")):
+                continue
+            if any(_pn_word_base(w) in tokens for w in _pn_name_words(t.real)):
+                doomed.append(t)
+        for t in doomed:
+            self.terms.remove(t)
+            self.records.pop((t.category, t.real.lower()), None)
+            self._pruned_reals.add(t.real.lower())
+        if doomed:
+            self._trusted_tok_cache = None
+        return [t.real for t in doomed]
 
     def prune_fragment_terms(self, text):
         """Drop every DOCUMENT-harvested name term that the corpus only ever
@@ -15591,6 +15665,12 @@ def _pn_prescan_folder(pdfs, pseudonymizer, log, extra_texts=()):
         log.info(f"  Pseudonymize: dropped {len(prose)} harvested name(s) the "
                  f"corpus writes as ordinary lower-case prose "
                  f"({', '.join(sorted(prose)[:6])})")
+    authors = pseudonymizer.prune_authority_party_terms(full, log)
+    if authors:
+        log.info(f"  Pseudonymize: dropped {len(authors)} harvested name(s) that "
+                 f"name a party of an authority this batch CITES — public "
+                 f"record, not this case's information "
+                 f"({', '.join(sorted(authors)[:6])})")
     frags = pseudonymizer.prune_fragment_terms(full)
     if frags:
         log.info(f"  Pseudonymize: dropped {len(frags)} harvested name(s) that "

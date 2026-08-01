@@ -134,3 +134,67 @@ def test_a_term_absent_from_the_corpus_is_left_alone():
                             case_sensitive=False, priority=1,
                             source="document")])
     assert z.prune_fragment_terms("nothing relevant here") == []
+
+
+# ───────── a party of a CITED authority is not a party of this case ─────────
+
+def test_a_cited_decisions_party_is_not_harvested_as_ours():
+    """`prune_citation_only_terms` catches a name that never appears outside a
+    citation. It cannot catch the shape that actually bites: a brief DISCUSSES
+    the facts of the case it cites, so the cited party is named in prose too.
+
+    A motion to quash argued *Kremerman v. White* (2021) 71 Cal.App.5th 358 at
+    length and named Angela White — the defendant IN THAT DECISION — throughout.
+    The pre-scan read her as a party of this case, her bare token "White" was
+    applied 210 times, and the argument heading shipped as "Kremerman v.
+    Yardley". She is a party of a published opinion: public record, and not this
+    case's information to protect."""
+    z = _pz(names=("Weishi Yang", "Ashley Liu"), casenos=("26STCV08967",))
+    fake = P._pn_fake_person("Angela White", z.registry)[0]
+    z._add_terms([P._PnTerm("person", "Angela White", fake, whole_word=True,
+                            case_sensitive=False, priority=2,
+                            source="document")])
+    motion = ("Defendant relies on Kremerman v. White (2021) 71 Cal.App.5th "
+              "358. In that case Angela White had closed her mailbox.")
+    assert "Angela White" in z.prune_authority_party_terms(motion)
+    out = z.apply(motion)
+    assert "Kremerman v. White (2021) 71 Cal.App.5th 358" in out, out
+    assert "Angela White" in out, "a published decision's party is public record"
+
+
+def test_the_party_templates_own_name_survives_the_authority_screen():
+    # Only a GUESS is refused. A real party who happens to share a cited
+    # decision's surname keeps their term.
+    z = _pz(names=("Angela White",), casenos=("26STCV08967",))
+    motion = ("See Kremerman v. White (2021) 71 Cal.App.5th 358. "
+              "Plaintiff Angela White testified.")
+    assert z.prune_authority_party_terms(motion) == []
+    out = z.apply(motion)
+    assert "Angela White" not in out, "our own party must still be scrubbed"
+    assert "Kremerman v. White (2021)" in out, "the authority must survive"
+
+
+# ───────────── a transposed spelling of a party is still a party ────────────
+
+def test_an_adjacent_transposition_is_a_known_variant():
+    # A complaint wrote its own defendant's given name "Ashely", and the export
+    # shipped it beside the faked surname — a half-scrubbed pair naming the
+    # party. The registry's OCR fold already counts a transposition as ONE slip.
+    assert "Ashely" in P._pn_name_variants("Ashley")
+
+
+def test_a_transposed_spelling_is_scrubbed():
+    z = _pz(names=("Ashley Liu",), casenos=("26STCV08967",))
+    out = z.apply('Defendant Ashely Liu ("Liu") is a resident.')
+    assert "Ashely" not in out and "Liu" not in out, out
+
+
+def test_an_invented_variant_that_spells_a_word_is_pruned():
+    # "Silver" transposes to "Sliver". A DERIVED spelling is screened whatever
+    # its source — the corpus writing it in lower-case is the proof.
+    z = _pz(names=("Marcus Silver",))
+    corpus = ("Marcus Silver testified. A sliver of doubt remains; only a "
+              "sliver of evidence supports it.")
+    assert "Sliver" in z.prune_prose_word_terms(corpus)
+    out = z.apply(corpus)
+    assert "sliver of doubt" in out and "Silver" not in out, out
