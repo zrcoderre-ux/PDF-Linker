@@ -8054,6 +8054,19 @@ _PN_FORM_LABEL_WORDS = frozenset({
     "check", "form", "forms", "declarant", "deponent", "amount", "amounts",
 })
 
+# Service-of-process vocabulary that is ALSO a plausible surname (a real party
+# can be named Bond, Branch or Store). Same contract as the form-label words —
+# never a bare token ("The UPS Store" must not mint "Store" -> a surname, the
+# way "Process Server Institute" minted "Server" -> "radley"), but kept OUT of
+# `_PN_COMMON_WORDS` so a party who really carries the name stays reportable
+# by the leak scans. "Manager"/"custodian" are here rather than in the role
+# words because a role word anchors the unknown-name scan, and these label a
+# third party's JOB inside prose, not a caption role.
+_PN_SERVICE_GENERIC_WORDS = frozenset({
+    "store", "stores", "bond", "bonds", "manager", "managers", "custodian",
+    "custodians",
+})
+
 
 def _pn_is_generic_token(base):
     """True for a word that must never become a BARE pseudonym token, however
@@ -8068,7 +8081,7 @@ def _pn_is_generic_token(base):
     corrupted document."""
     return (base in _PN_COMMON_WORDS or base in _PN_REVIEW_NAME_STOP
             or base in _PN_LOCALITY_WORDS or base in _PN_FORM_LABEL_WORDS
-            or base in _PN_FIRM_WORDS)
+            or base in _PN_SERVICE_GENERIC_WORDS or base in _PN_FIRM_WORDS)
 
 
 def _pn_is_protected_locality(city):
@@ -8923,7 +8936,23 @@ fax telephone number numbers reservation date cure confer floor suite
 owner builder builders membership arrangement unincorporated
 interindemnity helpdesk
 hospital hospitals medical center centers surgery surgical physician
-physicians clinic clinics healthcare""".split())
+physicians clinic clinics healthcare
+quash quashes quashing quashed summons subpoena subpoenas duces tecum
+server servers serve serves process processes proof proofs diligence
+diligent diligently substituted substitute substitution personal personally
+mail mailings mailbox mailboxes delivery deliver delivered attempt
+attempts attempted receiving receive received recipient recipients
+registered registration registrant perfected effected commercial agency
+agencies household dwelling abode domicile counties departments
+confirmation portal institute institutes google scholar""".split())
+# The first service-of-process batch (above, from the motion-to-quash corpus
+# that shipped "Motion to Mabry", "Eldridge of Service" and "process radley"):
+# procedural vocabulary that is never anyone's name, so it belongs in the
+# gazetteer proper — the leak scans may treat it as boilerplate. Vocabulary
+# from the same corpus that DOUBLES as a real surname (Bond, Branch, Store)
+# goes in _PN_SERVICE_GENERIC_WORDS below instead, for the reason
+# _PN_FORM_LABEL_WORDS states: withheld from ever becoming a bare token,
+# still reportable when a party really carries the name.
 
 
 def _pn_unknown_name_findings(text, neutral_words):
@@ -9754,6 +9783,22 @@ def _pn_load_key(path, registry, log):
         if (cat in ("person-token", "entity-token") and len(real.split()) == 1
                 and (_pn_is_generic_token(_pn_word_base(real))
                      or _pn_word_base(real) in registry.keep_words)):
+            continue
+        # The same rule for a single-word HARVESTED person/entity row. A
+        # motion-to-quash corpus harvested "Quash", "Proof", "Server" and
+        # "Google" as names, and the key then reproduced "Motion to Mabry" /
+        # "Eldridge of Service" / "process radley" on every re-run — purging
+        # the gazetteer alone could not retire the rows. An AUTHORITATIVE row
+        # (the operator's template or --term) is never refused: declining a
+        # real party name is the failure the whole method exists to prevent.
+        # Seed the memo so the binding stays consistent (and a delivered
+        # export reversible); just build no matching term.
+        if (cat in ("person", "entity") and len(real.split()) == 1
+                and source not in _PN_KEY_UNMATCHED_SOURCES
+                and _pn_is_generic_token(_pn_word_base(real))):
+            registry._memo.setdefault(("name_or_entity", real.lower()), fake)
+            log.info(f"  Pseudonym key: retiring harvested common-word row "
+                     f"{real!r} -> {fake!r} (ordinary vocabulary, not a name)")
             continue
 
         if cat in _PN_KEY_DETECTOR_CATS:
