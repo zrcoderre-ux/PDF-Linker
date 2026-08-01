@@ -199,3 +199,62 @@ def test_the_same_value_standing_elsewhere_is_still_a_leak():
 def test_an_ordinary_survivor_is_unaffected():
     z = _pz(["Helen Rasho"])
     assert z.surviving_reals("Plaintiff Helen Rasho testified.")
+
+
+# ── the guard's window must not straddle two different citations ─────────────
+
+# Taken verbatim from a quarantined export. "Liu" is the DEFENDANT's real name;
+# *Kremerman v. White* is a genuine authority the brief cites in full on the
+# next line and names again in the argument heading above.
+_BRIEF = ("E. Kremerman v. White Is Inapposite - and Actually Supports "
+          "Plaintiff.\n"
+          "Liu leans heavily on Kremerman v. White (2021) 71 Cal.App.5th 358, "
+          "but\nthat decision cuts against her. Angela White testified.")
+
+
+def _brief_pz():
+    return _pz(["Angela White", "White", "Ashley Liu"], casenos=("26STCV08967",))
+
+
+def test_a_party_name_between_two_citations_is_still_scrubbed():
+    """Both windows are 80 characters wide, so they straddled two different
+    cites: "Liu" had a " v. " to its left (from the heading) and a "(2021)" to
+    its right (from the cite that follows), and the guard read it as a cited
+    party. The export shipped the defendant's real name, the leak scan reported
+    it, and Apply Leak Fixes could never clear it — every pass refused to scrub
+    and every pass re-reported."""
+    out = _brief_pz().apply(_BRIEF)
+    assert "Liu" not in out, f"the defendant's real name rode out: {out}"
+
+
+def test_the_cited_party_in_that_same_sentence_is_still_protected():
+    out = _brief_pz().apply(_BRIEF)
+    assert "Kremerman v. White (2021) 71 Cal.App.5th 358" in out, out
+
+
+def test_a_short_form_case_name_is_protected_from_its_own_full_cite():
+    """A brief names an authority again in an argument heading, with no
+    reporter — nothing for the parser to read and no anchor for the guard. One
+    opposition shipped a heading reading "Kremerman v. Yardley" while the full
+    cite two lines below kept the real name."""
+    out = _brief_pz().apply(_BRIEF)
+    assert "Kremerman v. White Is Inapposite" in out, (
+        f"a cited decision was renamed in the argument heading: {out}")
+
+
+def test_the_same_surname_elsewhere_is_still_a_party():
+    # The pair is protected, not the word: a real person who happens to share a
+    # surname with a cited decision is still scrubbed.
+    out = _brief_pz().apply(_BRIEF)
+    assert "Angela White" not in out, out
+
+
+def test_a_short_form_repeat_of_our_own_caption_is_not_protected():
+    # The caption exemption applies here too: both sides ours means it is this
+    # case's own caption, which must still be replaced.
+    z = _pz(["Helen Rasho", "General Motors, LLC"])
+    page = ("Helen Rasho v. General Motors, LLC (2025) 1 Cal.5th 1.\n"
+            "As set out above, Helen Rasho v. General Motors, LLC is this "
+            "action.")
+    out = z.apply(page)
+    assert "Rasho" not in out and "General Motors" not in out, out
