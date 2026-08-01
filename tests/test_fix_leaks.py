@@ -293,3 +293,63 @@ def test_rejected_fix_alone_leaves_the_folder_untouched(tmp_path):
     assert (td / "Reply.txt.LEAK").exists()
     assert (tmp_path / "LEAKS.xlsx").exists()
     assert (tmp_path / "Apply Leak Fixes.command").exists()
+
+
+# ── a Fix?=yes may not rename a cited decision ──────────────────────────────
+
+def _cite_only_folder(folder):
+    """A quarantined export whose flagged value is a CITED AUTHORITY's name."""
+    tdir = folder / "Text Files"
+    tdir.mkdir()
+    reg = P._PnFakeRegistry()
+    terms = P._pn_build_terms(["Weishi Yang", "Ashley Liu"], ["26STCV08967"],
+                              [], registry=reg)
+    pz = P.Pseudonymizer(terms, {}, registry=reg)
+    pz.apply("Weishi Yang v. Ashley Liu")
+    pz.write_key(folder / "pseudonym_key.xlsx", log)
+    (tdir / "Quash.txt.LEAK").write_text(
+        "====== Page 1 ======\n"
+        "E. Kremerman v. White Is Inapposite - and Supports Plaintiff.\n"
+        "Defendant leans on Kremerman v. White (2021) 71 Cal.App.5th 358, 372.\n"
+        "See also Kremerman v. White, supra, 71 Cal.App.5th at p. 373.\n",
+        encoding="utf-8")
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Value", "Fix? (yes/no)", "File", "Type", "Where", "Notes"])
+    ws.append(["White", "yes", "Quash.txt.LEAK", "LEAK", "p.1:2", ""])
+    wb.save(folder / "LEAKS.xlsx")
+    return tdir
+
+
+def test_a_yes_on_a_citation_only_value_is_refused(tmp_path):
+    """`yes` answers "should I fake this?", not "is this a party?" — but the
+    value then becomes an authoritative --term, exempt from every screen a
+    harvested guess must clear, and renames the cited decision.
+
+    One folder marked "White" yes. That case's party template names Weishi Yang,
+    Ashley Liu, Carol Xu and counsel — no White at all. The word was the
+    defendant in *Kremerman v. White*, and the argument heading shipped as
+    "Kremerman v. Yardley"."""
+    tdir = _cite_only_folder(tmp_path)
+    args = _Args()
+    args.key = str(tmp_path / "pseudonym_key.xlsx")
+    P._fix_leaks_mode(tmp_path, args, {}, log)
+    out = next(iter(tdir.iterdir())).read_text()
+    assert out.count("Kremerman v. White") == 3, (
+        f"a cited decision was renamed by an operator yes:\n{out}")
+
+
+def test_a_yes_on_a_value_that_also_stands_outside_a_cite_still_applies(tmp_path):
+    # The screen is "ONLY inside citations", exactly as it is for a document
+    # harvest. A real person who happens to share a cited party's surname is
+    # still faked where they actually appear.
+    tdir = _cite_only_folder(tmp_path)
+    f = next(iter(tdir.iterdir()))
+    f.write_text(f.read_text() + "Declaration of Angela White, custodian.\n",
+                 encoding="utf-8")
+    args = _Args()
+    args.key = str(tmp_path / "pseudonym_key.xlsx")
+    P._fix_leaks_mode(tmp_path, args, {}, log)
+    out = next(iter(tdir.iterdir())).read_text()
+    assert "Angela White" not in out, f"the real occurrence rode out:\n{out}"
+    assert "Kremerman v. White (2021)" in out, f"authority renamed:\n{out}"

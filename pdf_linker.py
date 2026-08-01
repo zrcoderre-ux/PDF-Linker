@@ -10704,7 +10704,7 @@ class Pseudonymizer:
                                              case_sensitive=require_cap,
                                              priority=1, source="document")])
 
-    def prune_citation_only_terms(self, text):
+    def prune_citation_only_terms(self, text, sources=("document",), only=None):
         """Drop every DOCUMENT-harvested name term whose occurrences in `text`
         all lie inside protected citation spans — the corpus-wide equivalent of
         "don't harvest a party out of the authorities table".
@@ -10728,7 +10728,8 @@ class Pseudonymizer:
         doomed = []
         loaded = getattr(self, "_loaded_reals", ())
         for t in list(self.terms):
-            if (t.source != "document"
+            if (t.source not in sources
+                    or (only is not None and t.real.lower() not in only)
                     or t.real.lower() in loaded
                     or t.category not in ("person", "entity", "person-token",
                                           "entity-token", "short-name")):
@@ -17220,6 +17221,38 @@ def _fix_leaks_mode(folder, args, cfg, log):
     _fix_start = time.monotonic()
 
     changed = 0
+    # A Fix?=yes whose value appears ONLY inside case citations is refused.
+    #
+    # `yes` answers "should I fake this?", not "is this a party?" — the operator
+    # is reading a worksheet row, not the citation around it. But the value then
+    # becomes an authoritative `--term`, exempt from every screen a harvested
+    # guess must clear, and it renames the cited decision wherever protection
+    # cannot reach. One folder marked "White" yes; the party template for that
+    # case names Weishi Yang, Ashley Liu, Carol Xu and counsel, and no White at
+    # all — the word was the defendant in *Kremerman v. White*, and the argument
+    # heading shipped as "Kremerman v. Yardley".
+    #
+    # Same rule `prune_citation_only_terms` applies to a document harvest: a
+    # name that never appears outside a citation is an authority, not a party.
+    # Refused rather than warned about, because renaming an authority is this
+    # tool's worst failure and a warning in a log nobody reads does not prevent
+    # it. The row stays in the worksheet, and the message says what to do.
+    bodies = {}
+    for f in files:
+        try:
+            bodies[f] = f.read_text(encoding="utf-8")
+        except Exception as e:
+            log.warning(f"  Could not read {f.name}: {e}")
+    if auto_terms and bodies:
+        cite_only = pz.prune_citation_only_terms(
+            "\n\f\n".join(bodies.values()), sources=("--term",),
+            only={str(v).lower() for v in auto_terms})
+        if cite_only:
+            _warn(f"  --fix-leaks: refused Fix?=yes for "
+                  f"{', '.join(repr(v) for v in cite_only)} — that value "
+                  f"appears ONLY inside case citations in these exports, so "
+                  f"faking it would rename a cited decision. It is an "
+                  f"authority, not a party: mark the row 'no'.")
     # Files held because a REJECTED decision's value is still in them (see
     # `rejected`): the worksheet's other rows may have applied cleanly, and
     # those files are released as usual — but a file whose own fix was dropped
@@ -17227,10 +17260,8 @@ def _fix_leaks_mode(folder, args, cfg, log):
     held = set()
     rejected_low = [v.lower() for v in rejected]
     for f in files:
-        try:
-            body = f.read_text(encoding="utf-8")
-        except Exception as e:
-            log.warning(f"  Could not read {f.name}: {e}")
+        body = bodies.get(f)
+        if body is None:
             continue
         is_leak = f.name.endswith(".txt.LEAK")
         scrubbed = pz.apply(body)
