@@ -198,3 +198,39 @@ def test_an_invented_variant_that_spells_a_word_is_pruned():
     assert "Sliver" in z.prune_prose_word_terms(corpus)
     out = z.apply(corpus)
     assert "sliver of doubt" in out and "Silver" not in out, out
+
+
+# ─────── "none of the key values matched" must stay believable ──────────────
+
+def _hits(names, text):
+    z = _pz(names=names, casenos=("26STCV08967",))
+    z.apply(text)
+    return z.spreadsheet_hits(), z.spreadsheet_token_hits()
+
+
+def test_a_key_that_matched_only_by_token_is_not_called_stale():
+    """The template says "Ashley Liu"; the complaint writes "Ashely Liu". The
+    full-name term matches nothing while the surname matches throughout, so the
+    run scrubbed correctly and then announced that the exports "may name real
+    parties because none of the key values matched any document" — a false alarm
+    on the one warning that must stay believable."""
+    primary, tokens = _hits(("Weishi Yang", "Ashley Liu"),
+                            "Defendant Ashely Liu appeared. Liu answered. "
+                            "Liu testified at the hearing.")
+    assert primary == 0, "fixture must defeat the full-name term"
+    assert tokens >= 2, "the key's own tokens corroborate it"
+
+
+def test_a_genuinely_stale_sheet_still_scores_zero():
+    primary, tokens = _hits(("Bartholomew Quillfeather", "Peregrine Vandermolen"),
+                            "Defendant Wilhelmina Ashgrove is a resident. "
+                            "Ashgrove appeared and answered the complaint.")
+    assert primary == 0 and tokens < 2, (primary, tokens)
+
+
+def test_an_ordinary_word_token_does_not_corroborate():
+    # The reason the primary-only rule existed: a party named Green or Long must
+    # not be cleared by prose that happens to use the word.
+    z = _pz(names=("Marcus Green", "Sandra Long"), casenos=("26STCV08967",))
+    z.apply("The green light was long overdue; a green car and a long delay.")
+    assert z.spreadsheet_token_hits() < 2, "prose must not corroborate a key"

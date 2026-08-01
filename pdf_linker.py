@@ -10617,11 +10617,42 @@ class Pseudonymizer:
     def spreadsheet_hits(self):
         """Replacements made from PRIMARY spreadsheet-key values — full party
         names, entities, case numbers — excluding bare surname/given-name
-        tokens. Zero means the key didn't correspond to the documents: a bare
+        tokens. Zero means the key MAY not correspond to the documents: a bare
         token can match unrelated prose incidentally, so counting only primary
-        values keeps that from masking a wrong/stale sheet."""
+        values keeps that from masking a wrong/stale sheet. Read together with
+        `spreadsheet_token_hits`, which supplies the corroboration this
+        deliberately refuses."""
         return sum(r["count"] for r in self.records.values()
                    if r["source"] == "spreadsheet" and r["category"] != "person-token")
+
+    def spreadsheet_token_hits(self):
+        """How many DISTINCT distinctive party tokens from the key actually
+        matched — the corroboration `spreadsheet_hits` leaves out.
+
+        A key can correspond perfectly and still score zero above: the template
+        says "Ashley Liu" and the complaint writes "Ashely Liu", so the full-name
+        term matches nothing while the surname matches 44 times. The run scrubbed
+        correctly and then announced that the exports "may name real parties
+        because none of the key values matched any document" — a false alarm on
+        the one warning that must stay believable, because when it is right the
+        exports really do carry real names.
+
+        Kept conservative, so it corroborates without reintroducing what the
+        primary-only rule was protecting against. A token counts only when it is
+        DISTINCTIVE (name-shaped, not ordinary vocabulary — a party named Green
+        or Long must not be cleared by prose), and TWO distinct ones are needed:
+        a stale sheet from another matter would have to land two unrelated party
+        names in these documents by accident."""
+        seen = set()
+        for r in self.records.values():
+            if (r["source"] != "spreadsheet" or r["count"] <= 0
+                    or r["category"] != "person-token"):
+                continue
+            base = _pn_word_base(str(r["real"]))
+            if (len(base) >= 3 and base not in _PN_COMMON_WORDS
+                    and _pn_is_name_token(str(r["real"]))):
+                seen.add(base)
+        return len(seen)
 
     def a_case_number_fake(self):
         """A fake case number (any), for use as a neutral filename prefix."""
@@ -18337,7 +18368,14 @@ def main():
         # the key is the wrong/stale sheet, or none was found. The .txt files
         # are left in place; warn loudly (console + log) so they're reviewed
         # before sharing.
-        if pseudonymizer.texts_applied and pseudonymizer.spreadsheet_hits() == 0:
+        # …unless the key's own party TOKENS corroborate it (see
+        # `spreadsheet_token_hits`): a template that spells a name one way and a
+        # document that spells it another leaves the full-name term matching
+        # nothing while the surname matches throughout, and warning there trains
+        # the operator to ignore the one message that must stay believable.
+        if (pseudonymizer.texts_applied
+                and pseudonymizer.spreadsheet_hits() == 0
+                and pseudonymizer.spreadsheet_token_hits() < 2):
             if not pseudonymizer.has_spreadsheet_terms():
                 if key_path:
                     reason = f"the key {key_path.name} held no party/case values"
