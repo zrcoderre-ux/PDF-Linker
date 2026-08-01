@@ -110,7 +110,11 @@ def test_case_number_and_address_stay_consistent(folder):
     added_out = z2.apply(ADDED)
     assert faked_caseno in added_out
     # the same parcel written a second way folds onto the same faked street
-    assert _street(added_out) == _street(sent_out.split("Offices at ")[1])
+    # NAME. The house number is kept verbatim now, so "414" and the range
+    # "414-416" print their own real numbers — that is the parcel reading as
+    # the document wrote it, not two different streets.
+    name = lambda s: P._pn_addr_name_of(_street(s))
+    assert name(added_out) == name(sent_out.split("Offices at ")[1])
 
 
 # ── the party the key never bound is still scrubbed ─────────────────────────

@@ -110,9 +110,13 @@ class TestAddressDetector:
         assert len(set(fakes.values())) == len(fakes)
 
     def test_variant_spellings_share_a_fake(self):
+        # One parcel, one faked street NAME. The suffix mirrors how each
+        # occurrence was written (it is kept verbatim, not faked), so the two
+        # spellings differ there and nowhere else.
         pz, _ = _pz(detectors=["address"])
-        assert (pz._fake_street("21225 Pacific Coast Highway")
-                == pz._fake_street("21225 Pacific Coast Hwy"))
+        name = lambda s: pl._pn_addr_name_of(s)
+        assert (name(pz._fake_street("21225 Pacific Coast Highway"))
+                == name(pz._fake_street("21225 Pacific Coast Hwy")))
 
     def test_maple_not_in_fake_pool(self):
         assert "Maple" not in pl._PN_STREET_NAMES
@@ -1016,3 +1020,60 @@ class TestInitialsAreNeverAWord:
             pl._PnFakeRegistry().alnum("AT", "acronym", avoid=pl._pn_reads_as_word))
         assert not pl._pn_reads_as_word(
             pl._PnFakeRegistry().alnum("MW", "acronym", avoid=pl._pn_reads_as_word))
+
+
+# ── one parcel, one fake address, however the filing spells it ──────────────
+
+ADDR_GROUPS = [
+    # A directional abbreviated vs spelled out gave the FIRST form its own
+    # street and its own house number, so a reader cannot tell it is the
+    # address named three lines up.
+    ["122 E Foothill Blvd.",
+     "122 East Foothill Blvd",
+     "122 East Foothill Boulevard, Unit 126",
+     "122 East Foothill Boulevard, Unit 126, Arcadia, California 91006"],
+    # …and "S.Figueroa" — the abbreviation written hard against the name — was
+    # a third identity again, because a whitespace split sees one token and the
+    # period then dissolves into the name ("sfigueroa street").
+    ["445 S Figueroa St. Suite 2280",
+     "445 S Figueroa St., Ste 2280",
+     "445 S. Figueroa Street, Ste 2280",
+     "445 S.Figueroa St.",
+     "445 SOUTH FIGUEROA STREET SUITE 2280"],
+]
+
+
+@pytest.mark.parametrize("group", ADDR_GROUPS)
+def test_every_spelling_of_one_address_shares_an_identity(group):
+    keys = {pl._pn_addr_street_key(a)[0] for a in group}
+    assert len(keys) == 1, f"one parcel, {len(keys)} identities: {sorted(keys)}"
+
+
+@pytest.mark.parametrize("group", ADDR_GROUPS)
+def test_every_spelling_of_one_address_gets_one_fake(group):
+    reg = pl._PnFakeRegistry()
+    det = {k: pl._PN_DETECTORS[k] for k in pl._PN_DEFAULT_DETECTORS}
+    z = pl.Pseudonymizer(pl._pn_build_terms([], [], [], registry=reg), det,
+                        registry=reg)
+    seen = set()
+    for a in group:
+        out = z.apply(f"Service was made at {a} on April 24.")
+        fake = out[len("Service was made at "):-len(" on April 24.")]
+        m = re.match(r"(\d+)\s+(\w+)", fake)
+        assert m, fake
+        seen.add((m.group(1), m.group(2).lower()))   # house number AND street
+    assert len(seen) == 1, f"one parcel rendered as {len(seen)} places: {seen}"
+
+
+def test_two_different_streets_still_get_different_fakes():
+    # The fold must not collapse genuinely different parcels.
+    a = pl._pn_addr_street_key("122 East Foothill Boulevard")[0]
+    b = pl._pn_addr_street_key("122 West Foothill Boulevard")[0]
+    assert a != b, "opposite directionals are different streets"
+
+
+def test_a_directional_is_not_confused_with_a_street_name():
+    # "North" can be the NAME of a street, not only a directional. Expanding is
+    # idempotent, so "North Street" keys the same either way.
+    assert (pl._pn_addr_street_key("100 North Street")[0]
+            == pl._pn_addr_street_key("100 N Street")[0])
