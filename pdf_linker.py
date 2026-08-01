@@ -7840,8 +7840,20 @@ _PN_ADDR_ABBR = {
     "pkwy": "Parkway", "cir": "Circle", "ct": "Court", "pl": "Place",
     "ter": "Terrace", "sq": "Square", "trl": "Trail",
 }
-_PN_ADDR_DIRS = {"n": "N", "s": "S", "e": "E", "w": "W", "ne": "NE",
-                 "nw": "NW", "se": "SE", "sw": "SW"}
+# Directionals, EXPANDED to the spelled-out word. Mapping the abbreviation to
+# itself only normalised case, so "445 S Figueroa St." and "445 SOUTH FIGUEROA
+# STREET" keyed as "s figueroa street" and "south figueroa street" — two
+# identities for one parcel, and therefore two unrelated fake addresses for one
+# real office ("6995 Rosewood Street" and "9043 Laurel Street"). The same
+# spelling pair gave "122 E Foothill Blvd." its own street AND its own house
+# number, so a reader cannot tell it is the address named three lines up.
+_PN_ADDR_DIRS = {"n": "north", "s": "south", "e": "east", "w": "west",
+                 "ne": "northeast", "nw": "northwest",
+                 "se": "southeast", "sw": "southwest",
+                 "north": "north", "south": "south",
+                 "east": "east", "west": "west",
+                 "northeast": "northeast", "northwest": "northwest",
+                 "southeast": "southeast", "southwest": "southwest"}
 
 
 def _pn_addr_canon(real):
@@ -7849,6 +7861,12 @@ def _pn_addr_canon(real):
     `21225 Pacific Coast Highway`, and `21225 PACIFIC COAST HWY` seed ONE fake —
     the audited run gave one office three fakes. Expands the suffix and
     directional abbreviations, lower-cases, and collapses punctuation/space."""
+    # An abbreviation written hard against the next word ("S.Figueroa") is one
+    # token to a whitespace split, so the directional never expanded and the
+    # period dissolved into the name: "sfigueroa street", a third identity for
+    # the same parcel. Give the period back its space first — this string is
+    # only ever an identity KEY, never text that gets written out.
+    real = re.sub(r"(?<=[A-Za-z])\.(?=[A-Za-z])", ". ", real)
     toks = re.split(r"[ \t]+", real.strip())
     out = []
     for t in toks:
@@ -7860,6 +7878,15 @@ def _pn_addr_canon(real):
         else:
             out.append(base)
     return re.sub(r"[^a-z0-9 ]", "", " ".join(out)).strip()
+
+
+def _pn_addr_name_of(street):
+    """The NAME words of a street, with the house number and the street-type
+    suffix removed ("7227 Hickory Blvd" -> "Hickory"). The name is the only part
+    the tool fakes, so it is the only part the registry memoizes."""
+    out = re.sub(r"^[\s\d\-\u2013\u2014]+", "", str(street)).strip()
+    out = re.sub(rf"[ \t]+{_PN_ADDR_SUFFIX}\b\.?[ \t]*$", "", out).strip()
+    return out
 
 
 def _pn_addr_street_key(real):
@@ -9698,10 +9725,13 @@ def _pn_load_key(path, registry, log):
             registry._memo.setdefault(("caseno", real.lower()), fake)
         elif cat == "address":
             core = _pn_addr_street_key(real)[0]
-            fake_core = _pn_addr_parts(fake)[0]
-            if core and fake_core:
-                registry._memo.setdefault(("street", core.lower()), fake_core)
-                registry._used.add(fake_core.lower())
+            # The memo holds the street NAME alone (the only part faked), so a
+            # key written when the whole "<number> <name> <suffix>" was stored
+            # is reduced to the same thing on the way in.
+            fake_name = _pn_addr_name_of(_pn_addr_parts(fake)[0])
+            if core and fake_name:
+                registry._memo.setdefault(("street", core.lower()), fake_name)
+                registry._used.add(fake_name.lower())
 
         # A person-token row DERIVED from the judge's (or a staff member's)
         # full name exists for the reversal macro only. Loading it as a match
@@ -11469,15 +11499,29 @@ class Pseudonymizer:
 
     def _fake_street_core(self, real):
         """The faked "<number> <name> <suffix>" street alone (no suite, no
-        City/ST/ZIP), keyed on the STREET IDENTITY so every spelling of one
-        parcel shares one fake."""
+        City/ST/ZIP). Only the NAME is faked, keyed on the STREET IDENTITY so
+        every spelling of one parcel shares it.
+
+        The HOUSE NUMBER is kept verbatim, for the reason the street-type
+        suffix and the whole City/ST/ZIP tail already are: a bare number
+        identifies nobody, and the street is what does. Faking it also broke
+        both directions at once. Keyed on the number-stripped identity, every
+        house on one street drew the SAME fake number, so 122, 500 and 1450
+        East Foothill all became "7227 Hickory Blvd" — three real addresses
+        collapsed onto one fake, which the registry is supposed to make
+        impossible and which the reversal cannot undo (the macro sees one fake
+        claimed by three Real Values, calls it ambiguous, and restores none of
+        them). Keeping the number makes the whole address injective for free
+        and keeps a range ("414-416") reading as a range."""
+        street, _suite, _cz = _pn_addr_parts(real)
+        street = street or real
         suffix = _pn_addr_suffix_of(real)
         core, _nums = _pn_addr_street_key(real)
-
-        def make(rng):
-            return (f"{rng.randrange(100, 9999)} "
-                    f"{rng.choice(_PN_STREET_NAMES)} {suffix}")
-        return self.registry.unique(core, "street", make)
+        name = self.registry.unique(
+            core, "street", lambda rng: rng.choice(_PN_STREET_NAMES))
+        lead = re.match(r"[\s]*([\d][\d\-\u2013\u2014]*)", street)
+        number = (lead.group(1) + " ") if lead else ""
+        return f"{number}{name} {suffix}".strip()
 
     def _fake_street(self, real):
         """Injective address fake keyed on the STREET IDENTITY (number-stripped

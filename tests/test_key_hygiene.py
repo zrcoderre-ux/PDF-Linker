@@ -95,18 +95,26 @@ def test_a_case_variant_is_one_row_not_two(tmp_path):
     assert barry[0][5] == 2, "both spellings must count toward the one row"
 
 
-def test_two_spellings_of_one_address_do_not_both_reverse(tmp_path):
-    # The macro cannot invert an ambiguous fake, so exactly one row may claim
-    # each Replacement; the other is marked, not dropped (it is still needed
-    # forward).
+def test_two_spellings_of_one_address_each_reverse(tmp_path):
+    """Two spellings of one parcel, and BOTH are fully reversible.
+
+    They used to collide onto one fake — the whole "<number> <name> <suffix>"
+    was memoized on the street identity — so one row had to be marked
+    `alt spelling` and only the other could reverse. Now the house number and
+    the suffix are kept verbatim and only the NAME is faked, so each spelling
+    yields its own distinct fake, the key is bijective here, and nothing has to
+    be retired. They still read as one street, which is the point."""
     z = _pz()
     z.apply("11845 W. Olympic Blvd., Suite 1270 and "
             "11845 W. Olympic Boulevard, Suite 1270.")
     _p, macro, _pinned = _write(z, tmp_path)
     addr = [r for r in macro if r[0] == "address"]
     assert len(addr) == 2, addr
-    owners = [r for r in addr if r[3] != P._PN_KEY_ALT_STATUS]
-    assert len(owners) == 1, f"two rows claim the same fake in reverse: {addr}"
+    assert all(r[3] != P._PN_KEY_ALT_STATUS for r in addr), (
+        f"a spelling was retired from the reverse pass: {addr}")
+    assert len({str(r[2]) for r in addr}) == 2, f"two reals, one fake: {addr}"
+    assert len({P._pn_addr_name_of(P._pn_addr_parts(str(r[2]))[0])
+                for r in addr}) == 1, f"one parcel, two street names: {addr}"
 
 
 # ──────────────────── D7: OCR-mangled contact details ───────────────────────

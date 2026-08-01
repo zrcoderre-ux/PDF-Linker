@@ -429,6 +429,24 @@ the party), so its row stays reversible.
   acronym of the entity's OWN fake so the long and short forms stay one firm —
   when those initials spell a word that tie is worth less than the word costs,
   and `registry.alnum(..., avoid=...)` settles it.
+- **An ADDRESS fakes the STREET NAME and nothing else.** The house number, the
+  street-type suffix and the whole City/ST/ZIP tail are kept verbatim — a bare
+  number identifies nobody, the street is what does, and the locality is kept by
+  house standard anyway. Faking the number broke both directions at once: it was
+  keyed on the number-stripped identity, so EVERY house on one street drew the
+  same number and "122", "500" and "1450 East Foothill" all became
+  "7227 Hickory Blvd" — three real addresses collapsed onto one fake, which the
+  registry exists to prevent and which the macro cannot reverse (one fake, three
+  Real Values, so it calls the mapping ambiguous and restores none of them).
+  Keeping the number makes the whole address injective for free and keeps a
+  range ("414-416") reading as one. `_pn_addr_canon` decides the street IDENTITY
+  and must fold every spelling of one parcel: it EXPANDS directionals (the map
+  used to send "s" to "S", normalising case but never folding "S Figueroa" onto
+  "SOUTH FIGUEROA" — two identities, two unrelated fake streets for one office)
+  and re-spaces an abbreviation written hard against the name ("S.Figueroa",
+  which a whitespace split reads as one token and whose period then dissolves
+  into the name). `_pn_load_key` seeds the memo with the NAME alone, reducing a
+  key written when the whole composed street was stored.
 - **Detectors** (`_PN_DETECTORS`: ssn/email/phone/address/url) run as regex over
   the text in `apply()`; `_detector_cands`/`_term_cands` produce candidates,
   highest-priority longest-non-overlapping wins.
