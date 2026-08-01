@@ -7547,7 +7547,7 @@ def _pn_append_person_terms(terms, raw, source, registry):
     priority, sharing each token's fake — its near-spelling variants, so a
     surname the key spells one way is still scrubbed where a document spells it
     another ("Roxane" vs "Roxanne")."""
-    raw = _pn_strip_et_al(raw)
+    raw = _pn_trim_edge_vocabulary(_pn_strip_et_al(raw))
     if not _pn_harvest_value_ok(raw, source):
         return {}
     fake_full, bare = _pn_fake_person(raw, registry)
@@ -7666,6 +7666,68 @@ def _pn_strip_pleading_title_prefix(name):
             or _pn_is_procedural_phrase(rest)):
         return ""
     return rest
+
+
+def _pn_trim_edge_vocabulary(name):
+    """`name` with ordinary SENTENCE VOCABULARY trimmed off both ends.
+
+    A leak-worksheet `yes` mints the whole flagged phrase as an authoritative
+    `--term`, and a flagged phrase is routinely an argument heading rather than
+    a party: one delivered key carried
+
+        That Lin                     -> That Yardley            (124 hits)
+        Lin Intended                 -> Yardley Intended
+        Alleges That Lin Particpated -> Alleges That Yardley Fenwick
+
+    beside the correct `Lin -> Yardley` the case already had. The edge word is
+    never identifying — it is the sentence the name was standing in — and
+    keeping it costs three ways. It NARROWS the match to that one phrasing; it
+    clutters the key with rows that say nothing; and, because the reversal
+    macro applies a multi-word row's stored casing when the matched text is
+    mixed case, it rewrites the document's own capitalization on the way back
+    ("...on the ground that Lin was a sham defendant" returns as "That Lin",
+    mid-sentence, everywhere the phrase appeared).
+
+    Trimmed, the row is `Lin -> Yardley` and the output text is UNCHANGED: the
+    edge word was being mapped to itself anyway, so dropping it removes a
+    constraint on matching, never a substitution.
+
+    Applied on the PERSON path only. An ENTITY's leading word is routinely part
+    of its identity and routinely ordinary vocabulary — "Service by Medallion,
+    Inc.", "General Motors", "Standard Oil" — so trimming there would cut into
+    the name itself. A person's name does not begin with a conjunction.
+
+    Firm furniture and connectors are deliberately NOT trimmed — "LAW OFFICES
+    OF" is kept verbatim by the composing faker on purpose, and a term is the
+    unit `_pn_restore_furniture` repairs. A word that is also a real surname
+    (`_PN_COMMON_WORD_SURNAMES`: Green, West, Price, Day…) is never trimmed
+    either. Nor is anything trimmed that would leave no distinctive word
+    behind, so a party whose name IS ordinary vocabulary keeps it."""
+    words = name.split()
+
+    def _trimmable(w):
+        base = _pn_word_base(w)
+        return (base in _PN_COMMON_WORDS
+                and base not in _PN_FIRM_WORDS
+                and base not in _PN_NAME_CONNECTORS
+                and base not in _PN_COMMON_WORD_SURNAMES)
+
+    lo, hi = 0, len(words)
+    while lo < hi and _trimmable(words[lo]):
+        lo += 1
+    while hi > lo and _trimmable(words[hi - 1]):
+        hi -= 1
+    core = words[lo:hi]
+    # Nothing DISTINCTIVE left means the whole value was vocabulary — leave it
+    # exactly as it came, and let the ordinary screens decide it. Measured
+    # against `_pn_is_generic_token` and not against the trim test, or "The
+    # Same" would trim to the bare connector "The": a connector is protected
+    # from trimming precisely because it is furniture, which is the opposite
+    # of a reason to keep it as the whole name.
+    if not core or not any(not _pn_is_generic_token(_pn_word_base(w))
+                           for w in core):
+        return name
+    return " ".join(core)
 
 
 def _pn_append_name_terms(terms, raw, source, registry):
