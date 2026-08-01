@@ -496,6 +496,17 @@ the party), so its row stays reversible.
   `_real_remainder` returns the value untouched — no evidence is not evidence of
   absence, and without that guard every stand-in would look absent and every
   finding would be gutted.
+- **A triage row NAMES the authority it may have come from**
+  (`_pn_authority_cite_index` / `authority_note`, the Notes column). "Angela
+  White" in a worksheet is a question the operator can only answer by already
+  knowing the batch's authorities — and answering it wrong is expensive, because
+  a `yes` mints the value into an authoritative `--term` and renames the cited
+  decision. "cited authority: Kremerman v. White (2021) 71 Cal.App.5th 358"
+  beside the row IS the answer. The same year-bearing-cite harvest the fake-pool
+  screen uses, keeping WHICH decision each party word came from. It INFORMS and
+  never decides: sharing a surname with a cited decision is not proof (a real
+  witness can be called White in a case that cites *Kremerman v. White*), so the
+  row is still shown, and an operator's own note is appended to, never replaced.
 - **Two-tier leak detection**: `surviving_reals` (a tracked real still present)
   and the high-recall REVIEW scans (`review_scan`, `unknown_name_scan`,
   `reid_scan`) surface anything name-shaped for human triage in `LEAKS.xlsx`.

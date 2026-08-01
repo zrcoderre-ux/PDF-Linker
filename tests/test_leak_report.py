@@ -257,3 +257,79 @@ def test_unbound_decision_is_still_carried_forward(tmp_path):
             openpyxl.load_workbook(sheet).active.iter_rows(min_row=2,
                                                            values_only=True)]
     assert "TRAVELERS CASUALTY" in vals
+
+
+# ───── a triage row names the authority it may have come from ───────────────
+
+def _cited_pz():
+    reg = P._PnFakeRegistry()
+    terms = P._pn_build_terms(["Weishi Yang", "Ashley Liu"], ["26STCV08967"],
+                              [], registry=reg)
+    det = {k: P._PN_DETECTORS[k] for k in P._PN_DEFAULT_DETECTORS}
+    z = P.Pseudonymizer(terms, det, registry=reg)
+    z.note_authority_cites(
+        "Defendant relies on Kremerman v. White (2021) 71 Cal.App.5th 358, 372, "
+        "and on Pasadena Medi-Center Associates v. Superior Court (1973) 9 "
+        "Cal.3d 773.")
+    return z
+
+
+def test_a_value_sharing_a_cited_partys_name_is_annotated():
+    """"Angela White" in a worksheet is a question the operator can only answer
+    by already knowing the authorities. The note IS the answer."""
+    note = _cited_pz().authority_note("Angela White")
+    assert note == ("cited authority: Kremerman v. White (2021) "
+                    "71 Cal.App.5th 358"), note
+
+
+def test_an_unrelated_value_gets_no_note():
+    assert _cited_pz().authority_note("Bartholomew Quillfeather") == ""
+
+
+def test_only_a_year_bearing_cite_contributes():
+    # A bare "X v. Y" is as likely to be the document's own caption.
+    reg = P._PnFakeRegistry()
+    z = P.Pseudonymizer([], {}, registry=reg)
+    z.note_authority_cites("HELEN RASHO v. GENERAL MOTORS, LLC\n  Defendant.")
+    assert z.authority_note("General Motors") == ""
+
+
+def test_the_note_reaches_the_worksheet(tmp_path):
+    z = _cited_pz()
+    P._pn_write_leak_report(tmp_path, [
+        {"file": "Quash.pdf", "type": "unscrubbed name?",
+         "value": "Angela White", "where": "p.2:20"},
+        {"file": "Complaint.pdf", "type": "LEAK",
+         "value": "Bartholomew Quillfeather", "where": "p.1:4"},
+    ], log, note_for=z.authority_note)
+    rows = {r[0]: r[5] for r in openpyxl.load_workbook(
+        tmp_path / "LEAKS.xlsx").active.iter_rows(min_row=2, values_only=True)}
+    assert "Kremerman v. White" in str(rows["Angela White"])
+    assert not str(rows["Bartholomew Quillfeather"] or "")
+
+
+def test_the_row_is_still_shown_not_suppressed(tmp_path):
+    # Sharing a surname with a cited decision is not proof: a real witness can
+    # be called White in a case that cites *Kremerman v. White*. The note
+    # informs the operator; it does not decide for them.
+    z = _cited_pz()
+    P._pn_write_leak_report(tmp_path, [
+        {"file": "Quash.pdf", "type": "unscrubbed name?",
+         "value": "Angela White", "where": "p.2:20"},
+    ], log, note_for=z.authority_note)
+    values = [r[0] for r in openpyxl.load_workbook(
+        tmp_path / "LEAKS.xlsx").active.iter_rows(min_row=2, values_only=True)]
+    assert "Angela White" in values
+
+
+def test_an_operators_own_note_survives(tmp_path):
+    z = _cited_pz()
+    P._pn_write_leak_report(tmp_path, [
+        {"file": "Quash.pdf", "type": "unscrubbed name?",
+         "value": "Angela White", "where": "p.2:20"},
+    ], log, decisions={"angela white": {"value": "Angela White", "fix": "",
+                                        "notes": "checked with counsel"}},
+        note_for=z.authority_note)
+    note = [r[5] for r in openpyxl.load_workbook(
+        tmp_path / "LEAKS.xlsx").active.iter_rows(min_row=2, values_only=True)][0]
+    assert "checked with counsel" in note and "Kremerman v. White" in note
