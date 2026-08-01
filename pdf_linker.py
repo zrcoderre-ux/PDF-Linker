@@ -10327,6 +10327,32 @@ _PN_LABEL_RES = (
     # zero-false-positive anchor.
     re.compile(r"(?P<n>" + _PN_LABEL_NAME + r")\s*,?\s*(?:Esq\.?\s*,?\s*)?"
                r"\(?(?i:State\s+Bar\s+No|SBN|S\.\s*B\.?\s*(?:N|#))"),
+    # The third-party humans a SERVICE document names, who carry no party-role
+    # anchor at all: the process server the motion turns on and the mailbox-
+    # store manager who accepted the papers. A motion-to-quash batch shipped
+    # the server's name 51 times and the manager's 10 — never keyed, because
+    # every harvest anchor was a party role. Name-first is how declarations
+    # write them ("Michael Rodgers, a registered California process server";
+    # "Lupe Lopez, the store manager"); label-first is how a POS-010 does
+    # ("PROCESS SERVER: ...").
+    re.compile(r"(?P<n>" + _PN_LABEL_NAME + r")[ \t]*,[ \t]*"
+               r"(?:(?i:a|an|the)[ \t]+)?(?:(?i:duly[ \t]+)?(?i:registered)[ \t]+)?"
+               r"(?:(?i:california)[ \t]+)?"
+               r"(?i:process[ \t]+server|notary[ \t]+public|"
+               r"(?:(?:store|branch|office|general)[ \t]+)?manager|"
+               r"custodian[ \t]+of[ \t]+(?:the[ \t]+)?records?|"
+               r"certified[ \t]+interpreter|interpreter)s?(?![\w])"),
+    re.compile(r"(?i:(?:registered[ \t]+)?(?:california[ \t]+)?"
+               r"process[ \t]+server|notary[ \t]+public|"
+               r"(?:store|branch|office|general)[ \t]+manager|"
+               r"custodian[ \t]+of[ \t]+(?:the[ \t]+)?records?)s?"
+               r"[ \t]*[,:][ \t]*\n?[ \t]*(?P<n>" + _PN_LABEL_NAME + r")"),
+    # The POS-010 field that names the server: "Person who served papers:"
+    # then its "a. Name:" sub-field. A bare "Name:" label is far too broad to
+    # anchor on; the compound is not.
+    re.compile(r"(?i:person[ \t]+who[ \t]+served[ \t]+papers)[ \t]*:?[ \t]*\n?"
+               r"[ \t]*(?:[a-z]\.[ \t]*)?(?i:name)[ \t]*:?" + _PN_LABEL_GAP +
+               r"(?P<n>" + _PN_LABEL_NAME + r")"),
 )
 
 
@@ -10375,6 +10401,84 @@ def _pn_label_names(text):
                 if piece.lower() not in seen:
                     seen.add(piece.lower())
                     out.append(piece)
+    return out
+
+
+# A LASC case-summary / docket roster row: a name, then the party's role, with
+# nothing else on the line — "DENG XIAOXIA          Plaintiff",
+# "Shi Fiona aka Yaqin Shi | Defendant", "Tomassian Serge   Attorney for
+# Defendant". Every existing harvest anchor is a role PREFIX ("Defendant
+# Travelers"), so a role-SUFFIXED roster matched none of them and a Reply's
+# Exhibit A docket shipped fourteen parties of a prior case untouched — or,
+# worse, half-scrubbed, where one token happened to be keyed from elsewhere
+# ("Xiaoxia Deng" -> "Xiaoxia Ingersoll", 102 times).
+#
+# The row is surname-first, which is why the alias is written the same way and
+# why the whole run is registered as one name: `_pn_append_person_terms`
+# registers every token, so word order costs nothing.
+#
+# The anchor is deliberately narrow — the role word must CLOSE the line, and
+# the name run must be the whole rest of it — because a role word is common in
+# prose and this shape is not. A separator column ("|") is optional; a docket
+# printed as a table extracts with one, a PDF text layer usually with runs of
+# spaces.
+_PN_DOCKET_ROLE = (
+    r"(?:Cross[- ]?)?(?:Plaintiff|Defendant|Petitioner|Respondent|Complainant|"
+    r"Claimant|Appellant|Movant)s?"
+    r"|Attorney[ \t]+for[ \t]+[A-Za-z][\w \t-]*"
+    r"|Judicial[ \t]+Officer|Deputy[ \t]+Clerk|Court[ \t]+Reporter")
+_PN_DOCKET_ROW_RE = re.compile(
+    r"(?m)^[ \t]*(?P<n>[A-Z][A-Za-z.'’-]+(?:[ \t]+[A-Za-z][A-Za-z.'’-]*){1,4})"
+    r"[ \t]*(?:\|[ \t]*|[ \t]{2,})"
+    rf"(?:{_PN_DOCKET_ROLE})[ \t]*\|?[ \t]*$")
+
+
+def _pn_docket_roster_names(text):
+    """['Deng Xiaoxia', 'Shi Fiona aka Yaqin Shi', …] — the party names a
+    docket/case-summary roster lists with their role in the trailing column.
+
+    Screened like any other DOCUMENT harvest: a role word is never a name
+    word, a calendar word is never a party, and every token must be able to
+    stand as a name token on its own. An `aka` run is handed over whole —
+    `_pn_append_name_terms` splits it, and the alias needing its own binding
+    is exactly the half-scrub this exists to prevent."""
+    out, seen = [], set()
+    for m in _PN_DOCKET_ROW_RE.finditer(text):
+        raw = _pn_strip_et_al(re.sub(r"\s+", " ", m.group("n")).strip())
+        words = [w for w in raw.split() if re.search(r"[A-Za-z]", w)]
+        if len(words) < 2:
+            continue
+        if _pn_is_party_role(raw) or _pn_is_public_entity(raw):
+            continue
+        if _pn_is_protected_locality(raw) or _pn_is_never_fake(raw):
+            continue
+        # Every word must be able to be a name: a role word, a calendar word,
+        # a procedural word or a form label anywhere in the run means this is
+        # a heading the column layout happened to leave alone, not a roster.
+        ok, distinctive = True, False
+        for w in words:
+            base = _pn_word_base(w)
+            if base in ("aka", "fka", "dba", "akas"):
+                continue        # an alias joiner, kept for the splitter below
+            if re.fullmatch(r"[A-Za-z]\.?", w):
+                continue        # a middle initial ("Weisskopf Stephen D.")
+            if (not _pn_is_name_token(w) or _pn_is_role_token(w)
+                    or base in _PN_CALENDAR_WORDS
+                    or _pn_is_generic_token(base) or len(base) < 2):
+                ok = False
+                break
+            distinctive = distinctive or len(base) >= _PN_HARVEST_TOKEN_MIN
+        # The LOOSE-harvest length screen (`_PN_HARVEST_TOKEN_MIN`) applies to
+        # the ROW, not to each token: a roster row carries its own
+        # corroboration — a role column and nothing else on the line — the way
+        # a declaration short cite does, and a real two-letter surname is
+        # commonplace ("WU JING", "Yu", "Ng"). One distinctive word is enough
+        # to say this is a name and not the "ET AL." wreckage the screen was
+        # written for.
+        if not ok or not distinctive or raw.lower() in seen:
+            continue
+        seen.add(raw.lower())
+        out.append(raw)
     return out
 
 
@@ -11175,6 +11279,17 @@ class Pseudonymizer:
         one place real names appear off the spreadsheet AND off the pleading
         anchors. Idempotent; call before apply()."""
         for raw in _pn_label_names(text):
+            new = []
+            _pn_append_name_terms(new, raw, "document", self.registry)
+            self._add_terms(new)
+
+    def register_docket_names(self, text):
+        """Register the parties a DOCKET / case-summary roster lists with their
+        role in a trailing column ("DENG XIAOXIA    Plaintiff"). Every other
+        harvest anchors on a role PREFIX, so this shape reached no pass at all
+        and a Reply's Exhibit A shipped a prior case's whole party list.
+        Idempotent; call before apply()."""
+        for raw in _pn_docket_roster_names(text):
             new = []
             _pn_append_name_terms(new, raw, "document", self.registry)
             self._add_terms(new)
@@ -15734,6 +15849,7 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         pseudonymizer.register_declarant_refs(detect_full)
         pseudonymizer.register_court_names(detect_full)
         pseudonymizer.register_dba_names(detect_full)
+        pseudonymizer.register_docket_names(detect_full)
         pseudonymizer.register_firm_names(detect_full)
         pseudonymizer.register_label_names(detect_full)
         pseudonymizer.register_short_names(detect_full)
@@ -15963,6 +16079,7 @@ def _pn_learn_from_text(pseudonymizer, text, stem=None):
     if stem:
         pseudonymizer.register_declarant_refs(re.sub(r"[_\-]+", " ", stem))
     pseudonymizer.register_dba_names(text)
+    pseudonymizer.register_docket_names(text)
     pseudonymizer.register_firm_names(text)
     pseudonymizer.register_label_names(text)
     pseudonymizer.register_short_names(text)
