@@ -324,6 +324,34 @@ the party), so its row stays reversible.
   as often as capitalized is prose — no hand-kept gazetteer is ever complete)
   and `prune_fragment_terms` (a candidate the corpus only ever writes INSIDE a
   longer word is an OCR fragment).
+- **A motion's own SUBJECT MATTER is not a party, and no word list will ever
+  say so** (`prune_heading_only_terms`). Four hand-kept lists now exist to stop
+  ordinary legal vocabulary being replaced by a surname — `_PN_COMMON_WORDS`
+  (583 entries), `_PN_SERVICE_GENERIC_WORDS`, `_PN_FORM_LABEL_WORDS`,
+  `_PN_SHORT_TOKEN_STOP` — and every one was written AFTER a motion type
+  shipped with its vocabulary renamed ("MOTION TO MABRY SERVICE OF SUMMONS",
+  "ELDRIDGE OF SERVICE", "process radley"). A list of words that are not names
+  is a list of every noun in every motion type the tool has not met yet, which
+  is why the standing note here was "expect the next motion type to reveal the
+  next missing block" — a promise of recurrence, not a fix.
+  `prune_prose_word_terms` is the general form of the same question and cannot
+  reach these: a motion's subject matter lives in its CAPTION and HEADINGS,
+  where every word is capitalised, so "Quash" is never once written lower-case
+  in a motion to quash. The evidence that separates them is POSITION. A party
+  is written into PROSE ("served on Mabry at his residence"); the subject
+  matter appears only where everything around it is a title. So a candidate
+  needs one CAPITALISED occurrence on a prose line (`_pn_line_is_prose`), and a
+  lower-case occurrence is never evidence — a motion writes "moves to quash
+  service" in its argument and "MOTION TO QUASH" in its caption, and counting
+  the argument's occurrence rescued the very word this exists to drop. The line
+  test ignores `_PN_TITLE_LOWER_WORDS`, since house style leaves "to"/"of"
+  lower inside a title. **ONE prose word is enough, deliberately**: a CAPTION
+  CELL is where a filing states its parties and carries exactly one
+  ("HELEN RASHO, an individual,"), so a two-word floor would read every caption
+  as a heading and drop the party the caption exists to name. Scoped like
+  `prune_prose_word_terms` — document-harvested guesses and this tool's own
+  DERIVED spellings only, never the operator's template, a `--term`, or a value
+  a reused key pinned.
 - **The people a SERVICE document names carry no party role, and a DOCKET names
   its parties role-LAST.** Every harvest anchor was a role PREFIX ("Defendant
   Travelers", "Attorneys for X"), so two whole populations reached no pass at
@@ -669,8 +697,12 @@ the party), so its row stays reversible.
   as a real surname (Bond, Branch, Store, Manager) goes in
   `_PN_SERVICE_GENERIC_WORDS`, not `_PN_COMMON_WORDS`, for the reason
   `_PN_FORM_LABEL_WORDS` states: withheld from ever becoming a bare token, still
-  reportable when a party really carries the name. Expect the next motion type
-  to reveal the next missing block.
+  reportable when a party really carries the name. The lists are no longer the
+  only line of defence — `prune_heading_only_terms` answers the same question
+  from the corpus, so a vocabulary word the lists have never heard of is
+  dropped on the evidence that nothing but a heading ever offered it. Keep
+  extending them anyway: the prune needs the word to APPEAR somewhere, and a
+  list entry costs nothing.
 - **A HALF-SCRUBBED pair is the most dangerous thing the tool can emit, and the
   scans were structurally blind to it** (`half_scrubbed_scan`). "Xiaoxia
   Ingersoll" shipped 102 times in one batch, "Jiayin Sterling" in all seven
@@ -1144,9 +1176,34 @@ survive to fail.
   site, the grind rungs included. Tesseract otherwise collapses the run of
   spaces a two-column caption depends on — a weld manufactured at recognition
   time, upstream of every cure the pseudonymizer has.
+- **A DESTRUCTIVE pass must PROVE it helped** (`_reocr_improves`, the gate on
+  `_reocr_garbled_pages`' phase 2). The pass redacts a page's real text and
+  overlays 300-dpi guesses, and it used to do that on a HEURISTIC alone:
+  `_text_looks_garbled` said the old text was bad and the new text was adopted
+  sight unseen. Two ways that ends badly, both of which have happened — the
+  heuristic misjudges a page that was fine (a table of authorities, a
+  digit-dominated damages table; the ratio has now been retuned THREE times for
+  exactly this), or the rebuild is itself junk (a page ground down to 72 dpi, an
+  image Tesseract cannot read, a page whose ink is a signature). Either way the
+  run threw away the true text layer and kept a worse one, and nothing
+  downstream can tell: the export reads as prose and the source is gone. So the
+  rebuild is now measured against the same bar that condemned the page — if the
+  new text ALSO reads as garbled it bought nothing and the ORIGINAL is at least
+  what the document says, and if it recovered less than `_REOCR_MIN_YIELD` of
+  the word-shaped tokens the page already had it lost content. The page keeps
+  its own text, and the refusal is logged. This is the belt that makes the
+  ratio's remaining false positives cheap: a misjudged page now costs a wasted
+  render instead of the document.
 - The grind never skips a page, but a page re-rendered below `_OCR_LOW_DPI`
   (150) has traded away real recognition quality, so it is named in the log as
-  low-confidence. Silence there read as "recognised fine".
+  low-confidence. Silence there read as "recognised fine". **And the EXPORT says
+  it too** (`_note_low_confidence` → the page banner in `_write_text_version`),
+  because the log is a separate file that does not travel with the shared
+  export: text recognised at 99 dpi comes back mostly wrong and otherwise sits
+  in the middle of an accurate document looking exactly like the rest of it. A
+  reviewer needs to know which paragraph is the document and which is a guess.
+  Same reasoning the ink-form banner already follows — an inferred checkbox is
+  never presented as equal to a widget's, and it says so where it is read.
 - Per-page **timeout + grind**: a stalled page is re-rendered at lower
   resolution and retried, never skipped, never hangs (the earlier 0%-CPU hang).
 - Env vars: `PDF_LINKER_OCR_WORKERS` (default cores-1, cap 10),
