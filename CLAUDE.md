@@ -463,6 +463,22 @@ the party), so its row stays reversible.
   nothing is able to clean. `_substitute` gets the same protected set the main
   pass gets, so a cited authority still stays byte-for-byte and an operator KEEP
   still stays verbatim. ~50 ms an export, early-outing when nothing survived.
+- **The ORIGINAL text is EVIDENCE, and the run uses it when it has it**
+  (`note_original` / `confirm_findings`). A leak finding claims "real
+  information survived into the export"; the run's OWN output cannot satisfy
+  that claim, and where `known_fake_words` only INFERS which words are ours the
+  unscrubbed original says so outright. "Langley" was one folder's stand-in for
+  "Liu" — 44 times in the export, ZERO in the PDF — and it still reached the
+  triage worksheet twice, once dragged along by a real misspelling and once
+  inside an argument heading. A worksheet row can be marked `yes`, which mints
+  the value into an authoritative `--term`, which is how a cited decision came
+  to be renamed. Checked WORD BY WORD, never on the whole phrase, because the
+  finding that matters most is HALF-scrubbed ("Ashely Langley" is our fake
+  beside the complaint's own typo of the defendant's given name, and "Ashely" IS
+  in the original) — plus an alnum-reduced whole-value check so a welded
+  original still counts. Fed by the "original text files" option on a full run
+  and read back off that folder by `--fix-leaks`, which never reopens the PDFs.
+  With no original recorded there is no evidence and nothing is dropped.
 - **Two-tier leak detection**: `surviving_reals` (a tracked real still present)
   and the high-recall REVIEW scans (`review_scan`, `unknown_name_scan`,
   `reid_scan`) surface anything name-shaped for human triage in `LEAKS.xlsx`.

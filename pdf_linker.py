@@ -10541,6 +10541,12 @@ class Pseudonymizer:
                                  # human-triage worksheet (page:line located)
         self.suppressed = set()  # value_lowers the reviewer marked "no fix" in
                                  # the worksheet — never quarantine on these
+        # The UNSCRUBBED text of each export, when the run has it: the "original
+        # text files" option writes it, and `--fix-leaks` reads it back off that
+        # folder. Evidence that a flagged value is really in the document — see
+        # `confirm_findings`.
+        self._orig_reduced = []  # alnum-reduced originals, for a welded value
+        self._orig_words = set() # every word base the originals contain
         self.unreversible = []   # (real, fake, category) applied this run that
                                  # no key row reverses — see
                                  # `unreversible_fakes`. Must stay empty; the
@@ -12315,6 +12321,86 @@ class Pseudonymizer:
             # able to undo it (an unrecorded row is omitted from the key).
             rec["count"] += 1
         return out
+
+    def note_original(self, text):
+        """Record the UNSCRUBBED text of an export as EVIDENCE for
+        `confirm_findings`. Called with what the "original text files" option
+        writes, and read back off that folder by `--fix-leaks`."""
+        if not text:
+            return
+        text = _NFKC(str(text))
+        self._orig_reduced.append(_pn_alnum_core(text).lower())
+        self._orig_words |= {b for b in
+                             (_pn_word_base(w) for w in _PN_WORD_RE.findall(text))
+                             if b}
+
+    def _finding_is_in_original(self, value):
+        """True when `value` could be REAL information — i.e. some part of it
+        actually appears in the source document.
+
+        A leak finding claims "real information survived into the export". The
+        run's own output cannot satisfy that claim, and the ORIGINAL text says
+        so outright, where `known_fake_words` only infers it. "Langley" is this
+        run's stand-in for "Liu": it appears 44 times in the export and ZERO
+        times in the PDF, so it can never be a leak — yet it reached the
+        worksheet twice, once dragged along by a real misspelling and once
+        inside an argument heading.
+
+        Checked WORD BY WORD, not on the whole phrase, because the finding that
+        matters most is HALF-scrubbed: "Ashely Langley" is our fake beside the
+        complaint's own typo of the defendant's given name, and "Ashely" IS in
+        the original. Dropping the phrase for not appearing verbatim would throw
+        away the one real thing in it.
+
+        With no original recorded there is no evidence, so nothing is dropped."""
+        if not self._orig_words:
+            return True
+        red = _pn_alnum_core(_NFKC(str(value))).lower()
+        if red and any(red in o for o in self._orig_reduced):
+            return True
+        known = self.known_fake_words()
+        for w in _PN_WORD_RE.findall(_NFKC(str(value))):
+            base = _pn_word_base(w)
+            if not base or _pn_word_is_own_fake(w, known):
+                continue
+            if base in self._orig_words:
+                return True
+        return False
+
+    def confirm_findings(self, log=None):
+        """Drop every leak / review finding the ORIGINAL text disproves, and say
+        how many. Returns the dropped values.
+
+        This is the one check that can tell the tool's own output from the
+        document's, by evidence rather than inference — so it also stops such a
+        value being marked `yes` and minted into an authoritative term, which is
+        how one folder came to rename a cited decision."""
+        if not self._orig_words:
+            return []
+        dropped = set()
+        keep_rows = []
+        for row in self.leak_report:
+            if self._finding_is_in_original(row.get("value", "")):
+                keep_rows.append(row)
+            else:
+                dropped.add(str(row.get("value", "")))
+        self.leak_report = keep_rows
+        keep_review = []
+        for c, s in self.review:
+            if self._finding_is_in_original(s):
+                keep_review.append((c, s))
+            else:
+                dropped.add(str(s))
+        self.review = keep_review
+        gone = {v.lower() for v in dropped}
+        self.leaked -= gone
+        for f, vals in list(self.leaked_by_file.items()):
+            self.leaked_by_file[f] = vals - gone
+        if dropped and log:
+            log.info(f"  Pseudonymize: {len(dropped)} flagged value(s) dropped — "
+                     f"absent from the ORIGINAL text, so they are this run's own "
+                     f"output and not a leak ({', '.join(sorted(dropped)[:6])})")
+        return sorted(dropped)
 
     def note_leaks(self, reals):
         """Record that `reals` survived in some export, for the key's Status."""
@@ -15562,7 +15648,11 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         orig_path = orig_dir / (pdf_path.stem + ".txt")
         try:
             orig_dir.mkdir(parents=True, exist_ok=True)
-            orig_path.write_text(build_body(None), encoding="utf-8", newline="\n")
+            original = build_body(None)
+            orig_path.write_text(original, encoding="utf-8", newline="\n")
+            # …and keep it as EVIDENCE: a flagged value absent from here is this
+            # run's own output, not a leak (`confirm_findings`).
+            pseudonymizer.note_original(original)
             log.info(f"  Wrote original text version: "
                      f"{original_subdir}/{orig_path.name}")
         except OSError as e:
@@ -15862,6 +15952,7 @@ def _write_word_text_version(src_path, text, log, pseudonymizer=None,
             orig_dir.mkdir(parents=True, exist_ok=True)
             orig_path.write_text(text.rstrip("\n") + "\n",
                                  encoding="utf-8", newline="\n")
+            pseudonymizer.note_original(text)
             log.info(f"  Wrote original text version: "
                      f"{original_subdir}/{orig_path.name}")
         except OSError as e:
@@ -17382,6 +17473,25 @@ def _fix_leaks_mode(folder, args, cfg, log):
                     {"file": f.name, "type": "LEAK", "value": real,
                      "where": _pn_locate(parsed, real)})
 
+    # `--fix-leaks` never reopens the PDFs, so the ORIGINAL TEXT folder is the
+    # only evidence of what the documents actually said. Read it when the
+    # operator keeps one: a flagged value absent from there is this run's own
+    # output, so it must not hold the export hostage.
+    orig_dir = folder / (cfg.get("original_text_subfolder", "").strip()
+                         or "Original Text (real names - do not share)")
+    if orig_dir.is_dir():
+        n = 0
+        for o in sorted(orig_dir.glob("*.txt")):
+            try:
+                pz.note_original(o.read_text(encoding="utf-8", errors="ignore"))
+                n += 1
+            except OSError:
+                pass
+        if n:
+            log.info(f"  --fix-leaks: confirming findings against {n} original "
+                     f"text file(s) in {orig_dir.name}")
+    pz.confirm_findings(log)
+
     # Un-quarantine every *.LEAK that no longer carries a party-name leak.
     # Parity with the main gate: a value the reviewer marked "no fix" never
     # blocks delivery here either.
@@ -18040,6 +18150,10 @@ def main():
 
     # One key file for the whole folder maps every real value to its fake.
     if pseudonymizer is not None:
+        # Confirm every finding against the ORIGINAL text where the run has it:
+        # a value that is not in the source document is this run's own output,
+        # so it is neither a leak to quarantine on nor a question to ask.
+        pseudonymizer.confirm_findings(log)
         # Human-triage worksheet of every located potential leak — written even
         # if the leak gate quarantines below, so the reviewer always gets it.
         # Prior yes/no decisions are carried through (yes was scrubbed above).
