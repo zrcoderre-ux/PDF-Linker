@@ -7291,7 +7291,19 @@ def _pn_authority_tokens(text):
     Palermo* (1956) 47 Cal.2d 469 while the run minted "stockton" as a stand-in
     — a loaded gun, and the pool cannot be made safe against a corpus it has
     never seen."""
-    out = set()
+    return set(_pn_authority_cite_index(text))
+
+
+def _pn_authority_cite_index(text):
+    """{party word base: {citation key}} for every YEAR-BEARING case citation in
+    `text` — the same harvest `_pn_authority_tokens` reduces to a bare set, but
+    keeping WHICH decision each word came from.
+
+    That is what lets a triage row say why it is there. "Angela White" in a
+    worksheet is a question the operator can only answer by already knowing the
+    authorities; "cited authority: Kremerman v. White (2021) 71 Cal.App.5th 358"
+    beside it IS the answer."""
+    out = {}
     try:
         cites = find_all_citations(text)
     except Exception:
@@ -7299,13 +7311,14 @@ def _pn_authority_tokens(text):
     for c in cites:
         if c.get("kind") != "case" or c.get("plaintiff") is None:
             continue
-        if not re.search(r"\((?:1[7-9]|20)\d\d\)", str(c.get("key", ""))):
+        key = re.sub(r"\s+", " ", str(c.get("key", ""))).strip()
+        if not re.search(r"\((?:1[7-9]|20)\d\d\)", key):
             continue          # a bare "X v. Y" is as likely to be the caption
         for side in (c.get("plaintiff", ""), c.get("defendant", "")):
             for w in _pn_name_words(side):
                 base = _pn_word_base(w)
                 if len(base) >= 4 and base.isalpha():
-                    out.add(base)
+                    out.setdefault(base, set()).add(key)
     return out
 
 
@@ -10547,6 +10560,9 @@ class Pseudonymizer:
         # `confirm_findings`.
         self._orig_reduced = []  # alnum-reduced originals, for a welded value
         self._orig_words = set() # every word base the originals contain
+        # {party word base: {citation key}} for the authorities this batch
+        # CITES — what lets a triage row name the decision it came from.
+        self.authority_cites = {}
         self.unreversible = []   # (real, fake, category) applied this run that
                                  # no key row reverses — see
                                  # `unreversible_fakes`. Must stay empty; the
@@ -10870,6 +10886,30 @@ class Pseudonymizer:
             self._trusted_tok_cache = None
         return [t.real for t in doomed]
 
+    def note_authority_cites(self, text):
+        """Index the authorities `text` cites, by their party words."""
+        for base, keys in _pn_authority_cite_index(_NFKC(str(text))).items():
+            self.authority_cites.setdefault(base, set()).update(keys)
+
+    def authority_note(self, value):
+        """"cited authority: <case>" when a word of `value` names a party of a
+        decision this batch cites — the context that turns an unanswerable
+        triage row into an answerable one. "" when nothing matches.
+
+        The row is still SHOWN: sharing a surname with a cited decision is not
+        proof the value is that decision's party (a real witness can be called
+        White in a case that cites *Kremerman v. White*), so this informs the
+        operator rather than deciding for them."""
+        hits = []
+        for w in _pn_name_words(str(value)):
+            for key in sorted(self.authority_cites.get(_pn_word_base(w), ())):
+                if key not in hits:
+                    hits.append(key)
+        if not hits:
+            return ""
+        shown = "; ".join(hits[:2]) + (" …" if len(hits) > 2 else "")
+        return f"cited authority: {shown}"
+
     def reserve_authority_names(self, text, log=None):
         """Take the authorities `text` cites out of the fake pools, re-minting
         any stand-in already drawn on one. Returns [(old, new), ...].
@@ -10881,7 +10921,8 @@ class Pseudonymizer:
         A run that REUSED a key does not move anything: its whole job is to
         reproduce the delivered exports byte for byte, and a fake already in
         circulation is a worse problem to create than the one being avoided."""
-        tokens = _pn_authority_tokens(text)
+        self.note_authority_cites(text)
+        tokens = set(self.authority_cites)
         if not tokens:
             return []
         if getattr(self, "_loaded_reals", None):
@@ -14544,7 +14585,7 @@ _PN_LEAK_COLUMNS = (
     ("File", "file", 20),
     ("Type", "type", 22),
     ("Where (page:line)", "where", 30),
-    ("Notes", "notes", 24),
+    ("Notes", "notes", 46),
 )
 _PN_LEAK_HEADERS = tuple(h for h, _k, _w in _PN_LEAK_COLUMNS)
 _PN_LEAK_ABSENT = "(no longer present)"
@@ -15230,7 +15271,7 @@ def _pn_update_master_keep(cfg, record_map, case_name, today, log):
 
 
 def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
-                          bound=()):
+                          bound=(), note_for=None):
     """Write/refresh the leak-triage worksheet 'LEAKS.xlsx'. Each DISTINCT
     flagged value is ONE row with a 'Fix?' column — the files and page:line
     locations it was found in are aggregated into that row, so a name that
@@ -15242,6 +15283,16 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
     decisions removes the worksheet. Plain-text checklist fallback without
     openpyxl."""
     decisions = decisions or {}
+
+    def _notes(value, carried):
+        """The Notes cell: whatever a prior decision carried, plus the cited
+        authority this value shares a party word with. Appended, never
+        replaced — an operator's own note must survive."""
+        extra = note_for(value) if note_for else ""
+        if extra and extra not in str(carried):
+            return f"{carried} | {extra}" if carried else extra
+        return carried
+
     xlsx = _pn_leak_xlsx_path(folder)
     txt = _pn_leak_txt_path(folder)
     # A worksheet written under the old name in a prior run would otherwise
@@ -15301,7 +15352,8 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
                      "fix": d.get("fix", ""),
                      "fixcell": (d.get("fixcell") or d.get("replacement")
                                  or d.get("fix", "")),
-                     "notes": d.get("notes", ""), "present": True})
+                     "notes": _notes(g["value"], d.get("notes", "")),
+                     "present": True})
     # Persist a Fix?=yes/explicit decision whose value didn't recur this run, so
     # the fix keeps applying — but ONLY while nothing else already holds it.
     # KEEP decisions are omitted (the master KEEP sheet holds them), and so is
@@ -15321,7 +15373,8 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
                          "fix": d["fix"],
                          "fixcell": (d.get("fixcell") or d.get("replacement")
                                      or d["fix"]),
-                         "notes": d.get("notes", ""), "present": False})
+                         "notes": _notes(d["value"], d.get("notes", "")),
+                         "present": False})
 
     def _remove(paths):
         for p in paths:
@@ -17597,6 +17650,9 @@ def _fix_leaks_mode(folder, args, cfg, log):
         if body is None:
             continue
         is_leak = f.name.endswith(".txt.LEAK")
+        # Citations survive the scrub byte-for-byte, so the export names the
+        # same authorities the PDF did — enough to annotate a triage row.
+        pz.note_authority_cites(body)
         scrubbed = pz.apply(body)
         # A quarantined file may have been held for a WELDED leak the whole-word
         # patterns can't see ("FORDMOTORCOMPANYDEFENDANT" on a spliced caption).
@@ -17705,7 +17761,8 @@ def _fix_leaks_mode(folder, args, cfg, log):
     if still:
         _pn_write_leak_report(folder, pz.leak_report, log, decisions=decisions,
                               cfg=cfg,
-                              bound=[r["real"] for r in pz.records.values()])
+                              bound=[r["real"] for r in pz.records.values()],
+                              note_for=pz.authority_note)
     else:
         # Every LEAK file is fixed: the worksheet and the Apply-Leak-Fixes
         # launcher have done their job — remove them instead of leaving stale
@@ -18331,7 +18388,8 @@ def main():
         _pn_write_leak_report(folder, pseudonymizer.leak_report, log,
                               leak_decisions, cfg=cfg,
                               bound=[r["real"] for r in
-                                     pseudonymizer.records.values()])
+                                     pseudonymizer.records.values()],
+                              note_for=pseudonymizer.authority_note)
         # Record this run's KEEP decisions into the single cross-folder master
         # KEEP sheet: every LOCAL keep (made in this folder), plus any GLOBAL
         # keep that actually protected text here (a real hit) — so Times Seen /
