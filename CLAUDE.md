@@ -483,9 +483,16 @@ the party), so its row stays reversible.
   contain is never stripped; and checking only our OWN fakes is the whole
   search, since a word this run never minted cannot be its output whatever the
   original says. A row left with nothing real stops gating delivery, and two
-  phrasings that reduce to the same remainder merge into one row. Fed by the
-  "original text files" option on a full run and read back off that folder by
-  `--fix-leaks`, which never reopens the PDFs. With no original recorded
+  phrasings that reduce to the same remainder merge into one row. The evidence
+  is ALWAYS available, never gated on an output preference: a full run builds
+  the unscrubbed body regardless (pure string assembly over pages already
+  extracted — no OCR, no second read) and caches it in TEMP keyed by folder
+  hash, exactly as `_folder_lock_file` is (`_originals_cache_dir`).
+  `--fix-leaks` never reopens the PDFs, so it reads the in-folder copy when
+  `original_text_subfolder` wrote one and that cache otherwise. TEMP and never
+  the case folder — the case folder is the thing that gets synced and shared —
+  and `_clear_originals_cache` drops it the moment the folder comes out clean.
+  With no original recorded
   `_real_remainder` returns the value untouched — no evidence is not evidence of
   absence, and without that guard every stand-in would look absent and every
   finding would be gutted.
