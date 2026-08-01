@@ -1699,3 +1699,19 @@ def test_gazetteer_did_not_swallow_a_leaked_surname():
 def test_no_fake_pool_word_is_a_gazetteer_word():
     pool = {w.lower() for w in P._PN_NAME_WORDS} | {w.lower() for w in P._PN_ENTITY_WORDS}
     assert not (pool & P._PN_COMMON_WORDS)
+
+
+def test_a_heading_built_on_our_own_fake_is_not_a_declarant_finding():
+    """"F. Langley Submitted No Declaration and Relies on Inadmissible Hearsay"
+    is an argument heading. "Langley" is this run's own stand-in; strip it and
+    "Submitted No" is left, which cleared the old two-words test and put the
+    tool's own fake in front of the operator as an unscrubbed declarant."""
+    known = {"langley", "holloway"}
+    assert P._pn_declarant_ref_findings(
+        "F. Langley Submitted No Declaration and Relies on Hearsay", known) == []
+
+
+def test_a_real_declarant_beside_our_fake_is_still_reported():
+    known = {"langley", "holloway"}
+    got = P._pn_declarant_ref_findings("Langley and Alarcon Decl. at 3", known)
+    assert got and got[0][1] == "Alarcon", got
