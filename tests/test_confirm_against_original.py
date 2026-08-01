@@ -1,6 +1,6 @@
 """
-The ORIGINAL text as evidence: a flagged value that is not in the source
-document is this run's own output, and cannot be a leak.
+The ORIGINAL text as evidence: a flagged value is reduced to the part the source
+document can account for, and dropped when nothing of it is real.
 
 A leak finding claims "real information survived into the export". The run's own
 output cannot satisfy that claim — and where `known_fake_words` only INFERS
@@ -12,8 +12,9 @@ a real misspelling, once inside an argument heading — and a value in that
 worksheet can be marked `yes`, which mints it into an authoritative term. That
 is how a cited decision came to be renamed.
 
-Fed from the "original text files" option on a full run, and read back off that
-folder by `--fix-leaks`, which never reopens the PDFs.
+The finding is REDUCED rather than kept-or-dropped whole, because that is what
+makes the worksheet answerable: "Ashely Langley" reads like the tool flagging
+its own output, and the real question in it is "Ashely".
 
 Run:  cd PDF-Linker && python3 -m pytest tests/test_confirm_against_original.py -v
 """
@@ -44,64 +45,97 @@ def _pz():
     return z
 
 
-@pytest.mark.parametrize("value", ["Langley", "Holloway", "Holloway Langley"])
-def test_a_pure_fake_is_not_a_finding(value):
-    assert not _pz()._finding_is_in_original(value), (
-        f"{value!r} is this run's own stand-in and is absent from the source")
+def _fakes(z):
+    """(given, surname) this run minted for the defendant."""
+    return z.records[("person", "ashley liu")]["fake"].split()
 
 
-@pytest.mark.parametrize("value", [
-    "Melissa Penuela",      # a genuine survivor, verbatim in the original
-    "Ashely Langley",       # HALF-scrubbed: "Ashely" is the source's own typo
-    "Melissa Sable",        # HALF-scrubbed: "Melissa" is real, "Sable" is ours
-])
-def test_a_value_with_anything_real_in_it_is_kept(value):
-    assert _pz()._finding_is_in_original(value), (
-        f"{value!r} carries real information and must still be triaged")
+# ───────────────────── nothing real left -> no row at all ───────────────────
 
-
-def test_the_check_is_word_by_word_not_whole_phrase():
-    # The finding that matters most is half-scrubbed, and never appears verbatim
-    # in the original. Requiring the whole phrase would throw away the one real
-    # thing in it.
+def test_a_pure_stand_in_leaves_nothing(_=None):
     z = _pz()
-    assert "Ashely Langley" not in ORIGINAL
-    assert z._finding_is_in_original("Ashely Langley")
+    for fake in _fakes(z) + [" ".join(_fakes(z))]:
+        assert z._real_remainder(fake) == "", (
+            f"{fake!r} is this run's own output and is absent from the source")
 
 
-def test_a_welded_value_is_matched_on_the_reduction():
-    z = P.Pseudonymizer([], {}, registry=P._PnFakeRegistry())
-    z.note_original("Served on ASHELYLIU at the address.")
-    assert z._finding_is_in_original("Ashely Liu")
+# ──────────────── the real remainder is what gets reported ──────────────────
+
+def test_a_half_scrubbed_pair_reduces_to_its_real_word():
+    # The whole point. "Ashely" is the complaint's own typo of the defendant's
+    # given name — the real question — and the fake beside it is noise.
+    z = _pz()
+    surname = _fakes(z)[1]
+    assert z._real_remainder(f"Ashely {surname}") == "Ashely"
 
 
-def test_no_original_means_nothing_is_dropped():
-    # With no evidence recorded the check must be inert — never a silent
-    # suppressor of real findings.
+def test_a_phrase_built_on_a_stand_in_loses_it():
+    z = _pz()
+    surname = _fakes(z)[1]
+    assert z._real_remainder(f"{surname} Submitted No") == "Submitted No"
+
+
+def test_a_genuine_finding_is_untouched():
+    assert _pz()._real_remainder("Melissa Penuela") == "Melissa Penuela"
+
+
+def test_a_stand_in_that_IS_in_the_source_is_kept():
+    """The safety condition. A word is removed only when it is BOTH one of our
+    fakes AND absent from the original — a stand-in that the source happens to
+    contain is not this run's doing, and might be real information."""
     reg = P._PnFakeRegistry()
     z = P.Pseudonymizer(P._pn_build_terms(["Ashley Liu"], [], [], registry=reg),
                         {}, registry=reg)
-    assert z._finding_is_in_original("Langley")
+    surname = z.records[("person", "ashley liu")]["fake"].split()[1]
+    z.note_original(f"The witness {surname} testified for the plaintiff.")
+    assert z._real_remainder(f"Ashely {surname}") == f"Ashely {surname}"
+
+
+def test_no_original_changes_nothing():
+    # With no evidence the check is inert — never a silent suppressor.
+    reg = P._PnFakeRegistry()
+    z = P.Pseudonymizer(P._pn_build_terms(["Ashley Liu"], [], [], registry=reg),
+                        {}, registry=reg)
+    surname = z.records[("person", "ashley liu")]["fake"].split()[1]
+    assert z._real_remainder(surname) == surname
     assert z.confirm_findings(log) == []
 
 
-def test_confirm_findings_clears_the_row_and_the_gate():
+# ─────────────────────── what the worksheet ends up with ────────────────────
+
+def test_confirm_findings_rewrites_the_row_and_clears_the_gate():
     z = _pz()
+    surname = _fakes(z)[1]
     z.leak_report = [
-        {"file": "Complaint.txt", "type": "LEAK", "value": "Langley",
+        {"file": "Complaint.txt", "type": "LEAK", "value": surname,
          "where": "p.2:15"},
+        {"file": "Complaint.txt", "type": "unscrubbed name?",
+         "value": f"Ashely {surname}", "where": "p.2:15"},
         {"file": "Complaint.txt", "type": "LEAK", "value": "Melissa Penuela",
          "where": "p.9:3"},
     ]
-    z.review = [("unscrubbed declarant name?", "Langley"),
+    z.review = [("unscrubbed name?", f"Ashely {surname}"),
                 ("possible person name", "Melissa Penuela")]
-    z.note_leaks(["Langley", "Melissa Penuela"])
-    z.leaked_by_file = {"Complaint.txt": {"langley", "melissa penuela"}}
+    z.note_leaks([surname, "Melissa Penuela"])
+    z.leaked_by_file = {"Complaint.txt": {surname.lower(), "melissa penuela"}}
 
-    dropped = z.confirm_findings(log)
+    z.confirm_findings(log)
 
-    assert dropped == ["Langley"], dropped
-    assert [r["value"] for r in z.leak_report] == ["Melissa Penuela"]
-    assert z.review == [("possible person name", "Melissa Penuela")]
-    assert "langley" not in z.leaked, "a fake must not quarantine an export"
+    assert [r["value"] for r in z.leak_report] == ["Ashely", "Melissa Penuela"]
+    assert z.review == [("unscrubbed name?", "Ashely"),
+                        ("possible person name", "Melissa Penuela")]
+    assert surname.lower() not in z.leaked, "a stand-in must not gate delivery"
     assert z.leaked_by_file["Complaint.txt"] == {"melissa penuela"}
+
+
+def test_two_phrasings_that_reduce_to_one_row_are_merged():
+    z = _pz()
+    given, surname = _fakes(z)
+    z.leak_report = [
+        {"file": "Complaint.txt", "type": "LEAK", "value": f"Ashely {surname}",
+         "where": "p.2:15"},
+        {"file": "Complaint.txt", "type": "LEAK",
+         "value": f"{given} Ashely {surname}", "where": "p.4:2"},
+    ]
+    z.confirm_findings(log)
+    assert [r["value"] for r in z.leak_report] == ["Ashely"], z.leak_report
