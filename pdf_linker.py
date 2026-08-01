@@ -7780,14 +7780,27 @@ def _pn_fake_ssn(real):
 # was left to the url/domain rule, which faked the HOST and left the local part
 # — the attorney's own name — standing in the export. Half-scrubbed is the worst
 # outcome available, so the at-sign is matched the way the page actually spells
-# it. Split out as a constant because the detector that FINDS an address and
+# it. A fax-generation scan also SPACES the at-sign out ("barrylaw7 @gmail.com"),
+# which missed the detector the same way and shipped the real address in clear
+# text, so a step of horizontal whitespace on either side is part of the sign.
+# Split out as a constant because the detector that FINDS an address and
 # `_fake_email`, which takes it apart, have to agree on what one looks like.
-_PN_AT_SIGN = r"(?:@|[(\[{][ \t]*[aA][ \t]*[)\]}])"
+_PN_AT_SIGN = r"(?:[ \t]{0,2}(?:@|[(\[{][ \t]*[aA][ \t]*[)\]}])[ \t]{0,2})"
 _PN_AT_SIGN_RE = re.compile(_PN_AT_SIGN)
 
 
+def _pn_email_canon(real):
+    """The ONE identity of an e-mail address, however the page spelled it:
+    whitespace the scan inserted removed, the at-sign as OCR rendered it
+    ("(a)") folded to "@", case folded. Every fake derivation seeds on this,
+    so "barrylaw7 @gmail.com", "BARRYLAW7@GMAIL. COM" and the clean form all
+    draw the SAME fake — one real address must never ship under three."""
+    canon = _PN_AT_SIGN_RE.sub("@", _NFKC(str(real)))
+    return re.sub(r"\s+", "", canon).lower()
+
+
 def _pn_fake_email(real):
-    r = _pn_rng("email", real.lower())
+    r = _pn_rng("email", _pn_email_canon(real))
     return (f"{r.choice(_PN_NAME_WORDS).lower()}.{r.choice(_PN_NAME_WORDS).lower()}"
             f"@{r.choice(_PN_EMAIL_DOMAINS)}")
 
@@ -8325,8 +8338,13 @@ _PN_DETECTORS = {
     # indistinguishable from a Bates/account/reservation number) — it is caught
     # only behind an SSN label, in _PN_ID_RES below.
     "ssn": (re.compile(r"(?<!\d)\d{3}[-. ]\d{2}[-. ]\d{4}(?!\d)"), _pn_fake_ssn),
+    # The TLD tail tolerates ONE step of OCR whitespace after the final dot
+    # ("BARRYLAW7@GMAIL. COM" shipped in clear text because of it) — but only
+    # for a KNOWN TLD, or the first word of the next sentence would be read as
+    # one ("bob@acme. Next" must not swallow "Next").
     "email": (re.compile(
-        rf"\b[A-Za-z0-9._%+\-]+{_PN_AT_SIGN}[A-Za-z0-9.\-]+\.[A-Za-z]{{2,}}\b"),
+        rf"\b[A-Za-z0-9._%+\-]+{_PN_AT_SIGN}[A-Za-z0-9.\-]+"
+        rf"\.(?:[A-Za-z]{{2,}}|[ \t](?i:com|net|org|law|gov|edu|us|biz|info))\b"),
         _pn_fake_email),
     # An area code in brackets may be preceded by a stray digit and the brackets
     # themselves may be OCR's idea of them: a scanned letterhead gave `4(818)
@@ -8716,8 +8734,10 @@ def _pn_is_email_value(value):
     if v.count("@") != 1:
         return False
     local, _, host = v.partition("@")
+    # OCR whitespace inside the host ("GMAIL. COM") is spelling, not identity.
     return bool(local.strip()
-                and re.fullmatch(r"[A-Za-z0-9.\-_]+\.[A-Za-z]{2,}", host.strip()))
+                and re.fullmatch(r"[A-Za-z0-9.\-_]+\.[A-Za-z]{2,}",
+                                 re.sub(r"\s+", "", host)))
 
 
 def _pn_is_procedural_phrase(value):
@@ -12120,6 +12140,12 @@ class Pseudonymizer:
                               if at else (real, "", ""))
         if not sep:
             return _pn_fake_email(real)
+        # Whatever whitespace the scan inserted is spelling, not identity: the
+        # spaced form and the clean form must take apart to the SAME pieces, or
+        # one address ships under two fakes ("abernathylaw@…" in the caption,
+        # "braddock@…" in the proof of service, both for barrylaw7@gmail.com).
+        local = local.strip()
+        domain = re.sub(r"\s+", "", domain)
         tokens = self.registry.tokens_for("nametok")
         # Only distinctive tokens (>=4 chars) so short/common fragments don't
         # rewrite unrelated letters; longest-first for greedy, non-overlapping

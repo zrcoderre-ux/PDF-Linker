@@ -200,3 +200,42 @@ def test_a_protected_url_survivor_is_not_reported_as_a_leak():
     out = z.apply("See https://law.justia.com/cases/california/ for the cite.")
     survivors = {s.lower() for s in z.surviving_reals(out)}
     assert not any("justia" in s for s in survivors), survivors
+
+
+# ── OCR spellings of one address are ONE address ────────────────────────────
+# A fax-generation scan shipped "barrylaw7 @gmail.com" in clear text (space
+# before the @ missed the detector), "BARRYLAW7@GMAIL. COM" (TLD split), and
+# minted THREE different fakes for the one address across the batch. The
+# at-sign tolerates a step of whitespace, the TLD tolerates one after the dot
+# (known TLDs only), and every fake derivation seeds on the canonical form.
+
+def _email_fakes(*spellings):
+    reg = P._PnFakeRegistry()
+    z = P.Pseudonymizer([], DET, registry=reg)
+    outs = [z.apply(f"Contact {s} today.") for s in spellings]
+    return z, outs
+
+
+@pytest.mark.parametrize("spelling", [
+    "barrylaw7 @gmail.com",
+    "barrylaw7@ gmail.com",
+    "BARRYLAW7@GMAIL. COM",
+    "barrylaw7(a)gmail.com",
+])
+def test_an_ocr_spelling_of_an_address_is_still_faked(spelling):
+    _z, (out,) = _email_fakes(spelling)
+    assert "barrylaw7" not in out.lower(), out
+
+
+def test_every_spelling_of_one_address_draws_one_fake():
+    z, _outs = _email_fakes("barrylaw7@gmail.com", "barrylaw7 @gmail.com",
+                            "BARRYLAW7@GMAIL. COM", "barrylaw7(a)gmail.com")
+    fakes = {r["fake"].lower() for r in z.records.values()
+             if r["category"] == "email"}
+    assert len(fakes) == 1, f"one real address shipped under {sorted(fakes)}"
+
+
+def test_a_sentence_boundary_is_not_read_as_a_spaced_tld():
+    # "bob@acme. Next sentence" — "Next" must not be swallowed as a TLD.
+    _z, (out,) = _email_fakes("bob@acme. Next sentence follows.")
+    assert "Next sentence follows." in out
