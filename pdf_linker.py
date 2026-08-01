@@ -1994,6 +1994,14 @@ def _ocr_pdf(doc, log):
 _GARBLE_VOWELS = set("aeiouy")
 
 
+# A DOT LEADER run — the row of dots that carries the eye from a table entry to
+# its page number. Four or more, so an ellipsis or a sentence's "..." is never
+# one. Shared, because the same run is what makes a table of authorities look
+# like symbol soup to `_text_looks_garbled` AND what identifies a table entry to
+# `_pn_toa_entry_spans`.
+_LEADER_RUN_RE = re.compile(r"[.·•…]{4,}")
+
+
 def _text_looks_garbled(text: str) -> bool:
     """Heuristic: does this page's *extracted* text look like broken output
     (bad font/ToUnicode encoding, unmapped glyphs, junk) rather than real
@@ -2003,11 +2011,38 @@ def _text_looks_garbled(text: str) -> bool:
     Signals, in order:
       * "(cid:NN)" tokens — PDFMiner-style unmapped glyphs.
       * A real density of U+FFFD replacement characters.
-      * Mostly non-letters (symbol soup from a broken encoding).
+      * Mostly non-letters (symbol soup from a broken encoding), measured with
+        DOT LEADERS EXCLUDED (see below).
       * A low fraction of word-shaped alphabetic tokens. On real legal prose
         this fraction sits at ~0.99 (measured), so a 0.50 cut has a wide
         safety margin while still catching gibberish.
-    """
+
+    **The denominator is the whole problem, and a TABLE OF AUTHORITIES is what
+    it destroys.** A table of authorities is mostly dot leaders, which are
+    neither letters nor digits, so the "meaningful" ratio reads it as symbol
+    soup and the page is sent into DESTRUCTIVE re-OCR — the real text redacted
+    and replaced with 300-dpi guesses. Measured on this corpus (the delivered
+    Demurrer's page 5 is 100% `GlyphLessFont` over a single image, the only
+    OCR'd page in the folder):
+
+        page                        ratio    leaders excluded
+        Opposition p.2 (contents)   0.375        0.962
+        Opposition p.3 (authorities)0.364        0.880
+        Reply p.3   (authorities)   0.377        0.871
+        Demurrer p.6                0.376        0.892
+
+    The tables that survived did so by ONE PERCENTAGE POINT. Excluding the
+    leader runs before measuring restores a margin of ~0.5 instead of ~0.01.
+    Note the ratio has been retuned twice already — once from letters-only to
+    letters-plus-digits, after digit-dominated damages tables were destroyed
+    the same way — and each retune found a new character class. Leaders are the
+    third; the lesson is that the ratio must measure what is CONTENT on the
+    page in front of it, not add another term.
+
+    The damage also CONCEALS ITSELF: Tesseract turns a leader run into
+    letter-soup, so the rebuilt page measures 0.938 and a second run over the
+    delivered file reads it as healthy. The only surviving marker is
+    `GlyphLessFont` in the font table."""
     if not text:
         return False
     # Ignore any legacy right-margin markers a prior version may have stamped.
@@ -2024,7 +2059,11 @@ def _text_looks_garbled(text: str) -> bool:
     # the letters-only ratio sent those pages into destructive re-OCR (all
     # real text redacted, replaced by 300-dpi OCR guesses) and gave them the
     # 40x OCR ETA weight. Symbol soup from a broken encoding is low on BOTH.
-    meaningful = sum(1 for c in text if c.isalpha() or c.isdigit())
+    # Dot leaders are page FURNITURE, not content, so they leave the
+    # measurement entirely rather than counting against it.
+    body = _LEADER_RUN_RE.sub(" ", text)
+    non_space = sum(1 for c in body if not c.isspace()) or non_space
+    meaningful = sum(1 for c in body if c.isalpha() or c.isdigit())
     if meaningful / non_space < 0.35:
         return True  # dominated by symbols/punctuation
     tokens = re.findall(r"[A-Za-z]{2,}", text)
@@ -2045,6 +2084,46 @@ def _text_looks_garbled(text: str) -> bool:
     return good / len(tokens) < 0.50
 
 
+def _page_text_layer_is_sound(page) -> bool:
+    """True when this page's text layer is demonstrably GOOD, whatever a ratio
+    says about it: it came out of a real font as READABLE WORDS.
+
+    A HARD PRECONDITION rather than another term in the ratio, because the two
+    answer different questions. The ratio asks "does this look like content?",
+    and a table of authorities — mostly dot leaders — makes it say no. This
+    asks "did the text extract correctly?", and the page the heuristic exists
+    to catch fails it BY CONSTRUCTION: a broken encoding yields `(cid:NN)`
+    tokens, replacement characters and symbol soup, never thirty readable
+    words. So sparing a page on this signal cannot spare a page that needed
+    rebuilding.
+
+    Deliberately NOT a test for an EMBEDDED font. That was the first shape of
+    this check and it is the wrong one: a page set in a base-14 font
+    (Times-Roman, referenced rather than embedded) is perfectly sound, and
+    rejecting it would send a good text layer to the shredder for a property
+    that carries no signal — the word test already proves the mapping works.
+    What the font table IS consulted for is `GlyphLessFont`, Tesseract's own
+    invisible-text font: a page carrying it has already been OCR'd, so it is
+    not a source text layer and must never be vouched for as one. That is also
+    what stops a second run over a delivered folder trusting the first run's
+    guesses.
+    """
+    try:
+        fonts = page.get_fonts(full=True)
+        text = page.get_text("text")
+    except Exception:
+        return False
+    if not fonts:
+        return False
+    if any("GlyphLess" in str(f[3]) for f in fonts if len(f) > 3):
+        return False                # an OCR layer, not a source font
+    if "(cid:" in text or "�" in text:
+        return False
+    # Word-SHAPED: letters only, so a page of "word1 word2 …" identifiers or a
+    # digit-dominated table cannot vouch for itself on token count alone.
+    return len(re.findall(r"(?i)(?<![\w])[a-z]{2,}(?![\w])", text)) >= 30
+
+
 def _reocr_garbled_pages(doc, log):
     """Rebuild the text layer of any page whose extracted text looks garbled.
 
@@ -2054,10 +2133,34 @@ def _reocr_garbled_pages(doc, log):
     look clearly garbled (see `_text_looks_garbled`) are touched, so a good
     text layer is never rasterised or degraded. No-op with a warning if OCR
     tooling is unavailable. Returns the number of pages re-OCR'd.
+
+    This pass is DESTRUCTIVE — it redacts the existing text before overlaying
+    the OCR — so every decision is logged with the page number and the reason.
+    One log line is the difference between a five-minute diagnosis and an
+    audit: when this misfired on a table of authorities, the only surviving
+    evidence that it had run at all was `GlyphLessFont` in the font table.
     """
-    garbled = [p.number for p in doc if _text_looks_garbled(p.get_text("text"))]
+    garbled, spared = [], []
+    for p in doc:
+        if not _text_looks_garbled(p.get_text("text")):
+            continue
+        if _page_text_layer_is_sound(p):
+            spared.append(p.number)
+            continue
+        garbled.append(p.number)
+    def _plist(nums):                     # 1-based, as the operator counts them
+        shown = ", ".join(str(n + 1) for n in nums[:12])
+        return shown + (f" (+{len(nums) - 12} more)" if len(nums) > 12 else "")
+
+    if spared:
+        log.info(f"  Re-OCR: page(s) {_plist(spared)} read as garbled but carry "
+                 f"an embedded font and readable words — text layer KEPT (a "
+                 f"table of authorities reads as symbol soup and must not be "
+                 f"rebuilt from 300-dpi guesses)")
     if not garbled:
         return 0
+    log.info(f"  Re-OCR: rebuilding page(s) {_plist(garbled)} — the existing "
+             f"text is REPLACED by OCR output")
     try:
         import io
         import pytesseract
@@ -11389,7 +11492,20 @@ class Pseudonymizer:
         rewriting only the labelled occurrence) also scrubs the bare repeats —
         a caption's "Res. I.D." echoed on an exhibit stamp — and lets
         `surviving_reals` report one that gets through. Idempotent; call before
-        apply()."""
+        apply().
+
+        **An identifier INSIDE a citation belongs to the decision, not to this
+        case.** A brief citing an unreported case gives its trial-court docket
+        — "Krikorian Inv. Servs., Inc. v. Radmanesh, No. BC543295, 2015 WL
+        12751760" — and the shape is indistinguishable from a production stamp,
+        so `BC543295` was registered as a term and given a fake. Span
+        protection then saved it in body text and NOT in the appendix's
+        percent-encoded query, where no citation parses: the published docket
+        shipped as "No. GEARHART543295". A term that is never built cannot be
+        applied anywhere, which is the only version of this that holds
+        wherever the parser fails — the same reason the table of authorities is
+        masked out of the harvest (`_pn_mask_toa_entries`)."""
+        text = self._mask_protected_citations(_NFKC(text))
         new = []
         for cls, val in _pn_identifier_values(text):
             cat = cls.replace(" ", "_")
@@ -16277,10 +16393,123 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
 # ────────────────────────────────────────────────────────────────────────────
 # Main per-PDF processing
 # ────────────────────────────────────────────────────────────────────────────
+# A heading that opens a table of authorities or its sections. Used only to
+# WIDEN an entry region that dot leaders have already identified — never on its
+# own, because "CASES" also heads an argument section.
+_PN_TOA_HEADING_RE = re.compile(
+    r"(?i)^\s*(?:table\s+of\s+(?:authorities|contents)|case\s+law|cases?|"
+    r"statutes?(?:\s+and\s+rules?)?|rules?|other\s+authorities|"
+    r"authorities|page\(s\)|federal\s+cases?|state\s+cases?|"
+    r"treatises?|miscellaneous)\s*:?\s*$")
+# How many lines above a leader line may belong to the same entry. An entry is
+# "name" / "(year) reporter cite …… page", occasionally with the name wrapping
+# once more, so two is the observed maximum and three is the safe cap.
+_PN_TOA_ENTRY_LOOKBACK = 3
+# A dot leader AS TESSERACT READ IT. A page already rebuilt by the destructive
+# re-OCR this build now prevents carries its leaders as letter-soup —
+# "oo. eececcssccesecsseeseessesseceseceaecaeecaececesseesaecaecaecaeesseeeeeseeeaeenaeeneeeas"
+# — so the dot anchor finds nothing and the table's authorities are harvested
+# anyway. No word runs 25 letters unbroken (`_wordish` already draws the line at
+# 24 for the same reason), and the cost of a false positive here is only that
+# one line is not read for TERMS. Delivered folders carry these pages, so the
+# anchor is worth having even though the upstream cause is fixed.
+_PN_OCR_LEADER_RE = re.compile(r"[A-Za-z]{25,}")
+
+
+def _pn_toa_entry_spans(text):
+    """[(start, end), …] over the TABLE-OF-AUTHORITIES ENTRIES in `text`.
+
+    An entry is anchored on its DOT LEADER — the row of dots carrying the eye
+    to a page number — and extended back over the lines that wrap into it,
+    because a table writes the case name on its own line above the cite:
+
+        Hamilton v. Greenwich Investors XXVI, LLC
+        (2011) 195 Cal.App.4th 1039 ……………………… 7-8
+
+    Anchored on the leader and not on the heading because a continuation page
+    carries no heading, and because "CASES" also heads an argument section. The
+    heading only WIDENS a region the leaders already found.
+
+    The walk-back stops at a blank line, at a heading, and at the previous
+    entry, so it can never reach off the table into body prose — which has no
+    leaders to anchor on in the first place."""
+    lines, spans, claimed = text.split("\n"), [], set()
+    starts, pos = [], 0
+    for ln in lines:
+        starts.append(pos)
+        pos += len(ln) + 1
+    def _is_leader(ln):
+        return bool(_LEADER_RUN_RE.search(ln) or _PN_OCR_LEADER_RE.search(ln))
+
+    for i, ln in enumerate(lines):
+        if not _is_leader(ln):
+            continue
+        first = i
+        for j in range(i - 1, max(-1, i - 1 - _PN_TOA_ENTRY_LOOKBACK), -1):
+            if j in claimed or not lines[j].strip():
+                break
+            if _PN_TOA_HEADING_RE.match(lines[j]):
+                break
+            if _is_leader(lines[j]):
+                break            # the previous entry — stop before it
+            first = j
+        for j in range(first, i + 1):
+            claimed.add(j)
+        spans.append((starts[first], starts[i] + len(lines[i])))
+    return spans
+
+
+def _pn_mask_toa_entries(text):
+    """`text` with every table-of-authorities ENTRY blanked to spaces.
+
+    **A table of authorities is a list of PUBLISHED DECISIONS, so nothing in it
+    is a value of THIS case — and everything in it is a name the tool must
+    never rewrite.** Harvesting from one is therefore all cost: it mints the
+    cited decisions' parties as terms, and the tool then renames the very
+    authorities the cardinal invariant exists to protect. Measured on this
+    corpus, one table of authorities page harvests
+
+        Greenwich Investors XXVI, LLC · Specialized Loan Serv., LLC ·
+        Peterson Enters., LLC · Grancare, LLC · BC543295
+
+    — five cited decisions and a published docket number, offered up as this
+    case's parties and identifiers. Those are exactly the names that shipped
+    renamed (`Hamilton v. Kirkwall Investors…`, `Reeder v. Crestline Loan
+    Ambrose…`), and the bare tokens they leave behind ("Loan", "Serv", "Auto")
+    are what then fired inside ordinary words elsewhere in the folder.
+
+    Masking is PREVENTIVE, where `prune_citation_only_terms` and
+    `prune_authority_party_terms` are reactive: a term never built cannot be
+    applied before the pruners run, cannot leave a bare token behind, and
+    cannot draw a pool word. The pruners stay — they cover an authority cited
+    only in body text, where there is no table to mask.
+
+    Length-preserving, so any offset a caller holds still lines up. This masks
+    the HARVEST INPUT only: the table still reaches the export, the scrubber
+    and the leak scan, because text that never reaches those is text the run
+    certifies without reading."""
+    spans = _pn_toa_entry_spans(text)
+    if not spans:
+        return text
+    chars = list(text)
+    for s, e in spans:
+        for i in range(s, min(e, len(chars))):
+            if not chars[i].isspace():
+                chars[i] = " "
+    return "".join(chars)
+
+
 def _pn_learn_from_text(pseudonymizer, text, stem=None):
     """Run every document-learning register_* pass over one document's text (and,
     when given, its filename stem). Shared by the PDF pre-scan and the Word-doc
-    conversion so both feed the same folder-wide vocabulary."""
+    conversion so both feed the same folder-wide vocabulary.
+
+    The TABLE OF AUTHORITIES is masked out of the harvest input first: it lists
+    published decisions, so it is pure cost as a source of terms — see
+    `_pn_mask_toa_entries`. It is masked HERE, at the single choke point every
+    register_* pass goes through, so no pass can be added later that quietly
+    reads from a table again."""
+    text = _pn_mask_toa_entries(text)
     pseudonymizer.register_declarant_names(text)
     pseudonymizer.register_declarant_refs(text)
     pseudonymizer.register_court_names(text)

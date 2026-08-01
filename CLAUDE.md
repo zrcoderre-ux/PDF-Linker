@@ -1,18 +1,13 @@
 # Project workflow
 
-## Branch & merge policy (standing instruction from the repo owner)
+## Branch & merge policy
 
-- **Always work on the existing branch `claude/clever-franklin-glawt6`.** Do
-  not create new feature branches — the owner cannot delete branches and does
-  not want an ever-growing list. Reuse this one for every task.
-- **After completing edits on a task, finish the loop automatically without
-  waiting to be asked:**
-  1. Commit and push to `claude/clever-franklin-glawt6`.
-  2. Open a pull request into `main` (a new PR each time, since the prior one
-     is merged/closed).
-  3. Merge the pull request using **squash merge** (keeps `main` linear, one
-     commit per task).
-- Apply this on every task going forward, not just when explicitly requested.
+- **Work on a fresh branch per task**, named for the change. The old standing
+  instruction pinned every task to one reused branch; it was removed at the
+  owner's direction. Delete the branch after the merge so the list stays short.
+- **Finish the loop without waiting to be asked:** commit, push, open a pull
+  request into `main`, and **squash merge** it (keeps `main` linear, one commit
+  per task).
 
 # Architecture overview
 
@@ -342,6 +337,41 @@ the party), so its row stays reversible.
   refused. Missing these is how a Reply's Exhibit A shipped a prior case's
   whole party list — or worse, HALF of each name, wherever one token happened
   to be keyed from elsewhere.
+- **A TABLE OF AUTHORITIES is never a SOURCE of terms, and neither is the
+  inside of a citation.** A table of authorities lists published decisions, so
+  nothing in it is a value of THIS case and everything in it is a name the tool
+  must not rewrite — harvesting one is all cost. Measured, a single table page
+  offers up `Greenwich Investors XXVI, LLC`, `Specialized Loan Serv., LLC`,
+  `Peterson Enters., LLC`, `Grancare, LLC` and the published docket `BC543295`
+  as this case's parties and identifiers. `_pn_mask_toa_entries` blanks the
+  table's ENTRIES out of the harvest input at `_pn_learn_from_text`, the one
+  choke point every `register_*` pass goes through, so no pass added later can
+  quietly read from a table again. An entry is anchored on its DOT LEADER and
+  extended back over the lines that wrap into it, because the name sits on its
+  own line above the cite; the walk-back stops at a blank line, a heading and
+  the previous entry, so it can never reach off the table into prose — which
+  has no leader to anchor on in the first place. A page already rebuilt by the
+  destructive re-OCR above carries its leaders as letter-soup, so
+  `_PN_OCR_LEADER_RE` (a 25-letter unbroken run — no word is that long, the
+  line `_wordish` already draws at 24) anchors those too; delivered folders
+  carry such pages. Scoped to the ENTRIES and not the page, so the letterhead
+  printed in a table page's margin is still harvested. **Honest accounting: on
+  the corpus in hand this changes NOTHING** — `prune_citation_only_terms` and
+  `prune_authority_party_terms` already drop every one of those names, and the
+  delivered renaming came from a build predating them. It is kept because it
+  makes "a table of authorities is never a source" true BY CONSTRUCTION rather
+  than as the emergent result of four corpus-dependent pruning heuristics, each
+  with its own precondition — and because prevention costs no pool word and
+  leaves no bare token behind. The same reasoning covers the inside of a
+  citation, where it is NOT merely belt-and-braces: `register_identifiers`
+  masks protected citation spans, because a brief citing an unreported case
+  gives its trial-court docket ("No. BC543295, 2015 WL 12751760") in a shape
+  indistinguishable from a production stamp. That WAS registered and faked;
+  span protection saved it in body text and not in the appendix's
+  percent-encoded query, where no citation parses, so the published docket
+  shipped as "No. GEARHART543295". A term never built cannot be applied
+  anywhere, which is the only version of this that holds wherever the parser
+  fails.
 - **A REGISTRATION number is only safe to track behind its LABEL.** "a
   registered California process server, Registration No. 833, San Bernardino
   County" names one person in the county's public registry, and the pair
@@ -1071,6 +1101,32 @@ survive to fail.
 
 ## OCR (the runtime bottleneck on scanned exhibits)
 
+- **A TABLE OF AUTHORITIES must never be re-OCR'd, and the ratio is why.**
+  `_text_looks_garbled` measures the fraction of characters that are letters or
+  digits, and a table of authorities is mostly DOT LEADERS — neither. So it
+  reads as symbol soup and the page goes into `_reocr_garbled_pages`, which is
+  DESTRUCTIVE: the real text is redacted and replaced with 300-dpi guesses. A
+  delivered Demurrer's page 5 is 100% `GlyphLessFont` (Tesseract's invisible
+  text font) over a single image — the only OCR'd page in its folder — and it
+  cost all 28 gutter numbers, put the rotated firm sidebar into body text, and
+  turned reporter volumes into letters ("A Cal. App. 4th 857"). Measured on the
+  real corpus the tables that SURVIVED cleared the cut by one percentage point
+  (0.364 against 0.35), and the tool's own extraction path put one at **0.342**
+  — already over. The damage also CONCEALS ITSELF: Tesseract renders a leader
+  run as letter-soup, so the rebuilt page measures 0.938 and a second run reads
+  it as healthy; the only surviving marker is the font name. The fix is to drop
+  leaders from the measurement (`_LEADER_RUN_RE`) rather than move the
+  threshold — it has been retuned twice already, once from letters-only to
+  letters-plus-digits after digit-dominated damages tables were destroyed the
+  same way, and each retune found a new character class. Belt:
+  `_page_text_layer_is_sound` is a HARD PRECONDITION — a page whose text
+  extracts as thirty-plus readable words, with no `(cid:` and no
+  `GlyphLessFont`, is never rebuilt whatever the ratio says. It is deliberately
+  NOT an embedded-font test: a base-14 page is perfectly sound and rejecting it
+  would shred a good text layer for a property carrying no signal, while the
+  page this heuristic exists to catch — a BROKEN encoding — fails the word test
+  by construction. Every decision is logged, since a destructive pass that
+  leaves no trace but a font name is not diagnosable.
 - `_ocr_pdf` OCRs pages with **no** text; `_reocr_garbled_pages` rebuilds pages
   whose text extracts as gibberish (bad encoding). Both **parallelize** render+
   OCR across worker threads (Tesseract is a subprocess → releases the GIL);
