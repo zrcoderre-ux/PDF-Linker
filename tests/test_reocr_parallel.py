@@ -40,8 +40,12 @@ def _install(monkeypatch, ocr_fn):
     monkeypatch.setitem(sys.modules, "PIL.Image", fake_image)
     monkeypatch.setattr(P, "_find_tesseract", lambda: "tesseract")
     monkeypatch.setattr(P, "_tesseract_usable", lambda *a, **k: True)
-    # Treat every page as garbled so the re-OCR path fires.
-    monkeypatch.setattr(P, "_text_looks_garbled", lambda t: True)
+    # Treat the page's OWN text as garbled so the re-OCR path fires — but not
+    # the rebuild, which the double makes deliberately good. The blanket
+    # `lambda t: True` this replaces also condemned the fresh OCR, and
+    # `_reocr_improves` reads it: a rebuild no better than the text it replaces
+    # is refused, so the double was telling the pass its own output was junk.
+    monkeypatch.setattr(P, "_text_looks_garbled", lambda t: "FRESHOCR" not in t)
 
 
 def test_reocr_parallel_relayers_every_page(monkeypatch):

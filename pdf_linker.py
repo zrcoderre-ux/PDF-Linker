@@ -1859,6 +1859,37 @@ _OCR_CONFIG = "-c preserve_interword_spaces=1"
 # gets a text layer (never skipped), but it is named in the log so a reviewer
 # knows which pages to trust least.
 _OCR_LOW_DPI = 150
+# Where a low-confidence page is remembered: {page number -> dpi it settled at},
+# hung on the Document so it survives from the OCR pass to the export writer
+# without threading a return value through four call sites.
+_LOW_DPI_ATTR = "_pdf_linker_low_dpi_pages"
+
+
+def _note_low_confidence(page, dpi):
+    """Remember that `page` had to be recognised at `dpi`, below `_OCR_LOW_DPI`.
+
+    **The EXPORT has to say this, not only the log.** The grind never skips a
+    page, which is right — a page with no text at all is a hole in the record.
+    But measured on this repo's own settings a degraded scan recognised at 99
+    dpi comes back with most of its words wrong ("Ververty" for Beverly,
+    "Vurtiey" for Yardley), and that text lands in the middle of an otherwise
+    accurate document with nothing to distinguish it. A reader has no way to
+    know which paragraph is the document and which is a guess, and the log —
+    which is a separate file, read only when something has already gone wrong —
+    does not travel with the export that gets shared.
+
+    So the page's own banner carries it (see `_write_text_version`). The same
+    reasoning the ink-form path already follows: an inferred checkbox is never
+    presented as equal to a widget's, and it says so on the page it is on."""
+    try:
+        doc = page.parent
+        seen = getattr(doc, _LOW_DPI_ATTR, None)
+        if seen is None:
+            seen = {}
+            setattr(doc, _LOW_DPI_ATTR, seen)
+        seen[page.number] = dpi
+    except Exception:
+        pass          # instrumentation must never take a run down
 
 
 def _ocr_page_to_pdf(page, pytesseract, Image, io, log, label, start=0):
@@ -1882,6 +1913,7 @@ def _ocr_page_to_pdf(page, pytesseract, Image, io, log, label, start=0):
             out = pytesseract.image_to_pdf_or_hocr(
                 img, extension="pdf", config=_OCR_CONFIG, timeout=timeout)
             if dpi < _OCR_LOW_DPI:
+                _note_low_confidence(page, dpi)
                 log.warning(
                     f"  {label} REVIEW: page {page.number} was recognised at "
                     f"only {dpi} dpi after grinding down — its text is "
@@ -2124,6 +2156,45 @@ def _page_text_layer_is_sound(page) -> bool:
     return len(re.findall(r"(?i)(?<![\w])[a-z]{2,}(?![\w])", text)) >= 30
 
 
+# A rebuild that recovers less than this share of the word-shaped tokens the
+# page already had has LOST content, whatever it did for readability.
+_REOCR_MIN_YIELD = 0.5
+
+
+def _reocr_improves(old: str, new: str) -> bool:
+    """True when replacing `old` with the re-OCR's `new` is an IMPROVEMENT.
+
+    **A destructive pass must prove it helped.** `_reocr_garbled_pages` redacts
+    the page's real text and overlays 300-dpi guesses, and until this gate it
+    did so on the strength of a HEURISTIC alone — `_text_looks_garbled` said the
+    old text was bad, and the new text was adopted sight unseen. Two ways that
+    ends badly, both observed on real pages: the heuristic misjudges a page
+    that was fine (a table of authorities, a damages table — the ratio has been
+    retuned three times for exactly this), or the rebuild is itself junk (a
+    stalled page ground down to 72 dpi, an image Tesseract cannot read, a page
+    whose ink is a signature). In both the run threw away the true text layer
+    and kept a worse one, and nothing downstream can tell: the export reads as
+    prose and the source is gone.
+
+    So the rebuild is measured against the same bar that condemned the page. If
+    the new text ALSO looks garbled it bought nothing, and the ORIGINAL is at
+    least what the document actually says. If it recovered less than
+    `_REOCR_MIN_YIELD` of the word-shaped tokens the page already had, it lost
+    content — the usual cause is a render or recognition that mostly failed.
+    Either way the page keeps its own text.
+
+    Cheap by construction: it reads two strings the pass already holds, and it
+    runs once per rebuilt page — which is a handful in a folder, each of which
+    has just paid for a render and an OCR."""
+    if not new or not new.strip():
+        return False                     # nothing was recognised at all
+    if _text_looks_garbled(new):
+        return False                     # no better than the text it replaces
+    old_words = len(re.findall(r"[A-Za-z]{2,}", old or ""))
+    new_words = len(re.findall(r"[A-Za-z]{2,}", new))
+    return new_words >= _REOCR_MIN_YIELD * old_words
+
+
 def _reocr_garbled_pages(doc, log):
     """Rebuild the text layer of any page whose extracted text looks garbled.
 
@@ -2232,12 +2303,29 @@ def _reocr_garbled_pages(doc, log):
 
     # Phase 2 — strip the garbled text and overlay the fresh OCR (serial; mutates
     # the doc, which PyMuPDF requires single-threaded).
-    done = 0
+    done, refused = 0, []
     for pno in garbled:
         ocr_bytes = ocr_by_page.get(pno)
         if ocr_bytes is None:
             continue
         page = doc[pno]
+        # PROVE IT HELPED before destroying anything. The redaction below is
+        # irreversible and the page's own text is the only record of what the
+        # document says, so a rebuild that is not measurably better than what
+        # it replaces must not be adopted (see `_reocr_improves`). Read the
+        # overlay's text now, while the original is still intact and the
+        # comparison is still possible.
+        try:
+            with fitz.open(stream=ocr_bytes, filetype="pdf") as probe:
+                fresh = probe[0].get_text("text")
+        except Exception as e:
+            log.warning(f"  Could not read the re-OCR of page {pno} ({e}); "
+                        f"keeping the page's own text")
+            refused.append(pno)
+            continue
+        if not _reocr_improves(page.get_text("text"), fresh):
+            refused.append(pno)
+            continue
         # Strip the garbled text (text only; keep images and line art, no fill)
         # so get_text no longer returns the gibberish.
         try:
@@ -2257,6 +2345,11 @@ def _reocr_garbled_pages(doc, log):
             done += 1
         except Exception as e:
             log.warning(f"  Could not overlay re-OCR on page {pno}: {e}")
+    if refused:
+        log.info(f"  Re-OCR: page(s) {_plist(refused)} read as garbled, but the "
+                 f"rebuild was no better than the text already there — the "
+                 f"page's OWN text layer is KEPT (a destructive pass has to "
+                 f"prove it improved the page)")
     if done:
         log.info(f"  Re-OCR'd {done} page(s) with garbled text layers")
     return done
@@ -5855,6 +5948,49 @@ _PN_FIRM_WORDS = frozenset({
 _PN_NAME_CONNECTORS = frozenset({"the", "of", "and", "for", "&"})
 _PN_NAME_FURNITURE = _PN_FIRM_WORDS | _PN_NAME_CONNECTORS
 
+# The words a TITLE leaves in lower case. House style capitalises every word of
+# a heading except the articles, conjunctions and short prepositions, so their
+# presence is NOT evidence that a line is running prose — "Motion to Quash
+# Service of Summons" is a title, and "to"/"of" are the only lower-case words
+# in it. `_pn_line_is_prose` therefore ignores exactly these; every other
+# lower-case word means somebody was writing sentences.
+_PN_TITLE_LOWER_WORDS = frozenset({
+    "a", "an", "the", "and", "or", "nor", "but", "for", "so", "yet",
+    "as", "at", "by", "in", "of", "off", "on", "per", "to", "up", "via",
+    "from", "into", "onto", "over", "with", "upon", "than", "that",
+    "v", "vs", "et", "al", "re", "ex", "de", "la", "el",
+})
+# The shortest lower-case word that counts as running text. Two letters is
+# noise — a title carries plenty of them and they are the ones OCR mangles most.
+_PN_PROSE_WORD_MIN = 3
+
+
+def _pn_line_is_prose(line) -> bool:
+    """True when `line` reads as running text rather than a heading or caption.
+
+    The test is the lower-case words it carries, MINUS the ones a title leaves
+    lower-case anyway (`_PN_TITLE_LOWER_WORDS`). A caption line
+    ("NOTICE OF MOTION AND MOTION TO QUASH SERVICE OF SUMMONS"), a title-case
+    heading ("Motion to Quash Service of Summons") and a letterhead line
+    ("Process Server Institute, Registration No. 833") all come out False; a
+    sentence that happens to carry a name ("served on Mabry at his residence")
+    comes out True.
+
+    **ONE such word is enough, and that is a deliberate trade.** A CAPTION CELL
+    is where a filing states its parties, and it carries exactly one:
+    "HELEN RASHO, an individual," is a name plus a descriptor. Requiring two
+    would read every caption as a heading and drop the party the caption exists
+    to name — not a small loss of recall but the removal of the main harvest
+    site. The cost is that a heading with one stray lower-case word is read as
+    prose, which is much rarer than it sounds: the whole WORD must be
+    lower-case, and OCR damage to a capitalised word leaves it MIXED
+    ("SERVICE" -> "SERVlCE"), which does not count."""
+    for w in re.findall(r"[A-Za-z][A-Za-z'’\-]*", str(line)):
+        if (len(w) >= _PN_PROSE_WORD_MIN and w.islower()
+                and w.lower() not in _PN_TITLE_LOWER_WORDS):
+            return True
+    return False
+
 # ── "dba" (fictitious business name) markers ────────────────────────────────
 # A caption cell routinely names one party twice: the legal entity and the
 # fictitious name it trades under ("SMITH AUTO GROUP, INC. dba TOYOTA OF
@@ -6034,11 +6170,34 @@ _PN_NAME_FOLD_MIN = 5
 
 # Letter-only visual confusables for deriving a substitution typo of a fake —
 # the result must stay a name-shaped token, so a glyph never maps to a digit.
+#
+# **An INVOLUTION, by rule: every letter swaps with exactly one partner.** The
+# first shape of this map was looser — `u`, `w` AND `y` all mapped onto `v`
+# (with only `v -> u` going back), plus two smaller sinks on `n` and `b` — and
+# the wide end of the funnel was load-bearing in the worst way. A `v` where the
+# real text had a `y` is the SIGNATURE of a page recognised below
+# `_OCR_LOW_DPI` (the thin descender is the first stroke lost), so the fold was
+# deliberately minting the one artifact an operator most needs to read as scan
+# damage. 43 of the 192 pool surnames carry a `y`; every folded variant of one
+# was a coin-flip away from a spurious "this page scanned badly" signal.
+#
+# Symmetric pairs fix that twice over. Injective: each substituted letter has
+# exactly ONE possible source, so `_report_minted_misspellings` can say not
+# just "this word is ours" but which letter it bent — and a `v` standing where
+# the real had a `y` is now ALWAYS the scan's work, never ours. Involutory: the
+# pair reads as one confusion in both directions, the way a reader experiences
+# it. The pairs are the classic single-glyph confusions: mirror forms (b/d),
+# lost or gained strokes (i/l, t/f, e/c, n/r — an `r` is an `n` missing its
+# leg, u/v, h/k), open-vs-closed bowls (o/a, g/q), flipped arches (m/w), s/z,
+# and y/j (two descenders; also a live spelling variant — Yulia/Julia — so the
+# result still reads as a name). `p` and `x` have no honest partner left and
+# get no entry: minting an IMPLAUSIBLE typo is worse than letting that one
+# variant fall through to a clean pool draw.
 _PN_CONFUSABLES = {
-    "i": "l", "l": "i", "o": "a", "a": "o", "m": "n", "n": "m", "u": "v",
-    "v": "u", "e": "c", "c": "e", "s": "z", "z": "s", "b": "h", "h": "b",
-    "g": "q", "q": "g", "t": "f", "f": "t", "r": "n", "d": "b", "w": "v",
-    "y": "v",
+    "i": "l", "l": "i", "o": "a", "a": "o", "e": "c", "c": "e", "s": "z",
+    "z": "s", "t": "f", "f": "t", "g": "q", "q": "g", "u": "v", "v": "u",
+    "b": "d", "d": "b", "h": "k", "k": "h", "m": "w", "w": "m", "n": "r",
+    "r": "n", "y": "j", "j": "y",
 }
 
 
@@ -6166,6 +6325,22 @@ class _PnFakeRegistry:
         # the authority. See `_pn_authority_tokens`.
         self.avoid_words = set()
         self._domain_reals = {}  # real host -> fake, for OCR-typo folding
+        # Every stand-in this run minted as a DELIBERATE MISSPELLING of another
+        # stand-in: (real, fake, base_real, base_fake, op). The typo fold below
+        # is working as designed when it does this — a source that spells one
+        # name several ways must get a distinct, reversible stand-in for each,
+        # and mirroring the slip is what keeps them reading as one person. But
+        # the result is indistinguishable, in the export, from the scan getting
+        # it wrong: `_PN_CONFUSABLES` bends one letter, and so does a 150-dpi
+        # recognition of the same word. An operator reading "Fenwore" cannot
+        # tell which produced it, and the two have opposite remedies — one is
+        # correct output, the other means the page needs re-scanning. So the
+        # run SAYS which words are its own (see `_check_key_completeness`).
+        # (The map is injective on purpose — a `v` where the real had a `y` is
+        # now always the SCAN's work — but every other pair still collides
+        # with a plausible scan slip, which is what makes this list worth
+        # keeping.)
+        self.typo_folds = []
         # The operator's NUCLEAR keeps for this run (`{braced}` in a Fix? or
         # Replacement cell), lower-cased word bases. They ride on the registry
         # because every composing faker already receives one, so the run's
@@ -6241,6 +6416,8 @@ class _PnFakeRegistry:
                     reps = 1
                 for cand in _pn_typo_variants(prev_fake, op, low, reps):
                     if cand.lower() not in self._used:
+                        self.typo_folds.append(
+                            (real, cand, prev, prev_fake, op))
                         return self._take(key, cand)
                 break     # a near-variant was found but yielded no free typo
         # A HYPHENATED compound surname is two name components, not one word,
@@ -11280,6 +11457,90 @@ class Pseudonymizer:
             self._fuzzy_idx = None
         return [t.real for t in doomed]
 
+    def prune_heading_only_terms(self, text):
+        """Drop every DOCUMENT-harvested one-word name term the corpus only ever
+        writes inside a HEADING — the corpus-wide answer to "is this a name or
+        the document's own subject matter?"
+
+        **The gazetteers cannot win this, and the reason is structural.** Four
+        hand-kept word lists now exist to stop ordinary legal vocabulary being
+        replaced by a surname — `_PN_COMMON_WORDS` (583 entries),
+        `_PN_SERVICE_GENERIC_WORDS`, `_PN_FORM_LABEL_WORDS`,
+        `_PN_SHORT_TOKEN_STOP` — and each was written after a motion type
+        shipped with its own vocabulary renamed: "NOTICE AND MOTION TO MABRY
+        SERVICE OF SUMMONS" (Quash), "ELDRIDGE OF SERVICE" (Proof), "a
+        registered California process radley" (Server). A list of words the
+        tool must not treat as names is a list of every noun in every motion
+        type it has not met yet, so the standing note in CLAUDE.md is "expect
+        the next motion type to reveal the next missing block". That is a
+        promise of recurrence, not a fix.
+
+        `prune_prose_word_terms` is the general form of the same question and
+        catches the case where the corpus writes the word in lower case. It
+        cannot catch this one: a motion's subject matter lives in its CAPTION
+        and its HEADINGS, where every word is capitalised, so "Quash" and
+        "Proof" are never once written lower-case in a motion to quash. The
+        evidence that separates them is POSITION, not case. A party is written
+        into prose — "served on Mabry at his residence" — while the document's
+        own subject matter appears only where everything around it is a title.
+
+        So: an occurrence counts as PROSE when its line carries a lower-case
+        word that is not a title-case function word ("to", "of", "and" stay
+        lower inside "Motion to Quash Service of Summons", which is why the
+        test reads the LINE and exempts them). A candidate with no prose
+        occurrence anywhere in the corpus has no evidence behind it and earns
+        no term.
+
+        Scoped exactly like `prune_prose_word_terms`, and for the same reasons —
+        DOCUMENT-harvested guesses and this tool's own DERIVED spellings only,
+        never the operator's party template, never a `--term`, never a value a
+        reused key pinned. A caption-only party keeps its term through the
+        template that names it; what this drops is the words nothing but a
+        heading ever offered.
+
+        Call with the FULL corpus text, beside the other corpus-wide prunes."""
+        text = _NFKC(text)
+        self._pruned_reals = getattr(self, "_pruned_reals", set())
+        loaded = getattr(self, "_loaded_reals", ())
+        lines = text.split("\n")
+        prose_line = [_pn_line_is_prose(ln) for ln in lines]
+        doomed = []
+        for t in list(self.terms):
+            if ((t.source != "document" and not t.derived)
+                    or t.real.lower() in loaded
+                    or t.category not in ("person", "entity", "person-token",
+                                          "entity-token", "short-name")
+                    or not re.fullmatch(r"[A-Za-z][A-Za-z'’\-]*", t.real)):
+                continue
+            rx = re.compile(r"(?<!\w)" + re.escape(t.real) + r"(?!\w)",
+                            re.IGNORECASE)
+            seen = False
+            for i, ln in enumerate(lines):
+                hits = rx.findall(ln)
+                if not hits:
+                    continue
+                seen = True
+                # Only a CAPITALISED occurrence is evidence of a name, and only
+                # on a prose line. The lower-case one is evidence the other way:
+                # a motion to quash writes "moves to quash service" in its
+                # argument and "MOTION TO QUASH" in its caption, so counting
+                # the argument's occurrence rescued the very word this exists
+                # to drop. (`prune_prose_word_terms` cannot reach it either —
+                # one lower-case occurrence is below its two-hit floor.)
+                if prose_line[i] and any(h[:1].isupper() for h in hits):
+                    break
+            else:
+                if seen:
+                    doomed.append(t)
+        for t in doomed:
+            self.terms.remove(t)
+            self.records.pop((t.category, t.real.lower()), None)
+            self._pruned_reals.add(t.real.lower())
+        if doomed:
+            self._trusted_tok_cache = None
+            self._fuzzy_idx = None
+        return [t.real for t in doomed]
+
     def note_authority_cites(self, text):
         """Index the authorities `text` cites, by their party words."""
         for base, keys in _pn_authority_cite_index(_NFKC(str(text))).items():
@@ -13498,7 +13759,49 @@ class Pseudonymizer:
             log.warning(f"  Pseudonymize: the stand-in {fake!r} (minted for "
                         f"{real!r}) stands in an export with no key row; check "
                         f"it is the ordinary word and not an unreversible fake")
+        self._report_minted_misspellings(log)
         return applied
+
+    def _report_minted_misspellings(self, log):
+        """Name every stand-in this run minted as a DELIBERATE MISSPELLING.
+
+        **A misspelling in the export has two possible authors, and they have
+        opposite remedies.** The typo fold mints one on purpose: a source that
+        spells a party several ways — "Palladino", "Palladina", "Pallading" —
+        must give each spelling its own reversible stand-in, and folding them
+        onto typos of the one fake ("Paget", "Pagct", "Poget") is what keeps
+        them reading as one person instead of three. That is correct output.
+        The scan mangling a word is not, and means the page wants re-scanning
+        or a higher-resolution pass.
+
+        In the export the two are the same shape: every `_PN_CONFUSABLES` pair
+        is a plausible scan slip, which is exactly why the fold uses it.
+        Reading the export, an operator cannot tell "Fenwore" the fold minted
+        from "Fenwore" the scanner produced. Reading the log, they can: what is
+        named here is OURS, and a misspelling that is NOT named here came off
+        the page. One collision is closed at the SOURCE instead: `y -> v` is
+        the signature of a page recognised below `_OCR_LOW_DPI` (the thin
+        descender is the first stroke lost), so the map is injective and mints
+        a `v` only from a `u` — a `v` standing where the real text had a `y`
+        is always the scan's work, never this tool's.
+
+        Reported at INFO — nothing here is a fault, and saying so is the whole
+        point."""
+        folds = getattr(self.registry, "typo_folds", [])
+        if not folds:
+            return
+        log.info(f"  Pseudonymize: {len(folds)} stand-in(s) minted as a "
+                 f"deliberate misspelling of another stand-in — the source "
+                 f"spells one name more than one way, so each spelling gets "
+                 f"its own reversible typo. These misspellings are OURS; one "
+                 f"NOT listed here came off the page (a page recognised below "
+                 f"{_OCR_LOW_DPI} dpi is named in this log too).")
+        for real, fake, base_real, base_fake, _op in folds[:8]:
+            log.info(f"      {fake!r} (for {real!r}) is a typo of {base_fake!r} "
+                     f"(for {base_real!r})")
+        if len(folds) > 8:
+            log.info(f"      (+{len(folds) - 8} more; every one is a row in "
+                     f"the key)")
 
     def write_key(self, path, log):
         """Write the REVERSAL key the Word macro consumes. A row is written when
@@ -16190,8 +16493,16 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         # Header carries the printed (footer) page number when present, so the
         # page half of a pinpoint cite is unambiguous too.
         label = _footer_page_label(page)
+        # A page the OCR grind had to recognise below `_OCR_LOW_DPI` says so on
+        # its own banner. The log alone is not enough: it is a separate file
+        # that does not travel with the export, and the low-confidence text
+        # otherwise sits in the middle of an accurate document looking exactly
+        # like the rest of it.
+        low_dpi = getattr(doc, _LOW_DPI_ATTR, {}).get(i)
         header = (f"====== Page {i + 1}"
                   + (f" (printed p. {label})" if label else "")
+                  + (f" — REVIEW: recognised at only {low_dpi} dpi, "
+                     f"text is LOW CONFIDENCE" if low_dpi else "")
                   + " ======")
         page_blocks.append((header, rows if rows is not None else clean))
 
@@ -16660,6 +16971,12 @@ def _pn_prescan_folder(pdfs, pseudonymizer, log, extra_texts=()):
         log.info(f"  Pseudonymize: dropped {len(prose)} harvested name(s) the "
                  f"corpus writes as ordinary lower-case prose "
                  f"({', '.join(sorted(prose)[:6])})")
+    headings = pseudonymizer.prune_heading_only_terms(full)
+    if headings:
+        log.info(f"  Pseudonymize: dropped {len(headings)} harvested name(s) "
+                 f"the corpus only ever writes inside a heading — a motion's "
+                 f"own subject matter, not a party "
+                 f"({', '.join(sorted(headings)[:6])})")
     authors = pseudonymizer.prune_authority_party_terms(full, log)
     if authors:
         log.info(f"  Pseudonymize: dropped {len(authors)} harvested name(s) that "

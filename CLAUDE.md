@@ -244,7 +244,13 @@ the party), so its row stays reversible.
   like "Adler"/"Alder" is ONE slip, not two subs) and the allowed distance
   **scales with length** (`_pn_name_fold_dist`: 1 for short names, 2 at ≥10 chars,
   3 at ≥16 — a long token plausibly carries more typos, and two genuinely
-  different long surnames rarely sit that close). A multi-character length delta
+  different long surnames rarely sit that close). Note what widening the
+  distance DOES to an export: a variant that no longer draws a clean pool word
+  now draws a deliberately misspelled one, so the count of misspelled-looking
+  words in the delivered text goes UP with the fold's reach. That is the design
+  working, and it is also indistinguishable from the scan getting it wrong —
+  see `_report_minted_misspellings` in the OCR section, which is what tells the
+  two apart. A multi-character length delta
   is mirrored (`reps`), so a real that gained two letters gets a fake that grew by
   two. A **welded** token (a column-splice glued two names, "ADLERMICHAEL" =
   "ADLER"+"MICHAEL") folds onto the CONCATENATION of the two parts' fakes
@@ -318,6 +324,34 @@ the party), so its row stays reversible.
   as often as capitalized is prose — no hand-kept gazetteer is ever complete)
   and `prune_fragment_terms` (a candidate the corpus only ever writes INSIDE a
   longer word is an OCR fragment).
+- **A motion's own SUBJECT MATTER is not a party, and no word list will ever
+  say so** (`prune_heading_only_terms`). Four hand-kept lists now exist to stop
+  ordinary legal vocabulary being replaced by a surname — `_PN_COMMON_WORDS`
+  (583 entries), `_PN_SERVICE_GENERIC_WORDS`, `_PN_FORM_LABEL_WORDS`,
+  `_PN_SHORT_TOKEN_STOP` — and every one was written AFTER a motion type
+  shipped with its vocabulary renamed ("MOTION TO MABRY SERVICE OF SUMMONS",
+  "ELDRIDGE OF SERVICE", "process radley"). A list of words that are not names
+  is a list of every noun in every motion type the tool has not met yet, which
+  is why the standing note here was "expect the next motion type to reveal the
+  next missing block" — a promise of recurrence, not a fix.
+  `prune_prose_word_terms` is the general form of the same question and cannot
+  reach these: a motion's subject matter lives in its CAPTION and HEADINGS,
+  where every word is capitalised, so "Quash" is never once written lower-case
+  in a motion to quash. The evidence that separates them is POSITION. A party
+  is written into PROSE ("served on Mabry at his residence"); the subject
+  matter appears only where everything around it is a title. So a candidate
+  needs one CAPITALISED occurrence on a prose line (`_pn_line_is_prose`), and a
+  lower-case occurrence is never evidence — a motion writes "moves to quash
+  service" in its argument and "MOTION TO QUASH" in its caption, and counting
+  the argument's occurrence rescued the very word this exists to drop. The line
+  test ignores `_PN_TITLE_LOWER_WORDS`, since house style leaves "to"/"of"
+  lower inside a title. **ONE prose word is enough, deliberately**: a CAPTION
+  CELL is where a filing states its parties and carries exactly one
+  ("HELEN RASHO, an individual,"), so a two-word floor would read every caption
+  as a heading and drop the party the caption exists to name. Scoped like
+  `prune_prose_word_terms` — document-harvested guesses and this tool's own
+  DERIVED spellings only, never the operator's template, a `--term`, or a value
+  a reused key pinned.
 - **The people a SERVICE document names carry no party role, and a DOCKET names
   its parties role-LAST.** Every harvest anchor was a role PREFIX ("Defendant
   Travelers", "Attorneys for X"), so two whole populations reached no pass at
@@ -663,8 +697,12 @@ the party), so its row stays reversible.
   as a real surname (Bond, Branch, Store, Manager) goes in
   `_PN_SERVICE_GENERIC_WORDS`, not `_PN_COMMON_WORDS`, for the reason
   `_PN_FORM_LABEL_WORDS` states: withheld from ever becoming a bare token, still
-  reportable when a party really carries the name. Expect the next motion type
-  to reveal the next missing block.
+  reportable when a party really carries the name. The lists are no longer the
+  only line of defence — `prune_heading_only_terms` answers the same question
+  from the corpus, so a vocabulary word the lists have never heard of is
+  dropped on the evidence that nothing but a heading ever offered it. Keep
+  extending them anyway: the prune needs the word to APPEAR somewhere, and a
+  list entry costs nothing.
 - **A HALF-SCRUBBED pair is the most dangerous thing the tool can emit, and the
   scans were structurally blind to it** (`half_scrubbed_scan`). "Xiaoxia
   Ingersoll" shipped 102 times in one batch, "Jiayin Sterling" in all seven
@@ -1138,13 +1176,67 @@ survive to fail.
   site, the grind rungs included. Tesseract otherwise collapses the run of
   spaces a two-column caption depends on — a weld manufactured at recognition
   time, upstream of every cure the pseudonymizer has.
+- **A DESTRUCTIVE pass must PROVE it helped** (`_reocr_improves`, the gate on
+  `_reocr_garbled_pages`' phase 2). The pass redacts a page's real text and
+  overlays 300-dpi guesses, and it used to do that on a HEURISTIC alone:
+  `_text_looks_garbled` said the old text was bad and the new text was adopted
+  sight unseen. Two ways that ends badly, both of which have happened — the
+  heuristic misjudges a page that was fine (a table of authorities, a
+  digit-dominated damages table; the ratio has now been retuned THREE times for
+  exactly this), or the rebuild is itself junk (a page ground down to 72 dpi, an
+  image Tesseract cannot read, a page whose ink is a signature). Either way the
+  run threw away the true text layer and kept a worse one, and nothing
+  downstream can tell: the export reads as prose and the source is gone. So the
+  rebuild is now measured against the same bar that condemned the page — if the
+  new text ALSO reads as garbled it bought nothing and the ORIGINAL is at least
+  what the document says, and if it recovered less than `_REOCR_MIN_YIELD` of
+  the word-shaped tokens the page already had it lost content. The page keeps
+  its own text, and the refusal is logged. This is the belt that makes the
+  ratio's remaining false positives cheap: a misjudged page now costs a wasted
+  render instead of the document.
 - The grind never skips a page, but a page re-rendered below `_OCR_LOW_DPI`
   (150) has traded away real recognition quality, so it is named in the log as
-  low-confidence. Silence there read as "recognised fine".
+  low-confidence. Silence there read as "recognised fine". **And the EXPORT says
+  it too** (`_note_low_confidence` → the page banner in `_write_text_version`),
+  because the log is a separate file that does not travel with the shared
+  export: text recognised at 99 dpi comes back mostly wrong and otherwise sits
+  in the middle of an accurate document looking exactly like the rest of it. A
+  reviewer needs to know which paragraph is the document and which is a guess.
+  Same reasoning the ink-form banner already follows — an inferred checkbox is
+  never presented as equal to a widget's, and it says so where it is read.
 - Per-page **timeout + grind**: a stalled page is re-rendered at lower
   resolution and retried, never skipped, never hangs (the earlier 0%-CPU hang).
 - Env vars: `PDF_LINKER_OCR_WORKERS` (default cores-1, cap 10),
   `PDF_LINKER_OCR_TIMEOUT` (default 600s).
+- **A misspelling in an export has TWO possible authors, and the run says which
+  one wrote each** (`_report_minted_misspellings`). The typo fold mints one on
+  purpose — a source that spells a party several ways gives each spelling its
+  own reversible stand-in, and a typo of the one fake is what keeps them
+  reading as one person — while the scan mangling a word means the page wants
+  re-scanning. Opposite remedies, identical shape in the export — every
+  `_PN_CONFUSABLES` pair is a plausible scan slip, which is exactly why the
+  fold uses it. The worst collision is closed at the SOURCE: "a y came out as
+  a v" is the signature of a page recognised below `_OCR_LOW_DPI`, where a
+  thin descender is the first stroke lost — and the map used to funnel `u`,
+  `w` AND `y` all onto `v`, so the fold was deliberately minting that exact
+  artifact (43 of the 192 pool surnames carry a `y`). The map is now an
+  INVOLUTION — every letter swaps with exactly one partner, so it is injective
+  and a `v` is minted only from a `u`: a v-for-y in an export is ALWAYS the
+  scan's work. (A reused key still reproduces delivered exports byte for byte
+  — the memo pins every binding — but a re-run WITHOUT its key re-derives
+  folded fakes under the new map, which is the standing rule for any change to
+  the fold.) Measured on this repo's own settings — Tesseract
+  5.3.4, `_ocr_base_dpi`, `_OCR_CONFIG` — a clean or lightly-degraded render is
+  error-free at 300 and 198 dpi and stays so at 150; a degraded one breaks down
+  at 150 (21 words wrong) and collapses at 99 (24-43, the wrong words being
+  exactly "Ververty" for Beverly, "Vurtiey" for Yardley, "Vextesday's" for
+  Yesterday's). So the grind's own low-dpi REVIEW line and this report are, in
+  combination, the whole diagnosis: a misspelling NAMED here is ours and
+  correct, one that is not came off the page. Reported at INFO — nothing in it
+  is a fault, and saying so is the entire point. The same A/B measured
+  `preserve_interword_spaces=1` as **exactly neutral** on character
+  recognition (identical error counts in every dpi × degradation cell); it
+  buys the spacing it is there for and costs no accuracy.
 
 ## Diagnosing a run that just stops
 
