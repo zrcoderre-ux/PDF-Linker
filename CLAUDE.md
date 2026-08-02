@@ -1362,9 +1362,28 @@ is **COMBINED** into single files that say so in their own first line, list
 their members, and hold each document in full behind its own DOCUMENT banner.
 Nothing is dropped and nothing is shortened; the parts are removed only once
 the combined file is safely written, so `Text Files` is exactly the deliverable
-set and nobody has to work out which of the files in front of them to skip. The
-`Original Text` sibling (real names, never shared) is left per-document — the
-cap is about what gets uploaded.
+set and nobody has to work out which of the files in front of them to skip.
+
+**The `Original Text` sibling is combined too** (`deliverable=False`), even
+though nothing in it is ever uploaded. The cap is not about that folder; the
+SHAPE is. A case that delivers 20 exports and keeps 34 do-not-share originals
+beside them is two different shapes of one case, and "the original of this
+export" stops being one file in the same place — bookkeeping the operator has to
+carry in their head, which is the same thing this pass exists to remove. The
+grouping is derived from that folder's OWN filenames rather than mirrored from
+the deliverable's, because the two folders do not share names: an export's
+filename is pseudonymized and the reference copy keeps the source PDF's real
+stem. The rules are the same and a part marker survives pseudonymization, so the
+split normally comes out the same; where it does not, each file still names its
+own members in its header. Its header says THAT, not "only 20 files can be
+uploaded" (`_combine_original_note`) — and the deliverable's header is unchanged
+to the byte, because a folder already sent must still reproduce. The
+pseudonymizer is NEVER passed on that pass: `_combine_remap_tracking` moves the
+leak gate's per-file bookkeeping onto the combined file, and these files are
+real names by design — never tracked, never quarantined. Harmless for the
+evidence path too (`--fix-leaks` reads this folder via `note_original`): a
+combined file can only ADD words (the banners), and `_real_remainder` only ever
+removes a word ABSENT from the original, so a finding is kept and never dropped.
 
 **Which files, in the operator's two rules.** Rule ONE
 (`_combine_same_name_groups`): the same name with a part marker after it —

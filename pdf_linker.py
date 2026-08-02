@@ -17371,10 +17371,12 @@ def _combine_doc_banner(i, n, name):
     return f"{'#' * 8} DOCUMENT {i} OF {n} IN THIS COMBINED FILE: {name} {'#' * 8}"
 
 
-def _combined_body(members, cap):
+def _combined_body(members, cap, note=None):
     """Assemble a combined export. `members` is `[(name, path, text), ...]` —
     `text` carries a section forward from a previous combined file whose
-    document no longer has a separate export of its own.
+    document no longer has a separate export of its own. `note` replaces the
+    two header lines that say WHY the file was combined (the unscrubbed
+    reference copies are not the thing being uploaded).
 
     Byte-stability matters as much here as it does for a pseudonym: a folder
     re-run without changes must reproduce the file the operator already sent,
@@ -17383,16 +17385,17 @@ def _combined_body(members, cap):
     n = len(members)
     head = [_COMBINE_RULE,
             f"# {_COMBINE_MARK} — {n} documents in one file",
-            "#",
+            "#"]
+    head += list(note) if note else [
             f"# Only {cap} file{'' if cap == 1 else 's'} can be uploaded at "
             f"once and this case folder holds more,",
             "# so the documents listed below were combined into this single "
-            "file.",
-            "# NOTHING was dropped or shortened: each one appears in full, in "
-            "the",
-            "# order listed, behind its own DOCUMENT banner.",
-            "#",
-            "# Documents in this file:"]
+            "file."]
+    head += ["# NOTHING was dropped or shortened: each one appears in full, in "
+             "the",
+             "# order listed, behind its own DOCUMENT banner.",
+             "#",
+             "# Documents in this file:"]
     head += [f"#   {i}. {name}" for i, (name, _p, _t) in enumerate(members, 1)]
     head += ["#",
              "# Page numbering restarts at every DOCUMENT banner: a 'p.3:7' "
@@ -17460,9 +17463,19 @@ def _combine_remap_tracking(pseudonymizer, combined, members, log):
 
 
 def _combine_exports_for_upload(folder, text_subdir, cfg, log,
-                                pseudonymizer=None):
+                                pseudonymizer=None, deliverable=True):
     """Combine this folder's .txt exports down to the upload cap. Returns
     `[(combined path, [member names]), ...]`.
+
+    `deliverable=False` runs the same pass over the UNSCRUBBED reference copies
+    (`original_text_subfolder`), which are never uploaded and never quarantined
+    — see the caller. The grouping there is derived from that folder's OWN
+    filenames rather than mirrored from the deliverable's, because the two
+    folders do not share names: an export's filename is pseudonymized and the
+    reference copy keeps the source PDF's real stem. The rules are the same and
+    a part marker survives pseudonymization, so the split normally comes out the
+    same anyway; where it does not, each combined file still names its own
+    members in its header, which is the only thing the operator reads it for.
 
     Order of business, and why:
 
@@ -17577,22 +17590,29 @@ def _combine_exports_for_upload(folder, text_subdir, cfg, log,
 
     out = []
     header_cap = cap or _COMBINE_DEFAULT_CAP
+    note = None if deliverable else _combine_original_note(header_cap)
     taken = keep_names | {q.name for q in free}
     for entry in plan:
         entry["name"] = _combine_unique_name(entry["name"], taken)
         path = _combine_write_group(text_dir, entry, header_cap, log,
-                                    pseudonymizer)
+                                    pseudonymizer, note)
         if path is not None:
             out.append((path, [m[0] for m in entry["members"]]))
     if out:
         docs = sum(len(m) for _p, m in out)
-        log.warning(
-            f"  Upload cap: at most {header_cap} files can be uploaded, so "
-            f"{docs} of this folder's documents are delivered inside "
-            f"{len(out)} combined file(s) "
-            f"({', '.join(p.name for p, _m in out[:4])}"
-            + (" …" if len(out) > 4 else "") + "). Each names its own members "
-            f"in its header; nothing was dropped or shortened.")
+        names = (", ".join(p.name for p, _m in out[:4])
+                 + (" …" if len(out) > 4 else ""))
+        if deliverable:
+            log.warning(
+                f"  Upload cap: at most {header_cap} files can be uploaded, so "
+                f"{docs} of this folder's documents are delivered inside "
+                f"{len(out)} combined file(s) ({names}). Each names its own "
+                f"members in its header; nothing was dropped or shortened.")
+        else:
+            log.info(
+                f"  Upload cap: {text_subdir} — the do-not-share reference "
+                f"copies were combined the same way: {docs} document(s) in "
+                f"{len(out)} file(s) ({names}).")
     return out
 
 
@@ -17615,13 +17635,24 @@ def _combine_unlink(path, log, why):
         log.warning(f"  Upload cap: could not remove {why} {path.name}: {e}")
 
 
-def _combine_write_group(text_dir, entry, cap, log, pseudonymizer):
+def _combine_original_note(cap):
+    """The header lines a combined UNSCRUBBED reference copy carries instead of
+    the deliverable's "only N files can be uploaded". Nothing here is uploaded —
+    it is combined so the reference folder holds the same documents, split the
+    same number of ways, as the exports beside it."""
+    return (f"# The exports beside this folder are combined to fit an upload "
+            f"limit of {cap} files,",
+            "# so these do-not-share reference copies were combined the same "
+            "way.")
+
+
+def _combine_write_group(text_dir, entry, cap, log, pseudonymizer, note=None):
     """Write one combined export, then — and only then — remove the parts it
     now holds. A failed write leaves every part where it was: a folder over the
     upload cap is an inconvenience, a folder missing a document is not."""
     target = text_dir / entry["name"]
     try:
-        body = _combined_body(entry["members"], cap)
+        body = _combined_body(entry["members"], cap, note)
     except OSError as e:
         log.warning(f"  Upload cap: could not read a part of {target.name} "
                     f"({e}) — leaving its documents as separate files.")
@@ -18397,8 +18428,10 @@ _CONFIG_TEMPLATE = (
     "# document go together first (Brief (1) / Brief part 2 / Brief 2 of 3);\n"
     "# if that is not enough, the smallest exports are bundled until the count\n"
     "# fits. A grouping is reproduced on every later run, so a folder you have\n"
-    "# already sent comes back the same. 0 turns combining off (a grouping\n"
-    "# already delivered is still honoured — it is never re-split).\n"
+    "# already sent comes back the same. The do-not-share original-text copies\n"
+    "# (keep_original_text) are combined the same way, so both folders hold the\n"
+    "# same documents split the same number of ways. 0 turns combining off (a\n"
+    "# grouping already delivered is still honoured — it is never re-split).\n"
     "max_text_files = 20\n"
     "\n"
     "# Word documents (.docx/.docm) in a folder that has NO PDFs are bulk-\n"
@@ -20131,6 +20164,18 @@ def main():
     if args.extract_text and (pdfs or word_texts):
         _combine_exports_for_upload(folder, text_subdir, cfg, log,
                                     pseudonymizer)
+        # The UNSCRUBBED reference copies get the same treatment. They are not
+        # what the cap is about — nothing in that folder is ever uploaded — but
+        # a folder of 34 documents that delivers 20 exports and keeps 34
+        # originals beside them is two different shapes of the same case, and
+        # the operator has to hold the difference in their head. Combined the
+        # same way, "the original of this export" is one file in the same place.
+        # NEVER with the pseudonymizer: `_combine_remap_tracking` moves the leak
+        # gate's per-file bookkeeping onto the combined file, and these files are
+        # real names by design — never tracked, never quarantined.
+        if original_subdir:
+            _combine_exports_for_upload(folder, original_subdir, cfg, log,
+                                        deliverable=False)
 
     # One key file for the whole folder maps every real value to its fake.
     if pseudonymizer is not None:
