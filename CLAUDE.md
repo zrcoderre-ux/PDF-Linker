@@ -1194,6 +1194,36 @@ survive to fail.
   its own text, and the refusal is logged. This is the belt that makes the
   ratio's remaining false positives cheap: a misjudged page now costs a wasted
   render instead of the document.
+- **A rebuilt page SAYS SO in the export, and its old layer is kept where that
+  is free.** Two halves of the same gap. The export never marked a rebuilt
+  page, so 300-dpi guesses sat in the middle of an accurately-extracted
+  document reading exactly like the rest of it — which is how "A Cal. App. 4th
+  857" shipped with nothing flagging it. `_REOCR_ATTR` (hung on the Document
+  like `_LOW_DPI_ATTR`, recorded by `_note_rebuilt_page` only once the overlay
+  has actually landed) drives a page banner in the same voice as the low-dpi
+  and ink-form ones: an inferred reading is never presented as equal to a read
+  one. The other half is that the OLD text was thrown away, and a broken
+  ToUnicode is usually a SUBSTITUTION CIPHER — the glyphs are in the right
+  order, so the word lengths, the spacing, the digits and the punctuation are
+  the document's own and only the letters are wrong. Beside a reconstruction
+  that reads "A Cal. App. 4th 857", that settles the argument. So
+  `_garbled_appendix` prints it, at the end, **in the UNSCRUBBED copy only** —
+  the `Original Text (real names - do not share)` file and the TEMP evidence
+  cache, never the shared export. That line is where it is because garbled
+  text is exactly the shape the whole-word patterns cannot match (the reason
+  `scrub_welded` and the reduced scans exist): in the deliverable it would be
+  real party names nothing can scrub, and the review scans would fill the
+  worksheet with soup nobody can answer. In the do-not-share copy it costs
+  nothing — that file carries the real names in plain text already. Both
+  consumers of the unscrubbed body get it, because `--fix-leaks` reads the
+  in-folder copy when there is one and the cache otherwise and the two must
+  agree; as EVIDENCE it can only ADD words, and `_real_remainder` only removes
+  a word ABSENT from the original, so a noisier original keeps a finding and
+  never drops one. `_garbled_keepable` is the "is there anything usable here"
+  gate: unmapped glyphs (`(cid:3)(cid:15)`) and replacement characters come out
+  first and what is left must clear `_GARBLED_KEEP_MIN`, because a page of cid
+  tokens carries no length, no spacing and no digits — it can settle nothing
+  and costs the reader attention to skim.
 - The grind never skips a page, but a page re-rendered below `_OCR_LOW_DPI`
   (150) has traded away real recognition quality, so it is named in the log as
   low-confidence. Silence there read as "recognised fine". **And the EXPORT says
