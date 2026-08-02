@@ -6222,7 +6222,25 @@ def _pn_is_suffix_token(word):
 # signs) plus Latin Extended-A (U+0100–U+017F); digits and underscores stay out.
 _PN_LAT = "A-Za-zÀ-ÖØ-öø-ÿĀ-ſ"
 _PN_LAT_UPPER = "A-ZÀ-ÖØ-Þ"
-_PN_WORD_RE = re.compile(rf"[{_PN_LAT}][{_PN_LAT}'\-]*")
+# The TYPOGRAPHIC apostrophe belongs in a word exactly as the straight one does,
+# and leaving it out did not merely split a token — it MANUFACTURED AN INITIAL.
+# A filing written in Word carries "GREEN’S", not "GREEN'S", so the word ended
+# as "GREEN" plus a one-letter word "S"; `_pn_fake_person` keeps a single letter
+# verbatim (see there), which is indistinguishable from a middle initial, and
+# `_pn_align_initials` then gave that "initial" the first letter of the fake the
+# middle name got: "RACHEL GREEN’S" -> "RIDLEY YEARDLEY’H". The possessive is
+# not a name and has no fake to agree with. Everything that reads a word already
+# handled both marks (`_pn_word_affixes` strips either possessive,
+# `_pn_word_base` folds on the result), so this is the one place they disagreed
+# — and it also kept "O’Brien" from being one word.
+_PN_WORD_RE = re.compile(rf"[{_PN_LAT}][{_PN_LAT}'’\-]*")
+# The two marks a filing uses interchangeably for one character, in ONE place so
+# every pass agrees on what an apostrophe is (`_pn_word_affixes` strips either
+# possessive, `_PN_WORD_RE` keeps either inside a word, `_pn_build_pattern`
+# matches either in the text).
+_PN_APOS = "'’"
+_PN_APOS_CLASS = "['’]"
+_PN_APOS_RE = re.compile(f"[{_PN_APOS}]")
 
 
 def _pn_build_accent_fold():
@@ -7006,7 +7024,13 @@ def _pn_is_name_token(word):
         return False
     if _pn_is_suffix_token(word):  # "M.D.", "Ph.D.", "Esq" — a suffix, not a name
         return False
-    base = word.strip('.,:;"’\'').lower().removesuffix("'s")
+    # Through the SHARED base, which strips a possessive written with EITHER
+    # apostrophe. Its own strip+removesuffix knew only the straight one, so
+    # "Green's" reduced to "green" and was correctly refused a bare token while
+    # Word's "Green’s" reduced to "green’s", matched no list, and became one —
+    # a token whose fake carries a possessive, applied to every near-miss
+    # spelling of the surname ("Grreen" -> "Yeardley’s").
+    base = _pn_word_base(word)
     return (base not in _PN_NON_NAME_WORDS and base not in _PN_PARTY_ROLE_WORDS
             and base not in _PN_COMMON_WORD_SURNAMES)
 
@@ -9618,8 +9642,19 @@ def _pn_build_pattern(term, *, whole_word, follow=None):
     that lost the space in "Smith Decl." leaves "SmithDecl.", and the declarant
     reference is exactly what that harvester was reading. Everything else still
     needs a word boundary — the LEFT one always holds, which is what stops a
-    short name firing inside a longer word ("Tue" in "Vatue")."""
-    body = r"\s+".join(re.escape(p) for p in _NFKC(term).split())
+    short name firing inside a longer word ("Tue" in "Vatue").
+
+    An APOSTROPHE matches either mark. The two sides of a run disagree about it
+    by default — the E-Court spreadsheet exports a straight `'` and a filing
+    written in Word carries `’` — and a literal match of one against the other
+    finds nothing: "Rachel Green's Trust" left "RACHEL GREEN’S TRUST" standing
+    whole, and "Sean O'Brien" left "O’Brien" beside a faked given name. Neither
+    was reported either, because `_surviving_records` scans with this same
+    pattern: replacement and detection agreed, and both were blind. `_NFKC` does
+    not fold the marks (they are distinct characters, not a compatibility pair),
+    so the pattern has to."""
+    body = _PN_APOS_RE.sub(_PN_APOS_CLASS,
+                           r"\s+".join(re.escape(p) for p in _NFKC(term).split()))
     if whole_word:
         right = rf"(?:(?!\w)|(?={follow}))" if follow else r"(?!\w)"
         body = rf"(?<!\w)(?:{body}){right}"

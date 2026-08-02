@@ -506,6 +506,28 @@ the party), so its row stays reversible.
   ("O'Brien") is not a possessive and stays in the core. `_pn_load_key` repairs
   a divergent possessive row an older build wrote, folding it onto the base
   binding — but only when the base row is there to be authoritative.
+- **`'` and `’` ARE THE SAME CHARACTER, and the three places that disagreed
+  each failed differently.** Everything above is written with the straight
+  mark; a filing written in Word carries the typographic one, so the two meet
+  in every folder — the E-Court spreadsheet exports `'`, the PDF says `’`.
+  (1) `_PN_WORD_RE` kept `'` inside a word and not `’`, so "GREEN’S" read as
+  "GREEN" plus a one-letter word "S" — and a single letter is kept verbatim by
+  `_pn_fake_person`, which is indistinguishable from a middle INITIAL, so
+  `_pn_align_initials` handed the possessive the first letter of the fake the
+  middle name got: **"RACHEL GREEN’S" -> "RIDLEY YEARDLEY’H"**. The same split
+  made "O’Brien" an initial "O" plus a surname. (2) `_pn_is_name_token` did its
+  own strip-and-`removesuffix("'s")` instead of `_pn_word_base`, so "Green's"
+  reduced to "green" and was rightly refused a bare token (a common-word
+  surname) while "Green’s" reduced to "green’s", matched no list, and became
+  one — a token whose FAKE carries a possessive, then applied to every
+  near-miss spelling ("Grreen" -> "Yeardley’s"). (3) `_pn_build_pattern`
+  matched the mark LITERALLY, so a term never met the other spelling at all:
+  "Rachel Green's Trust" left "RACHEL GREEN’S TRUST" standing whole and
+  "Sean O'Brien" left "O’Brien" beside a faked given name — neither reported,
+  because `_surviving_records` scans with that same pattern, so replacement and
+  detection agreed and both were blind. `_NFKC` does not fold them (distinct
+  characters, not a compatibility pair), so each site has to: the marks live in
+  `_PN_APOS` / `_PN_APOS_CLASS` and a pattern matches either.
 - **An INITIAL agrees with the fake of the name it abbreviates.** A filing
   writes one attorney both ways, and only one of the two forms was faked:
   `STEVEN W. BURT -> AMBERLY W. YEARDLEY` beside
