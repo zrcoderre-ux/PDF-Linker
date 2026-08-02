@@ -112,7 +112,8 @@ not come back to life just because it is also a template row.
 
 **Correcting the key in place / durable KEEP store.** The `Replacement` column
 of `pseudonym_key.xlsx` accepts the same operator control words the LEAKS `Fix?`
-column does — `no` (keep this Real Value verbatim), a `[bracketed]` keep-spec
+column does — `no` (keep this Real Value verbatim), `never` (the nuclear keep of
+the WHOLE value), a `[bracketed]` keep-spec
 (keep the bracketed part, auto-fake the rest) and a `{braced}` one (same cut,
 stronger promise) — so a mistake baked into the key
 that never surfaced as a leak can be fixed where it lives (`_pn_load_key` returns
@@ -128,8 +129,9 @@ never touches "California"):
 - **`keep_strict`** (a bracketed keep-spec part) — "this fragment is never a
   name": kept even next to names, so `[Plaintiff]` stays in "Plaintiff John Doe"
   and `[Attached]` stays in "Jack Gerlach Attached".
-- **`keep_nuclear`** (a `{braced}` part) — "this can never reveal anything":
-  never faked in ANY folder, not even inside a party name. See below.
+- **`keep_nuclear`** (a `{braced}` part, or the whole value via `never`) — "this
+  can never reveal anything": never faked in ANY folder, not even inside a party
+  name. See below.
 
 A keep normally loses to a **full party match** — a kept word inside a
 `_PN_PARTY_OVERRIDE_CATS` (person/entity/case_number) term is released so the real
@@ -171,6 +173,28 @@ what to keep, so it neither seeds a word nor is silently applied — it falls
 through as an explicit replacement (which would write a literal "{Law}" into the
 export) and is WARNED about. The master KEEP sheet types a braced row
 `KEEP-ALWAYS` (`_PN_KEEP_NUCLEAR_TYPE`).
+**`never` is that same nuclear keep over the WHOLE value** (`_PN_NEVER_CONTROL` /
+`_pn_is_never_cell`), which is what the operator means most of the time and what
+braces make tedious — re-typing a long value inside them is also a chance to
+mistype it, and a brace whose text is not part of its value keeps nothing and
+falls through as a literal replacement. It is normalised at the two places a
+control word is read (`_pn_parse_decision_rows`, `_pn_load_key` — plus that
+function's pre-scan, so the words land on the registry before any row is
+processed) into the decision `{whole value}` already produced, so nothing
+downstream distinguishes them; braces keep their job of nuking only PART of a
+value, and still work on a single word. The word is stored back VERBATIM rather
+than expanded into a brace spec, so the master sheet keeps saying what was typed.
+**And the party override yields to a keep that COVERS the party match.** The
+override's justification — it costs a nuclear keep nothing, because composition
+keeps the word — holds only while some word of the party is still left to fake:
+`_pn_fake_person` / `_pn_fake_entity_parts` DROP the keep rather than return the
+name itself ("The Law Firm" must not map onto itself). So a whole-value nuclear
+keep on a party was released and then faked whole, and `never` meant its opposite
+for the values it is most often typed against. `_keep_spans` passes
+`party_wider_only` for the nuclear tier: a party match lying entirely inside the
+kept span releases nothing, one that reaches beyond it still does (`never` on
+"Doe" keeps the word and still fakes "John Doe" as "Yorke Doe"). Nothing is left
+in the clear that the operator did not name.
 
 **The KEEP store is a SINGLE cross-folder sheet**, the `KEEP` tab of the master
 workbook (`_pn_master_path`, next to the config or `PDF_LINKER_MASTER` /
@@ -741,6 +765,8 @@ the party), so its row stays reversible.
   distinct value**: a name that leaks across many files is aggregated into a
   single row (files + locations merged) so the operator decides it once, not
   once per file. The **Fix?** column round-trips: `yes`=auto-fake, `no`=leave,
+  `never`=never fake this value, in this or any folder (the nuclear keep, on the
+  dropdown beside yes/no),
   **any other text = an explicit operator-typed replacement**, and
   **`[bracketed]` text naming part of the value = keep that part verbatim and
   auto-fake the rest** (`_pn_bracket_keep`; "Raytheon's [Human Resources]" fakes

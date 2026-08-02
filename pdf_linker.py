@@ -33,7 +33,8 @@ For each *.pdf in the folder (processed from shortest to longest by file size):
      A mistake baked into the pseudonym_key.xlsx (a value it should not have
      faked) can be corrected in place in the key's Replacement column, using the
      same words the LEAKS worksheet's Fix? column accepts: "no" leaves that Real
-     Value verbatim, a [bracketed] keep-spec keeps the bracketed part and
+     Value verbatim, "never" is the nuclear keep of the whole value (below), a
+     [bracketed] keep-spec keeps the bracketed part and
      fakes the rest, and a {braced} keep-spec does the same but with a stronger
      promise (below). These KEEP decisions are recorded to a SINGLE
      cross-folder sheet — the KEEP tab of master_leaks.xlsx — so they are applied
@@ -50,6 +51,9 @@ For each *.pdf in the folder (processed from shortest to longest by file size):
      "Alder Law, P.C." into "Kaldor Law, P.C." rather than letting the firm
      through. It adds to the tool's own built-in list of name furniture
      ("Law Offices of", "& Associates", "the"/"of"), which applies regardless.
+     "never" is that same nuclear keep applied to the WHOLE value, without
+     re-typing it inside braces — so braces stay for the case where only PART
+     of a value gets the nuclear treatment (they still work on a single word).
   1a. Writes a plain-text companion (.txt) for each PDF that has a real text
      layer into a "Text Files" subfolder of the case folder (name overridable
      via text_subfolder in pdf_linker.config), so a text-only copy can be
@@ -10103,14 +10107,20 @@ def _pn_load_key(path, registry, log):
     nuke = set()
     for row in rows[1:]:
         real, fake = at(row, "real value"), at(row, "replacement")
-        if real in (None, "") or fake in (None, "") or "{" not in str(fake):
+        if real in (None, "") or fake in (None, ""):
             continue
-        # Only a genuine keep-spec counts: braced text that is not part of the
-        # value falls through as an explicit replacement (warned below), and
-        # must not silently nuke a word it never described.
-        if _pn_bracket_keep(str(real), str(fake)) is None:
+        if _pn_is_never_cell(fake):
+            parts = [str(real)]           # "never" braces the WHOLE value
+        elif "{" in str(fake):
+            # Only a genuine keep-spec counts: braced text that is not part of
+            # the value falls through as an explicit replacement (warned below),
+            # and must not silently nuke a word it never described.
+            if _pn_bracket_keep(str(real), str(fake)) is None:
+                continue
+            parts = _pn_keep_spec_parts(str(fake))[1]
+        else:
             continue
-        for part in _pn_keep_spec_parts(str(fake))[1]:
+        for part in parts:
             nuke.update(b for b in (_pn_word_base(w)
                                     for w in _PN_WORD_RE.findall(part)) if b)
     if nuke - set(registry.keep_words):
@@ -10146,6 +10156,15 @@ def _pn_load_key(path, registry, log):
             key_decisions[real.lower()] = {
                 "value": real, "type": "KEEP", "fix": "no", "replacement": None,
                 "fake_values": None, "fixcell": None, "notes": "pseudonym key"}
+            continue
+        if _pn_is_never_cell(ctrl):
+            # The whole Real Value brace-kept, without re-typing it inside
+            # braces. Its words are already on `registry.keep_words` (pre-scan
+            # above), so no fake composed from this key can carry them.
+            key_decisions[real.lower()] = {
+                "value": real, "type": _PN_KEEP_NUCLEAR_TYPE, "fix": "no",
+                "replacement": None, "fake_values": None, "fixcell": ctrl,
+                "notes": "pseudonym key"}
             continue
         if "[" in ctrl or "{" in ctrl:
             frags = _pn_bracket_keep(real, ctrl)
@@ -10336,9 +10355,13 @@ def _pn_load_key(path, registry, log):
     log.info(f"  Pseudonym key REUSED: loaded {len(terms)} binding(s) from "
              f"{path.name} — fakes will match the original run")
     if key_decisions:
-        kept = sum(1 for d in key_decisions.values() if d["fix"] == "no")
-        part = len(key_decisions) - kept
+        never = sum(1 for d in key_decisions.values()
+                    if _pn_is_never_cell(d.get("fixcell")))
+        kept = sum(1 for d in key_decisions.values() if d["fix"] == "no") - never
+        part = len(key_decisions) - kept - never
         log.info(f"  Pseudonym key: {kept} value(s) marked 'no' (keep verbatim)"
+                 + (f", {never} marked 'never' (keep in every folder)"
+                    if never else "")
                  + (f" and {part} bracketed keep-spec(s)" if part else "")
                  + " in the Replacement column will be honored.")
     return terms, key_decisions
@@ -12635,7 +12658,20 @@ class Pseudonymizer:
         A `{braced}` NUCLEAR keep is released by a party match too — and loses
         nothing by it, because the party's fake was COMPOSED with the braced word
         kept verbatim (see `_pn_nuclear_words`). It is collected here so the word
-        also survives every bare token, detector and near-miss variant."""
+        also survives every bare token, detector and near-miss variant.
+
+        …with ONE exception, and it is the whole meaning of `never` (and of a
+        brace around an entire value): a party match that lies ENTIRELY INSIDE
+        the kept text releases nothing. The override's justification is that it
+        costs the nuclear keep nothing — but that holds only while some word of
+        the party is still left to fake. When every word of the party is kept,
+        `_pn_fake_person`/`_pn_fake_entity_parts` drop the keep rather than
+        return the name itself ("The Law Firm" must not map onto itself), so the
+        released span was faked WHOLE and "never fake this value" quietly meant
+        its opposite for the values it is most often typed against — a party
+        name. Nothing is left in the clear that the operator did not name: the
+        kept text covers the entire party match, so releasing it could only fake
+        text already declared safe."""
         if not self.keep_soft and not self.keep_strict and not self.keep_nuclear:
             return []
         # Spans of full party-name matches, which override EITHER kind of keep.
@@ -12647,12 +12683,16 @@ class Pseudonymizer:
                 if m.start() != m.end():
                     party.append((m.start(), m.end()))
 
-        def in_party(s, e):
-            return any(s < pe and ps < e for ps, pe in party)
+        def in_party(s, e, wider_only=False):
+            """A party match overlapping [s,e]. `wider_only` ignores one the kept
+            span already covers — see the nuclear exception above."""
+            return any(s < pe and ps < e
+                       and not (wider_only and s <= ps and pe <= e)
+                       for ps, pe in party)
 
         spans = []
 
-        def collect(values, soft, party_wins=True):
+        def collect(values, soft, party_wins=True, party_wider_only=False):
             for v in sorted(values, key=len, reverse=True):
                 if not v:
                     continue
@@ -12664,7 +12704,7 @@ class Pseudonymizer:
                 for m in re.finditer(r"(?<!\w)" + re.escape(v) + r"(?!\w)",
                                      text, re.IGNORECASE):
                     s, e = m.span()
-                    if s == e or (party_wins and in_party(s, e)):
+                    if s == e or (party_wins and in_party(s, e, party_wider_only)):
                         continue      # a full party match here — party fakes it
                     # A soft `no` keep is also released where the word sits in a
                     # multi-word capitalized name run (a possible party), so only
@@ -12678,7 +12718,7 @@ class Pseudonymizer:
 
         local_strict = self.keep_strict_local & self.keep_strict
         collect(local_strict, soft=False, party_wins=False)
-        collect(self.keep_nuclear, soft=False)
+        collect(self.keep_nuclear, soft=False, party_wider_only=True)
         collect(self.keep_strict - local_strict, soft=False)
         collect(self.keep_soft, soft=True)
         return spans
@@ -15685,6 +15725,22 @@ _PN_KEEP_BRACKET_RE = re.compile(r"\[([^\[\]]*)\]")
 # and parsed by the same code, but a different promise — see
 # `_pn_nuclear_words`.
 _PN_KEEP_BRACE_RE = re.compile(r"\{([^{}]*)\}")
+# The NEVER control word: shorthand for bracing the WHOLE value. `{...}` is the
+# only way to say "never fake THIS PART of the value", but the common case is
+# the whole thing — and re-typing a long value inside braces to say so is both
+# tedious and a chance to mistype it (a brace whose text is not part of its
+# value keeps nothing and falls through as a literal replacement). "never" says
+# exactly the same thing about the value the row already names, so it is
+# normalised to the same NUCLEAR decision and nothing downstream sees a
+# difference. It is stored back VERBATIM rather than expanded into a brace spec,
+# so the sheet keeps saying what the operator typed.
+_PN_NEVER_CONTROL = "never"
+
+
+def _pn_is_never_cell(cell):
+    """True when a Fix?/Replacement cell is the bare NEVER control word — the
+    nuclear keep of the whole value (see `_PN_NEVER_CONTROL`)."""
+    return str(cell or "").strip().lower() == _PN_NEVER_CONTROL
 
 
 def _pn_keep_spec_parts(cell):
@@ -15740,10 +15796,16 @@ def _pn_decision_nuclear_parts(d):
     """The `{braced}` part(s) of a decision — the NUCLEAR keep: text the operator
     has declared can never reveal anything, so it is never faked in ANY folder,
     not even inside a party name. `{...}` around the whole value means the whole
-    value. Returns [] when the decision brace-keeps nothing."""
+    value, and so does the bare word `never`. Returns [] when the decision
+    nuclear-keeps nothing."""
     cell = d.get("fixcell")
     if not cell:
         return []
+    if _pn_is_never_cell(cell):
+        # "never" IS the whole value braced — see `_PN_NEVER_CONTROL`. Taken
+        # from the value directly rather than re-parsed out of a synthesized
+        # brace spec, so a value that happens to carry a brace still keeps whole.
+        return [d["value"]] if d.get("value") else []
     braces = _pn_keep_spec_parts(cell)[1]
     if not braces:
         return []
@@ -15790,10 +15852,12 @@ def _pn_parse_decision_rows(rows):
     """Parse the (values_only) rows of a decision sheet — LEAKS or KEEP — into
     {value_lower: {value, type, fix, replacement, fake_values, fixcell, notes}}.
     `fix` is normalised to 'yes'/'no'/''. A Fix? entry that is NOT a reserved
-    control word ('yes'/'no' and the bare y/n shorthands) is one of:
+    control word ('yes'/'no' and the bare y/n shorthands, and 'never') is one of:
       * BRACKETED text that is part of the value — keep the bracketed part
         verbatim, auto-fake the rest (`fake_values` holds the fragment(s)); or
-      * anything else — an explicit typed replacement (`replacement`)."""
+      * anything else — an explicit typed replacement (`replacement`).
+    'never' is the whole value brace-kept: a NUCLEAR keep, recorded as a `no`
+    carrying its own control word in `fixcell` so every nuclear path sees it."""
     if not rows:
         return {}
     hdr = [str(h).strip().lower() if h else "" for h in rows[0]]
@@ -15818,6 +15882,12 @@ def _pn_parse_decision_rows(rows):
             fix, replacement = "yes", None
         elif low in ("no", "n"):
             fix, replacement = "no", None
+        elif low == _PN_NEVER_CONTROL:
+            # The whole value, brace-kept: keep it verbatim in this folder and
+            # every other, even inside a party name. Recorded as a `no` (nothing
+            # is left to fake) whose `fixcell` carries the control word, which is
+            # what `_pn_decision_nuclear_parts` reads to promote it to NUCLEAR.
+            fix, replacement, fixcell = "no", None, raw
         elif low == "":
             fix, replacement = "", None
         else:
@@ -16460,9 +16530,10 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
     try:
         import openpyxl
     except ImportError:
-        lines = ["Potential leaks — set Fix? to yes (auto fake), no (leave it), "
-                 "type the exact replacement, or [bracket] the part to KEEP "
-                 "(the rest is faked)", ""]
+        lines = ["Potential leaks — set Fix? to yes (auto fake), no (leave it "
+                 "here), never (never fake it, in any folder), type the exact "
+                 "replacement, or [bracket] the part to KEEP (the rest is "
+                 "faked)", ""]
         for r in rows:
             mark = {"yes": "[x]", "no": "[-]"}.get(r["fix"], "[ ]")
             lines.append(f"{mark} {r['type']}: {r['value']}  "
@@ -16490,11 +16561,13 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
         fix_col = get_column_letter(
             next(i for i, (h, _k, _w) in enumerate(_PN_LEAK_COLUMNS, start=1)
                  if h.lower().startswith("fix?")))
-        dv = DataValidation(type="list", formula1='"yes,no"', allow_blank=True)
+        dv = DataValidation(type="list", formula1='"yes,no,never"',
+                            allow_blank=True)
         dv.showErrorMessage = False   # offer the dropdown but ALSO allow a typed
         dv.showInputMessage = True    # replacement in the cell, not just yes/no
         dv.promptTitle = "Fix?"
-        dv.prompt = ("yes = auto fake · no = leave it · type the exact "
+        dv.prompt = ("yes = auto fake · no = leave it here · never = never fake "
+                     "this value, in this or any folder · type the exact "
                      "replacement to use · or [bracket] the part to KEEP and "
                      "the rest is faked")
         ws.add_data_validation(dv)
@@ -16506,7 +16579,8 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
         _remove((txt, *stale))
         log.warning(f"  Wrote leak-review worksheet: {xlsx.name} — {active} "
                     f"item(s) to triage (Fix?: 'yes' scrubs with an auto fake, "
-                    f"'no' leaves it, or type the exact replacement to use).")
+                    f"'no' leaves it here, 'never' leaves it in every folder, "
+                    f"or type the exact replacement to use).")
     except OSError as ex:
         log.warning(f"  Could not write leak-review worksheet: {ex}")
 
