@@ -103,8 +103,9 @@ def test_the_export_reads_the_same_and_keeps_its_own_capitalisation():
            "alleges that Lin made it. That Lin delivered the repudiation.")
     out = z.apply(src)
     assert "Lin" not in out                      # the name is still scrubbed
-    assert "on the ground that Yardley" in out   # lowercase "that" preserved
-    assert "That Yardley delivered" in out       # sentence-initial one too
+    fake = out.split("on the ground that ")[1].split()[0]
+    assert f"on the ground that {fake}" in out   # lowercase "that" preserved
+    assert f"That {fake} delivered" in out       # sentence-initial one too
 
 
 def test_one_row_instead_of_a_row_per_phrasing():

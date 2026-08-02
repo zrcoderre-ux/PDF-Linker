@@ -470,8 +470,12 @@ def test_spliced_replacement_recorded_in_key():
 #   open-world review scan no longer flags the tool's own numbered fake domain.
 def test_review_scan_ignores_own_fake_domain():
     z = _pz06764(names=["Alpha Corp"])
-    hosts = ["alphalegal.com", "bravofirm.net", "charliegroup.org",
-             "deltapartners.co", "echoholdings.com", "foxtrotcorp.biz"]
+    # One host more than the domain pool holds, so the pool is guaranteed to
+    # run out and recycle — the numbered fake this test is about. Sized off the
+    # pool rather than a fixed list, which stopped exhausting it when the pool
+    # grew from 4 domains to 32.
+    hosts = [f"firm{i:02d}legal{i:02d}.com"
+             for i in range(len(P._PN_EMAIL_DOMAINS) + 1)]
     minted = None
     for h in hosts:
         out = z.apply(f"x@{h}")

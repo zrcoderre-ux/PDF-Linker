@@ -46,8 +46,10 @@ def test_the_text_reads_as_one_person():
     out = pz.apply("Rasho Doe filed. RASHO'S opposition. Rasho's brief.")
     assert "Rasho" not in out and "RASHO" not in out
     # Casing follows the document, so compare the names themselves.
-    stems = {w.rstrip("'S").rstrip("'s").lower() for w in out.split()
-             if w.endswith(("'s", "'S"))}
+    # removesuffix, not rstrip: a fake that itself ends in "s" ("Strangeways")
+    # loses its own last letter to a character-set strip.
+    stems = {w.removesuffix("'s").removesuffix("'S").lower()
+             for w in out.split() if w.endswith(("'s", "'S"))}
     assert len(stems) == 1
     assert stems.pop() == out.split()[0].lower()
 

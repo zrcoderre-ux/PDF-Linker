@@ -56,6 +56,14 @@ def _key_rows(path):
             for r in ws.iter_rows(min_row=2, values_only=True) if r and r[0]]
 
 
+def _fake_for(rows, real):
+    """The Replacement a row carries for `real`. Read back rather than named:
+    which pool word a value draws moves whenever the pools are resized, and
+    what these tests are about is WHICH ROW owns a fake, not which fake."""
+    return next(str(r["replacement"]) for r in rows
+                if str(r["real value"]).lower() == str(real).lower())
+
+
 def _reversible(rows):
     """The rows the macro will use fake->real: everything but `alt spelling`."""
     return [r for r in rows if str(r["status"]).strip().lower() != ALT]
@@ -97,15 +105,17 @@ def test_wrap_split_spelling_does_not_own_the_reversal(tmp_path):
     """The row that reverses the compound fake must carry the CANONICAL
     surname; the wrap-split spelling is kept, marked forward-only."""
     _z, out, rows = _run(tmp_path, [HYPHEN_PARTY], WRAPPED)
+    compound = _fake_for(rows, "Ardeshirpour-Zartoshti")
     group = [r for r in rows
-             if str(r["replacement"]).lower() == "sedgwick-linford"]
+             if str(r["replacement"]).lower() == compound.lower()]
     owner = _reversible(group)
     assert len(owner) == 1
     assert owner[0]["real value"] == "Ardeshirpour-Zartoshti"
     assert [r["real value"] for r in group if r not in owner] == [
         "Ardeshirpour- Zartoshti"]
     # And the fake it reverses really is the one in the export.
-    assert "Sedgwick-Linford" in out
+    assert compound in out
+    assert "-" in compound            # each half is that half's own fake
     assert "Ardeshirpour" not in out
 
 
@@ -114,8 +124,9 @@ def test_owner_status_answers_for_the_whole_group(tmp_path):
     spelling: the fake DID reach the export, and this is the row that reverses
     it. Reading `no match` would mark it a binding nothing ever used."""
     _z, _out, rows = _run(tmp_path, [HYPHEN_PARTY], WRAPPED)
+    compound = _fake_for(rows, "Ardeshirpour-Zartoshti")
     owner = next(r for r in _reversible(rows)
-                 if str(r["replacement"]).lower() == "sedgwick-linford")
+                 if str(r["replacement"]).lower() == compound.lower())
     assert owner["status"] == "replaced"
 
 
@@ -126,11 +137,12 @@ def test_ocr_near_miss_spelling_does_not_own_the_reversal(tmp_path):
     assert "Sarra" in P._pn_name_variants("Sara")   # guards the fixture
     _z, out, rows = _run(tmp_path, [HYPHEN_PARTY],
                          "Declaration of Sarra Ardeshirpour-Zartoshti.")
+    sara = _fake_for(rows, "Sara")
     given = [r for r in _reversible(rows)
-             if str(r["replacement"]).lower() == "atwater"]
+             if str(r["replacement"]).lower() == sara.lower()]
     assert len(given) == 1
     assert given[0]["real value"] == "Sara"
-    assert "Atwater" in out
+    assert sara in out
 
 
 def test_a_variant_owns_the_reversal_when_the_canonical_earned_no_row(tmp_path):
@@ -148,8 +160,10 @@ def test_a_variant_owns_the_reversal_when_the_canonical_earned_no_row(tmp_path):
     z.apply(WRAPPED)
     path = tmp_path / "pseudonym_key.xlsx"
     z.write_key(path, log)
-    owner = [r for r in _reversible(_key_rows(path))
-             if str(r["replacement"]).lower() == "sedgwick-linford"]
+    rows = _key_rows(path)
+    compound = _fake_for(rows, "Ardeshirpour- Zartoshti")
+    owner = [r for r in _reversible(rows)
+             if str(r["replacement"]).lower() == compound.lower()]
     assert len(owner) == 1
     assert owner[0]["real value"] == "Ardeshirpour- Zartoshti"
 
@@ -167,7 +181,9 @@ def test_marked_rows_still_pin_the_wrap_split_spelling(template):
                         {}, registry=reg)
     sent = z.apply(WRAPPED)
     z.write_key(template / "pseudonym_key.xlsx", log)
-    assert "Sedgwick-Linford" in sent
+    compound = _fake_for(_key_rows(template / "pseudonym_key.xlsx"),
+                         "Ardeshirpour-Zartoshti")
+    assert compound in sent and "-" in compound
 
     (template / "Order_Template_Input.xlsx").unlink()
     reg2 = P._PnFakeRegistry()
@@ -195,8 +211,10 @@ def test_the_marker_survives_a_rewrite(template):
         z2 = P.Pseudonymizer(terms, {}, registry=reg2)
         assert z2.apply(WRAPPED) == sent
         z2.write_key(template / "pseudonym_key.xlsx", log)
-        owner = [r for r in _reversible(_key_rows(template / "pseudonym_key.xlsx"))
-                 if str(r["replacement"]).lower() == "sedgwick-linford"]
+        rows = _key_rows(template / "pseudonym_key.xlsx")
+        compound = _fake_for(rows, "Ardeshirpour-Zartoshti")
+        owner = [r for r in _reversible(rows)
+                 if str(r["replacement"]).lower() == compound.lower()]
         assert len(owner) == 1
         assert owner[0]["real value"] == "Ardeshirpour-Zartoshti"
 

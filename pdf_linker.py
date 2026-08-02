@@ -5976,6 +5976,110 @@ _PN_NAME_WORDS = [
     "Crandall", "Eldridge", "Fanshawe", "Grimwood", "Harkness", "Loxley",
     "Merton", "Pennington", "Rushton", "Sedgwick", "Tennant", "Waverley",
     "Wharton", "Yeardley",
+    # A third enlargement, measured rather than guessed. The largest folder the
+    # tool has met needed **305 distinct name-pool draws** — parties, counsel,
+    # court staff, every declarant, and 94 e-mail DISPLAY NAMES, which are the
+    # quiet bulk of it — against a pool of 192. So it recycled: "Deverell5",
+    # "Vance5", "Whitlock3 Sackett2", 684 numbered tokens in one key. A numbered
+    # stand-in is not merely ugly, it is the pool telling the run it has nothing
+    # left, and every one of them ships in a document a judge reads. Sized at
+    # ~2.3x the largest case seen so that the next one does not come back here.
+    "Abbotsford", "Ackworth", "Adderley", "Alverstone", "Anstruther",
+    "Applewhite", "Arbuthnot", "Ardleigh", "Armitage", "Ashdown", "Astley",
+    "Atherton", "Attwell", "Aylesworth", "Babbington", "Baddeley",
+    "Bagshaw", "Bainbridge", "Balcombe", "Bardsley", "Barkworth",
+    "Bartholomew", "Battersby", "Beckford", "Bedingfield", "Bellingham",
+    "Benfield", "Beresford", "Berrington", "Bickerton", "Biddulph",
+    "Billingsley", "Birchall", "Blakeney", "Blandford", "Bolingbroke",
+    "Bosworth", "Bracewell", "Braithwaite", "Brancaster", "Brandreth",
+    "Brereton", "Bridgewater", "Brindley", "Bristow", "Broadbent",
+    "Brockhurst", "Broughton", "Buckminster", "Bulstrode", "Burghley",
+    "Burnaby", "Burstall", "Cadogan", "Callender", "Camberwell",
+    "Canfield", "Cantrell", "Carbury", "Carmichael", "Carnforth",
+    "Carstairs", "Cathcart", "Cavendish", "Caxton", "Chalmers", "Chandos",
+    "Charnley", "Chatterton", "Chelmsford", "Cheriton", "Chilcott",
+    "Chillingworth", "Chorley", "Claverhouse", "Cliveden", "Coldwell",
+    "Colgrave", "Collingwood", "Conistone", "Cotterill", "Coverdale",
+    "Crawshaw", "Creighton", "Crossfield", "Culpepper", "Cunliffe",
+    "Curzon", "Dalgleish", "Dalrymple", "Danbury", "Darlington",
+    "Dashwood", "Daventry", "Delamere", "Denbigh", "Derwent", "Devereaux",
+    "Dinsdale", "Ditchfield", "Dorrington", "Doughty", "Drakeford",
+    "Drummond", "Dunstable", "Durward", "Dysart", "Easterbrook",
+    "Eccleston", "Edgecombe", "Elderfield", "Elphinstone", "Elverton",
+    "Endicott", "Erskine", "Etherington", "Everard", "Ewbank",
+    "Fairweather", "Farnham", "Farrington", "Fearnley", "Felsham",
+    "Fennimore", "Ferrers", "Fetherston", "Fitzalan", "Fitzhugh",
+    "Fleetwood", "Flintham", "Fordyce", "Forrester", "Fothergill",
+    "Framley", "Frobisher", "Fulmer", "Gadsby", "Gainsford", "Galbraith",
+    "Gallimore", "Gatliff", "Gawthorpe", "Gedney", "Gilliatt", "Glanville",
+    "Glossop", "Godalming", "Goodenough", "Grafton", "Greenhalgh",
+    "Gresham", "Greville", "Grimshaw", "Grosvenor", "Gulliver", "Guthrie",
+    "Hackforth", "Haddington", "Halliwell", "Hambleton", "Hammersley",
+    "Hardcastle", "Harmsworth", "Harrowgate", "Haslemere", "Hatherleigh",
+    "Haverford", "Hawksmoor", "Haythorne", "Headington", "Heathcote",
+    "Henshaw", "Hepworth", "Herriot", "Hexham", "Hillingdon", "Hindmarsh",
+    "Hobhouse", "Holbrooke", "Hollingsworth", "Holmwood", "Hopcroft",
+    "Hornby", "Horrocks", "Houghton", "Hovingham", "Howarth", "Hulbert",
+    "Hunsdon", "Huntingdon", "Hurstwood", "Hutchings", "Ilchester",
+    "Ingleby", "Inskip", "Isherwood", "Jacoby", "Jardine", "Jeavons",
+    "Jellicoe", "Jephson", "Jesmond", "Jevington", "Jocelyn", "Jolliffe",
+    "Kearsley", "Keighley", "Kelsall", "Kendrick", "Kenilworth", "Kenmare",
+    "Kentridge", "Kerrigan", "Kettering", "Kilbride", "Kilmartin",
+    "Kingscote", "Kinnaird", "Kirkbride", "Knatchbull", "Knowlton",
+    "Kyneston", "Lambourne", "Lanchester", "Landseer", "Langdale",
+    "Lanyon", "Latimer", "Laverock", "Lavington", "Leconfield", "Leighton",
+    "Lennox", "Lethbridge", "Leveson", "Lilburne", "Lindisfarne",
+    "Linthorpe", "Livesey", "Llewellyn", "Lonsdale", "Lovelace", "Lowther",
+    "Lumsden", "Luscombe", "Lyndhurst", "Lyttelton", "Macaulay",
+    "Maidstone", "Mainwaring", "Malvern", "Manningham", "Marchmont",
+    "Markham", "Marchbanks", "Marlborough", "Marston", "Masterman",
+    "Maudsley", "Maulden", "Maynard", "Melbury", "Meriwether",
+    "Micklethwaite", "Middleton", "Mildmay", "Millington", "Milverton",
+    "Minchin", "Mirfield", "Molyneux", "Monkton", "Moorcroft", "Mordaunt",
+    "Morecambe", "Mortimer", "Mountjoy", "Muirhead", "Mulcaster",
+    "Murchison", "Musgrave", "Nasmyth", "Neville", "Newcombe", "Newington",
+    "Nightingale", "Norbury", "Northam", "Nuneaton", "Nuttall",
+    "Oakenshaw", "Oldbury", "Oldcastle", "Ollerton", "Orchardson",
+    "Ormerod", "Osbaldeston", "Osgood", "Otterbourne", "Oughtred",
+    "Overbury", "Oxenham", "Padgett", "Paignton", "Palliser", "Pargeter",
+    "Parminter", "Patchett", "Pattinson", "Peachey", "Pelham",
+    "Pendlebury", "Penhaligon", "Pentreath", "Percival", "Perriman",
+    "Petherbridge", "Pevensey", "Pickersgill", "Pilkington", "Plackett",
+    "Plumstead", "Polkinghorne", "Pomeroy", "Ponsonby", "Poulton",
+    "Prendergast", "Prestbury", "Prideaux", "Pringle", "Purcell",
+    "Pyecroft", "Quarrington", "Quennell", "Quimby", "Quintrell",
+    "Radcliffe", "Ranelagh", "Rathmore", "Ravensworth", "Rawlinson",
+    "Rayburn", "Redfern", "Redgrave", "Rendlesham", "Restarick",
+    "Ribblesdale", "Rickerby", "Riddington", "Rimmington", "Rivenhall",
+    "Robsart", "Rockingham", "Rolleston", "Romilly", "Rookwood",
+    "Roscommon", "Rossiter", "Rothbury", "Rowntree", "Ruddock",
+    "Rushbrooke", "Rutledge", "Saddlington", "Salkeld", "Saltonstall",
+    "Sandbrook", "Sandringham", "Satterthwaite", "Saunderson", "Savernake",
+    "Scarborough", "Seabright", "Seagrave", "Seaton", "Selborne",
+    "Sempill", "Severn", "Shackleton", "Sharnbrook", "Shawcross",
+    "Shelmerdine", "Shenstone", "Sherbourne", "Shipley", "Shrewsbury",
+    "Skelton", "Smallwood", "Snelgrove", "Somerville", "Southwell",
+    "Spofforth", "Stapleton", "Staveley", "Stebbing", "Stenhouse",
+    "Stopford", "Stourton", "Stowell", "Stradbroke", "Strangeways",
+    "Stretton", "Studholme", "Sudeley", "Sunderland", "Sutcliffe",
+    "Swaffield", "Swanwick", "Sydenham", "Symington", "Talbot", "Tarleton",
+    "Tattersall", "Teasdale", "Templeton", "Thelwall", "Thirlwall",
+    "Thistlewood", "Thornbury", "Thrapston", "Throckmorton", "Thurlow",
+    "Tilbury", "Tindall", "Tiverton", "Todhunter", "Tollemache",
+    "Towneley", "Trelawney", "Trenholme", "Trevelyan", "Trewin",
+    "Trumbull", "Tunstall", "Turnbull", "Twyford", "Tyndale", "Tyrwhitt",
+    "Ullswater", "Upcott", "Uppingham", "Urquhart", "Uxbridge",
+    "Vandeleur", "Vansittart", "Varley", "Vaughan", "Ventris", "Verinder",
+    "Vesey", "Villiers", "Vinall", "Voysey", "Wakefield", "Walsingham",
+    "Wanstead", "Warburton", "Wardlaw", "Warnford", "Wavertree", "Weddell",
+    "Welbeck", "Wellesley", "Wemyss", "Wendover", "Wentworth", "Westenra",
+    "Westerham", "Wetherall", "Whalley", "Wheatcroft", "Whichcote",
+    "Whitcombe", "Whittaker", "Wickham", "Widdecombe", "Wilberforce",
+    "Wilbraham", "Willoughby", "Wimborne", "Winchcombe", "Windlesham",
+    "Wingrave", "Winstanley", "Winterbourne", "Wisbech", "Withington",
+    "Wivenhoe", "Woburn", "Wollaston", "Woodbridge", "Woolnough",
+    "Wootton", "Worsley", "Wrenbury", "Wrightson", "Wykeham", "Wyndham",
+    "Yaxley", "Yeovil", "Youlgrave", "Younghusband", "Zouche",
 ]
 _PN_ENTITY_WORDS = [
     "Aldrin", "Brightwater", "Cascadia", "Dunmore", "Everline", "Foxglen",
@@ -6179,6 +6283,15 @@ _PN_STREET_NAMES = [
     "Poplar", "Hawthorn", "Linden", "Chestnut",
     "Sequoia", "Cypress", "Alder", "Dogwood", "Hickory", "Rosewood",
     "Foxglove", "Larkspur", "Tamarack", "Sorrel",
+    # 19 of those 20 were spent on ONE folder (53 addresses, 42 distinct), so
+    # the next address on the next street would have started numbering. Same
+    # register: uncommon plant/tree names, none of them a common real street.
+    "Bayberry", "Bilberry", "Blackthorn", "Bracken", "Buckthorn", "Catalpa",
+    "Chicory", "Cinquefoil", "Clematis", "Comfrey", "Elderberry", "Fernbrake",
+    "Gentian", "Hazelnut", "Hornbeam", "Ironbark", "Ivywood", "Marjoram",
+    "Mulberry", "Myrtlewood", "Persimmon", "Quince", "Sagebrush", "Silverbell",
+    "Snowberry", "Sumac", "Tanglewood", "Teasel", "Thornapple", "Trefoil",
+    "Vervain", "Wintergreen", "Witchhazel", "Yarrowleaf", "Yewberry",
 ]
 # Fake localities. The STATE is kept (venue is jurisdictionally meaningful and a
 # two-letter code identifies nobody); the city name and the ZIP are faked, and a
@@ -6195,7 +6308,46 @@ _PN_CITY_NAMES = [
 # NB: there is no fake street-TYPE pool. A road type (Street/Road/Court/Way…) is
 # generic, not identifying, so the real one is always kept — see
 # `_pn_addr_suffix_of`. Only the number and the street NAME are faked.
-_PN_EMAIL_DOMAINS = ["example.com", "mailhaven.net", "postbox.org", "letterbox.co"]
+# Fake e-mail domains. FOUR of them met a folder with 209 addresses across some
+# thirty real domains, so the same recycling that hit the name pool hit this one
+# harder: "quenby3@postbox9.org", "letterbox17". A domain is per-real-domain
+# (`_pn_email_canon` keeps every spelling of one address on one host), so the
+# pool has to cover the DOMAINS a case touches — every firm, every court, every
+# webmail provider, every vendor. Invented labels in the same register.
+_PN_EMAIL_DOMAINS = [
+    "example.com", "mailhaven.net", "postbox.org", "letterbox.co",
+    "postbay.org", "mailglen.net", "inboxvale.com", "mailcrest.net",
+    "penbox.org", "quillbox.net", "mailridge.com", "postgate.net",
+    "letterfield.org", "inboxharbor.com", "mailbrook.net", "postvale.org",
+    "letterglen.co", "mailstead.com", "postholm.net", "inboxmere.org",
+    "mailwick.co", "postloft.com", "letterdale.net", "mailbourne.org",
+    "postcairn.co", "inboxfern.com", "mailthorne.net", "postbriar.org",
+    "letterhollow.co", "mailquarry.com", "postbeacon.net", "inboxlantern.org",
+]
+
+# Every word any pool can hand out, for one question: is this fake a RECYCLED
+# one? A pool that runs out mints `<pool word><n>` (see `_PnFakeRegistry.token`)
+# — "Deverell5", "quenby3", "postbox9" — and that suffix is the only mark it
+# leaves. Nothing else this tool writes has a pool word hard against a number.
+_PN_POOL_WORDS = frozenset(
+    w.lower() for w in (list(_PN_NAME_WORDS) + list(_PN_ENTITY_WORDS)
+                        + list(_PN_STREET_NAMES) + list(_PN_CITY_NAMES)
+                        + [d.split(".")[0] for d in _PN_EMAIL_DOMAINS]))
+_PN_RECYCLED_RE = re.compile(r"([A-Za-z]+)(\d+)")
+
+
+def _pn_recycled_fake(fake):
+    """The recycled stand-in inside `fake` ("Deverell5", "postbox9"), or None.
+
+    A house number, a case number and a production stamp all carry digits, so
+    the test is not "has a digit": it is a POOL WORD immediately followed by
+    one, which is exactly the shape the exhausted-pool fallback mints and a
+    shape nothing else produces (an address keeps its real number, and it is
+    separated from the street by a space)."""
+    for m in _PN_RECYCLED_RE.finditer(str(fake)):
+        if m.group(1).lower() in _PN_POOL_WORDS:
+            return m.group(0)
+    return None
 # Generational and professional/degree suffixes that trail a name — never a name
 # themselves, always kept verbatim ("Jane Smith, M.D." -> "<fake> <fake>, M.D.").
 _PN_SUFFIX_TOKENS = {"jr", "jr.", "sr", "sr.", "ii", "iii", "iv", "v", "esq",
@@ -10091,7 +10243,7 @@ def _pn_key_looks_like_ours(path):
                  for h in (header or ())[:6]) == _PN_KEY_HEADERS
 
 
-def _pn_load_key(path, registry, log):
+def _pn_load_key(path, registry, log, remint_recycled=False):
     """Load a key THIS tool wrote as authoritative real->fake bindings, seeding
     `registry` so new values can't collide and re-harvested names recompose
     identically. Returns `(terms, key_decisions)` — the list of pre-bound
@@ -10111,7 +10263,11 @@ def _pn_load_key(path, registry, log):
     `[bracketed]` keep-spec (keep the bracketed part verbatim, auto-fake the
     rest). Such a row builds no faking term; the decision is returned in
     `key_decisions` (value_lower -> dict shaped like a leak decision) for the
-    caller to apply and persist."""
+    caller to apply and persist.
+
+    `remint_recycled` DROPS a binding whose fake is a recycled pool word
+    ("Deverell5", "quenby3@postbox9.org") so the value is drawn again from the
+    pool — see `_pn_triage_pending`, which is what decides it is safe."""
     import openpyxl
     wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
     ws = wb.active
@@ -10164,7 +10320,7 @@ def _pn_load_key(path, registry, log):
                  f"faked, in any row — {', '.join(sorted(nuke)[:8])}"
                  + (" …" if len(nuke) > 8 else ""))
 
-    terms, seen, key_decisions = [], set(), {}
+    terms, seen, key_decisions, reminted = [], set(), {}, []
     for row in rows[1:]:
         def cell(name):
             i = idx.get(name)
@@ -10181,6 +10337,16 @@ def _pn_load_key(path, registry, log):
         if (cat, real.lower()) in seen:
             continue
         seen.add((cat, real.lower()))
+
+        # A RECYCLED stand-in, on a run that is allowed to re-assign one: drop
+        # the binding entirely — no term, no memo, and its word left out of the
+        # used-pool — so the value is drawn again below and lands on a clean
+        # pool word. Pinning is what a reused key is FOR, so this is the one
+        # thing that overrides it, and only where the caller has established
+        # that no export has been used yet (`_pn_triage_pending`).
+        if remint_recycled and _pn_recycled_fake(fake):
+            reminted.append((real, fake))
+            continue
 
         # Operator control words typed into the Replacement column (same
         # vocabulary the LEAKS Fix? column accepts). Build no faking term; hand
@@ -10399,6 +10565,14 @@ def _pn_load_key(path, registry, log):
                     if never else "")
                  + (f" and {part} bracketed keep-spec(s)" if part else "")
                  + " in the Replacement column will be honored.")
+    if reminted:
+        log.warning(
+            f"  Pseudonym key: {len(reminted)} binding(s) carried a RECYCLED "
+            f"stand-in (the pool had run out and numbered it) and this folder "
+            f"still has leak triage pending, so no export has been used yet — "
+            f"re-assigning them a clean name this run: "
+            + ", ".join(f"{r} (was {f})" for r, f in reminted[:6])
+            + (" …" if len(reminted) > 6 else ""))
     return terms, key_decisions
 
 
@@ -16139,6 +16313,34 @@ def _pn_retire_kept_key_terms(terms, decisions, registry, log):
     return survivors, [str(t.real) for t in retired]
 
 
+def _pn_triage_pending(folder, text_subdir):
+    """True when this folder still has leak triage waiting on the operator: a
+    QUARANTINED export (`*.txt.LEAK`), or a worksheet row with nothing typed
+    into its Fix? cell.
+
+    It answers one question — "can the fakes still move?" A reused key exists to
+    reproduce what was already delivered byte for byte, so a binding is normally
+    untouchable. But triage pending means the folder was never handed on: the
+    gate held an export, or the operator has not answered the worksheet yet, and
+    in either case no draft has been written against these names. That is the
+    one moment a stand-in can be re-assigned for free — which is what makes it
+    possible to repair a RECYCLED name (`_pn_recycled_fake`), the ugly
+    "Deverell5" a pool mints when it runs out.
+
+    Read BEFORE this run writes anything, so it describes the state the operator
+    left behind. Never consulted by `--fix-leaks`: that pass works on text that
+    is already scrubbed and never reopens the PDFs, so a fake it moved would be
+    left standing in the export with nothing to reverse it."""
+    for d in (folder / text_subdir, folder):
+        try:
+            if any(d.glob("*.txt.LEAK")):
+                return True
+        except OSError:
+            continue
+    return any(not d.get("fix") and not d.get("fixcell")
+               for d in _pn_read_leak_decisions(folder).values())
+
+
 def _pn_read_leak_decisions(folder):
     """{value_lower: decision} read back from this folder's LEAKS worksheet the
     reviewer annotated on a prior run — the transient, per-case genuine-leak
@@ -19931,7 +20133,17 @@ def main():
                 if _pn_key_looks_like_ours(key_path):
                     # A key this tool wrote: reuse its bindings so a follow-up
                     # single-file run reproduces the original run's fakes.
-                    terms, key_decisions = _pn_load_key(key_path, registry, log)
+                    #
+                    # …EXCEPT a RECYCLED stand-in, when this folder still has
+                    # leak triage pending. Triage pending means the exports were
+                    # never handed on, so no draft is written against these
+                    # names and a fake can still move for free — the one moment
+                    # the pool's "Deverell5" can be repaired into a real name.
+                    # Read before this run writes anything, so it describes the
+                    # state the operator left behind.
+                    terms, key_decisions = _pn_load_key(
+                        key_path, registry, log,
+                        remint_recycled=_pn_triage_pending(folder, text_subdir))
                     # A flagged value the operator marked yes can be HALF-
                     # scrubbed ("Melissa Sable", where only "Penuela" was bound).
                     # Fake only its real remainder, so a stand-in this key

@@ -41,6 +41,24 @@ registry's used-pool and its per-slot memos — name/entity tokens, domains, AND
 (because they are re-derived through their own slots) `caseno` and the
 number-stripped `street` identity — so a value written a second way in the new
 document folds onto the fake already in the key.
+**…except a RECYCLED name, on a re-run that finds triage still pending.** Pinning
+is what a reused key is FOR, so exactly one thing overrides it. When the pool
+runs out it mints `<pool word><n>` — "Deverell5", "quenby3@postbox9.org" — and
+the key then pins that forever, in a document a judge reads. But leak triage
+PENDING (`_pn_triage_pending`: a quarantined `*.txt.LEAK`, or a worksheet row
+with nothing typed in its Fix? cell) is the run's evidence that the folder was
+never handed on: the gate held an export, or the operator has not answered yet,
+so no draft has been written against these names and a stand-in can still move
+for free. `_pn_load_key(remint_recycled=True)` then DROPS such a binding whole —
+no term, no memo, its word left out of the used-pool — and the value is drawn
+again, landing on a clean word now that the pool has been enlarged.
+`_pn_recycled_fake` is deliberately narrow: a POOL WORD hard against a number,
+which is the only shape the exhausted-pool fallback mints. A house number, a
+case number and a production stamp all carry digits and none of them qualifies.
+Read BEFORE this run writes anything, so it describes the state the operator
+left behind, and NEVER consulted by `--fix-leaks` — that pass works on text that
+is already scrubbed and never reopens the PDFs, so a fake it moved would be left
+standing in the export with nothing to reverse it.
 **The key pins every AUTHORITATIVE binding, matched or not.** `write_key` used
 to write only rows that matched, so a party the template names but this batch
 never mentioned had no row — and the fake was already minted (every term gets
@@ -251,13 +269,32 @@ the party), so its row stays reversible.
 
 ## Pseudonymization pipeline (the privacy-critical half)
 
-- **Fake pools** (`_PN_NAME_WORDS` ~190 surnames, `_PN_ENTITY_WORDS` ~110): drawn
+- **Fake pools** (`_PN_NAME_WORDS` 695 surnames, `_PN_ENTITY_WORDS` 108,
+  `_PN_STREET_NAMES` 55, `_PN_EMAIL_DOMAINS` 32): drawn
   without replacement per case, so they must stay ahead of a real filing's
   distinct name tokens (parties + counsel + staff + every declarant + e-mail
   display name) or the registry mints ugly numbered stand-ins ("Corwin Vance3",
   and in body text "HENDRY2 CORPORATIOLORNE10"). Keep the four pools
   (name/entity/city/street) disjoint (`TestPoolsAreDisjoint`) and every added
   surname a valid `_pn_is_name_token`.
+  **Size them by MEASURING a delivered key, not by guessing.** The largest
+  folder seen needed **305 distinct name draws** — and 94 of its 1,042 rows were
+  e-mail DISPLAY NAMES, which is the quiet bulk nobody predicts — against a pool
+  of 192, so it recycled 684 tokens deep enough to reach "Deverell5". The same
+  key spent 19 of 20 STREET names and drove four e-mail domains to
+  "letterbox17", while the ENTITY pool used 11 of 108: the pools do not run out
+  together, and only the one that ran out needs growing. A test that hard-codes
+  a pool word (an expected fake) breaks on every resize — read the fake back
+  from the run instead.
+  **A pool word must never be a near-twin of another** (OSA distance ≥2 across
+  the whole pool): the typo fold deliberately mints a misspelling of an existing
+  fake, so two pool words one edit apart make a real draw indistinguishable from
+  a folded one.
+  **The pools are COPIED into `DeAnonymize.bas`** (`PseudonymPool` /
+  `EmailDomainPool` in the My-Macros repo), where they drive the residual-fake
+  highlighter — the last net before a document is shared. A fake drawn from a
+  word that copy lacks is a pseudonym that ships unflagged, so growing a pool
+  here is only half the change.
 - **OCR/typo folding** (`_PnFakeRegistry.token`): a name token near an already-
   bound token (min length `_PN_NAME_FOLD_MIN`) folds onto a *typo of that token's
   fake* (`_pn_typo_variants`), so "Palladina"/"Pallading" read as typos of the one
