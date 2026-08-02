@@ -1892,6 +1892,92 @@ def _note_low_confidence(page, dpi):
         pass          # instrumentation must never take a run down
 
 
+# Where a REBUILT page is remembered: {page number -> the text layer it had
+# BEFORE the rebuild, or "" when that text was not worth carrying forward}.
+# Hung on the Document like `_LOW_DPI_ATTR`, and for the same reason.
+_REOCR_ATTR = "_pdf_linker_reocr_pages"
+# Letters and digits that must survive stripping the unmapped-glyph tokens for
+# the old layer to be worth keeping. Below this it is punctuation and noise.
+_GARBLED_KEEP_MIN = 40
+_CID_TOKEN_RE = re.compile(r"\(cid:\d+\)")
+
+
+def _garbled_keepable(text):
+    """The pre-rebuild text layer when it can still settle an argument, else "".
+
+    **A broken text layer is not nothing.** A bad ToUnicode is usually a
+    substitution cipher: the glyphs are in the right order, so the word
+    lengths, the spacing, the digits and the punctuation are the document's
+    own and only the letters come out wrong. Set beside a 300-dpi
+    reconstruction that says "A Cal. App. 4th 857", that is real evidence
+    about what the page says — which is why `_reocr_improves` already keeps
+    the old layer outright whenever the rebuild is not measurably better.
+
+    UNMAPPED GLYPHS are nothing. `(cid:3)(cid:15)(cid:11)` carries no length,
+    no spacing and no digits — printing a page of it costs a reader attention
+    and answers no question at all. So the cid tokens and the replacement
+    characters come out first, and what is left has to clear
+    `_GARBLED_KEEP_MIN` before the page's old text is kept."""
+    body = _CID_TOKEN_RE.sub(" ", text or "").replace("�", " ")
+    if sum(1 for c in body if c.isalnum()) < _GARBLED_KEEP_MIN:
+        return ""
+    return text
+
+
+def _note_rebuilt_page(page, old_text):
+    """Remember that `page` had its text layer REPLACED by OCR, and what that
+    layer said. The export's page banner is driven off the first fact and the
+    original-text appendix off the second (see `_garbled_appendix`)."""
+    try:
+        doc = page.parent
+        seen = getattr(doc, _REOCR_ATTR, None)
+        if seen is None:
+            seen = {}
+            setattr(doc, _REOCR_ATTR, seen)
+        seen[page.number] = _garbled_keepable(old_text)
+    except Exception:
+        pass          # instrumentation must never take a run down
+
+
+def _garbled_appendix(rebuilt):
+    """The pre-rebuild text of every page this run replaced, as an appendix.
+
+    **It goes into the UNSCRUBBED copy only** — the `Original Text (real names
+    - do not share)` folder and the TEMP evidence cache — and never into the
+    shared export. That is not a nicety: garbled text is precisely the shape
+    the whole-word patterns cannot match (the reason `scrub_welded` and the
+    reduced scans exist), so a copy of it in the deliverable would be real
+    party names in a form nothing can scrub and the leak scan would flood the
+    worksheet with rows no answer can clear. In the do-not-share folder it
+    costs nothing: that file carries the real names in plain text already.
+
+    Both consumers of the unscrubbed body get it, deliberately. `--fix-leaks`
+    reads the in-folder copy when there is one and the TEMP cache otherwise,
+    so the two must say the same thing. As EVIDENCE the appendix can only add
+    words, and `_real_remainder` only ever removes a word that is absent from
+    the original — so more original text keeps a finding, never drops one."""
+    kept = {p: t for p, t in sorted(rebuilt.items()) if t}
+    if not kept:
+        return ""
+    pages = ", ".join(str(p + 1) for p in kept)
+    out = [f"====== Original text layer of rebuilt page(s) {pages} — "
+           f"NOT the document's words ======",
+           "",
+           "These pages had a text layer that RENDERS correctly but EXTRACTS as",
+           "gibberish, so the run redacted it and replaced it with a 300-dpi OCR",
+           "reconstruction. Below is what each page extracted as BEFORE that",
+           "rebuild, kept as a TIE-BREAKER: a broken encoding is usually a",
+           "substitution cipher, so the word lengths, the spacing, the digits and",
+           "the punctuation are the document's own even where the letters are",
+           "wrong. Check a suspicious word, number or citation in the rebuilt",
+           "text against it. This appendix is in the do-not-share copy only.",
+           ""]
+    for pno, text in kept.items():
+        out += [f"--- Page {pno + 1}, as extracted before the rebuild ---",
+                text.strip("\n"), ""]
+    return "\n".join(out).rstrip("\n") + "\n"
+
+
 def _ocr_page_to_pdf(page, pytesseract, Image, io, log, label, start=0):
     """OCR one page to overlay-PDF bytes, GRINDING rather than skipping. Try at
     full resolution; if Tesseract times out (a stall or a pathological page),
@@ -2323,7 +2409,12 @@ def _reocr_garbled_pages(doc, log):
                         f"keeping the page's own text")
             refused.append(pno)
             continue
-        if not _reocr_improves(page.get_text("text"), fresh):
+        # Read the old layer ONCE, here, while it still exists: the redaction
+        # below is irreversible, and this string is both the improvement
+        # gate's baseline and the only record of what the page said (kept for
+        # the do-not-share copy by `_note_rebuilt_page`).
+        old_text = page.get_text("text")
+        if not _reocr_improves(old_text, fresh):
             refused.append(pno)
             continue
         # Strip the garbled text (text only; keep images and line art, no fill)
@@ -2343,6 +2434,9 @@ def _reocr_garbled_pages(doc, log):
             page.show_pdf_page(page.rect, ocr_doc, 0, overlay=True)
             ocr_doc.close()
             done += 1
+            # Noted only once the rebuild has actually landed: a refused page
+            # still HAS its own text, so there is nothing to carry forward.
+            _note_rebuilt_page(page, old_text)
         except Exception as e:
             log.warning(f"  Could not overlay re-OCR on page {pno}: {e}")
     if refused:
@@ -16522,8 +16616,21 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         # otherwise sits in the middle of an accurate document looking exactly
         # like the rest of it.
         low_dpi = getattr(doc, _LOW_DPI_ATTR, {}).get(i)
+        # …and a page whose text layer was REBUILT says that too. Its words are
+        # not the document's words: the real layer was redacted and replaced by
+        # 300-dpi guesses, and until now nothing downstream could tell — the
+        # rebuilt page sits in the middle of an accurately-extracted document
+        # reading exactly like the rest of it, which is how a reporter volume
+        # came out as "A Cal. App. 4th 857" with nothing flagging it. Same
+        # reasoning as the low-dpi banner and the ink-form one: an inferred
+        # reading is never presented as equal to a read one. Both notes can
+        # apply to one page (rebuilt, then ground down to finish).
+        rebuilt = i in getattr(doc, _REOCR_ATTR, {})
         header = (f"====== Page {i + 1}"
                   + (f" (printed p. {label})" if label else "")
+                  + (" — REVIEW: the text layer was unreadable and was REBUILT "
+                     "by OCR; spellings, numbers and citations on this page are "
+                     "GUESSES" if rebuilt else "")
                   + (f" — REVIEW: recognised at only {low_dpi} dpi, "
                      f"text is LOW CONFIDENCE" if low_dpi else "")
                   + " ======")
@@ -16603,6 +16710,13 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         appendix = _build_authorities_appendix("\n\f\n".join(orig_pages), pz)
         if appendix:
             out += "\n" + appendix + "\n"
+        # The pre-rebuild text of any page this run replaced — the UNSCRUBBED
+        # copy only (`pz is None`), never the shared export. See
+        # `_garbled_appendix` for why that line is where it is.
+        if pz is None:
+            garbled = _garbled_appendix(getattr(doc, _REOCR_ATTR, {}))
+            if garbled:
+                out += "\n" + garbled
         return out
 
     body = build_body(pseudonymizer)
