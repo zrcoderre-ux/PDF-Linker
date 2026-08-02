@@ -11117,6 +11117,10 @@ class Pseudonymizer:
         self.leaked_by_file = {} # written txt path -> {real_lower} that survived
                                  # IN THAT FILE, so the gate quarantines only the
                                  # files carrying a leak, not the whole batch
+        self.combined = {}       # combined export path -> [member document
+                                 # names], when the folder was over the upload
+                                 # cap. A leak in any member holds the whole
+                                 # file, so the gate says how many are held.
         self.review = []         # (class, sample) open-world findings across files
         self.leak_report = []    # {file, type, value, where} rows for the
                                  # human-triage worksheet (page:line located)
@@ -15511,6 +15515,25 @@ def _pn_locate(parsed, needle, limit=12):
     return ", ".join(out[:limit]) + (" …" if len(out) > limit else "")
 
 
+def _pn_locate_export(text, needle, limit=12):
+    """`_pn_locate` over a WRITTEN export, aware that it may be a COMBINED one.
+
+    A combined export holds several documents and each of them numbers its own
+    pages from 1, so a bare "p.3:7" names as many places as the file holds
+    documents. Every location is prefixed with the document it sits in — which
+    is also the only thing left in the worksheet that says which SOURCE
+    document a leak came from, once the parts have been folded together."""
+    sections = _combined_sections(text)
+    if not sections:
+        return _pn_locate(_pn_body_lines(text), needle, limit)
+    out = []
+    for name, body in sections:
+        loc = _pn_locate(_pn_body_lines(body), needle, limit)
+        if loc != "(not located)":
+            out.append(f"{Path(name).stem} {loc}")
+    return "; ".join(out[:limit]) if out else "(not located)"
+
+
 # Worksheet column order. The flagged value leads and its Fix? decision sits
 # right beside it — the two columns a reviewer actually works — with the
 # locating detail (which file, what kind, where) trailing. Each header is
@@ -16991,6 +17014,448 @@ def _pn_prescan_folder(pdfs, pseudonymizer, log, extra_texts=()):
     return full
 
 
+# ── The upload cap: combining exports when a folder holds more than 20 ───────
+# The exports are uploaded to a drafting model, and that upload takes at most
+# 20 files. Most folders are well under it; a large case is not, and the
+# operator's remedy — merge some exports by hand and remember which — is
+# exactly the kind of bookkeeping that goes wrong quietly. So the run does it:
+# once every export is written, the ones over the cap are COMBINED into single
+# files whose opening banner says so.
+#
+# Nothing is dropped and nothing is shortened. A combined file holds each of
+# its documents in full, in order, behind its own DOCUMENT banner, and its
+# header lists the members — which is also the RECORD the next run reads to
+# reproduce the same grouping (see `_combine_exports_for_upload`). The parts
+# are removed once the combined file is safely written, so `Text Files` is
+# exactly the deliverable set: no operator has to work out which of the files
+# in front of them to skip.
+_COMBINE_DEFAULT_CAP = 20
+
+# The opening banner of every combined export carries this and nothing else
+# the tool writes does — it is the file's provenance (a re-run deletes only a
+# file that has it) and the flag `--fix-leaks` reads to know it has one.
+_COMBINE_MARK = "COMBINED TEXT EXPORT"
+_COMBINE_RULE = "#" * 78
+# The per-document separator. Deliberately not "====== Page N ======" shaped,
+# so `_pn_body_lines` can never mistake one for the other.
+_COMBINE_DOC_RE = re.compile(
+    r"^#+ DOCUMENT (\d+) OF (\d+) IN THIS COMBINED FILE: (.+?) #+$", re.M)
+
+# A trailing "this is one part of a larger document" marker: the Windows
+# duplicate-download suffix "(2)", a labelled part/volume/section, an "N of M",
+# or a bare index. Each alternative carries its own separator requirement, and
+# the bare form demands one — without it "Order 2024" strips to "Order 20",
+# since `\d{1,2}` will happily take the last two digits of a year.
+_COMBINE_PART_RE = re.compile(r"""(?ix)
+    (?: [\s,._\-]* \( \s* (?P<paren>\d{1,3}) \s* \)                 # Brief (2)
+      | [\s,._\-]* \[ \s* (?P<brack>\d{1,3}) \s* \]                 # Brief [2]
+      | [\s,._\-]* \b(?:parts?|pts?|volumes?|vols?|sections?|sects?|
+                        secs?|discs?|tabs?)\s*\.?\s*
+        (?P<label>\d{1,3}|[ivxlcdm]{1,6})                           # Brief pt. 2
+      | [\s,._\-]+ (?P<of>\d{1,3}) \s+ of \s+ \d{1,3}               # Brief 2 of 5
+      | [\s,._\-]+ (?P<bare>\d{1,2})                                # Brief 2
+    ) \s* $""")
+# Letters that must be LEFT once a marker is stripped for it to have been a
+# marker at all. "1 of 3.txt" reduces to "1 of", which names no document — and
+# grouping on a base like that would sweep unrelated files into one pile.
+_COMBINE_BASE_MIN = 3
+
+_ROMAN_VALS = {"i": 1, "v": 5, "x": 10, "l": 50, "c": 100, "d": 500, "m": 1000}
+
+
+def _roman_to_int(s):
+    """Value of a roman numeral ("iii" -> 3, "iv" -> 4); 0 if it isn't one."""
+    total, prev = 0, 0
+    for ch in reversed(s.lower()):
+        v = _ROMAN_VALS.get(ch)
+        if v is None:
+            return 0
+        total = total - v if v < prev else total + v
+        prev = max(prev, v)
+    return total
+
+
+def _combine_part_number(m):
+    """The part index a `_COMBINE_PART_RE` match carries, as an int."""
+    tok = (m.group("paren") or m.group("brack") or m.group("label")
+           or m.group("of") or m.group("bare") or "")
+    return int(tok) if tok.isdigit() else _roman_to_int(tok)
+
+
+def _combine_split_part(stem):
+    """Split an export stem into `(base, part-order)`: "Smith Decl part 2" and
+    "Smith Decl (2)" both give `("Smith Decl", (2,))`. `(None, ())` when the
+    stem carries no part marker, so it is only ever a group's FIRST member (a
+    Windows duplicate download leaves "Brief.pdf" beside "Brief (1).pdf")."""
+    base, order = stem.rstrip(), []
+    while True:
+        m = _COMBINE_PART_RE.search(base)
+        if not m or m.start() == 0:
+            break
+        order.insert(0, _combine_part_number(m))
+        base = base[: m.start()].rstrip()
+    if not order or len(re.sub(r"[^A-Za-z]", "", base)) < _COMBINE_BASE_MIN:
+        return None, ()
+    return base, tuple(order)
+
+
+def _combine_group_key(base):
+    """Case- and punctuation-insensitive identity of a base name, so
+    "Smith Decl." and "Smith_Decl" are one document in two spellings."""
+    return re.sub(r"[^a-z0-9]+", " ", base.lower()).strip()
+
+
+def _combine_same_name_groups(paths):
+    """Rule ONE: paths whose stems are the same name with a part marker after
+    it. Returns `[(display base, [paths in part order]), ...]`, itself ordered
+    by base name so the plan is reproducible.
+
+    A group needs at least one member that actually carries a marker — two
+    files whose stems merely normalize alike are two documents, not two parts
+    of one."""
+    buckets = {}
+    for p in paths:
+        base, order = _combine_split_part(p.stem)
+        key = _combine_group_key(base if base is not None else p.stem)
+        if not key:
+            continue
+        buckets.setdefault(key, []).append(
+            (order or (0,), p.stem.lower(), base, p))
+    groups = []
+    for key in sorted(buckets):
+        members = sorted(buckets[key], key=lambda t: (t[0], t[1]))
+        if len(members) < 2 or not any(b is not None for _o, _s, b, _p in members):
+            continue
+        display = next((b for _o, _s, b, _p in members if b), members[0][3].stem)
+        groups.append((display.rstrip(" ,._-"), [p for _o, _s, _b, p in members]))
+    return groups
+
+
+def _combine_file_size(p):
+    try:
+        return p.stat().st_size
+    except OSError:
+        return 0
+
+
+def _combine_pick_groups(groups, excess):
+    """Choose which same-name groups to combine, and how much of each, to shed
+    `excess` files. Returns `[(base, [paths to combine], group size), ...]`.
+
+    Smallest group first, taken whole while it fits; the one that would
+    overshoot is SLICED to the first `excess + 1` parts, in part order. Two
+    reasons to pay only what the cap asks. Combining is a cost — a leak in any
+    member holds the whole file, and every document in it loses its own
+    filename — so a folder two over does not fold a twelve-part exhibit set
+    into one file when a two-part declaration would have done. And a part left
+    out of a slice is still a complete document under its own name, while the
+    slice itself says so ("… COMBINED 3 of 12 parts"). Ties break on the base
+    name, so the choice is reproducible."""
+    picked = []
+    for base, members in sorted(groups, key=lambda g: (len(g[1]), g[0].lower())):
+        if excess <= 0:
+            break
+        take = members if len(members) - 1 <= excess else members[: excess + 1]
+        picked.append((base, take, len(members)))
+        excess -= len(take) - 1
+    return picked
+
+
+def _combined_sections(text):
+    """`[(document name, its text), ...]` for a combined export, else None.
+
+    The DOCUMENT banners are the record: they name each member and mark where
+    it starts, which is what lets a later run rebuild the same grouping and
+    lets `--fix-leaks` say WHICH document a leak is in."""
+    if _COMBINE_MARK not in text[:4000]:
+        return None
+    marks = list(_COMBINE_DOC_RE.finditer(text))
+    if not marks:
+        return None
+    out = []
+    for i, m in enumerate(marks):
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(text)
+        out.append((m.group(3).strip(), text[m.end():end]))
+    return out
+
+
+def _combine_doc_banner(i, n, name):
+    return f"{'#' * 8} DOCUMENT {i} OF {n} IN THIS COMBINED FILE: {name} {'#' * 8}"
+
+
+def _combined_body(members, cap):
+    """Assemble a combined export. `members` is `[(name, path, text), ...]` —
+    `text` carries a section forward from a previous combined file whose
+    document no longer has a separate export of its own.
+
+    Byte-stability matters as much here as it does for a pseudonym: a folder
+    re-run without changes must reproduce the file the operator already sent,
+    so nothing volatile (a folder file count, a timestamp) goes in the header.
+    """
+    n = len(members)
+    head = [_COMBINE_RULE,
+            f"# {_COMBINE_MARK} — {n} documents in one file",
+            "#",
+            f"# Only {cap} file{'' if cap == 1 else 's'} can be uploaded at "
+            f"once and this case folder holds more,",
+            "# so the documents listed below were combined into this single "
+            "file.",
+            "# NOTHING was dropped or shortened: each one appears in full, in "
+            "the",
+            "# order listed, behind its own DOCUMENT banner.",
+            "#",
+            "# Documents in this file:"]
+    head += [f"#   {i}. {name}" for i, (name, _p, _t) in enumerate(members, 1)]
+    head += ["#",
+             "# Page numbering restarts at every DOCUMENT banner: a 'p.3:7' "
+             "cite means",
+             "# page 3 of the document it sits under, not page 3 of this file.",
+             _COMBINE_RULE]
+    out = ["\n".join(head) + "\n"]
+    for i, (name, path, text) in enumerate(members, 1):
+        body = text if text is not None else path.read_text(
+            encoding="utf-8", errors="ignore")
+        out.append(f"\n{_combine_doc_banner(i, n, name)}\n\n{body.strip(chr(10))}\n")
+    return "".join(out)
+
+
+def _combine_cap(cfg):
+    """The upload cap from the config; 0 (or a negative) turns combining off."""
+    raw = str(cfg.get("max_text_files", "") or "").strip()
+    if not raw:
+        return _COMBINE_DEFAULT_CAP
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return _COMBINE_DEFAULT_CAP
+
+
+def _is_tool_txt_artifact(p):
+    """The tool's OWN .txt files in a folder — the leak worksheet's plain-text
+    companion and the empty ETA/DONE run markers. Never exports, so never
+    scrubbed, never counted against the upload cap and never combined."""
+    leak_txts = {f"{_PN_LEAK_STEM}.txt"} | {
+        f"{stem}.txt" for stem in _PN_LEAK_LEGACY_STEMS}
+    if p.name in leak_txts:
+        return True
+    if (p.name.startswith(_ETA_MARKER_PREFIX + " ")
+            or p.name.startswith(_DONE_MARKER_PREFIX + " ")):
+        try:
+            return p.stat().st_size == 0
+        except OSError:
+            return False
+    return False
+
+
+def _combine_remap_tracking(pseudonymizer, combined, members, log):
+    """Point the run's per-file bookkeeping at the combined export.
+
+    The leak gate quarantines FILES, and after this the part files are gone —
+    so `written` and `leaked_by_file` have to name the file that now carries
+    the text, or a leak would be reported against a path nothing can rename and
+    the export would ship. A leak in any member holds the whole combined file:
+    that is the cost of combining, and it is said out loud at the gate."""
+    if pseudonymizer is None:
+        return
+    merged = set(pseudonymizer.leaked_by_file.pop(combined, set()))
+    for _name, path, _text in members:
+        if path is None:
+            continue
+        while path in pseudonymizer.written:
+            pseudonymizer.written.remove(path)
+        merged |= pseudonymizer.leaked_by_file.pop(path, set())
+    if combined not in pseudonymizer.written:
+        pseudonymizer.written.append(combined)
+    if merged:
+        pseudonymizer.leaked_by_file[combined] = merged
+    pseudonymizer.combined[combined] = [n for n, _p, _t in members]
+
+
+def _combine_exports_for_upload(folder, text_subdir, cfg, log,
+                                pseudonymizer=None):
+    """Combine this folder's .txt exports down to the upload cap. Returns
+    `[(combined path, [member names]), ...]`.
+
+    Order of business, and why:
+
+    1. **A combined file from a PREVIOUS run is read before anything else.**
+       Its DOCUMENT banners name its members, so a grouping the operator has
+       already sent is reproduced instead of re-derived — the same reason a
+       re-run reuses `pseudonym_key.xlsx` rather than re-deriving the fakes.
+       Re-deriving would be worse than merely untidy: adding one document to a
+       folder can move which files are "the smallest", and every earlier draft
+       written against the old grouping is invalidated.
+    2. **It is only superseded once its members exist as separate exports.**
+       This run rewrites an export per source document; where it did not (the
+       PDF was removed, or failed), the combined file is that document's ONLY
+       copy, so its section is carried forward verbatim rather than deleted.
+    3. Then rule ONE (same name + a part marker) and, if that is not enough,
+       rule TWO (the smallest files) close the remaining gap.
+
+    A `.txt.LEAK` is never combined: it is quarantined, so it is not part of
+    the upload the cap is about, and merging it into a clean file would hold
+    that file too."""
+    text_dir = folder / text_subdir
+    if not text_dir.is_dir():
+        return []
+    cap = _combine_cap(cfg)
+
+    live, prior = {}, []
+    for p in sorted(text_dir.glob("*.txt")):
+        if not p.is_file() or _is_tool_txt_artifact(p):
+            continue
+        try:
+            text = p.read_text(encoding="utf-8", errors="ignore")
+        except OSError as e:
+            log.warning(f"  Upload cap: could not read {p.name}: {e}")
+            continue
+        sections = _combined_sections(text)
+        if sections:
+            prior.append((p, sections))
+        else:
+            live[p.name] = p
+
+    # A combined export QUARANTINED by an earlier run is superseded the moment
+    # every document in it has a freshly-written export of its own — same
+    # reasoning as `_pn_drop_superseded_quarantine`, which cannot see this one
+    # because the quarantine is named for the combined file and not for any
+    # source PDF. Left behind it is the one copy in the folder carrying the
+    # real names, and it says triage is pending on a run that has moved on.
+    for p in sorted(text_dir.glob("*.txt.LEAK")):
+        try:
+            sections = _combined_sections(
+                p.read_text(encoding="utf-8", errors="ignore"))
+        except OSError:
+            continue
+        if sections and all(name in live for name, _b in sections):
+            _combine_unlink(p, log, "superseded quarantine")
+
+    # Prior groupings first — kept whole even when the folder is now under the
+    # cap, because the delivered file must not change shape underneath a draft
+    # already written from it.
+    plan, keep_names = [], set()
+    for p, sections in prior:
+        members = []
+        for name, body in sections:
+            path = live.pop(name, None)
+            members.append((name, path, None if path is not None else body))
+        if len(members) < 2:
+            # Not a grouping any more (a one-member file): if its document has
+            # a separate export again, this file is redundant; otherwise it is
+            # still the only copy, so it stands as an ordinary export.
+            if members and members[0][1] is not None:
+                _combine_unlink(p, log, "superseded")
+            else:
+                keep_names.add(p.name)
+            continue
+        plan.append({"name": p.name, "old": p, "members": members})
+    free = sorted(live.values(), key=lambda q: q.name.lower())
+    count = len(plan) + len(free) + len(keep_names)
+
+    # `max_text_files = 0` turns combining OFF: no new grouping is made, but a
+    # grouping already delivered is still honoured above — "off" stops the tool
+    # combining, it never silently re-splits a file the operator has sent.
+    if cap and count > cap:
+        # Rule ONE — parts of one document, combined back into one document.
+        for base, paths, size in _combine_pick_groups(
+                _combine_same_name_groups(free), count - cap):
+            of = "" if len(paths) == size else f" of {size}"
+            plan.append({"name": f"{base} (COMBINED {len(paths)}{of} parts).txt",
+                         "old": None,
+                         "members": [(q.name, q, None) for q in paths]})
+            for q in paths:
+                free.remove(q)
+            count -= len(paths) - 1
+
+        if count > cap and len(free) >= 2:
+            # Rule TWO — the smallest exports, bundled until the count fits.
+            # One bundle of the (excess + 1) smallest lands exactly on the cap.
+            take = sorted(free, key=lambda q: (_combine_file_size(q),
+                                               q.name.lower()))[: count - cap + 1]
+            take.sort(key=lambda q: q.name.lower())
+            plan.append({"name": f"COMBINED {len(take)} documents.txt",
+                         "old": None,
+                         "members": [(q.name, q, None) for q in take]})
+            for q in take:
+                free.remove(q)
+            count -= len(take) - 1
+
+        if count > cap:
+            log.warning(
+                f"  Upload cap: {count} text export(s) remain and only {cap} "
+                f"can be uploaded. Combining could not get there without "
+                f"re-splitting a file already delivered as one — combine the "
+                f"last {count - cap} by hand, or raise max_text_files.")
+
+    out = []
+    header_cap = cap or _COMBINE_DEFAULT_CAP
+    taken = keep_names | {q.name for q in free}
+    for entry in plan:
+        entry["name"] = _combine_unique_name(entry["name"], taken)
+        path = _combine_write_group(text_dir, entry, header_cap, log,
+                                    pseudonymizer)
+        if path is not None:
+            out.append((path, [m[0] for m in entry["members"]]))
+    if out:
+        docs = sum(len(m) for _p, m in out)
+        log.warning(
+            f"  Upload cap: at most {header_cap} files can be uploaded, so "
+            f"{docs} of this folder's documents are delivered inside "
+            f"{len(out)} combined file(s) "
+            f"({', '.join(p.name for p, _m in out[:4])}"
+            + (" …" if len(out) > 4 else "") + "). Each names its own members "
+            f"in its header; nothing was dropped or shortened.")
+    return out
+
+
+def _combine_unique_name(name, taken):
+    """A combined file's name, disambiguated against the names already claimed
+    this run and any unrelated file sitting in the folder."""
+    stem, i = Path(name).stem, 2
+    while name.lower() in {t.lower() for t in taken}:
+        name = f"{stem} ({i}).txt"
+        i += 1
+    taken.add(name)
+    return name
+
+
+def _combine_unlink(path, log, why):
+    try:
+        path.unlink()
+        log.info(f"  Upload cap: removed {why} {path.name}.")
+    except OSError as e:
+        log.warning(f"  Upload cap: could not remove {why} {path.name}: {e}")
+
+
+def _combine_write_group(text_dir, entry, cap, log, pseudonymizer):
+    """Write one combined export, then — and only then — remove the parts it
+    now holds. A failed write leaves every part where it was: a folder over the
+    upload cap is an inconvenience, a folder missing a document is not."""
+    target = text_dir / entry["name"]
+    try:
+        body = _combined_body(entry["members"], cap)
+    except OSError as e:
+        log.warning(f"  Upload cap: could not read a part of {target.name} "
+                    f"({e}) — leaving its documents as separate files.")
+        return None
+    try:
+        target.write_text(body, encoding="utf-8", newline="\n")
+    except OSError as e:
+        log.warning(f"  Upload cap: could not write {target.name} ({e}) — "
+                    f"leaving its documents as separate files.")
+        return None
+    old = entry.get("old")
+    if old is not None and old != target:
+        _combine_unlink(old, log, "regrouped")
+    for _name, path, _text in entry["members"]:
+        if path is not None and path != target:
+            _combine_unlink(path, log, "combined")
+    log.info(f"  Upload cap: wrote {target.name} — "
+             + ", ".join(m[0] for m in entry["members"]))
+    _combine_remap_tracking(pseudonymizer, target, entry["members"], log)
+    return target
+
+
 # ── Word-document bulk conversion ────────────────────────────────────────────
 # Some folders hold only Word filings, with no PDFs at all. Convert those to the
 # same scrubbed .txt exports the PDFs get (no hyperlinking — Word docs are never
@@ -17736,6 +18201,17 @@ _CONFIG_TEMPLATE = (
     "# Subfolder (inside each case folder) that the .txt exports are written to.\n"
     "# Default: Text Files.\n"
     "text_subfolder = Text Files\n"
+    "\n"
+    "# Most .txt exports one folder may deliver — the upload limit of the tool\n"
+    "# they are sent to (default: 20). A folder with more documents than that\n"
+    "# has some of its exports COMBINED into single files, which say so in\n"
+    "# their own first line and list the documents they hold. Parts of one\n"
+    "# document go together first (Brief (1) / Brief part 2 / Brief 2 of 3);\n"
+    "# if that is not enough, the smallest exports are bundled until the count\n"
+    "# fits. A grouping is reproduced on every later run, so a folder you have\n"
+    "# already sent comes back the same. 0 turns combining off (a grouping\n"
+    "# already delivered is still honoured — it is never re-split).\n"
+    "max_text_files = 20\n"
     "\n"
     "# Word documents (.docx/.docm) in a folder that has NO PDFs are bulk-\n"
     "# converted to scrubbed .txt exports too (never hyperlinked). A Word doc\n"
@@ -18648,22 +19124,15 @@ def _fix_leaks_mode(folder, args, cfg, log):
         _pn_update_master_keep(cfg, _keep_rec, folder.name,
                                datetime.date.today().isoformat(), log)
 
-    def _is_tool_artifact(p):
-        """The tool's OWN .txt files in the folder — the worksheet's text
-        companion and the ETA/DONE run markers — are not exports and must not
-        be scrubbed or tracked (only reachable in the old single-folder layout,
-        where text_dir falls back to the case folder itself)."""
-        leak_txts = {f"{_PN_LEAK_STEM}.txt"} | {
-            f"{stem}.txt" for stem in _PN_LEAK_LEGACY_STEMS}
-        return (p.name in leak_txts
-                or ((p.name.startswith(_ETA_MARKER_PREFIX + " ")
-                     or p.name.startswith(_DONE_MARKER_PREFIX + " "))
-                    and p.stat().st_size == 0))
-
+    # The tool's OWN .txt files in the folder — the worksheet's text companion
+    # and the ETA/DONE run markers — are not exports and must not be scrubbed
+    # or tracked (only reachable in the old single-folder layout, where
+    # text_dir falls back to the case folder itself). Same rule the upload-cap
+    # pass applies, so the two can never disagree about what an export is.
     files = sorted(p for p in text_dir.iterdir()
                    if p.is_file() and (p.suffix == ".txt"
                                        or p.name.endswith(".txt.LEAK"))
-                   and not _is_tool_artifact(p))
+                   and not _is_tool_txt_artifact(p))
 
     # Projected-finish marker for the apply pass, same "ETA <clock>.txt" file the
     # full run drops so the operator sees how long Apply Leak Fixes will take.
@@ -18705,6 +19174,20 @@ def _fix_leaks_mode(folder, args, cfg, log):
             bodies[f] = f.read_text(encoding="utf-8")
         except Exception as e:
             log.warning(f"  Could not read {f.name}: {e}")
+    # A folder over the upload cap delivers COMBINED exports: one file holding
+    # several documents behind DOCUMENT banners. This pass treats one as the
+    # single file it is — the fix is applied across the whole thing and the
+    # quarantine is released whole — and it never re-splits the grouping, which
+    # the operator has already uploaded under that shape. What it does do is
+    # locate each finding by the member document (`_pn_locate_export`), since
+    # every document in the file numbers its pages from 1.
+    combined = {f: len(s) for f, b in bodies.items()
+                if (s := _combined_sections(b))}
+    if combined:
+        log.info(f"  --fix-leaks: {len(combined)} of these export(s) are "
+                 f"COMBINED files holding {sum(combined.values())} documents "
+                 f"(the folder is over the upload cap). A leak in any member "
+                 f"holds the whole file, and a fix releases it whole.")
     if auto_terms and bodies:
         cite_only = pz.prune_citation_only_terms(
             "\n\f\n".join(bodies.values()), sources=("--term",),
@@ -18759,13 +19242,12 @@ def _fix_leaks_mode(folder, args, cfg, log):
         if survivors:
             pz.leaked_by_file[f] = {s.lower() for s in survivors}
             pz.note_leaks(survivors)
-            parsed = _pn_body_lines(scrubbed)
             for real in sorted(survivors):
                 if _pn_is_email_value(real):
                     continue          # always faked — never a triage decision
                 pz.leak_report.append(
                     {"file": f.name, "type": "LEAK", "value": real,
-                     "where": _pn_locate(parsed, real)})
+                     "where": _pn_locate_export(scrubbed, real)})
 
     # `--fix-leaks` never reopens the PDFs, so the ORIGINAL TEXT folder is the
     # only evidence of what the documents actually said. Read it when the
@@ -19452,6 +19934,16 @@ def main():
         # conversion has no OCR to project from — it is done in seconds.
         _write_done_marker(folder)
 
+    # Every export is now written, so the folder can be measured against the
+    # UPLOAD CAP and the excess combined. Before the leak worksheet and before
+    # the gate, deliberately: after this the part files are gone, so a leak
+    # reported against one would name a path the gate cannot quarantine and the
+    # export would ship. `_combine_remap_tracking` moves the bookkeeping onto
+    # the combined file for exactly that reason.
+    if args.extract_text and (pdfs or word_texts):
+        _combine_exports_for_upload(folder, text_subdir, cfg, log,
+                                    pseudonymizer)
+
     # One key file for the whole folder maps every real value to its fake.
     if pseudonymizer is not None:
         # Confirm every finding against the ORIGINAL text where the run has it:
@@ -19609,11 +20101,22 @@ def main():
                               f"{txt.name}: {e}")
             delivered = len(pseudonymizer.written) - len(quarantined)
             shown = ", ".join(sorted(gating)[:8])
+            # A combined export is one FILE holding several documents, so its
+            # quarantine holds all of them for one document's leak. Say so —
+            # the count of held exports otherwise reads as the count of held
+            # documents, and it is not.
+            combos = [pseudonymizer.combined[t] for t in offenders
+                      if t in pseudonymizer.combined]
+            extra = (f" {len(combos)} of them are COMBINED files (the folder is "
+                     f"over the upload cap), so {sum(len(c) for c in combos)} "
+                     f"documents are held; Apply Leak Fixes releases each "
+                     f"combined file whole." if combos else "")
             _warn(f"!! Pseudonymize FAILED: party name(s) survived in the "
                   f"exports ({shown}) — the case is recognizable on sight. "
                   f"{len(quarantined)} .txt export(s) with a leak quarantined to "
                   f"*.LEAK and NOT delivered ({delivered} clean export(s) "
-                  f"delivered). Add the survivor(s) with --term and re-run.")
+                  f"delivered).{extra} Add the survivor(s) with --term and "
+                  f"re-run.")
             sys.exit(2)
         shown = ", ".join(sorted(pseudonymizer.leaked)[:8])
         _warn(f"Pseudonymize: {len(pseudonymizer.leaked)} lesser value(s) "
