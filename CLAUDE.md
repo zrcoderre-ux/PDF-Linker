@@ -287,9 +287,22 @@ the party), so its row stays reversible.
   a pool word (an expected fake) breaks on every resize — read the fake back
   from the run instead.
   **A pool word must never be a near-twin of another** (OSA distance ≥2 across
-  the whole pool): the typo fold deliberately mints a misspelling of an existing
+  every pool): the typo fold deliberately mints a misspelling of an existing
   fake, so two pool words one edit apart make a real draw indistinguishable from
-  a folded one.
+  a folded one, and `_report_minted_misspellings` promises that a misspelling it
+  names is ours. Enforced by `test_no_new_near_twin_pool_words`, which carries
+  the **21 pairs that predate the rule** (Radley/Ridley, Gable/Sable,
+  Waverly/Waverley…) as a named exception list rather than tolerating them
+  silently: those words are already in circulation in delivered keys, so
+  retiring them is a churn decision and not a bug fix. The assertion's job is
+  that the list never grows.
+  **Every pair of pools is disjoint**, not just city-vs-the-rest — the original
+  three assertions only ever asked about cities, so "Juniper" and "Larkspur" sat
+  in the entity AND street pools for as long as both existed: one stand-in that
+  is a company in one key row and a street in another. When a word has to move,
+  substitute it IN PLACE: `_pn_rng` shuffles INDICES, so a same-length list
+  changes only the draws that landed on the slot that changed, and every other
+  binding a re-run derives is untouched.
   **The pools are COPIED into `DeAnonymize.bas`** (`PseudonymPool` /
   `EmailDomainPool` in the My-Macros repo), where they drive the residual-fake
   highlighter — the last net before a document is shared. A fake drawn from a

@@ -5,6 +5,7 @@ PDF fixtures are needed — the module is imported and its `_pn_*` internals are
 called directly. Each test names the hardening task it guards (see the
 handoff). Run with: pytest tests/test_pseudonymize.py
 """
+import itertools
 import logging
 import importlib.util
 import re
@@ -482,6 +483,56 @@ class TestPoolsAreDisjoint:
 
     def test_cities_do_not_overlap_streets(self):
         assert not self._lower(pl._PN_CITY_NAMES) & self._lower(pl._PN_STREET_NAMES)
+
+    # The three above only ever asked about CITIES, so "Juniper" and "Larkspur"
+    # sat in the entity AND street pools for as long as both existed: one word,
+    # two categories, and a key in which the same stand-in is a company in one
+    # row and a street in another. Ask every pair instead.
+    def _pools(self):
+        return {"name": pl._PN_NAME_WORDS, "entity": pl._PN_ENTITY_WORDS,
+                "city": pl._PN_CITY_NAMES, "street": pl._PN_STREET_NAMES,
+                "domain": [d.split(".")[0] for d in pl._PN_EMAIL_DOMAINS]}
+
+    def test_every_pair_of_pools_is_disjoint(self):
+        pools = self._pools()
+        for a, b in itertools.combinations(pools, 2):
+            shared = self._lower(pools[a]) & self._lower(pools[b])
+            assert not shared, f"{a} and {b} share {sorted(shared)}"
+
+    def test_no_pool_repeats_a_word(self):
+        for name, pool in self._pools().items():
+            assert len(pool) == len(self._lower(pool)), f"{name} has a duplicate"
+
+    # A pool word one edit from another makes an ordinary draw read as a TYPO
+    # FOLD — the registry deliberately mints a misspelling of an existing fake
+    # when a real token is a near-miss of a bound one, and `_report_minted_
+    # misspellings` promises that a misspelling it names is ours. Two unrelated
+    # parties called Radley and Ridley break that reading.
+    #
+    # The pairs below predate the rule and are grandfathered rather than
+    # silently tolerated: every one is a word already in circulation in
+    # delivered keys, so retiring them is a churn decision, not a bug fix. The
+    # assertion's job is that the list never GROWS — an added word may not be
+    # a near-twin of anything.
+    LEGACY_TWINS = {
+        ("alden", "alder"), ("alder", "calder"), ("amberly", "emberly"),
+        ("barlowe", "marlowe"), ("carrow", "darrow"), ("carrow", "jarrow"),
+        ("darrow", "jarrow"), ("davenport", "havenport"),
+        ("emberton", "pemberton"), ("falcon", "fallon"),
+        ("fenwick", "renwick"), ("gable", "sable"), ("hadley", "radley"),
+        ("havenwood", "ravenwood"), ("kingsley", "kinsley"),
+        ("marlow", "marlowe"), ("radley", "ridley"), ("starling", "sterling"),
+        ("thorne", "thorpe"), ("waverley", "waverly"), ("yardley", "yeardley"),
+    }
+
+    def test_no_new_near_twin_pool_words(self):
+        words = sorted({w.lower() for pool in self._pools().values()
+                        for w in pool})
+        found = {(a, b) for a, b in itertools.combinations(words, 2)
+                 if abs(len(a) - len(b)) <= 1 and pl._pn_osa_distance(a, b) <= 1}
+        assert not (found - self.LEGACY_TWINS), (
+            "a new pool word is one edit from another, so a draw reads as a "
+            f"typo fold: {sorted(found - self.LEGACY_TWINS)}")
 
 
 # ── Task 16 — a locality is scrubbed wherever it stands ────────────────────

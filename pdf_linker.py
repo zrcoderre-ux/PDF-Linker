@@ -5995,7 +5995,7 @@ _PN_NAME_WORDS = [
     "Brereton", "Bridgewater", "Brindley", "Bristow", "Broadbent",
     "Brockhurst", "Broughton", "Buckminster", "Bulstrode", "Burghley",
     "Burnaby", "Burstall", "Cadogan", "Callender", "Camberwell",
-    "Canfield", "Cantrell", "Carbury", "Carmichael", "Carnforth",
+    "Canfield", "Cantrell", "Cardington", "Carmichael", "Carnforth",
     "Carstairs", "Cathcart", "Cavendish", "Caxton", "Chalmers", "Chandos",
     "Charnley", "Chatterton", "Chelmsford", "Cheriton", "Chilcott",
     "Chillingworth", "Chorley", "Claverhouse", "Cliveden", "Coldwell",
@@ -6065,7 +6065,7 @@ _PN_NAME_WORDS = [
     "Swaffield", "Swanwick", "Sydenham", "Symington", "Talbot", "Tarleton",
     "Tattersall", "Teasdale", "Templeton", "Thelwall", "Thirlwall",
     "Thistlewood", "Thornbury", "Thrapston", "Throckmorton", "Thurlow",
-    "Tilbury", "Tindall", "Tiverton", "Todhunter", "Tollemache",
+    "Tilbury", "Tindall", "Tiverley", "Todhunter", "Tollemache",
     "Towneley", "Trelawney", "Trenholme", "Trevelyan", "Trewin",
     "Trumbull", "Tunstall", "Turnbull", "Twyford", "Tyndale", "Tyrwhitt",
     "Ullswater", "Upcott", "Uppingham", "Urquhart", "Uxbridge",
@@ -6083,11 +6083,11 @@ _PN_NAME_WORDS = [
 ]
 _PN_ENTITY_WORDS = [
     "Aldrin", "Brightwater", "Cascadia", "Dunmore", "Everline", "Foxglen",
-    "Granite", "Havenwood", "Ironbridge", "Juniper", "Kestrel", "Lumen",
+    "Granite", "Havenwood", "Ironbridge", "Fernvale", "Kestrel", "Lumen",
     "Meridian", "Northgate", "Oakmont", "Pinnacle", "Quarry", "Redwood",
     "Silverpeak", "Torchlight", "Umbra", "Vantage", "Westmark", "Zephyr",
     "Ambrose", "Beacon", "Cobalt", "Drayton", "Emberly", "Falcon", "Gladstone",
-    "Harborview", "Ivory", "Jetstream", "Kaldor", "Larkspur", "Monarch",
+    "Harborview", "Ivory", "Jetstream", "Kaldor", "Kingsmere", "Monarch",
     "Nimbus", "Orion", "Pembroke",
     # Enlarged for the same reason as _PN_NAME_WORDS: a case with many entity
     # parties, affiliates and firm names outran 40 words and minted
