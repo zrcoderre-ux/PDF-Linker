@@ -1295,6 +1295,70 @@ for an allocation no fixed dpi bounds, and MuPDF failing that allocation aborts
 the interpreter. Dropping the dpi only costs box detection on a page that size,
 which then falls back to ordinary extraction.
 
+## The upload cap (a folder with more than 20 documents)
+
+The exports go to a drafting model that accepts at most **20 files**
+(`max_text_files`, default `_COMBINE_DEFAULT_CAP`). Most folders are well under
+it; a large case is not, and the operator's remedy — merge some exports by hand
+and remember which — is the kind of bookkeeping that fails quietly. So
+`_combine_exports_for_upload` does it, once every export is written: the excess
+is **COMBINED** into single files that say so in their own first line, list
+their members, and hold each document in full behind its own DOCUMENT banner.
+Nothing is dropped and nothing is shortened; the parts are removed only once
+the combined file is safely written, so `Text Files` is exactly the deliverable
+set and nobody has to work out which of the files in front of them to skip. The
+`Original Text` sibling (real names, never shared) is left per-document — the
+cap is about what gets uploaded.
+
+**Which files, in the operator's two rules.** Rule ONE
+(`_combine_same_name_groups`): the same name with a part marker after it —
+`Brief (1)`, `Brief part 2`, `Vol. II`, `Brief 2 of 5`, a bare trailing index.
+`_combine_split_part` strips the marker and demands `_COMBINE_BASE_MIN` LETTERS
+still stand, so "1 of 3" (which reduces to "1 of") groups with nothing, and the
+bare form demands a separator, or `\d{1,2}` takes the last two digits of
+"Order 2024" and files it under "Order 20". Rule TWO: the **smallest** exports,
+bundled — the (excess + 1) smallest lands exactly on the cap. Both may run.
+
+**Only as much as the cap asks.** `_combine_pick_groups` takes the smallest
+group first, whole while it fits, and SLICES the one that would overshoot to
+the first (excess + 1) parts. Combining is a cost — one leak holds every
+document in the file, and each member loses its own filename — so a folder two
+over does not fold a twelve-part exhibit set into one file when a two-part
+declaration would have done. A part left out of a slice is still a complete
+document under its own name, and the slice says so ("COMBINED 3 of 12 parts").
+
+**A grouping already sent is REPRODUCED, not re-derived**, for the reason a
+re-run reuses `pseudonym_key.xlsx` rather than re-deriving the fakes: adding one
+document moves which files are "the smallest", so a re-derived plan reshuffles a
+folder whose drafts are already written. The DOCUMENT banners are the record —
+`_combined_sections` reads the members back off the previous run's own file, and
+the header carries nothing volatile (no folder count, no timestamp) so an
+unchanged folder reproduces the delivered file byte for byte. A prior grouping
+is kept even once the folder fits again, and `max_text_files = 0` (combining
+OFF) still honours it: "off" stops the tool combining, it never silently
+re-splits a file the operator has sent. A combined file is superseded only once
+**every** member exists as a separate export again; a member whose source PDF is
+gone (or failed this run) has its section carried forward verbatim, because that
+file is the only copy of it there is.
+
+**Factored into the leak gate and `--fix-leaks`.** The gate quarantines FILES,
+so `_combine_remap_tracking` moves `written` / `leaked_by_file` onto the
+combined file — otherwise a leak is reported against a part path that no longer
+exists, nothing is renamed and the export ships. Combining therefore runs BEFORE
+the worksheet and the gate. A leak in any member holds the whole combined file:
+that is the cost, and the gate's message says how many documents are held rather
+than leaving the export count to be read as a document count. `--fix-leaks`
+treats one as the single file it is — the fix applies across the whole thing,
+the quarantine is released whole, and the grouping is never re-split (the
+operator has already uploaded that shape) — but every finding is located by its
+member document (`_pn_locate_export`), because each document in the file numbers
+its pages from 1, so a bare "p.3:7" names as many places as there are documents,
+and the member name is the only thing left in the worksheet saying which SOURCE
+document a leak came from. A combined export QUARANTINED by an earlier run is
+dropped by the same reachability rule `_pn_drop_superseded_quarantine` applies
+and cannot reach here (the `.LEAK` is named for the combined file, not for any
+source PDF), the moment every document in it has a fresh export of its own.
+
 ## Performance notes
 
 - Term/record regex patterns are **compiled once** per run via a
