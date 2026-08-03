@@ -15913,6 +15913,116 @@ def _pn_locate(parsed, needle, limit=12):
     return ", ".join(out[:limit]) + (" …" if len(out) > limit else "")
 
 
+# How much of the sentence a Context cell may hold, and how little will do. A
+# "sentence" on pleading paper is not reliably one: a caption block, a service
+# list and a damages table all run for hundreds of characters with no full stop
+# at all, while legal prose is full of abbreviations — "(Rasho Decl. ¶ 7.)"
+# splits into three "sentences", and "Decl." alone answers nothing. So the span
+# GROWS to the neighbouring sentences until it is worth reading and is then
+# capped, rather than being trusted to be one sentence.
+_PN_CONTEXT_MAX = 220
+_PN_CONTEXT_MIN = 60
+# Only a real terminator. A semicolon and a colon end a CLAUSE, and a label
+# ("PROCESS SERVER: Michael Rodgers") is exactly the context worth keeping.
+_PN_SENT_END_RE = re.compile(r"[.!?](?=\s|$)")
+
+
+def _pn_context(parsed, needle, width=_PN_CONTEXT_MAX):
+    """The sentence `needle` stands in, for the worksheet's Context column.
+
+    A triage row asks "is this real?", and the value alone often cannot answer
+    it: "Charge" is boilerplate in "CHARGE OF DISCRIMINATION" and a surname in
+    "served on Charge at his residence". Without the sentence the operator had
+    to open the export and hunt for the page to tell which — and the answer
+    decides whether the word is faked in this and every future folder.
+
+    Read from the same parsed body `_pn_locate` uses, so the two agree about
+    where the value is, and rebuilt as PROSE: the gutter line number is dropped
+    and the wrapped lines are joined, because a sentence on pleading paper is
+    spread over several numbered lines and one of them alone says almost
+    nothing. Returns "" when the value cannot be found — a welded or reduced
+    finding has no clean line to quote, exactly as it has no location."""
+    nl = str(needle).lower()
+    if not nl:
+        return ""
+    joined, first, prose_hit, lines = [], None, None, []
+    for _page, _gutter, text in parsed:
+        m = _PN_GUTTER_RE.match(text)
+        # The gutter number is furniture. Cut the number and its spacing only:
+        # the pattern's last atom is the first character of the body, so the
+        # slice stops one short of the match end or it eats that character
+        # ("DISCRIMINATION" came out "ISCRIMINATION").
+        body = (text[m.end() - 1:] if m else text).strip()
+        if not body:
+            continue
+        off = len(" ".join(joined)) + (1 if joined else 0)
+        lines.append((off, off + len(body), _pn_line_is_prose(body)))
+        if nl in body.lower():
+            at = off + body.lower().index(nl)
+            if first is None:
+                first = at
+            # PROSE beats a heading, which is the whole question the cell is
+            # there to settle: "Charge" appears first in "CHARGE OF
+            # DISCRIMINATION" — a caption, and no evidence either way — and
+            # again in "served on Charge at his residence", which is a name.
+            # Quoting the first occurrence would show the operator the one that
+            # proves nothing. Same test `prune_heading_only_terms` uses.
+            if prose_hit is None and lines[-1][2]:
+                prose_hit = at
+        joined.append(body)
+    hit = prose_hit if prose_hit is not None else first
+    if hit is None:
+        return ""
+    text = " ".join(joined)
+    # A caption block is not part of the sentence beside it. Bound the quote by
+    # the run of lines that read the same way as the one the hit is on, so a
+    # sentence never swallows the heading above it (there is no full stop in a
+    # caption, so "the previous terminator" is otherwise the top of the page)
+    # and a value found ONLY in a heading is quoted as the heading — which is
+    # itself the answer: nothing but a title ever offered it.
+    i = max((k for k, (a, b, _p) in enumerate(lines) if a <= hit < b), default=0)
+    floor, ceiling, mode = lines[i][0], lines[i][1], lines[i][2]
+    for k in range(i - 1, -1, -1):
+        if lines[k][2] != mode:
+            break
+        floor = lines[k][0]
+    for k in range(i + 1, len(lines)):
+        if lines[k][2] != mode:
+            break
+        ceiling = lines[k][1]
+    ends = [m.end() for m in _PN_SENT_END_RE.finditer(text)]
+    # The sentence holding the hit: the terminator belongs to the sentence it
+    # closes, so the span runs from the one before the hit to the one after.
+    before = [e for e in ends if floor <= e <= hit]
+    after = [e for e in ends if hit + len(nl) <= e <= ceiling]
+    start = before[-1] if before else floor
+    end = after[0] if after else ceiling
+    # …and it grows outward while it is too short to be evidence, which is what
+    # makes an abbreviation-split span harmless: "(Rasho Decl." is a sentence to
+    # the parser and nothing at all to the operator. Forward first (the text
+    # after a name usually says what it is), then back, with the prose run's own
+    # boundaries as the last candidate on each side.
+    cand_end = after[1:] + [ceiling]
+    cand_start = list(reversed(before[:-1])) + [floor]
+    ei = si = 0
+    while end - start < _PN_CONTEXT_MIN:
+        if ei < len(cand_end) and cand_end[ei] - start <= width:
+            end, ei = max(end, cand_end[ei]), ei + 1
+        elif si < len(cand_start) and end - cand_start[si] <= width:
+            start, si = min(start, cand_start[si]), si + 1
+        else:
+            break
+    sent = re.sub(r"\s+", " ", text[start:end]).strip()
+    if len(sent) <= width:
+        return sent
+    # Too long to read: a window centred on the value, rather than a truncation
+    # that may not even contain it.
+    at = max(sent.lower().find(nl), 0)
+    lo = max(0, at - (width - len(nl)) // 2)
+    return (("…" if lo else "") + sent[lo:lo + width].strip()
+            + ("…" if lo + width < len(sent) else ""))
+
+
 def _pn_locate_export(text, needle, limit=12):
     """`_pn_locate` over a WRITTEN export, aware that it may be a COMBINED one.
 
@@ -15941,6 +16051,11 @@ def _pn_locate_export(text, needle, limit=12):
 _PN_LEAK_COLUMNS = (
     ("Value", "value", 34),
     ("Fix? (yes/no)", "fixcell", 12),
+    # The sentence the value stands in. Next to the decision because it is what
+    # the decision is made ON: "Charge" is boilerplate in "CHARGE OF
+    # DISCRIMINATION" and a surname in "served on Charge at his residence", and
+    # without it the operator had to open the export and find the page to tell.
+    ("Context", "context", 70),
     ("File", "file", 20),
     ("Type", "type", 22),
     ("Where (page:line)", "where", 30),
@@ -16728,13 +16843,19 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
         g = grouped.get(vl)
         if g is None:
             grouped[vl] = {"value": e["value"], "type": e["type"],
-                           "files": [e["file"]], "wheres": [e["where"]]}
+                           "files": [e["file"]], "wheres": [e["where"]],
+                           "context": e.get("context", "")}
             continue
         if _leak_sev(e["type"]) < _leak_sev(g["type"]):
             g["type"] = e["type"]
         if e["file"] not in g["files"]:
             g["files"].append(e["file"])
         g["wheres"].append(e["where"])
+        # One sentence is a sample, not an inventory: the row already merges
+        # every file and location, and a cell holding nine sentences is one
+        # nobody reads. The first non-empty one stands for the value.
+        if not g.get("context"):
+            g["context"] = e.get("context", "")
 
     # Accumulate this run's flagged values into the cross-case master log, so a
     # value that keeps leaking across matters is easy to spot over time. The
@@ -16766,6 +16887,7 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
         # the exact instruction instead of re-deriving an auto fake.
         rows.append({"file": file_cell, "type": g["type"], "value": g["value"],
                      "where": _pn_merge_where(g["wheres"]),
+                     "context": g.get("context", ""),
                      "fix": d.get("fix", ""),
                      "fixcell": (d.get("fixcell") or d.get("replacement")
                                  or d.get("fix", "")),
@@ -16787,6 +16909,7 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
                 and not _pn_decision_is_keep(d):
             rows.append({"file": "—", "type": d.get("type") or "(decided)",
                          "value": d["value"], "where": _PN_LEAK_ABSENT,
+                         "context": "",
                          "fix": d["fix"],
                          "fixcell": (d.get("fixcell") or d.get("replacement")
                                      or d["fix"]),
@@ -16830,6 +16953,8 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
             mark = {"yes": "[x]", "no": "[-]"}.get(r["fix"], "[ ]")
             lines.append(f"{mark} {r['type']}: {r['value']}  "
                          f"({r['file']} — {r['where']})")
+            if r.get("context"):
+                lines.append(f"        \u201c{r['context']}\u201d")
         try:
             txt.write_text("\n".join(lines) + "\n", encoding="utf-8")
             _remove(stale)
@@ -17180,13 +17305,15 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
                 continue
             pseudonymizer.leak_report.append(
                 {"file": pdf_path.name, "type": "LEAK", "value": real,
-                 "where": _pn_locate(parsed, real)})
+                 "where": _pn_locate(parsed, real),
+                 "context": _pn_context(parsed, real)})
         for cls, sample in review:
             if _pn_is_procedural_phrase(sample) or _pn_is_email_value(sample):
                 continue
             pseudonymizer.leak_report.append(
                 {"file": pdf_path.name, "type": cls, "value": sample,
-                 "where": _pn_locate(parsed, sample)})
+                 "where": _pn_locate(parsed, sample),
+                 "context": _pn_context(parsed, sample)})
 
         # Pseudonymize the output filename too — the .txt is the artifact that
         # gets shared, so a party/attorney name must not survive in its name.
@@ -18109,13 +18236,15 @@ def _write_word_text_version(src_path, text, log, pseudonymizer=None,
                 continue
             pseudonymizer.leak_report.append(
                 {"file": src_path.name, "type": "LEAK", "value": real,
-                 "where": _word_locate(body, real)})
+                 "where": _word_locate(body, real),
+                 "context": _pn_context(_pn_body_lines(body), real)})
         for cls, sample in review:
             if _pn_is_procedural_phrase(sample) or _pn_is_email_value(sample):
                 continue
             pseudonymizer.leak_report.append(
                 {"file": src_path.name, "type": cls, "value": sample,
-                 "where": _word_locate(body, sample)})
+                 "where": _word_locate(body, sample),
+                 "context": _pn_context(_pn_body_lines(body), sample)})
 
         # Scrub the output filename too — the .txt is the shared artifact, so a
         # party/attorney name in the Word file's name must not ride along.
@@ -19760,7 +19889,8 @@ def _fix_leaks_mode(folder, args, cfg, log):
                     continue          # always faked — never a triage decision
                 pz.leak_report.append(
                     {"file": f.name, "type": "LEAK", "value": real,
-                     "where": _pn_locate_export(scrubbed, real)})
+                     "where": _pn_locate_export(scrubbed, real),
+                     "context": _pn_context(_pn_body_lines(scrubbed), real)})
 
     # `--fix-leaks` never reopens the PDFs, so the ORIGINAL TEXT folder is the
     # only evidence of what the documents actually said. Read it when the
