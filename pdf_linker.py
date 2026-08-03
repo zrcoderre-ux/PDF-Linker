@@ -13541,34 +13541,41 @@ class Pseudonymizer:
         rest = re.sub(r"\s+", " ", "".join(out)).strip(" \t,.;:'\"()[]-")
         return rest if re.search(r"[A-Za-z0-9]", rest) else ""
 
-    def _kept_remainder(self, value):
-        """`value` with NUCLEAR-kept words removed — the words the operator
-        typed `never` or `{braces}` against.
+    def _all_words_kept(self, value):
+        """True when EVERY word of `value` is one the operator typed `never` or
+        `{braces}` against — so the finding is made of nothing but text they
+        have already declared can never reveal anything, in this folder or any
+        other.
 
-        A worksheet row is a QUESTION, and this tier is the one where the
-        operator has already answered it in the strongest terms available:
-        "this can never reveal anything, in this or any folder". So a finding
-        made of nothing else is a question no answer changes — `yes` would fake
-        a value they said never to fake, `no` is already what is happening —
-        and it came back on every re-run, because the worksheet only ever
-        suppressed the EXACT value a decision named while the high-recall
-        review scans go on flagging every PHRASE that contains it ("Labor" is
-        kept; "Labor Relations Leader" is a new row, and so is every other
-        phrasing the documents use).
+        A worksheet row is a QUESTION, and this is the one tier where the answer
+        is already on file in the strongest terms the tool accepts. Such a row
+        is unanswerable: `yes` would fake a value they said never to fake, and
+        `no` is already what is happening. It came back on every re-run anyway,
+        because the worksheet only ever suppressed the EXACT value a decision
+        named while the high-recall scans go on flagging every PHRASE that
+        contains it — "Labor" is kept, "Labor Relations Leader" is a new row,
+        and so is every other phrasing the documents use.
 
-        Reduced rather than dropped whole, for the reason `_real_remainder` is:
-        a real name standing beside a kept word is still a leak, and the
-        question in it is the name. Needs no ORIGINAL to check against — unlike
-        a stand-in, a kept word is the operator's own declaration.
-
-        Only the NUCLEAR tier. A soft `no` keep is released inside a name run
-        precisely because the word may be part of a party there, so a phrase
-        carrying one can still be a genuine leak and must still be asked
-        about."""
+        DROPPED WHOLE, never reduced — the opposite of `_real_remainder`, and
+        for a reason. A stand-in is not in the source document at all, so
+        removing it leaves the operator the part that IS there. A kept word is
+        the document's own text: strike it out and the value no longer matches
+        anything, which is both unlocatable and, on a value that is a single
+        opaque string, plain wrong ("553.com" reduced to "553", a URL to
+        "//sir.int.benefitcenter./..."). One master sheet's nuclear words
+        included "com", "www", "no", "n", "and" and "the", harvested from
+        braced URLs and addresses; nothing good comes of cutting those out of a
+        finding. So a phrase carrying a real name beside a kept word stays
+        exactly as found — and marking it `yes` is safe, because the composing
+        faker keeps the kept word verbatim anyway ("Labor Rasho" ->
+        "Labor Yeardley")."""
         keep = frozenset(getattr(self.registry, "keep_words", ()) or ())
         if not keep:
-            return str(value)
-        return self._strip_words(value, lambda _piece, base: base in keep)
+            return False
+        words = [b for b in (_pn_word_base(piece)
+                             for piece in re.split(r"\W+", _NFKC(str(value))))
+                 if b]
+        return bool(words) and all(w in keep for w in words)
 
     def _real_remainder(self, value):
         """`value` with this run's OWN STAND-INS removed — the part that is
@@ -13602,21 +13609,21 @@ class Pseudonymizer:
         about, and drop the ones nothing is left of. Returns the values that
         went away.
 
-        Two reductions, in order, both of which only ever REMOVE a word:
-          * `_kept_remainder` — the operator has already answered for a
-            NUCLEAR-kept word ("never" / `{braced}`), in this folder and every
-            other; and
-          * `_real_remainder` — the ORIGINAL text says a word is this run's own
-            stand-in and not the document's. The one check that can tell the
-            tool's output from the document's by EVIDENCE rather than
-            inference, so it also stops such a value being marked `yes` and
-            minted into an authoritative term, which is how one folder came to
-            rename a cited decision."""
+        Two rules, and they differ in shape for a documented reason:
+          * `_all_words_kept` DROPS a finding made of nothing but NUCLEAR-kept
+            words ("never" / `{braced}`) — the operator's own answer, already
+            on file. Never reduced: those words are the document's own text.
+          * `_real_remainder` REDUCES a finding by this run's own stand-ins,
+            which the ORIGINAL text says are not in the document at all. The
+            one check that can tell the tool's output from the document's by
+            EVIDENCE rather than inference, so it also stops such a value being
+            marked `yes` and minted into an authoritative term, which is how
+            one folder came to rename a cited decision."""
         if not self._orig_words and not getattr(self.registry, "keep_words", ()):
             return []
 
         def reduce(value):
-            return self._real_remainder(self._kept_remainder(value))
+            return "" if self._all_words_kept(value) else self._real_remainder(value)
 
         dropped, seen = set(), set()
         keep_rows = []

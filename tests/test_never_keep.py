@@ -286,11 +286,23 @@ def test_a_phrase_made_only_of_kept_words_stops_being_a_row():
     assert _triage(pz, ["Business Manager", "Labor"]) == []
 
 
-def test_a_real_name_beside_a_kept_word_is_still_asked_about():
-    """Reduced, not dropped whole: the question in "Labor Rasho" is "Rasho"."""
+def test_a_real_name_beside_a_kept_word_is_asked_about_AS_FOUND():
+    """The row stays, and stays VERBATIM. A kept word is the document's own
+    text, so striking it out leaves a value that matches nothing in the export
+    — unlocatable, and on an opaque value plainly wrong ("553.com" -> "553").
+    Marking it yes is safe anyway: the composing faker keeps the kept word."""
     pz = _pz_with_keeps([("Labor", "never")])
     assert _triage(pz, ["Labor Relations Leader", "Labor Rasho"]) == [
-        "Relations Leader", "Rasho"]
+        "Labor Relations Leader", "Labor Rasho"]
+
+
+def test_an_opaque_value_is_never_cut_up():
+    """The nuclear set really does hold words like "com", "www", "no" and "n",
+    harvested from braced URLs and addresses in a master KEEP sheet."""
+    pz = _pz_with_keeps([("www.acme.com/path", "{www.acme.com/path}")])
+    assert "com" in pz.registry.keep_words
+    assert _triage(pz, ["553.com", "Tol. No.", "vrv.rtxpension.com"]) == [
+        "553.com", "Tol. No.", "vrv.rtxpension.com"]
 
 
 def test_no_original_text_is_needed():
@@ -302,9 +314,10 @@ def test_no_original_text_is_needed():
     assert _triage(pz, ["Labor"]) == []
 
 
-def test_a_braced_keep_reduces_the_same_way():
+def test_a_braced_keep_drops_the_same_way():
     pz = _pz_with_keeps([("Mulliken Medical Center", "{Medical Center}")])
-    assert _triage(pz, ["Medical Center", "Medical Center Rasho"]) == ["Rasho"]
+    assert _triage(pz, ["Medical Center", "Medical Center Rasho"]) == [
+        "Medical Center Rasho"]
 
 
 def test_a_soft_no_keep_does_not_strip_a_phrase():
@@ -315,11 +328,11 @@ def test_a_soft_no_keep_does_not_strip_a_phrase():
     assert _triage(pz, ["Cal Equipment"]) == ["Cal Equipment"]
 
 
-def test_the_review_list_is_reduced_too():
-    pz = _pz_with_keeps([("Labor", "never")])
+def test_the_review_list_is_cleaned_too():
+    pz = _pz_with_keeps([("Labor", "never"), ("Relations", "never")])
     pz.review = [("name", "Labor Relations"), ("name", "Marcus Ingram")]
     pz.confirm_findings(log)
-    assert pz.review == [("name", "Relations"), ("name", "Marcus Ingram")]
+    assert pz.review == [("name", "Marcus Ingram")]
 
 
 def test_the_exact_value_never_becomes_a_row(tmp_path):
