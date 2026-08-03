@@ -751,6 +751,22 @@ the party), so its row stays reversible.
   local worksheet never retired it either. Scoped to the categories a keep
   survives in — a keep is RELEASED inside a full party match, so a
   `_PN_PARTY_OVERRIDE_CATS` real still standing was faked nowhere and IS a leak.
+  **…and the suppression is EXACT-VALUE, which is why a `never` kept coming
+  back** (`_kept_remainder`, run from `confirm_findings` beside
+  `_real_remainder`). The worksheet drops a row whose value carries a KEEP
+  decision, but the high-recall scans go on flagging every PHRASE that contains
+  the kept word, and each phrasing is a distinct value with no decision of its
+  own: `never` on "Labor" left "Labor Relations Leader", "Senior Labor Counsel"
+  and every other wording to be answered again on every re-run — questions no
+  answer changes, since `yes` would fake a value the operator said never to
+  fake and `no` is already what is happening. A finding is now REDUCED by its
+  NUCLEAR-kept words and dropped when nothing else is left, exactly as
+  `_real_remainder` reduces it by this run's own stand-ins ("Labor Rasho" is a
+  row about "Rasho"). It needs no ORIGINAL to check against — a kept word is
+  the operator's own declaration, not an inference — so unlike the evidence
+  pass it runs in a folder that kept no unscrubbed copy. NUCLEAR only: a soft
+  `no` keep is released inside a name run precisely because the word may be
+  part of a party there, so a phrase carrying one can still be a real leak.
   These scans must never re-flag the run's OWN fakes: `_pn_word_is_own_fake`
   recognises a bare fake ("Keswick") AND a welded one where a splice glued the
   fake to a neighbour ("CORPORATIOLORNE10" carries "lorne10", "POSTBOX4.ORGPANY"

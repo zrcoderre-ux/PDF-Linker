@@ -251,3 +251,82 @@ def test_fix_leaks_honours_never_and_records_it_globally(tmp_path, monkeypatch):
         P._PN_MASTER_KEEP_SHEET]
     row = [r for r in keep.iter_rows(values_only=True) if r[0] == "Gregory Yu"][0]
     assert row[1] == "never" and row[2] == P._PN_KEEP_NUCLEAR_TYPE
+
+
+# ── the worksheet ───────────────────────────────────────────────────────────
+# A worksheet row is a QUESTION, and `never` is the strongest answer the tool
+# accepts. The exact value stops being a row the moment it is decided (that is
+# `_pn_decision_is_keep`, and it always worked) — but the high-recall REVIEW
+# scans go on flagging every PHRASE that contains it, and each phrasing is a
+# distinct value with no decision of its own, so the same kept word came back
+# under a new name on every re-run.
+
+def _pz_with_keeps(cells, records=()):
+    dec = {}
+    for value, cell in cells:
+        dec.update(_decision(value, cell))
+    reg = P._PnFakeRegistry()
+    P._pn_set_keep_words(reg, dec)
+    pz = P.Pseudonymizer(list(records), {}, registry=reg)
+    pz.keep_strict, pz.keep_soft, pz.keep_nuclear = P._pn_keep_values(dec)
+    pz._keep_decisions = {v: d for v, d in dec.items() if P._pn_decision_is_keep(d)}
+    pz._keep_local = set(dec)
+    return pz
+
+
+def _triage(pz, values):
+    pz.leak_report = [{"file": "A.txt", "type": "REVIEW", "value": v,
+                       "where": "p.1:1"} for v in values]
+    pz.confirm_findings(log)
+    return [r["value"] for r in pz.leak_report]
+
+
+def test_a_phrase_made_only_of_kept_words_stops_being_a_row():
+    pz = _pz_with_keeps([("Labor", "never"), ("Business Manager", "never")])
+    assert _triage(pz, ["Business Manager", "Labor"]) == []
+
+
+def test_a_real_name_beside_a_kept_word_is_still_asked_about():
+    """Reduced, not dropped whole: the question in "Labor Rasho" is "Rasho"."""
+    pz = _pz_with_keeps([("Labor", "never")])
+    assert _triage(pz, ["Labor Relations Leader", "Labor Rasho"]) == [
+        "Relations Leader", "Rasho"]
+
+
+def test_no_original_text_is_needed():
+    """Unlike a stand-in, a kept word is the operator's own declaration — there
+    is nothing to check it against, so the reduction runs with no evidence
+    recorded at all."""
+    pz = _pz_with_keeps([("Labor", "never")])
+    assert not pz._orig_words
+    assert _triage(pz, ["Labor"]) == []
+
+
+def test_a_braced_keep_reduces_the_same_way():
+    pz = _pz_with_keeps([("Mulliken Medical Center", "{Medical Center}")])
+    assert _triage(pz, ["Medical Center", "Medical Center Rasho"]) == ["Rasho"]
+
+
+def test_a_soft_no_keep_does_not_strip_a_phrase():
+    """A `no` is released inside a name run precisely because the word may be
+    part of a party there, so a phrase carrying one can still be a real leak
+    and must still be asked about."""
+    pz = _pz_with_keeps([("Cal", "no")])
+    assert _triage(pz, ["Cal Equipment"]) == ["Cal Equipment"]
+
+
+def test_the_review_list_is_reduced_too():
+    pz = _pz_with_keeps([("Labor", "never")])
+    pz.review = [("name", "Labor Relations"), ("name", "Marcus Ingram")]
+    pz.confirm_findings(log)
+    assert pz.review == [("name", "Relations"), ("name", "Marcus Ingram")]
+
+
+def test_the_exact_value_never_becomes_a_row(tmp_path):
+    """The half that always worked, pinned: a decided KEEP is excluded from the
+    worksheet outright (it lives on the master KEEP sheet instead)."""
+    dec = _decision("Gregory Yu", "never")
+    P._pn_write_leak_report(
+        tmp_path, [{"file": "A.txt", "type": "LEAK", "value": "Gregory Yu",
+                    "where": "p.1:1"}], log, dec, cfg={})
+    assert not (tmp_path / "LEAKS.xlsx").exists()

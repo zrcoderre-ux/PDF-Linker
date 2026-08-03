@@ -13523,6 +13523,53 @@ class Pseudonymizer:
                 return True
         return False
 
+    def _strip_words(self, value, drop):
+        """`value` with every word `drop(piece, base)` accepts removed, keeping
+        the separators around what stays. Returns the value UNCHANGED when
+        nothing was dropped, and "" when nothing alphanumeric is left. Shared by
+        the two reductions below so a finding is reduced the same way whichever
+        rule accounts for a word."""
+        out, removed = [], False
+        for piece in re.split(r"(\W+)", _NFKC(str(value))):
+            base = _pn_word_base(piece)
+            if base and drop(piece, base):
+                removed = True
+                continue
+            out.append(piece)
+        if not removed:
+            return str(value)
+        rest = re.sub(r"\s+", " ", "".join(out)).strip(" \t,.;:'\"()[]-")
+        return rest if re.search(r"[A-Za-z0-9]", rest) else ""
+
+    def _kept_remainder(self, value):
+        """`value` with NUCLEAR-kept words removed — the words the operator
+        typed `never` or `{braces}` against.
+
+        A worksheet row is a QUESTION, and this tier is the one where the
+        operator has already answered it in the strongest terms available:
+        "this can never reveal anything, in this or any folder". So a finding
+        made of nothing else is a question no answer changes — `yes` would fake
+        a value they said never to fake, `no` is already what is happening —
+        and it came back on every re-run, because the worksheet only ever
+        suppressed the EXACT value a decision named while the high-recall
+        review scans go on flagging every PHRASE that contains it ("Labor" is
+        kept; "Labor Relations Leader" is a new row, and so is every other
+        phrasing the documents use).
+
+        Reduced rather than dropped whole, for the reason `_real_remainder` is:
+        a real name standing beside a kept word is still a leak, and the
+        question in it is the name. Needs no ORIGINAL to check against — unlike
+        a stand-in, a kept word is the operator's own declaration.
+
+        Only the NUCLEAR tier. A soft `no` keep is released inside a name run
+        precisely because the word may be part of a party there, so a phrase
+        carrying one can still be a genuine leak and must still be asked
+        about."""
+        keep = frozenset(getattr(self.registry, "keep_words", ()) or ())
+        if not keep:
+            return str(value)
+        return self._strip_words(value, lambda _piece, base: base in keep)
+
     def _real_remainder(self, value):
         """`value` with this run's OWN STAND-INS removed — the part that is
         actually a question for the operator. "" when nothing real is left.
@@ -13546,35 +13593,36 @@ class Pseudonymizer:
         # it every stand-in would look absent and every finding would be gutted.
         if not known or not self._orig_words:
             return str(value)
-        out, removed = [], False
-        for piece in re.split(r"(\W+)", _NFKC(str(value))):
-            base = _pn_word_base(piece)
-            if (base and _pn_word_is_own_fake(piece, known)
-                    and base not in self._orig_words):
-                removed = True
-                continue
-            out.append(piece)
-        rest = re.sub(r"\s+", " ", "".join(out)).strip(" \t,.;:'\"()[]-")
-        if not removed:
-            return str(value)
-        return rest if re.search(r"[A-Za-z0-9]", rest) else ""
+        return self._strip_words(
+            value, lambda piece, base: (_pn_word_is_own_fake(piece, known)
+                                        and base not in self._orig_words))
 
     def confirm_findings(self, log=None):
-        """Reduce every leak / review finding to the part the ORIGINAL text can
-        account for, and drop the ones it disproves entirely. Returns the values
-        that went away.
+        """Reduce every leak / review finding to the part still worth asking
+        about, and drop the ones nothing is left of. Returns the values that
+        went away.
 
-        The one check that can tell the tool's own output from the document's by
-        EVIDENCE rather than inference — so it also stops such a value being
-        marked `yes` and minted into an authoritative term, which is how one
-        folder came to rename a cited decision."""
-        if not self._orig_words:
+        Two reductions, in order, both of which only ever REMOVE a word:
+          * `_kept_remainder` — the operator has already answered for a
+            NUCLEAR-kept word ("never" / `{braced}`), in this folder and every
+            other; and
+          * `_real_remainder` — the ORIGINAL text says a word is this run's own
+            stand-in and not the document's. The one check that can tell the
+            tool's output from the document's by EVIDENCE rather than
+            inference, so it also stops such a value being marked `yes` and
+            minted into an authoritative term, which is how one folder came to
+            rename a cited decision."""
+        if not self._orig_words and not getattr(self.registry, "keep_words", ()):
             return []
+
+        def reduce(value):
+            return self._real_remainder(self._kept_remainder(value))
+
         dropped, seen = set(), set()
         keep_rows = []
         for row in self.leak_report:
             value = str(row.get("value", ""))
-            rest = self._real_remainder(value)
+            rest = reduce(value)
             if not rest:
                 dropped.add(value)
                 continue
@@ -13589,7 +13637,7 @@ class Pseudonymizer:
         self.leak_report = keep_rows
         keep_review, seen_r = [], set()
         for c, s in self.review:
-            rest = self._real_remainder(str(s))
+            rest = reduce(str(s))
             if not rest:
                 dropped.add(str(s))
                 continue
@@ -13600,16 +13648,16 @@ class Pseudonymizer:
         self.review = keep_review
         # `leaked` holds tracked REAL values, so a remainder makes no sense
         # there — but a value the original never had must not gate delivery.
-        gone = {v.lower() for v in dropped
-                if not self._real_remainder(v)}
+        gone = {v.lower() for v in dropped if not reduce(v)}
         self.leaked -= gone
         for f, vals in list(self.leaked_by_file.items()):
             self.leaked_by_file[f] = vals - gone
         if dropped and log:
             log.info(f"  Pseudonymize: {len(dropped)} flagged value(s) reduced to "
-                     f"their real part or dropped — this run's own stand-ins are "
-                     f"absent from the ORIGINAL text and are not leaks "
-                     f"({', '.join(sorted(dropped)[:6])})")
+                     f"their real part or dropped — a word marked never (or "
+                     f"brace-kept) is the operator's own answer, and this run's "
+                     f"own stand-ins are absent from the ORIGINAL text; neither "
+                     f"is a leak ({', '.join(sorted(dropped)[:6])})")
         return sorted(dropped)
 
     def note_leaks(self, reals):
