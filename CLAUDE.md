@@ -41,6 +41,24 @@ registry's used-pool and its per-slot memos — name/entity tokens, domains, AND
 (because they are re-derived through their own slots) `caseno` and the
 number-stripped `street` identity — so a value written a second way in the new
 document folds onto the fake already in the key.
+**…except a RECYCLED name, on a re-run that finds triage still pending.** Pinning
+is what a reused key is FOR, so exactly one thing overrides it. When the pool
+runs out it mints `<pool word><n>` — "Deverell5", "quenby3@postbox9.org" — and
+the key then pins that forever, in a document a judge reads. But leak triage
+PENDING (`_pn_triage_pending`: a quarantined `*.txt.LEAK`, or a worksheet row
+with nothing typed in its Fix? cell) is the run's evidence that the folder was
+never handed on: the gate held an export, or the operator has not answered yet,
+so no draft has been written against these names and a stand-in can still move
+for free. `_pn_load_key(remint_recycled=True)` then DROPS such a binding whole —
+no term, no memo, its word left out of the used-pool — and the value is drawn
+again, landing on a clean word now that the pool has been enlarged.
+`_pn_recycled_fake` is deliberately narrow: a POOL WORD hard against a number,
+which is the only shape the exhausted-pool fallback mints. A house number, a
+case number and a production stamp all carry digits and none of them qualifies.
+Read BEFORE this run writes anything, so it describes the state the operator
+left behind, and NEVER consulted by `--fix-leaks` — that pass works on text that
+is already scrubbed and never reopens the PDFs, so a fake it moved would be left
+standing in the export with nothing to reverse it.
 **The key pins every AUTHORITATIVE binding, matched or not.** `write_key` used
 to write only rows that matched, so a party the template names but this batch
 never mentioned had no row — and the fake was already minted (every term gets
@@ -112,7 +130,8 @@ not come back to life just because it is also a template row.
 
 **Correcting the key in place / durable KEEP store.** The `Replacement` column
 of `pseudonym_key.xlsx` accepts the same operator control words the LEAKS `Fix?`
-column does — `no` (keep this Real Value verbatim), a `[bracketed]` keep-spec
+column does — `no` (keep this Real Value verbatim), `never` (the nuclear keep of
+the WHOLE value), a `[bracketed]` keep-spec
 (keep the bracketed part, auto-fake the rest) and a `{braced}` one (same cut,
 stronger promise) — so a mistake baked into the key
 that never surfaced as a leak can be fixed where it lives (`_pn_load_key` returns
@@ -128,8 +147,9 @@ never touches "California"):
 - **`keep_strict`** (a bracketed keep-spec part) — "this fragment is never a
   name": kept even next to names, so `[Plaintiff]` stays in "Plaintiff John Doe"
   and `[Attached]` stays in "Jack Gerlach Attached".
-- **`keep_nuclear`** (a `{braced}` part) — "this can never reveal anything":
-  never faked in ANY folder, not even inside a party name. See below.
+- **`keep_nuclear`** (a `{braced}` part, or the whole value via `never`) — "this
+  can never reveal anything": never faked in ANY folder, not even inside a party
+  name. See below.
 
 A keep normally loses to a **full party match** — a kept word inside a
 `_PN_PARTY_OVERRIDE_CATS` (person/entity/case_number) term is released so the real
@@ -171,6 +191,28 @@ what to keep, so it neither seeds a word nor is silently applied — it falls
 through as an explicit replacement (which would write a literal "{Law}" into the
 export) and is WARNED about. The master KEEP sheet types a braced row
 `KEEP-ALWAYS` (`_PN_KEEP_NUCLEAR_TYPE`).
+**`never` is that same nuclear keep over the WHOLE value** (`_PN_NEVER_CONTROL` /
+`_pn_is_never_cell`), which is what the operator means most of the time and what
+braces make tedious — re-typing a long value inside them is also a chance to
+mistype it, and a brace whose text is not part of its value keeps nothing and
+falls through as a literal replacement. It is normalised at the two places a
+control word is read (`_pn_parse_decision_rows`, `_pn_load_key` — plus that
+function's pre-scan, so the words land on the registry before any row is
+processed) into the decision `{whole value}` already produced, so nothing
+downstream distinguishes them; braces keep their job of nuking only PART of a
+value, and still work on a single word. The word is stored back VERBATIM rather
+than expanded into a brace spec, so the master sheet keeps saying what was typed.
+**And the party override yields to a keep that COVERS the party match.** The
+override's justification — it costs a nuclear keep nothing, because composition
+keeps the word — holds only while some word of the party is still left to fake:
+`_pn_fake_person` / `_pn_fake_entity_parts` DROP the keep rather than return the
+name itself ("The Law Firm" must not map onto itself). So a whole-value nuclear
+keep on a party was released and then faked whole, and `never` meant its opposite
+for the values it is most often typed against. `_keep_spans` passes
+`party_wider_only` for the nuclear tier: a party match lying entirely inside the
+kept span releases nothing, one that reaches beyond it still does (`never` on
+"Doe" keeps the word and still fakes "John Doe" as "Yorke Doe"). Nothing is left
+in the clear that the operator did not name.
 
 **The KEEP store is a SINGLE cross-folder sheet**, the `KEEP` tab of the master
 workbook (`_pn_master_path`, next to the config or `PDF_LINKER_MASTER` /
@@ -227,13 +269,45 @@ the party), so its row stays reversible.
 
 ## Pseudonymization pipeline (the privacy-critical half)
 
-- **Fake pools** (`_PN_NAME_WORDS` ~190 surnames, `_PN_ENTITY_WORDS` ~110): drawn
+- **Fake pools** (`_PN_NAME_WORDS` 695 surnames, `_PN_ENTITY_WORDS` 108,
+  `_PN_STREET_NAMES` 55, `_PN_EMAIL_DOMAINS` 32): drawn
   without replacement per case, so they must stay ahead of a real filing's
   distinct name tokens (parties + counsel + staff + every declarant + e-mail
   display name) or the registry mints ugly numbered stand-ins ("Corwin Vance3",
   and in body text "HENDRY2 CORPORATIOLORNE10"). Keep the four pools
   (name/entity/city/street) disjoint (`TestPoolsAreDisjoint`) and every added
   surname a valid `_pn_is_name_token`.
+  **Size them by MEASURING a delivered key, not by guessing.** The largest
+  folder seen needed **305 distinct name draws** — and 94 of its 1,042 rows were
+  e-mail DISPLAY NAMES, which is the quiet bulk nobody predicts — against a pool
+  of 192, so it recycled 684 tokens deep enough to reach "Deverell5". The same
+  key spent 19 of 20 STREET names and drove four e-mail domains to
+  "letterbox17", while the ENTITY pool used 11 of 108: the pools do not run out
+  together, and only the one that ran out needs growing. A test that hard-codes
+  a pool word (an expected fake) breaks on every resize — read the fake back
+  from the run instead.
+  **A pool word must never be a near-twin of another** (OSA distance ≥2 across
+  every pool): the typo fold deliberately mints a misspelling of an existing
+  fake, so two pool words one edit apart make a real draw indistinguishable from
+  a folded one, and `_report_minted_misspellings` promises that a misspelling it
+  names is ours. Enforced by `test_no_new_near_twin_pool_words`, which carries
+  the **21 pairs that predate the rule** (Radley/Ridley, Gable/Sable,
+  Waverly/Waverley…) as a named exception list rather than tolerating them
+  silently: those words are already in circulation in delivered keys, so
+  retiring them is a churn decision and not a bug fix. The assertion's job is
+  that the list never grows.
+  **Every pair of pools is disjoint**, not just city-vs-the-rest — the original
+  three assertions only ever asked about cities, so "Juniper" and "Larkspur" sat
+  in the entity AND street pools for as long as both existed: one stand-in that
+  is a company in one key row and a street in another. When a word has to move,
+  substitute it IN PLACE: `_pn_rng` shuffles INDICES, so a same-length list
+  changes only the draws that landed on the slot that changed, and every other
+  binding a re-run derives is untouched.
+  **The pools are COPIED into `DeAnonymize.bas`** (`PseudonymPool` /
+  `EmailDomainPool` in the My-Macros repo), where they drive the residual-fake
+  highlighter — the last net before a document is shared. A fake drawn from a
+  word that copy lacks is a pseudonym that ships unflagged, so growing a pool
+  here is only half the change.
 - **OCR/typo folding** (`_PnFakeRegistry.token`): a name token near an already-
   bound token (min length `_PN_NAME_FOLD_MIN`) folds onto a *typo of that token's
   fake* (`_pn_typo_variants`), so "Palladina"/"Pallading" read as typos of the one
@@ -482,6 +556,28 @@ the party), so its row stays reversible.
   ("O'Brien") is not a possessive and stays in the core. `_pn_load_key` repairs
   a divergent possessive row an older build wrote, folding it onto the base
   binding — but only when the base row is there to be authoritative.
+- **`'` and `’` ARE THE SAME CHARACTER, and the three places that disagreed
+  each failed differently.** Everything above is written with the straight
+  mark; a filing written in Word carries the typographic one, so the two meet
+  in every folder — the E-Court spreadsheet exports `'`, the PDF says `’`.
+  (1) `_PN_WORD_RE` kept `'` inside a word and not `’`, so "GREEN’S" read as
+  "GREEN" plus a one-letter word "S" — and a single letter is kept verbatim by
+  `_pn_fake_person`, which is indistinguishable from a middle INITIAL, so
+  `_pn_align_initials` handed the possessive the first letter of the fake the
+  middle name got: **"RACHEL GREEN’S" -> "RIDLEY YEARDLEY’H"**. The same split
+  made "O’Brien" an initial "O" plus a surname. (2) `_pn_is_name_token` did its
+  own strip-and-`removesuffix("'s")` instead of `_pn_word_base`, so "Green's"
+  reduced to "green" and was rightly refused a bare token (a common-word
+  surname) while "Green’s" reduced to "green’s", matched no list, and became
+  one — a token whose FAKE carries a possessive, then applied to every
+  near-miss spelling ("Grreen" -> "Yeardley’s"). (3) `_pn_build_pattern`
+  matched the mark LITERALLY, so a term never met the other spelling at all:
+  "Rachel Green's Trust" left "RACHEL GREEN’S TRUST" standing whole and
+  "Sean O'Brien" left "O’Brien" beside a faked given name — neither reported,
+  because `_surviving_records` scans with that same pattern, so replacement and
+  detection agreed and both were blind. `_NFKC` does not fold them (distinct
+  characters, not a compatibility pair), so each site has to: the marks live in
+  `_PN_APOS` / `_PN_APOS_CLASS` and a pattern matches either.
 - **An INITIAL agrees with the fake of the name it abbreviates.** A filing
   writes one attorney both ways, and only one of the two forms was faked:
   `STEVEN W. BURT -> AMBERLY W. YEARDLEY` beside
@@ -655,6 +751,31 @@ the party), so its row stays reversible.
   local worksheet never retired it either. Scoped to the categories a keep
   survives in — a keep is RELEASED inside a full party match, so a
   `_PN_PARTY_OVERRIDE_CATS` real still standing was faked nowhere and IS a leak.
+  **…and the suppression is EXACT-VALUE, so a phrasing the scans invent comes
+  back** (`_all_words_kept`, run from `confirm_findings` beside
+  `_real_remainder`). The worksheet drops a row whose value carries a KEEP
+  decision, but the high-recall scans go on flagging every PHRASE that contains
+  the kept word, and each phrasing is a distinct value with no decision of its
+  own: `never` on "Labor" leaves "Labor Relations Leader", "Senior Labor
+  Counsel" and every other wording to be answered again — questions no answer
+  changes, since `yes` would fake a value the operator said never to fake and
+  `no` is already what is happening. A finding made of NOTHING BUT nuclear-kept
+  words is now dropped. It needs no ORIGINAL to check against — a kept word is
+  the operator's own declaration, not an inference — so unlike the evidence
+  pass it runs in a folder that kept no unscrubbed copy.
+  **Dropped WHOLE, never reduced — the opposite of `_real_remainder`, and the
+  reason is which text is the document's.** A stand-in is not in the source at
+  all, so cutting it out leaves the part that IS there; a kept word is the
+  document's own text, so cutting it out yields a value matching nothing in the
+  export — unlocatable, and on an opaque value plainly wrong. A real master
+  sheet's nuclear words included "com", "www", "no", "n", "and" and "the",
+  harvested from braced URLs and addresses: reducing turned "553.com" into
+  "553" and a benefits URL into "//sir.int.benefitcenter./…". So a phrase
+  carrying a real name beside a kept word stays exactly as found, and marking
+  it `yes` is safe because the composing faker keeps the kept word anyway
+  ("Labor Rasho" -> "Labor Yeardley"). NUCLEAR only: a soft `no` keep is
+  released inside a name run precisely because the word may be part of a party
+  there, so a phrase carrying one can still be a real leak.
   These scans must never re-flag the run's OWN fakes: `_pn_word_is_own_fake`
   recognises a bare fake ("Keswick") AND a welded one where a splice glued the
   fake to a neighbour ("CORPORATIOLORNE10" carries "lorne10", "POSTBOX4.ORGPANY"
@@ -741,6 +862,8 @@ the party), so its row stays reversible.
   distinct value**: a name that leaks across many files is aggregated into a
   single row (files + locations merged) so the operator decides it once, not
   once per file. The **Fix?** column round-trips: `yes`=auto-fake, `no`=leave,
+  `never`=never fake this value, in this or any folder (the nuclear keep, on the
+  dropdown beside yes/no),
   **any other text = an explicit operator-typed replacement**, and
   **`[bracketed]` text naming part of the value = keep that part verbatim and
   auto-fake the rest** (`_pn_bracket_keep`; "Raytheon's [Human Resources]" fakes
@@ -1336,9 +1459,28 @@ is **COMBINED** into single files that say so in their own first line, list
 their members, and hold each document in full behind its own DOCUMENT banner.
 Nothing is dropped and nothing is shortened; the parts are removed only once
 the combined file is safely written, so `Text Files` is exactly the deliverable
-set and nobody has to work out which of the files in front of them to skip. The
-`Original Text` sibling (real names, never shared) is left per-document — the
-cap is about what gets uploaded.
+set and nobody has to work out which of the files in front of them to skip.
+
+**The `Original Text` sibling is combined too** (`deliverable=False`), even
+though nothing in it is ever uploaded. The cap is not about that folder; the
+SHAPE is. A case that delivers 20 exports and keeps 34 do-not-share originals
+beside them is two different shapes of one case, and "the original of this
+export" stops being one file in the same place — bookkeeping the operator has to
+carry in their head, which is the same thing this pass exists to remove. The
+grouping is derived from that folder's OWN filenames rather than mirrored from
+the deliverable's, because the two folders do not share names: an export's
+filename is pseudonymized and the reference copy keeps the source PDF's real
+stem. The rules are the same and a part marker survives pseudonymization, so the
+split normally comes out the same; where it does not, each file still names its
+own members in its header. Its header says THAT, not "only 20 files can be
+uploaded" (`_combine_original_note`) — and the deliverable's header is unchanged
+to the byte, because a folder already sent must still reproduce. The
+pseudonymizer is NEVER passed on that pass: `_combine_remap_tracking` moves the
+leak gate's per-file bookkeeping onto the combined file, and these files are
+real names by design — never tracked, never quarantined. Harmless for the
+evidence path too (`--fix-leaks` reads this folder via `note_original`): a
+combined file can only ADD words (the banners), and `_real_remainder` only ever
+removes a word ABSENT from the original, so a finding is kept and never dropped.
 
 **Which files, in the operator's two rules.** Rule ONE
 (`_combine_same_name_groups`): the same name with a part marker after it —

@@ -92,10 +92,13 @@ def test_a_loaded_binding_is_never_realigned():
 # ── the same disagreement in prose, from a single key row ───────────────────
 
 def test_the_abbreviated_spelling_is_registered():
+    # Read the spelled-out fake back rather than naming pool words: the pools
+    # are sized to the largest case seen, so which word a name draws moves
+    # whenever they grow. What must hold is the AGREEMENT between the forms.
     _reg, _terms, people = _built(["Steven Wayne Burt"])
-    assert people["Steven Wayne Burt"] == "Amberly Ondine Yeardley"
-    assert people["Steven W. Burt"] == "Amberly O. Yeardley"
-    assert people["Steven W Burt"] == "Amberly O Yeardley"
+    given, middle, surname = people["Steven Wayne Burt"].split()
+    assert people["Steven W. Burt"] == f"{given} {middle[0]}. {surname}"
+    assert people["Steven W Burt"] == f"{given} {middle[0]} {surname}"
 
 
 def test_every_spelling_in_the_text_agrees():
@@ -106,8 +109,10 @@ def test_every_spelling_in_the_text_agrees():
                    "did STEVEN W BURT and Mr. Burt.")
     assert "Burt" not in out and "Steven" not in out
     assert " W. " not in out and " W " not in out
+    _reg, _terms, people = _built(["Steven Wayne Burt"])
+    middle_letter = people["Steven Wayne Burt"].split()[1][0]
     middles = {w for w in out.replace(".", " ").split() if len(w) == 1}
-    assert middles <= {"O"}
+    assert middles <= {middle_letter}
 
 
 def test_the_abbreviated_spelling_is_synthetic():

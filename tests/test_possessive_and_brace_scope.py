@@ -46,8 +46,10 @@ def test_the_text_reads_as_one_person():
     out = pz.apply("Rasho Doe filed. RASHO'S opposition. Rasho's brief.")
     assert "Rasho" not in out and "RASHO" not in out
     # Casing follows the document, so compare the names themselves.
-    stems = {w.rstrip("'S").rstrip("'s").lower() for w in out.split()
-             if w.endswith(("'s", "'S"))}
+    # removesuffix, not rstrip: a fake that itself ends in "s" ("Strangeways")
+    # loses its own last letter to a character-set strip.
+    stems = {w.removesuffix("'s").removesuffix("'S").lower()
+             for w in out.split() if w.endswith(("'s", "'S"))}
     assert len(stems) == 1
     assert stems.pop() == out.split()[0].lower()
 
@@ -188,3 +190,75 @@ def test_an_ocr_typo_still_folds_onto_a_typo_of_the_same_fake():
     typo = people["cadiilac"]
     assert typo.lower() != bound.lower()                    # still distinct
     assert P._pn_osa_distance(typo.lower(), bound.lower()) <= 2
+
+
+# ── the TYPOGRAPHIC apostrophe ──────────────────────────────────────────────
+# Everything above is written with the straight `'`. A filing written in Word
+# carries `’`, and the tool treated the two as unrelated characters — which
+# broke the possessive three separate ways.
+
+CURLY = "’"
+
+
+def test_a_curly_possessive_is_not_an_initial():
+    """The reported failure: "RACHEL GREEN’S" -> "RIDLEY YEARDLEY’H".
+
+    `_PN_WORD_RE` kept a straight apostrophe inside a word but not a curly one,
+    so "GREEN’S" read as "GREEN" plus a one-letter word "S". A single letter is
+    kept verbatim by `_pn_fake_person`, which is exactly what a middle INITIAL
+    looks like — so `_pn_align_initials` gave the possessive the first letter of
+    the fake the middle name got. A possessive is not a name and has no fake to
+    agree with."""
+    reg = P._PnFakeRegistry()
+    terms = P._pn_build_terms(
+        [f"Rachel Green{CURLY}s", "Rachel Susanna Green"], [], [], registry=reg)
+    people = {t.real: t.fake for t in terms if t.category == "person"}
+    given, _middle, surname = people["Rachel Susanna Green"].split()
+    # The possessive keeps its own letters: the surname's fake, then "’s".
+    assert people[f"Rachel Green{CURLY}s"] == f"{given} {surname}{CURLY}s"
+    pz = P.Pseudonymizer(terms, DET, registry=reg)
+    out = pz.apply(f"RACHEL GREEN{CURLY}S OPPOSITION")
+    assert out == f"{given.upper()} {surname.upper()}{CURLY}S OPPOSITION"
+
+
+def test_both_apostrophes_screen_a_bare_token_the_same_way():
+    """`_pn_is_name_token` stripped only a straight possessive, so "Green's"
+    reduced to "green" and was refused a bare token (a common-word surname)
+    while "Green’s" reduced to "green’s", matched no list, and became one — a
+    token whose FAKE carries a possessive, then applied to every near-miss
+    spelling of the surname ("Grreen" -> "Yeardley’s")."""
+    for apos in ("'", CURLY):
+        reg = P._PnFakeRegistry()
+        _full, bare = P._pn_fake_person(f"Rachel Green{apos}s", reg)
+        assert [b[0] for b in bare] == ["Rachel"], apos
+    assert P._pn_word_base(f"Green{CURLY}s") == "green"
+    assert P._pn_is_name_token(f"Green{CURLY}s") is False
+
+
+def test_an_apostrophe_name_is_one_word():
+    """The same split hit "O’Brien", where the leading "O" became a
+    one-letter word — an initial to everything that reads one."""
+    assert P._PN_WORD_RE.findall(f"O{CURLY}Brien") == [f"O{CURLY}Brien"]
+    reg = P._PnFakeRegistry()
+    full, bare = P._pn_fake_person(f"Sean O{CURLY}Brien", reg)
+    assert CURLY not in full            # the surname is faked whole, not "O’x"
+    assert len(full.split()) == 2
+
+
+def test_a_term_matches_the_other_apostrophe():
+    """The E-Court spreadsheet exports `'`; the filing carries `’`. Matched
+    literally, the party was left standing whole — and `surviving_reals` scans
+    with the same pattern, so nothing reported it either."""
+    reg = P._PnFakeRegistry()
+    terms = P._pn_build_terms(["Rachel Green's Trust", "Sean O'Brien"], [], [],
+                              registry=reg)
+    pz = P.Pseudonymizer(terms, DET, registry=reg)
+    out = pz.apply(f"RACHEL GREEN{CURLY}S TRUST sued. Sean O{CURLY}Brien signed.")
+    for real in ("GREEN", "RACHEL", "Brien", "Sean"):
+        assert real not in out, out
+    # …and the other direction: a term carrying the curly mark matches straight
+    # text, so neither spelling is the privileged one.
+    reg2 = P._PnFakeRegistry()
+    t2 = P._pn_build_terms([f"Sean O{CURLY}Brien"], [], [], registry=reg2)
+    assert "Brien" not in P.Pseudonymizer(t2, DET, registry=reg2).apply(
+        "Sean O'Brien signed.")

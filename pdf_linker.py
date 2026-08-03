@@ -33,7 +33,8 @@ For each *.pdf in the folder (processed from shortest to longest by file size):
      A mistake baked into the pseudonym_key.xlsx (a value it should not have
      faked) can be corrected in place in the key's Replacement column, using the
      same words the LEAKS worksheet's Fix? column accepts: "no" leaves that Real
-     Value verbatim, a [bracketed] keep-spec keeps the bracketed part and
+     Value verbatim, "never" is the nuclear keep of the whole value (below), a
+     [bracketed] keep-spec keeps the bracketed part and
      fakes the rest, and a {braced} keep-spec does the same but with a stronger
      promise (below). These KEEP decisions are recorded to a SINGLE
      cross-folder sheet — the KEEP tab of master_leaks.xlsx — so they are applied
@@ -50,6 +51,9 @@ For each *.pdf in the folder (processed from shortest to longest by file size):
      "Alder Law, P.C." into "Kaldor Law, P.C." rather than letting the firm
      through. It adds to the tool's own built-in list of name furniture
      ("Law Offices of", "& Associates", "the"/"of"), which applies regardless.
+     "never" is that same nuclear keep applied to the WHOLE value, without
+     re-typing it inside braces — so braces stay for the case where only PART
+     of a value gets the nuclear treatment (they still work on a single word).
   1a. Writes a plain-text companion (.txt) for each PDF that has a real text
      layer into a "Text Files" subfolder of the case folder (name overridable
      via text_subfolder in pdf_linker.config), so a text-only copy can be
@@ -5972,14 +5976,118 @@ _PN_NAME_WORDS = [
     "Crandall", "Eldridge", "Fanshawe", "Grimwood", "Harkness", "Loxley",
     "Merton", "Pennington", "Rushton", "Sedgwick", "Tennant", "Waverley",
     "Wharton", "Yeardley",
+    # A third enlargement, measured rather than guessed. The largest folder the
+    # tool has met needed **305 distinct name-pool draws** — parties, counsel,
+    # court staff, every declarant, and 94 e-mail DISPLAY NAMES, which are the
+    # quiet bulk of it — against a pool of 192. So it recycled: "Deverell5",
+    # "Vance5", "Whitlock3 Sackett2", 684 numbered tokens in one key. A numbered
+    # stand-in is not merely ugly, it is the pool telling the run it has nothing
+    # left, and every one of them ships in a document a judge reads. Sized at
+    # ~2.3x the largest case seen so that the next one does not come back here.
+    "Abbotsford", "Ackworth", "Adderley", "Alverstone", "Anstruther",
+    "Applewhite", "Arbuthnot", "Ardleigh", "Armitage", "Ashdown", "Astley",
+    "Atherton", "Attwell", "Aylesworth", "Babbington", "Baddeley",
+    "Bagshaw", "Bainbridge", "Balcombe", "Bardsley", "Barkworth",
+    "Bartholomew", "Battersby", "Beckford", "Bedingfield", "Bellingham",
+    "Benfield", "Beresford", "Berrington", "Bickerton", "Biddulph",
+    "Billingsley", "Birchall", "Blakeney", "Blandford", "Bolingbroke",
+    "Bosworth", "Bracewell", "Braithwaite", "Brancaster", "Brandreth",
+    "Brereton", "Bridgewater", "Brindley", "Bristow", "Broadbent",
+    "Brockhurst", "Broughton", "Buckminster", "Bulstrode", "Burghley",
+    "Burnaby", "Burstall", "Cadogan", "Callender", "Camberwell",
+    "Canfield", "Cantrell", "Cardington", "Carmichael", "Carnforth",
+    "Carstairs", "Cathcart", "Cavendish", "Caxton", "Chalmers", "Chandos",
+    "Charnley", "Chatterton", "Chelmsford", "Cheriton", "Chilcott",
+    "Chillingworth", "Chorley", "Claverhouse", "Cliveden", "Coldwell",
+    "Colgrave", "Collingwood", "Conistone", "Cotterill", "Coverdale",
+    "Crawshaw", "Creighton", "Crossfield", "Culpepper", "Cunliffe",
+    "Curzon", "Dalgleish", "Dalrymple", "Danbury", "Darlington",
+    "Dashwood", "Daventry", "Delamere", "Denbigh", "Derwent", "Devereaux",
+    "Dinsdale", "Ditchfield", "Dorrington", "Doughty", "Drakeford",
+    "Drummond", "Dunstable", "Durward", "Dysart", "Easterbrook",
+    "Eccleston", "Edgecombe", "Elderfield", "Elphinstone", "Elverton",
+    "Endicott", "Erskine", "Etherington", "Everard", "Ewbank",
+    "Fairweather", "Farnham", "Farrington", "Fearnley", "Felsham",
+    "Fennimore", "Ferrers", "Fetherston", "Fitzalan", "Fitzhugh",
+    "Fleetwood", "Flintham", "Fordyce", "Forrester", "Fothergill",
+    "Framley", "Frobisher", "Fulmer", "Gadsby", "Gainsford", "Galbraith",
+    "Gallimore", "Gatliff", "Gawthorpe", "Gedney", "Gilliatt", "Glanville",
+    "Glossop", "Godalming", "Goodenough", "Grafton", "Greenhalgh",
+    "Gresham", "Greville", "Grimshaw", "Grosvenor", "Gulliver", "Guthrie",
+    "Hackforth", "Haddington", "Halliwell", "Hambleton", "Hammersley",
+    "Hardcastle", "Harmsworth", "Harrowgate", "Haslemere", "Hatherleigh",
+    "Haverford", "Hawksmoor", "Haythorne", "Headington", "Heathcote",
+    "Henshaw", "Hepworth", "Herriot", "Hexham", "Hillingdon", "Hindmarsh",
+    "Hobhouse", "Holbrooke", "Hollingsworth", "Holmwood", "Hopcroft",
+    "Hornby", "Horrocks", "Houghton", "Hovingham", "Howarth", "Hulbert",
+    "Hunsdon", "Huntingdon", "Hurstwood", "Hutchings", "Ilchester",
+    "Ingleby", "Inskip", "Isherwood", "Jacoby", "Jardine", "Jeavons",
+    "Jellicoe", "Jephson", "Jesmond", "Jevington", "Jocelyn", "Jolliffe",
+    "Kearsley", "Keighley", "Kelsall", "Kendrick", "Kenilworth", "Kenmare",
+    "Kentridge", "Kerrigan", "Kettering", "Kilbride", "Kilmartin",
+    "Kingscote", "Kinnaird", "Kirkbride", "Knatchbull", "Knowlton",
+    "Kyneston", "Lambourne", "Lanchester", "Landseer", "Langdale",
+    "Lanyon", "Latimer", "Laverock", "Lavington", "Leconfield", "Leighton",
+    "Lennox", "Lethbridge", "Leveson", "Lilburne", "Lindisfarne",
+    "Linthorpe", "Livesey", "Llewellyn", "Lonsdale", "Lovelace", "Lowther",
+    "Lumsden", "Luscombe", "Lyndhurst", "Lyttelton", "Macaulay",
+    "Maidstone", "Mainwaring", "Malvern", "Manningham", "Marchmont",
+    "Markham", "Marchbanks", "Marlborough", "Marston", "Masterman",
+    "Maudsley", "Maulden", "Maynard", "Melbury", "Meriwether",
+    "Micklethwaite", "Middleton", "Mildmay", "Millington", "Milverton",
+    "Minchin", "Mirfield", "Molyneux", "Monkton", "Moorcroft", "Mordaunt",
+    "Morecambe", "Mortimer", "Mountjoy", "Muirhead", "Mulcaster",
+    "Murchison", "Musgrave", "Nasmyth", "Neville", "Newcombe", "Newington",
+    "Nightingale", "Norbury", "Northam", "Nuneaton", "Nuttall",
+    "Oakenshaw", "Oldbury", "Oldcastle", "Ollerton", "Orchardson",
+    "Ormerod", "Osbaldeston", "Osgood", "Otterbourne", "Oughtred",
+    "Overbury", "Oxenham", "Padgett", "Paignton", "Palliser", "Pargeter",
+    "Parminter", "Patchett", "Pattinson", "Peachey", "Pelham",
+    "Pendlebury", "Penhaligon", "Pentreath", "Percival", "Perriman",
+    "Petherbridge", "Pevensey", "Pickersgill", "Pilkington", "Plackett",
+    "Plumstead", "Polkinghorne", "Pomeroy", "Ponsonby", "Poulton",
+    "Prendergast", "Prestbury", "Prideaux", "Pringle", "Purcell",
+    "Pyecroft", "Quarrington", "Quennell", "Quimby", "Quintrell",
+    "Radcliffe", "Ranelagh", "Rathmore", "Ravensworth", "Rawlinson",
+    "Rayburn", "Redfern", "Redgrave", "Rendlesham", "Restarick",
+    "Ribblesdale", "Rickerby", "Riddington", "Rimmington", "Rivenhall",
+    "Robsart", "Rockingham", "Rolleston", "Romilly", "Rookwood",
+    "Roscommon", "Rossiter", "Rothbury", "Rowntree", "Ruddock",
+    "Rushbrooke", "Rutledge", "Saddlington", "Salkeld", "Saltonstall",
+    "Sandbrook", "Sandringham", "Satterthwaite", "Saunderson", "Savernake",
+    "Scarborough", "Seabright", "Seagrave", "Seaton", "Selborne",
+    "Sempill", "Severn", "Shackleton", "Sharnbrook", "Shawcross",
+    "Shelmerdine", "Shenstone", "Sherbourne", "Shipley", "Shrewsbury",
+    "Skelton", "Smallwood", "Snelgrove", "Somerville", "Southwell",
+    "Spofforth", "Stapleton", "Staveley", "Stebbing", "Stenhouse",
+    "Stopford", "Stourton", "Stowell", "Stradbroke", "Strangeways",
+    "Stretton", "Studholme", "Sudeley", "Sunderland", "Sutcliffe",
+    "Swaffield", "Swanwick", "Sydenham", "Symington", "Talbot", "Tarleton",
+    "Tattersall", "Teasdale", "Templeton", "Thelwall", "Thirlwall",
+    "Thistlewood", "Thornbury", "Thrapston", "Throckmorton", "Thurlow",
+    "Tilbury", "Tindall", "Tiverley", "Todhunter", "Tollemache",
+    "Towneley", "Trelawney", "Trenholme", "Trevelyan", "Trewin",
+    "Trumbull", "Tunstall", "Turnbull", "Twyford", "Tyndale", "Tyrwhitt",
+    "Ullswater", "Upcott", "Uppingham", "Urquhart", "Uxbridge",
+    "Vandeleur", "Vansittart", "Varley", "Vaughan", "Ventris", "Verinder",
+    "Vesey", "Villiers", "Vinall", "Voysey", "Wakefield", "Walsingham",
+    "Wanstead", "Warburton", "Wardlaw", "Warnford", "Wavertree", "Weddell",
+    "Welbeck", "Wellesley", "Wemyss", "Wendover", "Wentworth", "Westenra",
+    "Westerham", "Wetherall", "Whalley", "Wheatcroft", "Whichcote",
+    "Whitcombe", "Whittaker", "Wickham", "Widdecombe", "Wilberforce",
+    "Wilbraham", "Willoughby", "Wimborne", "Winchcombe", "Windlesham",
+    "Wingrave", "Winstanley", "Winterbourne", "Wisbech", "Withington",
+    "Wivenhoe", "Woburn", "Wollaston", "Woodbridge", "Woolnough",
+    "Wootton", "Worsley", "Wrenbury", "Wrightson", "Wykeham", "Wyndham",
+    "Yaxley", "Yeovil", "Youlgrave", "Younghusband", "Zouche",
 ]
 _PN_ENTITY_WORDS = [
     "Aldrin", "Brightwater", "Cascadia", "Dunmore", "Everline", "Foxglen",
-    "Granite", "Havenwood", "Ironbridge", "Juniper", "Kestrel", "Lumen",
+    "Granite", "Havenwood", "Ironbridge", "Fernvale", "Kestrel", "Lumen",
     "Meridian", "Northgate", "Oakmont", "Pinnacle", "Quarry", "Redwood",
     "Silverpeak", "Torchlight", "Umbra", "Vantage", "Westmark", "Zephyr",
     "Ambrose", "Beacon", "Cobalt", "Drayton", "Emberly", "Falcon", "Gladstone",
-    "Harborview", "Ivory", "Jetstream", "Kaldor", "Larkspur", "Monarch",
+    "Harborview", "Ivory", "Jetstream", "Kaldor", "Kingsmere", "Monarch",
     "Nimbus", "Orion", "Pembroke",
     # Enlarged for the same reason as _PN_NAME_WORDS: a case with many entity
     # parties, affiliates and firm names outran 40 words and minted
@@ -6175,6 +6283,15 @@ _PN_STREET_NAMES = [
     "Poplar", "Hawthorn", "Linden", "Chestnut",
     "Sequoia", "Cypress", "Alder", "Dogwood", "Hickory", "Rosewood",
     "Foxglove", "Larkspur", "Tamarack", "Sorrel",
+    # 19 of those 20 were spent on ONE folder (53 addresses, 42 distinct), so
+    # the next address on the next street would have started numbering. Same
+    # register: uncommon plant/tree names, none of them a common real street.
+    "Bayberry", "Bilberry", "Blackthorn", "Bracken", "Buckthorn", "Catalpa",
+    "Chicory", "Cinquefoil", "Clematis", "Comfrey", "Elderberry", "Fernbrake",
+    "Gentian", "Hazelnut", "Hornbeam", "Ironbark", "Ivywood", "Marjoram",
+    "Mulberry", "Myrtlewood", "Persimmon", "Quince", "Sagebrush", "Silverbell",
+    "Snowberry", "Sumac", "Tanglewood", "Teasel", "Thornapple", "Trefoil",
+    "Vervain", "Wintergreen", "Witchhazel", "Yarrowleaf", "Yewberry",
 ]
 # Fake localities. The STATE is kept (venue is jurisdictionally meaningful and a
 # two-letter code identifies nobody); the city name and the ZIP are faked, and a
@@ -6191,7 +6308,46 @@ _PN_CITY_NAMES = [
 # NB: there is no fake street-TYPE pool. A road type (Street/Road/Court/Way…) is
 # generic, not identifying, so the real one is always kept — see
 # `_pn_addr_suffix_of`. Only the number and the street NAME are faked.
-_PN_EMAIL_DOMAINS = ["example.com", "mailhaven.net", "postbox.org", "letterbox.co"]
+# Fake e-mail domains. FOUR of them met a folder with 209 addresses across some
+# thirty real domains, so the same recycling that hit the name pool hit this one
+# harder: "quenby3@postbox9.org", "letterbox17". A domain is per-real-domain
+# (`_pn_email_canon` keeps every spelling of one address on one host), so the
+# pool has to cover the DOMAINS a case touches — every firm, every court, every
+# webmail provider, every vendor. Invented labels in the same register.
+_PN_EMAIL_DOMAINS = [
+    "example.com", "mailhaven.net", "postbox.org", "letterbox.co",
+    "postbay.org", "mailglen.net", "inboxvale.com", "mailcrest.net",
+    "penbox.org", "quillbox.net", "mailridge.com", "postgate.net",
+    "letterfield.org", "inboxharbor.com", "mailbrook.net", "postvale.org",
+    "letterglen.co", "mailstead.com", "postholm.net", "inboxmere.org",
+    "mailwick.co", "postloft.com", "letterdale.net", "mailbourne.org",
+    "postcairn.co", "inboxfern.com", "mailthorne.net", "postbriar.org",
+    "letterhollow.co", "mailquarry.com", "postbeacon.net", "inboxlantern.org",
+]
+
+# Every word any pool can hand out, for one question: is this fake a RECYCLED
+# one? A pool that runs out mints `<pool word><n>` (see `_PnFakeRegistry.token`)
+# — "Deverell5", "quenby3", "postbox9" — and that suffix is the only mark it
+# leaves. Nothing else this tool writes has a pool word hard against a number.
+_PN_POOL_WORDS = frozenset(
+    w.lower() for w in (list(_PN_NAME_WORDS) + list(_PN_ENTITY_WORDS)
+                        + list(_PN_STREET_NAMES) + list(_PN_CITY_NAMES)
+                        + [d.split(".")[0] for d in _PN_EMAIL_DOMAINS]))
+_PN_RECYCLED_RE = re.compile(r"([A-Za-z]+)(\d+)")
+
+
+def _pn_recycled_fake(fake):
+    """The recycled stand-in inside `fake` ("Deverell5", "postbox9"), or None.
+
+    A house number, a case number and a production stamp all carry digits, so
+    the test is not "has a digit": it is a POOL WORD immediately followed by
+    one, which is exactly the shape the exhausted-pool fallback mints and a
+    shape nothing else produces (an address keeps its real number, and it is
+    separated from the street by a space)."""
+    for m in _PN_RECYCLED_RE.finditer(str(fake)):
+        if m.group(1).lower() in _PN_POOL_WORDS:
+            return m.group(0)
+    return None
 # Generational and professional/degree suffixes that trail a name — never a name
 # themselves, always kept verbatim ("Jane Smith, M.D." -> "<fake> <fake>, M.D.").
 _PN_SUFFIX_TOKENS = {"jr", "jr.", "sr", "sr.", "ii", "iii", "iv", "v", "esq",
@@ -6218,7 +6374,25 @@ def _pn_is_suffix_token(word):
 # signs) plus Latin Extended-A (U+0100–U+017F); digits and underscores stay out.
 _PN_LAT = "A-Za-zÀ-ÖØ-öø-ÿĀ-ſ"
 _PN_LAT_UPPER = "A-ZÀ-ÖØ-Þ"
-_PN_WORD_RE = re.compile(rf"[{_PN_LAT}][{_PN_LAT}'\-]*")
+# The TYPOGRAPHIC apostrophe belongs in a word exactly as the straight one does,
+# and leaving it out did not merely split a token — it MANUFACTURED AN INITIAL.
+# A filing written in Word carries "GREEN’S", not "GREEN'S", so the word ended
+# as "GREEN" plus a one-letter word "S"; `_pn_fake_person` keeps a single letter
+# verbatim (see there), which is indistinguishable from a middle initial, and
+# `_pn_align_initials` then gave that "initial" the first letter of the fake the
+# middle name got: "RACHEL GREEN’S" -> "RIDLEY YEARDLEY’H". The possessive is
+# not a name and has no fake to agree with. Everything that reads a word already
+# handled both marks (`_pn_word_affixes` strips either possessive,
+# `_pn_word_base` folds on the result), so this is the one place they disagreed
+# — and it also kept "O’Brien" from being one word.
+_PN_WORD_RE = re.compile(rf"[{_PN_LAT}][{_PN_LAT}'’\-]*")
+# The two marks a filing uses interchangeably for one character, in ONE place so
+# every pass agrees on what an apostrophe is (`_pn_word_affixes` strips either
+# possessive, `_PN_WORD_RE` keeps either inside a word, `_pn_build_pattern`
+# matches either in the text).
+_PN_APOS = "'’"
+_PN_APOS_CLASS = "['’]"
+_PN_APOS_RE = re.compile(f"[{_PN_APOS}]")
 
 
 def _pn_build_accent_fold():
@@ -7002,7 +7176,13 @@ def _pn_is_name_token(word):
         return False
     if _pn_is_suffix_token(word):  # "M.D.", "Ph.D.", "Esq" — a suffix, not a name
         return False
-    base = word.strip('.,:;"’\'').lower().removesuffix("'s")
+    # Through the SHARED base, which strips a possessive written with EITHER
+    # apostrophe. Its own strip+removesuffix knew only the straight one, so
+    # "Green's" reduced to "green" and was correctly refused a bare token while
+    # Word's "Green’s" reduced to "green’s", matched no list, and became one —
+    # a token whose fake carries a possessive, applied to every near-miss
+    # spelling of the surname ("Grreen" -> "Yeardley’s").
+    base = _pn_word_base(word)
     return (base not in _PN_NON_NAME_WORDS and base not in _PN_PARTY_ROLE_WORDS
             and base not in _PN_COMMON_WORD_SURNAMES)
 
@@ -9614,8 +9794,19 @@ def _pn_build_pattern(term, *, whole_word, follow=None):
     that lost the space in "Smith Decl." leaves "SmithDecl.", and the declarant
     reference is exactly what that harvester was reading. Everything else still
     needs a word boundary — the LEFT one always holds, which is what stops a
-    short name firing inside a longer word ("Tue" in "Vatue")."""
-    body = r"\s+".join(re.escape(p) for p in _NFKC(term).split())
+    short name firing inside a longer word ("Tue" in "Vatue").
+
+    An APOSTROPHE matches either mark. The two sides of a run disagree about it
+    by default — the E-Court spreadsheet exports a straight `'` and a filing
+    written in Word carries `’` — and a literal match of one against the other
+    finds nothing: "Rachel Green's Trust" left "RACHEL GREEN’S TRUST" standing
+    whole, and "Sean O'Brien" left "O’Brien" beside a faked given name. Neither
+    was reported either, because `_surviving_records` scans with this same
+    pattern: replacement and detection agreed, and both were blind. `_NFKC` does
+    not fold the marks (they are distinct characters, not a compatibility pair),
+    so the pattern has to."""
+    body = _PN_APOS_RE.sub(_PN_APOS_CLASS,
+                           r"\s+".join(re.escape(p) for p in _NFKC(term).split()))
     if whole_word:
         right = rf"(?:(?!\w)|(?={follow}))" if follow else r"(?!\w)"
         body = rf"(?<!\w)(?:{body}){right}"
@@ -10052,7 +10243,7 @@ def _pn_key_looks_like_ours(path):
                  for h in (header or ())[:6]) == _PN_KEY_HEADERS
 
 
-def _pn_load_key(path, registry, log):
+def _pn_load_key(path, registry, log, remint_recycled=False):
     """Load a key THIS tool wrote as authoritative real->fake bindings, seeding
     `registry` so new values can't collide and re-harvested names recompose
     identically. Returns `(terms, key_decisions)` — the list of pre-bound
@@ -10072,7 +10263,11 @@ def _pn_load_key(path, registry, log):
     `[bracketed]` keep-spec (keep the bracketed part verbatim, auto-fake the
     rest). Such a row builds no faking term; the decision is returned in
     `key_decisions` (value_lower -> dict shaped like a leak decision) for the
-    caller to apply and persist."""
+    caller to apply and persist.
+
+    `remint_recycled` DROPS a binding whose fake is a recycled pool word
+    ("Deverell5", "quenby3@postbox9.org") so the value is drawn again from the
+    pool — see `_pn_triage_pending`, which is what decides it is safe."""
     import openpyxl
     wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
     ws = wb.active
@@ -10103,14 +10298,20 @@ def _pn_load_key(path, registry, log):
     nuke = set()
     for row in rows[1:]:
         real, fake = at(row, "real value"), at(row, "replacement")
-        if real in (None, "") or fake in (None, "") or "{" not in str(fake):
+        if real in (None, "") or fake in (None, ""):
             continue
-        # Only a genuine keep-spec counts: braced text that is not part of the
-        # value falls through as an explicit replacement (warned below), and
-        # must not silently nuke a word it never described.
-        if _pn_bracket_keep(str(real), str(fake)) is None:
+        if _pn_is_never_cell(fake):
+            parts = [str(real)]           # "never" braces the WHOLE value
+        elif "{" in str(fake):
+            # Only a genuine keep-spec counts: braced text that is not part of
+            # the value falls through as an explicit replacement (warned below),
+            # and must not silently nuke a word it never described.
+            if _pn_bracket_keep(str(real), str(fake)) is None:
+                continue
+            parts = _pn_keep_spec_parts(str(fake))[1]
+        else:
             continue
-        for part in _pn_keep_spec_parts(str(fake))[1]:
+        for part in parts:
             nuke.update(b for b in (_pn_word_base(w)
                                     for w in _PN_WORD_RE.findall(part)) if b)
     if nuke - set(registry.keep_words):
@@ -10119,7 +10320,7 @@ def _pn_load_key(path, registry, log):
                  f"faked, in any row — {', '.join(sorted(nuke)[:8])}"
                  + (" …" if len(nuke) > 8 else ""))
 
-    terms, seen, key_decisions = [], set(), {}
+    terms, seen, key_decisions, reminted = [], set(), {}, []
     for row in rows[1:]:
         def cell(name):
             i = idx.get(name)
@@ -10137,6 +10338,16 @@ def _pn_load_key(path, registry, log):
             continue
         seen.add((cat, real.lower()))
 
+        # A RECYCLED stand-in, on a run that is allowed to re-assign one: drop
+        # the binding entirely — no term, no memo, and its word left out of the
+        # used-pool — so the value is drawn again below and lands on a clean
+        # pool word. Pinning is what a reused key is FOR, so this is the one
+        # thing that overrides it, and only where the caller has established
+        # that no export has been used yet (`_pn_triage_pending`).
+        if remint_recycled and _pn_recycled_fake(fake):
+            reminted.append((real, fake))
+            continue
+
         # Operator control words typed into the Replacement column (same
         # vocabulary the LEAKS Fix? column accepts). Build no faking term; hand
         # the decision back for the caller to apply (keep-protection / fragment
@@ -10146,6 +10357,15 @@ def _pn_load_key(path, registry, log):
             key_decisions[real.lower()] = {
                 "value": real, "type": "KEEP", "fix": "no", "replacement": None,
                 "fake_values": None, "fixcell": None, "notes": "pseudonym key"}
+            continue
+        if _pn_is_never_cell(ctrl):
+            # The whole Real Value brace-kept, without re-typing it inside
+            # braces. Its words are already on `registry.keep_words` (pre-scan
+            # above), so no fake composed from this key can carry them.
+            key_decisions[real.lower()] = {
+                "value": real, "type": _PN_KEEP_NUCLEAR_TYPE, "fix": "no",
+                "replacement": None, "fake_values": None, "fixcell": ctrl,
+                "notes": "pseudonym key"}
             continue
         if "[" in ctrl or "{" in ctrl:
             frags = _pn_bracket_keep(real, ctrl)
@@ -10336,11 +10556,23 @@ def _pn_load_key(path, registry, log):
     log.info(f"  Pseudonym key REUSED: loaded {len(terms)} binding(s) from "
              f"{path.name} — fakes will match the original run")
     if key_decisions:
-        kept = sum(1 for d in key_decisions.values() if d["fix"] == "no")
-        part = len(key_decisions) - kept
+        never = sum(1 for d in key_decisions.values()
+                    if _pn_is_never_cell(d.get("fixcell")))
+        kept = sum(1 for d in key_decisions.values() if d["fix"] == "no") - never
+        part = len(key_decisions) - kept - never
         log.info(f"  Pseudonym key: {kept} value(s) marked 'no' (keep verbatim)"
+                 + (f", {never} marked 'never' (keep in every folder)"
+                    if never else "")
                  + (f" and {part} bracketed keep-spec(s)" if part else "")
                  + " in the Replacement column will be honored.")
+    if reminted:
+        log.warning(
+            f"  Pseudonym key: {len(reminted)} binding(s) carried a RECYCLED "
+            f"stand-in (the pool had run out and numbered it) and this folder "
+            f"still has leak triage pending, so no export has been used yet — "
+            f"re-assigning them a clean name this run: "
+            + ", ".join(f"{r} (was {f})" for r, f in reminted[:6])
+            + (" …" if len(reminted) > 6 else ""))
     return terms, key_decisions
 
 
@@ -12635,7 +12867,20 @@ class Pseudonymizer:
         A `{braced}` NUCLEAR keep is released by a party match too — and loses
         nothing by it, because the party's fake was COMPOSED with the braced word
         kept verbatim (see `_pn_nuclear_words`). It is collected here so the word
-        also survives every bare token, detector and near-miss variant."""
+        also survives every bare token, detector and near-miss variant.
+
+        …with ONE exception, and it is the whole meaning of `never` (and of a
+        brace around an entire value): a party match that lies ENTIRELY INSIDE
+        the kept text releases nothing. The override's justification is that it
+        costs the nuclear keep nothing — but that holds only while some word of
+        the party is still left to fake. When every word of the party is kept,
+        `_pn_fake_person`/`_pn_fake_entity_parts` drop the keep rather than
+        return the name itself ("The Law Firm" must not map onto itself), so the
+        released span was faked WHOLE and "never fake this value" quietly meant
+        its opposite for the values it is most often typed against — a party
+        name. Nothing is left in the clear that the operator did not name: the
+        kept text covers the entire party match, so releasing it could only fake
+        text already declared safe."""
         if not self.keep_soft and not self.keep_strict and not self.keep_nuclear:
             return []
         # Spans of full party-name matches, which override EITHER kind of keep.
@@ -12647,12 +12892,16 @@ class Pseudonymizer:
                 if m.start() != m.end():
                     party.append((m.start(), m.end()))
 
-        def in_party(s, e):
-            return any(s < pe and ps < e for ps, pe in party)
+        def in_party(s, e, wider_only=False):
+            """A party match overlapping [s,e]. `wider_only` ignores one the kept
+            span already covers — see the nuclear exception above."""
+            return any(s < pe and ps < e
+                       and not (wider_only and s <= ps and pe <= e)
+                       for ps, pe in party)
 
         spans = []
 
-        def collect(values, soft, party_wins=True):
+        def collect(values, soft, party_wins=True, party_wider_only=False):
             for v in sorted(values, key=len, reverse=True):
                 if not v:
                     continue
@@ -12664,7 +12913,7 @@ class Pseudonymizer:
                 for m in re.finditer(r"(?<!\w)" + re.escape(v) + r"(?!\w)",
                                      text, re.IGNORECASE):
                     s, e = m.span()
-                    if s == e or (party_wins and in_party(s, e)):
+                    if s == e or (party_wins and in_party(s, e, party_wider_only)):
                         continue      # a full party match here — party fakes it
                     # A soft `no` keep is also released where the word sits in a
                     # multi-word capitalized name run (a possible party), so only
@@ -12678,7 +12927,7 @@ class Pseudonymizer:
 
         local_strict = self.keep_strict_local & self.keep_strict
         collect(local_strict, soft=False, party_wins=False)
-        collect(self.keep_nuclear, soft=False)
+        collect(self.keep_nuclear, soft=False, party_wider_only=True)
         collect(self.keep_strict - local_strict, soft=False)
         collect(self.keep_soft, soft=True)
         return spans
@@ -13274,6 +13523,60 @@ class Pseudonymizer:
                 return True
         return False
 
+    def _strip_words(self, value, drop):
+        """`value` with every word `drop(piece, base)` accepts removed, keeping
+        the separators around what stays. Returns the value UNCHANGED when
+        nothing was dropped, and "" when nothing alphanumeric is left. Shared by
+        the two reductions below so a finding is reduced the same way whichever
+        rule accounts for a word."""
+        out, removed = [], False
+        for piece in re.split(r"(\W+)", _NFKC(str(value))):
+            base = _pn_word_base(piece)
+            if base and drop(piece, base):
+                removed = True
+                continue
+            out.append(piece)
+        if not removed:
+            return str(value)
+        rest = re.sub(r"\s+", " ", "".join(out)).strip(" \t,.;:'\"()[]-")
+        return rest if re.search(r"[A-Za-z0-9]", rest) else ""
+
+    def _all_words_kept(self, value):
+        """True when EVERY word of `value` is one the operator typed `never` or
+        `{braces}` against — so the finding is made of nothing but text they
+        have already declared can never reveal anything, in this folder or any
+        other.
+
+        A worksheet row is a QUESTION, and this is the one tier where the answer
+        is already on file in the strongest terms the tool accepts. Such a row
+        is unanswerable: `yes` would fake a value they said never to fake, and
+        `no` is already what is happening. It came back on every re-run anyway,
+        because the worksheet only ever suppressed the EXACT value a decision
+        named while the high-recall scans go on flagging every PHRASE that
+        contains it — "Labor" is kept, "Labor Relations Leader" is a new row,
+        and so is every other phrasing the documents use.
+
+        DROPPED WHOLE, never reduced — the opposite of `_real_remainder`, and
+        for a reason. A stand-in is not in the source document at all, so
+        removing it leaves the operator the part that IS there. A kept word is
+        the document's own text: strike it out and the value no longer matches
+        anything, which is both unlocatable and, on a value that is a single
+        opaque string, plain wrong ("553.com" reduced to "553", a URL to
+        "//sir.int.benefitcenter./..."). One master sheet's nuclear words
+        included "com", "www", "no", "n", "and" and "the", harvested from
+        braced URLs and addresses; nothing good comes of cutting those out of a
+        finding. So a phrase carrying a real name beside a kept word stays
+        exactly as found — and marking it `yes` is safe, because the composing
+        faker keeps the kept word verbatim anyway ("Labor Rasho" ->
+        "Labor Yeardley")."""
+        keep = frozenset(getattr(self.registry, "keep_words", ()) or ())
+        if not keep:
+            return False
+        words = [b for b in (_pn_word_base(piece)
+                             for piece in re.split(r"\W+", _NFKC(str(value))))
+                 if b]
+        return bool(words) and all(w in keep for w in words)
+
     def _real_remainder(self, value):
         """`value` with this run's OWN STAND-INS removed — the part that is
         actually a question for the operator. "" when nothing real is left.
@@ -13297,35 +13600,36 @@ class Pseudonymizer:
         # it every stand-in would look absent and every finding would be gutted.
         if not known or not self._orig_words:
             return str(value)
-        out, removed = [], False
-        for piece in re.split(r"(\W+)", _NFKC(str(value))):
-            base = _pn_word_base(piece)
-            if (base and _pn_word_is_own_fake(piece, known)
-                    and base not in self._orig_words):
-                removed = True
-                continue
-            out.append(piece)
-        rest = re.sub(r"\s+", " ", "".join(out)).strip(" \t,.;:'\"()[]-")
-        if not removed:
-            return str(value)
-        return rest if re.search(r"[A-Za-z0-9]", rest) else ""
+        return self._strip_words(
+            value, lambda piece, base: (_pn_word_is_own_fake(piece, known)
+                                        and base not in self._orig_words))
 
     def confirm_findings(self, log=None):
-        """Reduce every leak / review finding to the part the ORIGINAL text can
-        account for, and drop the ones it disproves entirely. Returns the values
-        that went away.
+        """Reduce every leak / review finding to the part still worth asking
+        about, and drop the ones nothing is left of. Returns the values that
+        went away.
 
-        The one check that can tell the tool's own output from the document's by
-        EVIDENCE rather than inference — so it also stops such a value being
-        marked `yes` and minted into an authoritative term, which is how one
-        folder came to rename a cited decision."""
-        if not self._orig_words:
+        Two rules, and they differ in shape for a documented reason:
+          * `_all_words_kept` DROPS a finding made of nothing but NUCLEAR-kept
+            words ("never" / `{braced}`) — the operator's own answer, already
+            on file. Never reduced: those words are the document's own text.
+          * `_real_remainder` REDUCES a finding by this run's own stand-ins,
+            which the ORIGINAL text says are not in the document at all. The
+            one check that can tell the tool's output from the document's by
+            EVIDENCE rather than inference, so it also stops such a value being
+            marked `yes` and minted into an authoritative term, which is how
+            one folder came to rename a cited decision."""
+        if not self._orig_words and not getattr(self.registry, "keep_words", ()):
             return []
+
+        def reduce(value):
+            return "" if self._all_words_kept(value) else self._real_remainder(value)
+
         dropped, seen = set(), set()
         keep_rows = []
         for row in self.leak_report:
             value = str(row.get("value", ""))
-            rest = self._real_remainder(value)
+            rest = reduce(value)
             if not rest:
                 dropped.add(value)
                 continue
@@ -13340,7 +13644,7 @@ class Pseudonymizer:
         self.leak_report = keep_rows
         keep_review, seen_r = [], set()
         for c, s in self.review:
-            rest = self._real_remainder(str(s))
+            rest = reduce(str(s))
             if not rest:
                 dropped.add(str(s))
                 continue
@@ -13351,16 +13655,16 @@ class Pseudonymizer:
         self.review = keep_review
         # `leaked` holds tracked REAL values, so a remainder makes no sense
         # there — but a value the original never had must not gate delivery.
-        gone = {v.lower() for v in dropped
-                if not self._real_remainder(v)}
+        gone = {v.lower() for v in dropped if not reduce(v)}
         self.leaked -= gone
         for f, vals in list(self.leaked_by_file.items()):
             self.leaked_by_file[f] = vals - gone
         if dropped and log:
             log.info(f"  Pseudonymize: {len(dropped)} flagged value(s) reduced to "
-                     f"their real part or dropped — this run's own stand-ins are "
-                     f"absent from the ORIGINAL text and are not leaks "
-                     f"({', '.join(sorted(dropped)[:6])})")
+                     f"their real part or dropped — a word marked never (or "
+                     f"brace-kept) is the operator's own answer, and this run's "
+                     f"own stand-ins are absent from the ORIGINAL text; neither "
+                     f"is a leak ({', '.join(sorted(dropped)[:6])})")
         return sorted(dropped)
 
     def note_leaks(self, reals):
@@ -15685,6 +15989,22 @@ _PN_KEEP_BRACKET_RE = re.compile(r"\[([^\[\]]*)\]")
 # and parsed by the same code, but a different promise — see
 # `_pn_nuclear_words`.
 _PN_KEEP_BRACE_RE = re.compile(r"\{([^{}]*)\}")
+# The NEVER control word: shorthand for bracing the WHOLE value. `{...}` is the
+# only way to say "never fake THIS PART of the value", but the common case is
+# the whole thing — and re-typing a long value inside braces to say so is both
+# tedious and a chance to mistype it (a brace whose text is not part of its
+# value keeps nothing and falls through as a literal replacement). "never" says
+# exactly the same thing about the value the row already names, so it is
+# normalised to the same NUCLEAR decision and nothing downstream sees a
+# difference. It is stored back VERBATIM rather than expanded into a brace spec,
+# so the sheet keeps saying what the operator typed.
+_PN_NEVER_CONTROL = "never"
+
+
+def _pn_is_never_cell(cell):
+    """True when a Fix?/Replacement cell is the bare NEVER control word — the
+    nuclear keep of the whole value (see `_PN_NEVER_CONTROL`)."""
+    return str(cell or "").strip().lower() == _PN_NEVER_CONTROL
 
 
 def _pn_keep_spec_parts(cell):
@@ -15740,10 +16060,16 @@ def _pn_decision_nuclear_parts(d):
     """The `{braced}` part(s) of a decision — the NUCLEAR keep: text the operator
     has declared can never reveal anything, so it is never faked in ANY folder,
     not even inside a party name. `{...}` around the whole value means the whole
-    value. Returns [] when the decision brace-keeps nothing."""
+    value, and so does the bare word `never`. Returns [] when the decision
+    nuclear-keeps nothing."""
     cell = d.get("fixcell")
     if not cell:
         return []
+    if _pn_is_never_cell(cell):
+        # "never" IS the whole value braced — see `_PN_NEVER_CONTROL`. Taken
+        # from the value directly rather than re-parsed out of a synthesized
+        # brace spec, so a value that happens to carry a brace still keeps whole.
+        return [d["value"]] if d.get("value") else []
     braces = _pn_keep_spec_parts(cell)[1]
     if not braces:
         return []
@@ -15790,10 +16116,12 @@ def _pn_parse_decision_rows(rows):
     """Parse the (values_only) rows of a decision sheet — LEAKS or KEEP — into
     {value_lower: {value, type, fix, replacement, fake_values, fixcell, notes}}.
     `fix` is normalised to 'yes'/'no'/''. A Fix? entry that is NOT a reserved
-    control word ('yes'/'no' and the bare y/n shorthands) is one of:
+    control word ('yes'/'no' and the bare y/n shorthands, and 'never') is one of:
       * BRACKETED text that is part of the value — keep the bracketed part
         verbatim, auto-fake the rest (`fake_values` holds the fragment(s)); or
-      * anything else — an explicit typed replacement (`replacement`)."""
+      * anything else — an explicit typed replacement (`replacement`).
+    'never' is the whole value brace-kept: a NUCLEAR keep, recorded as a `no`
+    carrying its own control word in `fixcell` so every nuclear path sees it."""
     if not rows:
         return {}
     hdr = [str(h).strip().lower() if h else "" for h in rows[0]]
@@ -15818,6 +16146,12 @@ def _pn_parse_decision_rows(rows):
             fix, replacement = "yes", None
         elif low in ("no", "n"):
             fix, replacement = "no", None
+        elif low == _PN_NEVER_CONTROL:
+            # The whole value, brace-kept: keep it verbatim in this folder and
+            # every other, even inside a party name. Recorded as a `no` (nothing
+            # is left to fake) whose `fixcell` carries the control word, which is
+            # what `_pn_decision_nuclear_parts` reads to promote it to NUCLEAR.
+            fix, replacement, fixcell = "no", None, raw
         elif low == "":
             fix, replacement = "", None
         else:
@@ -16032,6 +16366,34 @@ def _pn_retire_kept_key_terms(terms, decisions, registry, log):
              f"({', '.join(str(t.real) for t in retired[:6])}) — the re-run key "
              f"carries the corrected value only.")
     return survivors, [str(t.real) for t in retired]
+
+
+def _pn_triage_pending(folder, text_subdir):
+    """True when this folder still has leak triage waiting on the operator: a
+    QUARANTINED export (`*.txt.LEAK`), or a worksheet row with nothing typed
+    into its Fix? cell.
+
+    It answers one question — "can the fakes still move?" A reused key exists to
+    reproduce what was already delivered byte for byte, so a binding is normally
+    untouchable. But triage pending means the folder was never handed on: the
+    gate held an export, or the operator has not answered the worksheet yet, and
+    in either case no draft has been written against these names. That is the
+    one moment a stand-in can be re-assigned for free — which is what makes it
+    possible to repair a RECYCLED name (`_pn_recycled_fake`), the ugly
+    "Deverell5" a pool mints when it runs out.
+
+    Read BEFORE this run writes anything, so it describes the state the operator
+    left behind. Never consulted by `--fix-leaks`: that pass works on text that
+    is already scrubbed and never reopens the PDFs, so a fake it moved would be
+    left standing in the export with nothing to reverse it."""
+    for d in (folder / text_subdir, folder):
+        try:
+            if any(d.glob("*.txt.LEAK")):
+                return True
+        except OSError:
+            continue
+    return any(not d.get("fix") and not d.get("fixcell")
+               for d in _pn_read_leak_decisions(folder).values())
 
 
 def _pn_read_leak_decisions(folder):
@@ -16460,9 +16822,10 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
     try:
         import openpyxl
     except ImportError:
-        lines = ["Potential leaks — set Fix? to yes (auto fake), no (leave it), "
-                 "type the exact replacement, or [bracket] the part to KEEP "
-                 "(the rest is faked)", ""]
+        lines = ["Potential leaks — set Fix? to yes (auto fake), no (leave it "
+                 "here), never (never fake it, in any folder), type the exact "
+                 "replacement, or [bracket] the part to KEEP (the rest is "
+                 "faked)", ""]
         for r in rows:
             mark = {"yes": "[x]", "no": "[-]"}.get(r["fix"], "[ ]")
             lines.append(f"{mark} {r['type']}: {r['value']}  "
@@ -16490,11 +16853,13 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
         fix_col = get_column_letter(
             next(i for i, (h, _k, _w) in enumerate(_PN_LEAK_COLUMNS, start=1)
                  if h.lower().startswith("fix?")))
-        dv = DataValidation(type="list", formula1='"yes,no"', allow_blank=True)
+        dv = DataValidation(type="list", formula1='"yes,no,never"',
+                            allow_blank=True)
         dv.showErrorMessage = False   # offer the dropdown but ALSO allow a typed
         dv.showInputMessage = True    # replacement in the cell, not just yes/no
         dv.promptTitle = "Fix?"
-        dv.prompt = ("yes = auto fake · no = leave it · type the exact "
+        dv.prompt = ("yes = auto fake · no = leave it here · never = never fake "
+                     "this value, in this or any folder · type the exact "
                      "replacement to use · or [bracket] the part to KEEP and "
                      "the rest is faked")
         ws.add_data_validation(dv)
@@ -16506,7 +16871,8 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
         _remove((txt, *stale))
         log.warning(f"  Wrote leak-review worksheet: {xlsx.name} — {active} "
                     f"item(s) to triage (Fix?: 'yes' scrubs with an auto fake, "
-                    f"'no' leaves it, or type the exact replacement to use).")
+                    f"'no' leaves it here, 'never' leaves it in every folder, "
+                    f"or type the exact replacement to use).")
     except OSError as ex:
         log.warning(f"  Could not write leak-review worksheet: {ex}")
 
@@ -17297,10 +17663,12 @@ def _combine_doc_banner(i, n, name):
     return f"{'#' * 8} DOCUMENT {i} OF {n} IN THIS COMBINED FILE: {name} {'#' * 8}"
 
 
-def _combined_body(members, cap):
+def _combined_body(members, cap, note=None):
     """Assemble a combined export. `members` is `[(name, path, text), ...]` —
     `text` carries a section forward from a previous combined file whose
-    document no longer has a separate export of its own.
+    document no longer has a separate export of its own. `note` replaces the
+    two header lines that say WHY the file was combined (the unscrubbed
+    reference copies are not the thing being uploaded).
 
     Byte-stability matters as much here as it does for a pseudonym: a folder
     re-run without changes must reproduce the file the operator already sent,
@@ -17309,16 +17677,17 @@ def _combined_body(members, cap):
     n = len(members)
     head = [_COMBINE_RULE,
             f"# {_COMBINE_MARK} — {n} documents in one file",
-            "#",
+            "#"]
+    head += list(note) if note else [
             f"# Only {cap} file{'' if cap == 1 else 's'} can be uploaded at "
             f"once and this case folder holds more,",
             "# so the documents listed below were combined into this single "
-            "file.",
-            "# NOTHING was dropped or shortened: each one appears in full, in "
-            "the",
-            "# order listed, behind its own DOCUMENT banner.",
-            "#",
-            "# Documents in this file:"]
+            "file."]
+    head += ["# NOTHING was dropped or shortened: each one appears in full, in "
+             "the",
+             "# order listed, behind its own DOCUMENT banner.",
+             "#",
+             "# Documents in this file:"]
     head += [f"#   {i}. {name}" for i, (name, _p, _t) in enumerate(members, 1)]
     head += ["#",
              "# Page numbering restarts at every DOCUMENT banner: a 'p.3:7' "
@@ -17386,9 +17755,19 @@ def _combine_remap_tracking(pseudonymizer, combined, members, log):
 
 
 def _combine_exports_for_upload(folder, text_subdir, cfg, log,
-                                pseudonymizer=None):
+                                pseudonymizer=None, deliverable=True):
     """Combine this folder's .txt exports down to the upload cap. Returns
     `[(combined path, [member names]), ...]`.
+
+    `deliverable=False` runs the same pass over the UNSCRUBBED reference copies
+    (`original_text_subfolder`), which are never uploaded and never quarantined
+    — see the caller. The grouping there is derived from that folder's OWN
+    filenames rather than mirrored from the deliverable's, because the two
+    folders do not share names: an export's filename is pseudonymized and the
+    reference copy keeps the source PDF's real stem. The rules are the same and
+    a part marker survives pseudonymization, so the split normally comes out the
+    same anyway; where it does not, each combined file still names its own
+    members in its header, which is the only thing the operator reads it for.
 
     Order of business, and why:
 
@@ -17503,22 +17882,29 @@ def _combine_exports_for_upload(folder, text_subdir, cfg, log,
 
     out = []
     header_cap = cap or _COMBINE_DEFAULT_CAP
+    note = None if deliverable else _combine_original_note(header_cap)
     taken = keep_names | {q.name for q in free}
     for entry in plan:
         entry["name"] = _combine_unique_name(entry["name"], taken)
         path = _combine_write_group(text_dir, entry, header_cap, log,
-                                    pseudonymizer)
+                                    pseudonymizer, note)
         if path is not None:
             out.append((path, [m[0] for m in entry["members"]]))
     if out:
         docs = sum(len(m) for _p, m in out)
-        log.warning(
-            f"  Upload cap: at most {header_cap} files can be uploaded, so "
-            f"{docs} of this folder's documents are delivered inside "
-            f"{len(out)} combined file(s) "
-            f"({', '.join(p.name for p, _m in out[:4])}"
-            + (" …" if len(out) > 4 else "") + "). Each names its own members "
-            f"in its header; nothing was dropped or shortened.")
+        names = (", ".join(p.name for p, _m in out[:4])
+                 + (" …" if len(out) > 4 else ""))
+        if deliverable:
+            log.warning(
+                f"  Upload cap: at most {header_cap} files can be uploaded, so "
+                f"{docs} of this folder's documents are delivered inside "
+                f"{len(out)} combined file(s) ({names}). Each names its own "
+                f"members in its header; nothing was dropped or shortened.")
+        else:
+            log.info(
+                f"  Upload cap: {text_subdir} — the do-not-share reference "
+                f"copies were combined the same way: {docs} document(s) in "
+                f"{len(out)} file(s) ({names}).")
     return out
 
 
@@ -17541,13 +17927,24 @@ def _combine_unlink(path, log, why):
         log.warning(f"  Upload cap: could not remove {why} {path.name}: {e}")
 
 
-def _combine_write_group(text_dir, entry, cap, log, pseudonymizer):
+def _combine_original_note(cap):
+    """The header lines a combined UNSCRUBBED reference copy carries instead of
+    the deliverable's "only N files can be uploaded". Nothing here is uploaded —
+    it is combined so the reference folder holds the same documents, split the
+    same number of ways, as the exports beside it."""
+    return (f"# The exports beside this folder are combined to fit an upload "
+            f"limit of {cap} files,",
+            "# so these do-not-share reference copies were combined the same "
+            "way.")
+
+
+def _combine_write_group(text_dir, entry, cap, log, pseudonymizer, note=None):
     """Write one combined export, then — and only then — remove the parts it
     now holds. A failed write leaves every part where it was: a folder over the
     upload cap is an inconvenience, a folder missing a document is not."""
     target = text_dir / entry["name"]
     try:
-        body = _combined_body(entry["members"], cap)
+        body = _combined_body(entry["members"], cap, note)
     except OSError as e:
         log.warning(f"  Upload cap: could not read a part of {target.name} "
                     f"({e}) — leaving its documents as separate files.")
@@ -18323,8 +18720,10 @@ _CONFIG_TEMPLATE = (
     "# document go together first (Brief (1) / Brief part 2 / Brief 2 of 3);\n"
     "# if that is not enough, the smallest exports are bundled until the count\n"
     "# fits. A grouping is reproduced on every later run, so a folder you have\n"
-    "# already sent comes back the same. 0 turns combining off (a grouping\n"
-    "# already delivered is still honoured — it is never re-split).\n"
+    "# already sent comes back the same. The do-not-share original-text copies\n"
+    "# (keep_original_text) are combined the same way, so both folders hold the\n"
+    "# same documents split the same number of ways. 0 turns combining off (a\n"
+    "# grouping already delivered is still honoured — it is never re-split).\n"
     "max_text_files = 20\n"
     "\n"
     "# Word documents (.docx/.docm) in a folder that has NO PDFs are bulk-\n"
@@ -19789,7 +20188,17 @@ def main():
                 if _pn_key_looks_like_ours(key_path):
                     # A key this tool wrote: reuse its bindings so a follow-up
                     # single-file run reproduces the original run's fakes.
-                    terms, key_decisions = _pn_load_key(key_path, registry, log)
+                    #
+                    # …EXCEPT a RECYCLED stand-in, when this folder still has
+                    # leak triage pending. Triage pending means the exports were
+                    # never handed on, so no draft is written against these
+                    # names and a fake can still move for free — the one moment
+                    # the pool's "Deverell5" can be repaired into a real name.
+                    # Read before this run writes anything, so it describes the
+                    # state the operator left behind.
+                    terms, key_decisions = _pn_load_key(
+                        key_path, registry, log,
+                        remint_recycled=_pn_triage_pending(folder, text_subdir))
                     # A flagged value the operator marked yes can be HALF-
                     # scrubbed ("Melissa Sable", where only "Penuela" was bound).
                     # Fake only its real remainder, so a stand-in this key
@@ -20057,6 +20466,18 @@ def main():
     if args.extract_text and (pdfs or word_texts):
         _combine_exports_for_upload(folder, text_subdir, cfg, log,
                                     pseudonymizer)
+        # The UNSCRUBBED reference copies get the same treatment. They are not
+        # what the cap is about — nothing in that folder is ever uploaded — but
+        # a folder of 34 documents that delivers 20 exports and keeps 34
+        # originals beside them is two different shapes of the same case, and
+        # the operator has to hold the difference in their head. Combined the
+        # same way, "the original of this export" is one file in the same place.
+        # NEVER with the pseudonymizer: `_combine_remap_tracking` moves the leak
+        # gate's per-file bookkeeping onto the combined file, and these files are
+        # real names by design — never tracked, never quarantined.
+        if original_subdir:
+            _combine_exports_for_upload(folder, original_subdir, cfg, log,
+                                        deliverable=False)
 
     # One key file for the whole folder maps every real value to its fake.
     if pseudonymizer is not None:

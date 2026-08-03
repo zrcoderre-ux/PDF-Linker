@@ -431,3 +431,96 @@ def test_a_superseded_combined_quarantine_is_dropped(tmp_path):
                                   {"max_text_files": "1"}, log)
     assert not combined.with_name(combined.name + ".LEAK").exists()
     assert combined.exists()
+
+
+# ─── The unscrubbed reference copies get the same treatment ──────────────────
+# `keep_original_text` writes a do-not-share copy of every document under its
+# REAL filename. Nothing there is ever uploaded, so the cap is not about that
+# folder — but a case that delivers 20 exports and keeps 34 originals beside
+# them is two different shapes of the same case, and "the original of this
+# export" stops being one file in the same place.
+
+def _odir(tmp_path):
+    d = tmp_path / "Original Text (real names - do not share)"
+    d.mkdir()
+    return d
+
+
+def test_the_original_copies_are_combined_the_same_way(tmp_path):
+    odir = _odir(tmp_path)
+    for i in range(19):
+        _export(odir, f"Filing {chr(65 + i)}.txt")
+    _export(odir, "Smith Decl part 1.txt")
+    _export(odir, "Smith Decl part 2.txt")
+    _export(odir, "Smith Decl part 3.txt")              # 22 in all
+    out = P._combine_exports_for_upload(tmp_path, odir.name,
+                                        {"max_text_files": "20"}, log,
+                                        deliverable=False)
+    assert len(_txts(odir)) == 20
+    assert [p.name for p, _m in out] == ["Smith Decl (COMBINED 3 parts).txt"]
+    body = out[0][0].read_text()
+    assert [n for n, _b in P._combined_sections(body)] == [
+        "Smith Decl part 1.txt", "Smith Decl part 2.txt",
+        "Smith Decl part 3.txt"]
+
+
+def test_a_combined_reference_copy_says_what_it_is(tmp_path):
+    """Its header must not claim to be an upload — nothing in that folder is
+    one — while still naming its members and the limit that drove the split."""
+    odir = _odir(tmp_path)
+    _export(odir, "Decl part 1.txt")
+    _export(odir, "Decl part 2.txt")
+    P._combine_exports_for_upload(tmp_path, odir.name, {"max_text_files": "1"},
+                                  log, deliverable=False)
+    head = (odir / "Decl (COMBINED 2 parts).txt").read_text().split(
+        "DOCUMENT 1 OF")[0]
+    assert P._COMBINE_MARK in head
+    assert "do-not-share reference copies" in head
+    assert "can be uploaded" not in head
+    assert "1. Decl part 1.txt" in head
+
+
+def test_the_deliverable_header_is_unchanged(tmp_path):
+    """A folder already sent must reproduce byte for byte, so the reference
+    copy's wording is an ADDITION and never a rewrite of the export's."""
+    tdir = _tdir(tmp_path)
+    _export(tdir, "Decl part 1.txt")
+    _export(tdir, "Decl part 2.txt")
+    P._combine_exports_for_upload(tmp_path, "Text Files",
+                                  {"max_text_files": "1"}, log)
+    head = (tdir / "Decl (COMBINED 2 parts).txt").read_text().split(
+        "DOCUMENT 1 OF")[0]
+    assert "Only 1 file can be uploaded at once" in head
+    assert "do-not-share" not in head
+
+
+def test_end_to_end_both_folders_land_at_the_cap(tmp_path, monkeypatch):
+    """Through main(), pseudonymizing an all-Word folder with the reference
+    copies switched on: the deliverable and the do-not-share folder come out
+    the same shape, and nothing is lost from either."""
+    import sys
+    import zipfile
+
+    monkeypatch.setenv("PDF_LINKER_MASTER", str(tmp_path / "master.xlsx"))
+    W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    for i in range(6):
+        body = (f'<w:p><w:r><w:t xml:space="preserve">Body of filing {i}'
+                f'</w:t></w:r></w:p>')
+        with zipfile.ZipFile(tmp_path / f"Filing {chr(65 + i)}.docx", "w") as z:
+            z.writestr("word/document.xml",
+                       f'<?xml version="1.0" encoding="UTF-8"?>'
+                       f'<w:document xmlns:w="{W}"><w:body>{body}</w:body>'
+                       f'</w:document>')
+    monkeypatch.setattr(P, "_read_config", lambda log=None: {
+        "max_text_files": "4", "keep_original_text": "on"})
+    monkeypatch.setattr(sys, "argv", ["pdf_linker.py", str(tmp_path)])
+    P.main()
+
+    tdir = tmp_path / "Text Files"
+    odir = tmp_path / "Original Text (real names - do not share)"
+    assert len(_txts(tdir)) == 4
+    assert len(_txts(odir)) == 4
+    for d in (tdir, odir):
+        all_text = "".join(p.read_text() for p in d.glob("*.txt"))
+        for i in range(6):
+            assert f"Body of filing {i}" in all_text     # nothing dropped
