@@ -857,11 +857,31 @@ the party), so its row stays reversible.
   runs the whole citation parser.
   (worksheet tab `LEAKS`; the old `pdf_linker_leaks.xlsx` name is still READ so
   a folder triaged under a prior version keeps its decisions). Columns lead
-  with the flagged **Value** then its **Fix?** decision, with File/Type/Where/
-  Notes trailing — the order driven by `_PN_LEAK_COLUMNS`. **One row per
+  with the flagged **Value**, its **Fix?** decision and the **Context** the
+  decision is made on, with File/Type/Where/Notes trailing — the order driven
+  by `_PN_LEAK_COLUMNS`, and the reader is header-NAME driven so inserting a
+  column never breaks round-tripping. **One row per
   distinct value**: a name that leaks across many files is aggregated into a
   single row (files + locations merged) so the operator decides it once, not
-  once per file. The **Fix?** column round-trips: `yes`=auto-fake, `no`=leave,
+  once per file.
+  **The Context cell quotes the SENTENCE, and picks which one** (`_pn_context`).
+  The value alone frequently cannot answer the row's own question: "Charge" is
+  boilerplate in "CHARGE OF DISCRIMINATION" and a surname in "served on Charge
+  at his residence", and the operator had to open the export and find the page
+  to tell — for a decision that, as `never`, then applies in every future
+  folder. Three things make the quote worth reading. It is rebuilt as PROSE
+  from the same parsed body the Where column uses (the gutter number dropped,
+  wrapped lines joined), because a sentence on pleading paper is spread over
+  several numbered lines. It prefers an occurrence on a PROSE line over one in
+  a heading (`_pn_line_is_prose`, the same test `prune_heading_only_terms`
+  uses) — the first occurrence is often a caption that proves nothing, while a
+  value found ONLY in a heading is quoted as that heading, which is itself the
+  answer. And the span GROWS to its neighbours while it is under
+  `_PN_CONTEXT_MIN`, because legal prose is full of abbreviations and
+  "(Rasho Decl." is a sentence to a parser and nothing at all to a reader;
+  it is bounded by the run of same-kind lines so a sentence never swallows the
+  caption above it, and capped at `_PN_CONTEXT_MAX` with a window centred on
+  the value. The **Fix?** column round-trips: `yes`=auto-fake, `no`=leave,
   `never`=never fake this value, in this or any folder (the nuclear keep, on the
   dropdown beside yes/no),
   **any other text = an explicit operator-typed replacement**, and

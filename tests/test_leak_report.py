@@ -28,6 +28,14 @@ BODY = """====== Page 1 ======
 Donlen v. Ford Motor Co. -> http://scholar..."""
 
 
+def _sheet(path):
+    """[{header: value}] for the worksheet — read by header NAME, exactly as
+    `_pn_read_leak_decisions` does, so adding a column never breaks a test on a
+    positional index."""
+    rows = list(openpyxl.load_workbook(path).active.iter_rows(values_only=True))
+    return [dict(zip([str(h) for h in rows[0]], r)) for r in rows[1:]]
+
+
 def test_locate_reports_printed_page_and_gutter_line():
     parsed = P._pn_body_lines(BODY)
     assert P._pn_locate(parsed, "Travelers") == "p.1:1, p.5:16, p.5:17"
@@ -50,14 +58,15 @@ def test_worksheet_has_fix_column_and_severity_order(tmp_path):
     wb = openpyxl.load_workbook(xp)
     assert wb.active.title == "LEAKS"
     rows = list(wb.active.iter_rows(values_only=True))
-    assert rows[0] == ("Value", "Fix? (yes/no)", "File", "Type",
+    assert rows[0] == ("Value", "Fix? (yes/no)", "Context", "File", "Type",
                        "Where (page:line)", "Notes")
+    body = _sheet(xp)
     # real leaks first, then map-inverting REID, then ordinary review
-    assert [r[3] for r in rows[1:]] == ["LEAK", "REID bar number",
-                                        "unscrubbed name?"]
+    assert [r["Type"] for r in body] == ["LEAK", "REID bar number",
+                                         "unscrubbed name?"]
     # each row is located, and the Fix? column is blank for the reviewer
-    assert rows[1][4] == "p.5:16"
-    assert rows[1][1] in (None, "")
+    assert body[0]["Where (page:line)"] == "p.5:16"
+    assert body[0]["Fix? (yes/no)"] in (None, "")
 
 
 def test_clean_run_removes_stale_worksheet(tmp_path):
@@ -116,19 +125,18 @@ def test_roundtrip_persists_yes_suppresses_no_and_surfaces_new(tmp_path):
          "where": "p.2:1"},
     ]
     P._pn_write_leak_report(tmp_path, entries, log, decisions)
-    rows = list(openpyxl.load_workbook(tmp_path / "LEAKS.xlsx")
-                .active.iter_rows(values_only=True))
-    by_val = {r[0]: r for r in rows[1:]}
+    body = _sheet(tmp_path / "LEAKS.xlsx")
+    by_val = {r["Value"]: r for r in body}
     # a marked-yes value that's now gone is RETAINED so the term keeps applying
-    assert by_val["Travelers"][1] == "yes"
-    assert by_val["Travelers"][4] == P._PN_LEAK_ABSENT
+    assert by_val["Travelers"]["Fix? (yes/no)"] == "yes"
+    assert by_val["Travelers"]["Where (page:line)"] == P._PN_LEAK_ABSENT
     # a marked-NO value is a KEEP: it moves to the cross-folder master KEEP
     # sheet (handled by the run), so it no longer clutters this transient
     # per-folder triage.
     assert "Worthington Motors" not in by_val
     # a new undecided finding is blank and sorts ABOVE the resolved rows
-    assert by_val["New Corp"][1] in (None, "")
-    order = [r[0] for r in rows[1:]]
+    assert by_val["New Corp"]["Fix? (yes/no)"] in (None, "")
+    order = [r["Value"] for r in body]
     assert order.index("New Corp") < order.index("Travelers")
 
 
@@ -145,15 +153,13 @@ def test_same_value_across_files_is_one_row(tmp_path):
         {"file": "RJN.pdf", "type": "LEAK", "value": "ca.gov", "where": "p.2"},
     ]
     P._pn_write_leak_report(tmp_path, entries, log)
-    rows = list(openpyxl.load_workbook(tmp_path / "LEAKS.xlsx")
-                .active.iter_rows(values_only=True))
-    body = rows[1:]
+    body = _sheet(tmp_path / "LEAKS.xlsx")
     assert len(body) == 1                       # one row for the four files
-    value, fix, file_cell, typ, where, _notes = body[0]
-    assert value == "ca.gov"
-    assert file_cell == "4 files"               # aggregated (>3 → a count)
+    row = body[0]
+    assert row["Value"] == "ca.gov"
+    assert row["File"] == "4 files"             # aggregated (>3 → a count)
     for loc in ("p.1", "p.appendix", "p.C", "p.2"):
-        assert loc in where                     # every location preserved
+        assert loc in row["Where (page:line)"]  # every location preserved
 
 
 def test_merged_row_keeps_the_most_severe_type(tmp_path):
@@ -163,11 +169,10 @@ def test_merged_row_keeps_the_most_severe_type(tmp_path):
         {"file": "B.pdf", "type": "LEAK", "value": "M M", "where": "p.2"},
     ]
     P._pn_write_leak_report(tmp_path, entries, log)
-    rows = list(openpyxl.load_workbook(tmp_path / "LEAKS.xlsx")
-                .active.iter_rows(values_only=True))
-    assert len(rows[1:]) == 1
-    assert rows[1][0] == "M M" and rows[1][3] == "LEAK"
-    assert rows[1][2] == "A.pdf, B.pdf"         # <=3 files listed by name
+    body = _sheet(tmp_path / "LEAKS.xlsx")
+    assert len(body) == 1
+    assert body[0]["Value"] == "M M" and body[0]["Type"] == "LEAK"
+    assert body[0]["File"] == "A.pdf, B.pdf"    # <=3 files listed by name
 
 
 def test_one_decision_covers_every_occurrence(tmp_path):
@@ -302,7 +307,7 @@ def test_the_note_reaches_the_worksheet(tmp_path):
         {"file": "Complaint.pdf", "type": "LEAK",
          "value": "Bartholomew Quillfeather", "where": "p.1:4"},
     ], log, note_for=z.authority_note)
-    rows = {r[0]: r[5] for r in openpyxl.load_workbook(
+    rows = {r[0]: r[6] for r in openpyxl.load_workbook(
         tmp_path / "LEAKS.xlsx").active.iter_rows(min_row=2, values_only=True)}
     assert "Kremerman v. White" in str(rows["Angela White"])
     assert not str(rows["Bartholomew Quillfeather"] or "")
@@ -330,6 +335,93 @@ def test_an_operators_own_note_survives(tmp_path):
     ], log, decisions={"angela white": {"value": "Angela White", "fix": "",
                                         "notes": "checked with counsel"}},
         note_for=z.authority_note)
-    note = [r[5] for r in openpyxl.load_workbook(
+    note = [r[6] for r in openpyxl.load_workbook(
         tmp_path / "LEAKS.xlsx").active.iter_rows(min_row=2, values_only=True)][0]
     assert "checked with counsel" in note and "Kremerman v. White" in note
+
+
+# ── the Context column ──────────────────────────────────────────────────────
+# A triage row asks "is this real?", and the value alone often cannot answer
+# it. "Charge" is boilerplate in "CHARGE OF DISCRIMINATION" and a surname in
+# "served on Charge at his residence", and the answer decides whether the word
+# is faked in this and every future folder.
+
+PLEADING = """====== Page 4 ======
+ 1  NOTICE OF MOTION AND MOTION TO QUASH SERVICE OF SUMMONS
+ 2  CHARGE OF DISCRIMINATION AND RIGHT TO SUE
+ 3  Plaintiff alleges that the summons was served on Charge at his
+ 4  residence in Montebello on March 3, 2024. (Rasho Decl. ¶ 7.)
+"""
+
+
+def _ctx(needle, body=PLEADING):
+    return P._pn_context(P._pn_body_lines(body), needle)
+
+
+def test_the_sentence_is_quoted_not_the_line():
+    """A sentence on pleading paper is spread over numbered lines, so one line
+    says almost nothing — and the gutter number is furniture."""
+    got = _ctx("Montebello")
+    assert got == ("Plaintiff alleges that the summons was served on Charge at "
+                   "his residence in Montebello on March 3, 2024.")
+    assert "  4  " not in got and "\n" not in got
+
+
+def test_prose_beats_a_heading():
+    """The first occurrence of "Charge" is a caption and proves nothing; the
+    one that decides the row is the sentence."""
+    assert _ctx("Charge").startswith("Plaintiff alleges")
+
+
+def test_a_heading_only_value_is_quoted_as_its_heading():
+    """Which is itself the answer: nothing but a title ever offered it."""
+    assert _ctx("QUASH") == ("NOTICE OF MOTION AND MOTION TO QUASH SERVICE OF "
+                             "SUMMONS CHARGE OF DISCRIMINATION AND RIGHT TO SUE")
+
+
+def test_a_caption_is_not_swallowed_by_the_sentence_beside_it():
+    assert "NOTICE OF MOTION" not in _ctx("Montebello")
+
+
+def test_an_abbreviation_does_not_end_the_quote_early():
+    """"(Rasho Decl." is not evidence of anything: legal prose is full of
+    abbreviations, so a span too short to read grows into its neighbours."""
+    got = _ctx("Rasho")
+    assert "Rasho Decl." in got and len(got) > 60
+
+
+def test_a_long_span_is_windowed_around_the_value():
+    body = "====== Page 1 ======\n 1  " + ("filler words here " * 40) + "Wexford ok\n"
+    got = _ctx("Wexford", body)
+    assert "Wexford" in got and len(got) <= P._PN_CONTEXT_MAX + 2
+    assert got.startswith("…")
+
+
+def test_a_value_that_cannot_be_located_has_no_quote():
+    """A welded or reduced finding has no clean line to quote, exactly as it
+    has no location."""
+    assert _ctx("Nowhere") == ""
+
+
+def test_the_column_sits_between_the_decision_and_the_file(tmp_path):
+    P._pn_write_leak_report(tmp_path, [
+        {"file": "Motion.txt", "type": "LEAK", "value": "Charge",
+         "where": "p.4:3", "context": "served on Charge at his residence"},
+    ], log)
+    rows = list(openpyxl.load_workbook(tmp_path / "LEAKS.xlsx")
+                .active.iter_rows(values_only=True))
+    assert rows[0][:4] == ("Value", "Fix? (yes/no)", "Context", "File")
+    assert rows[1][2] == "served on Charge at his residence"
+
+
+def test_one_sample_sentence_per_merged_row(tmp_path):
+    """The row already merges every file and location; a cell holding nine
+    sentences is one nobody reads."""
+    P._pn_write_leak_report(tmp_path, [
+        {"file": "A.txt", "type": "LEAK", "value": "Charge", "where": "p.1",
+         "context": "first sentence"},
+        {"file": "B.txt", "type": "LEAK", "value": "Charge", "where": "p.2",
+         "context": "second sentence"},
+    ], log)
+    body = _sheet(tmp_path / "LEAKS.xlsx")
+    assert len(body) == 1 and body[0]["Context"] == "first sentence"
