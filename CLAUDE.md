@@ -1426,6 +1426,21 @@ folder works on one machine and not another), and `faulthandler` writes into the
 log's own stream for a C-level abort, which raises nothing at all and so cannot
 be hooked — MuPDF calls `abort()` on a fatal error, so this is the only thing
 that leaves a trace of one.
+**…and the hook has to survive the death it is reporting.** Formatting a
+traceback ALLOCATES — logging re-reads the source lines to print them — so on
+the one failure a big folder is most likely to hit, running out of memory, the
+rich report raised a second `MemoryError` INSIDE the hook, the best-effort
+`except Exception: pass` swallowed it, and the process exited having written
+nothing: a log ending mid-file and no python left in Task Manager, which is the
+exact silence this exists to break. The FIRST thing written is now a fixed line,
+encoded at install time and pushed straight at the log file's descriptor with
+`os.write` — no formatting, no allocation, one syscall — and only then is the
+traceback attempted. The raw line names OUT OF MEMORY where that is the cause,
+because it asks the operator to do something different (a 32-bit Python is
+capped near 2 GB however much the machine has; split the folder or move to a
+64-bit one) from "some exception". Note what this still cannot catch: a run the
+OS kills outright leaves no line at all, which is why the long phases time
+themselves — see the performance notes.
 
 **A missing core dependency fails at STARTUP, by name**
 (`_require_pymupdf`). `fitz` is imported lazily at each use site, so its absence
@@ -1558,6 +1573,45 @@ source PDF), the moment every document in it has a fresh export of its own.
   large case recompiled every pattern on every page (was ~75% of the scrub pass).
 - Files are processed **heaviest-first** by OCR-weighted cost; the one-click
   re-run launcher is written **up front** so an interrupted run still leaves one.
+- **Nothing on the leak path may be QUADRATIC in the document, and one line
+  was.** A 130-page motion spent 82 minutes inside one file's scrub-and-scan
+  block, wrote nothing to the log the whole time, and the run then stopped
+  there — indistinguishable from a hang, and reported as one. Profiled on that
+  folder's shape (a few hundred terms, 220 master KEEPs) **19 of every 24
+  seconds** were in `_in_name_run`, which searched `text[:s]` for a
+  `$`-anchored match: every occurrence of a soft keep COPIED the export so far
+  and made the engine scan the copy. The master sheet keeps ordinary
+  vocabulary — "and", "the", "of", "court" — so a long filing carries thousands
+  of occurrences and the product is the document squared. It now walks the two
+  neighbours by INDEX (`_PN_NAME_RUN_RIGHT_RE.match(text, e)` and a backward
+  scan reproducing the regex's leftmost match, punctuation-opened runs and
+  `$`-before-a-trailing-newline included), so the cost is one word.
+  Three cuts beside it, all exact. `_PnSpanIndex` answers "does any of these
+  spans overlap [s,e)?" by bisect over sorted starts plus a running maximum of
+  the ends — four passes asked that ONCE PER MATCH against a whole-export span
+  list (the party matches a keep yields to, the kept spans a finding is filtered
+  by, the citation spans `scrub_welded` and `_substitute` refuse to touch), so
+  each was a product of two numbers that both grow. `_surviving_records` — the
+  most expensive thing on the path, every tracked value scanned across the whole
+  export, asked for FOUR times per file — is memoized and now stops at the first
+  match that SURVIVES the filters (`finditer` is lazy; membership is decided by
+  the first survivor). `_keep_spans` and `_mask_protected_citations` memoize
+  **two** entries, not one: the block alternates between the export body and its
+  column-ordered twin, so a single slot was evicted before it was ever read.
+  Every one of these memos keys on `_scan_state_key()` and not on the text
+  alone — `--fix-leaks` sets the keep sets on a live `Pseudonymizer` and asks
+  the same question again, and sizes are not a fingerprint, so a length-only key
+  answers from before the operator's decision. Measured end to end on a 381 KB
+  body: **274 s → 25 s**, with the quadratic term gone (`test_scan_cost.py`
+  pins the shape, and the two rewritten primitives against the code they
+  replaced).
+- **The long phases NAME themselves before they run** — the same rule the
+  pre-scan follows for filenames, and for the same reason. Between "exporting
+  text" and the first REVIEW warning the log said nothing for 82 minutes, so a
+  reader could tell neither where the run was nor whether it was moving. The
+  scrub and the leak scan each announce themselves and then report their
+  elapsed time; a line written afterwards is a line never written when the
+  interpreter dies.
 
 ## Folder artifacts (what a finished folder should contain)
 
