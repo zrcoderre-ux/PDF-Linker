@@ -17395,6 +17395,50 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
                 out += "\n" + garbled
         return out
 
+    # The UNSCRUBBED text FIRST, because it is ready first and nothing about it
+    # has to wait. It is `build_body(None)` — pure string assembly over pages
+    # already extracted, no OCR and no second read — so it depends on the
+    # extraction and on nothing else, while the scrub and the leak scans that
+    # used to run ahead of it depend on every term and record in the case.
+    # Measured on a 130-page filing that is 1 second of work sitting behind
+    # 90, and on the folder that prompted this (before the quadratic in
+    # `_in_name_run` was found) 5 seconds sitting behind 65 MINUTES. The
+    # reference copy is what an operator reads while the export is still being
+    # checked, so the wait was pure cost: reordering moves it to the front and
+    # delays the export by exactly the 1 second it takes to write.
+    #
+    # ALWAYS built when pseudonymization is running — it is the evidence
+    # `confirm_findings` needs to tell this run's own stand-ins from the
+    # document's own words. Whether a READABLE COPY goes into the case folder
+    # stays exactly what `original_text_subfolder` says; the check must not
+    # depend on an output preference. `confirm_findings` runs once at the FOLDER
+    # level, so moving this earlier changes nothing it sees.
+    if pseudonymizer is not None:
+        original = build_body(None)
+        pseudonymizer.note_original(original)
+        # …and cached in TEMP, because `--fix-leaks` never reopens the PDFs and
+        # would otherwise have no evidence at all. Never in the case folder:
+        # that is the thing that gets synced and shared.
+        _cache_original(pdf_path.parent, pdf_path.stem, original)
+        # Optional reference copy in a sibling folder, under the real filename.
+        # Real names by design → never tracked for the leak gate, never
+        # quarantined.
+        if original_subdir:
+            orig_dir = pdf_path.parent / original_subdir
+            orig_path = orig_dir / (pdf_path.stem + ".txt")
+            try:
+                orig_dir.mkdir(parents=True, exist_ok=True)
+                orig_path.write_text(original, encoding="utf-8", newline="\n")
+                log.info(f"  Wrote original text version: "
+                         f"{original_subdir}/{orig_path.name}")
+            except OSError as e:
+                log.warning(f"  Could not write original text version "
+                            f"(non-fatal): {e}")
+        # Held only as long as the evidence pass needs it; the export below is
+        # built from the same pages, so keeping two full bodies alive across the
+        # scrub buys nothing.
+        del original
+
     # Name the phase BEFORE it runs, and time it — the same rule the pre-scan
     # follows for filenames, for the same reason. These two phases are the long
     # ones on a big filing, and between them the log said nothing at all: one
@@ -17564,33 +17608,9 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
     log.info(f"  Wrote {'pseudonymized ' if pseudonymizer else ''}text "
              f"version: {text_subdir}/{txt_path.name}")
 
-    # The UNSCRUBBED text, ALWAYS built when pseudonymization is running. It is
-    # pure string assembly over pages already extracted — no OCR, no second
-    # read — and it is the evidence `confirm_findings` needs to tell this run's
-    # own stand-ins from the document's own words. Whether a READABLE COPY goes
-    # into the case folder stays exactly what `original_text_subfolder` says;
-    # the check must not depend on an output preference.
-    if pseudonymizer is not None:
-        original = build_body(None)
-        pseudonymizer.note_original(original)
-        # …and cached in TEMP, because `--fix-leaks` never reopens the PDFs and
-        # would otherwise have no evidence at all. Never in the case folder:
-        # that is the thing that gets synced and shared.
-        _cache_original(pdf_path.parent, pdf_path.stem, original)
-        # Optional reference copy in a sibling folder, under the real filename.
-        # Real names by design → never tracked for the leak gate, never
-        # quarantined.
-        if original_subdir:
-            orig_dir = pdf_path.parent / original_subdir
-            orig_path = orig_dir / (pdf_path.stem + ".txt")
-            try:
-                orig_dir.mkdir(parents=True, exist_ok=True)
-                orig_path.write_text(original, encoding="utf-8", newline="\n")
-                log.info(f"  Wrote original text version: "
-                         f"{original_subdir}/{orig_path.name}")
-            except OSError as e:
-                log.warning(f"  Could not write original text version "
-                            f"(non-fatal): {e}")
+    # (The unscrubbed reference copy was written BEFORE the scrub — see above.
+    # It is ready as soon as the pages are extracted, so making it wait behind
+    # the scrub and the leak scans was pure delay.)
     return True
 
 

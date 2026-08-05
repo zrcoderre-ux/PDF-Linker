@@ -730,6 +730,22 @@ the party), so its row stays reversible.
   `_real_remainder` returns the value untouched — no evidence is not evidence of
   absence, and without that guard every stand-in would look absent and every
   finding would be gutted.
+  **It is also written FIRST, because nothing about it has to wait.**
+  `build_body(None)` depends on the extraction and on nothing else, while the
+  scrub and the leak scans it used to sit behind depend on every term and record
+  in the case. Measured on a 130-page filing that is 1 second of work queued
+  behind 90 — and on the folder that exposed the `_in_name_run` quadratic, 5
+  seconds queued behind 65 MINUTES. The reference copy is what an operator reads
+  while the export is still being checked, so the wait was pure cost; moving it
+  ahead delays the export by exactly the second it takes to write. Safe because
+  `confirm_findings` runs once at the FOLDER level, so nothing it sees changes,
+  and `note_original` still happens whether or not `original_text_subfolder`
+  asked for a readable copy — the check must not depend on an output preference.
+  The one thing it changes: a run that dies mid-scrub now leaves the unscrubbed
+  copy in the folder with no export beside it. That file is meant to be there
+  when the option is on, and having the reference copy beats having neither.
+  Pinned on LOG ORDER (`test_original_text.py`), not on mtimes — a fast machine
+  writes both inside one filesystem timestamp tick.
 - **A triage row NAMES the authority it may have come from**
   (`_pn_authority_cite_index` / `authority_note`, the Notes column). "Angela
   White" in a worksheet is a question the operator can only answer by already
