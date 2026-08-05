@@ -119,6 +119,25 @@ pin still does its job. "Carried" is REACHABILITY, not the row's own count: the
 macro reverses a composed fake word by word, so the token rows of a party whose
 full name is the only form the export used are load-bearing even though they
 matched nothing themselves.
+**Every key row QUOTES the sentence its value stood in** (`Context`,
+`note_key_context`). A row says `Rasho -> Strangeways`, and whether that binding
+is right depends on how the document used the word — the question the LEAKS
+Context column already answers for a decision not yet made, asked here of one
+already made. Read from the UNSCRUBBED body, of necessity: by the time the export
+exists the real value has been replaced, so only that copy still contains it.
+The consequence is deliberate and worth stating — `pseudonym_key.xlsx` now
+carries sentences of the real document, not merely its real values. It was never
+a shareable file (it is the reversal map), so this changes how revealing it is,
+not which file is safe to send. APPENDED as column 7, never inserted:
+`DeAnonymize.bas` reads the sheet by column POSITION and `_pn_key_looks_like_ours`
+fingerprints a key by its first six headers (`_PN_KEY_FINGERPRINT`), so a column
+on the end is invisible to both while one in the middle would break the reversal
+macro on every key already in circulation. FIRST document to use a value owns
+its quote, so a re-run of the same folder reproduces the column; a quote this run
+cannot re-derive is carried forward from the key on disk
+(`_pn_key_context_on_disk`), because the key outlives the folder's contents.
+Costs ~0.24 s per file on a 130-page filing with ~470 records — and would have
+cost ~39 s before `_pn_context` was split (see the performance notes).
 
 `_pn_supplement_key_terms` is the fallback for what the key still cannot carry:
 a key written by an older version, or a template AMENDED between runs (a Doe
@@ -1642,6 +1661,19 @@ source PDF), the moment every document in it has a fresh export of its own.
   body: **274 s → 25 s**, with the quadratic term gone (`test_scan_cost.py`
   pins the shape, and the two rewritten primitives against the code they
   replaced).
+- **A per-value quote must not re-read the document per value**
+  (`_pn_context_prep`). `_pn_context` computed `off = len(" ".join(joined))` on
+  every line — re-joining the whole export per line, quadratic in it, the same
+  shape as `_in_name_run` — and then re-derived the line table, the prose flags
+  and the sentence-terminator list for EVERY value asked about the same body.
+  A 290 KB export cost **82 ms per value**, of which the search itself was
+  0.04 ms. Split into a one-entry memo keyed on the parsed body's identity, with
+  a running offset and bisected terminator windows: **446x faster**, byte-
+  identical on a 148-value differential test (headings vs prose, absent values,
+  multi-word phrases, the empty string). That is what makes a Context column on
+  the KEY affordable at all — 335 rows went from 28 s to 0.06 s per file, 1,042
+  rows from 87 s to 0.19 s — and it repays itself on the LEAKS column that
+  already existed.
 - **The long phases NAME themselves before they run** — the same rule the
   pre-scan follows for filenames, and for the same reason. Between "exporting
   text" and the first REVIEW warning the log said nothing for 82 minutes, so a

@@ -10009,7 +10009,13 @@ def _pn_terms_from_xlsx(path, extra_name_headers, log):
 # one already in the key. The written-back key carries every loaded row forward
 # plus the new ones, so it never shrinks.
 _PN_KEY_HEADERS = ("Category", "Real Value", "Replacement", "Status", "Source",
-                   "Occurrences")
+                   "Occurrences", "Context")
+# "Context" is APPENDED, never inserted, and that is load-bearing twice over.
+# `DeAnonymize.bas` reads this sheet by column position, and
+# `_pn_key_looks_like_ours` fingerprints a key by its first six headers — so a
+# column added on the end is invisible to both, while one added in the middle
+# would silently break the reversal macro on every key already in circulation.
+_PN_KEY_FINGERPRINT = _PN_KEY_HEADERS[:6]
 # The regex-detector categories: in the batch these were computed live at
 # priority 3, so a loaded literal must sit ABOVE that to reproduce the exact
 # stored fake instead of letting the detector recompute a different one.
@@ -10241,7 +10247,45 @@ def _pn_key_looks_like_ours(path):
     except Exception:
         return False
     return tuple((h or "").strip() if isinstance(h, str) else h
-                 for h in (header or ())[:6]) == _PN_KEY_HEADERS
+                 for h in (header or ())[:6]) == _PN_KEY_FINGERPRINT
+
+
+def _pn_key_context_on_disk(path):
+    """{real_lower: Context} from the key already at `path`, both sheets.
+
+    A quote can only be re-derived from a document still in the folder, and the
+    key outlives the folder's contents — a party named only in a filing that was
+    delivered two runs ago keeps its binding, so it should keep its sentence
+    too. Read by header NAME, so a key written before the column existed simply
+    yields nothing.
+
+    Best-effort in every direction: no openpyxl, no file, an unreadable file or
+    a foreign spreadsheet all return {} rather than fail a run over a column
+    nothing reverses."""
+    try:
+        import openpyxl
+    except ImportError:
+        return {}
+    if not path.exists() or not _pn_key_looks_like_ours(path):
+        return {}
+    out = {}
+    try:
+        wb = openpyxl.load_workbook(path, read_only=True)
+        for ws in wb.worksheets:
+            rows = ws.iter_rows(values_only=True)
+            header = [_pn_norm_header(h) for h in (next(rows, ()) or ())]
+            if "real value" not in header or "context" not in header:
+                continue
+            rv, cx = header.index("real value"), header.index("context")
+            for row in rows:
+                if len(row) <= max(rv, cx) or not row[rv]:
+                    continue
+                if row[cx]:
+                    out.setdefault(str(row[rv]).lower(), str(row[cx]))
+        wb.close()
+    except Exception:
+        return out
+    return out
 
 
 def _pn_load_key(path, registry, log, remint_recycled=False):
@@ -11598,6 +11642,11 @@ class Pseudonymizer:
         # pseudonymize+scan runtime). This cache is unbounded, so each pattern
         # compiles once for the whole run.
         self._rx_cache = {}
+        # {real_lower: the sentence it stands in, from the UNSCRUBBED source} —
+        # the key's Context column. Kept beside the records rather than in them
+        # so `write_key`'s own DERIVED token rows can look one up too, and so a
+        # value can be quoted once for the folder rather than once per record.
+        self._key_context = {}
         self.records = {}
         for t in terms:
             # Never install a self-identical mapping (fake == real): it is a
@@ -14437,6 +14486,43 @@ class Pseudonymizer:
             log.info(f"      (+{len(folds) - 8} more; every one is a row in "
                      f"the key)")
 
+    def note_key_context(self, original):
+        """Quote, for every tracked value, the sentence it stands in — read from
+        the UNSCRUBBED source, which is the only text that still contains it.
+
+        The key's Context column answers the question the key itself cannot:
+        a row says `Rasho -> Strangeways`, and whether that binding is right
+        depends on how the document used the word. The LEAKS worksheet has had
+        this since it started asking "is this real?"; a key row asks the same
+        question of a decision already made.
+
+        It has to be the ORIGINAL, and that is a deliberate trade the operator
+        made: by the time the export exists the real value has been replaced, so
+        the scrubbed copy cannot quote it. The consequence is that
+        `pseudonym_key.xlsx` now carries sentences of the real document, not
+        merely its real values. The key was never shareable — it is the reversal
+        map — so this does not change which file is safe to send, but it does
+        make this one considerably more revealing if it goes astray.
+
+        FIRST non-empty wins, in processing order. A value named in several
+        documents is quoted from the first that used it, so the column is stable
+        across a re-run of the same folder; adding a document can move a quote,
+        which is acceptable for a column nothing reverses.
+
+        Cost is one `_pn_context` per value still lacking a quote, and
+        `_pn_context_prep` makes that a search rather than a scan — a few
+        tenths of a second for a folder-sized key, against the ~85 s the same
+        loop cost before that split."""
+        parsed = _pn_body_lines(original)
+        for rec in self.records.values():
+            real = str(rec["real"])
+            rl = real.lower()
+            if not rl or self._key_context.get(rl):
+                continue
+            quote = _pn_context(parsed, real)
+            if quote:
+                self._key_context[rl] = quote
+
     def write_key(self, path, log):
         """Write the REVERSAL key the Word macro consumes. A row is written when
         it MATCHED (Occurrences > 0), when it came from a REUSED key, or when it
@@ -14626,8 +14712,16 @@ class Pseudonymizer:
                 "short-name": 3, "entity": 4, "entity-token": 5}
         keyrows.sort(key=lambda r: (rank.get(r["category"], 50),
                                     r["category"], str(r["real"]).lower()))
-        headers = ["Category", "Real Value", "Replacement", "Status", "Source",
-                   "Occurrences"]
+        headers = list(_PN_KEY_HEADERS)
+        # A quote this run could not re-derive is preserved from the key already
+        # on disk: a folder whose documents have moved on still keeps what the
+        # last run learned, exactly as the bindings themselves are carried
+        # forward. This run's own quote wins where it has one.
+        carried = _pn_key_context_on_disk(path)
+
+        def row_context(r):
+            rl = str(r["real"]).lower()
+            return self._key_context.get(rl) or carried.get(rl, "")
 
         def row_status(r):
             key = (r["category"], str(r["real"]).lower())
@@ -14660,7 +14754,8 @@ class Pseudonymizer:
                                "replacement": r["fake"],
                                "status": row_status(r),
                                "source": r["source"],
-                               "occurrences": r["count"]}
+                               "occurrences": r["count"],
+                               "context": row_context(r)}
                               for r in keyrows]}, indent=2), encoding="utf-8")
             log.info(f"  openpyxl not installed; reversal key written as JSON: "
                      f"{kp.name} ({len(keyrows)} mapping(s))")
@@ -14694,16 +14789,19 @@ class Pseudonymizer:
         ws.append(headers)
         for r in applied:
             ws.append([r["category"], r["real"], r["fake"], row_status(r),
-                       r["source"], r["count"]])
+                       r["source"], r["count"], row_context(r)])
         if pinned:
             ps = wb.create_sheet(_PN_KEY_PINNED_SHEET)
             ps.append(headers)
             for r in pinned:
                 ps.append([r["category"], r["real"], r["fake"], row_status(r),
-                           r["source"], r["count"]])
+                           r["source"], r["count"], row_context(r)])
             log.info(f"  Pseudonymize: {len(pinned)} binding(s) no export "
                      f"carries moved to the '{_PN_KEY_PINNED_SHEET}' sheet — "
                      f"still pinned for a later run, never applied in reverse")
+        # The quote is a sentence; at default width the column is unreadable.
+        for sheet in wb.worksheets:
+            sheet.column_dimensions["G"].width = 60
         wb.save(path)
         self._check_key_completeness(keyrows, log)
         for cluster in self.alias_candidates():
@@ -16157,6 +16255,55 @@ _PN_CONTEXT_MIN = 60
 # Only a real terminator. A semicolon and a colon end a CLAUSE, and a label
 # ("PROCESS SERVER: Michael Rodgers") is exactly the context worth keeping.
 _PN_SENT_END_RE = re.compile(r"[.!?](?=\s|$)")
+# One-entry memo for `_pn_context_prep`, keyed on the parsed body's identity.
+_PN_CONTEXT_PREP = {}
+
+
+def _pn_context_prep(parsed):
+    """Everything a Context quote needs that depends on the BODY and not on the
+    value: the prose-rebuilt line table, each line lower-cased for searching,
+    the joined text, and the offsets of its sentence terminators.
+
+    Split out and memoized because it is identical for every value asked about
+    one body, and the caller asks about a great many — one per triage row, and
+    one per pseudonym-key binding, which runs to hundreds. Derived inside the
+    per-value path it was the whole cost: a 290 KB export spent 82 ms per value,
+    of which the search itself was 0.04 ms.
+
+    The running offset matters as much as the memo. `off` used to be
+    `len(" ".join(joined))` recomputed on every line, which re-joins the whole
+    document per line and is quadratic in it — the same shape as the
+    `_in_name_run` bug, and it made every Context cell pay for the length of the
+    export twice over. Accumulating the offset gives the identical numbers: the
+    join inserts one space between bodies, so each line starts one past the end
+    of the last.
+
+    One entry, keyed on the parsed body's identity: the callers ask about one
+    file's body at a time and then move on, so a second slot would never be
+    read. Cheap to rebuild if that stops being true."""
+    got = _PN_CONTEXT_PREP.get("k")
+    if got is not None and got[0] is parsed:
+        return got[1]
+    joined, lines, run = [], [], 0
+    for _page, _gutter, text in parsed:
+        m = _PN_GUTTER_RE.match(text)
+        # The gutter number is furniture. Cut the number and its spacing only:
+        # the pattern's last atom is the first character of the body, so the
+        # slice stops one short of the match end or it eats that character
+        # ("DISCRIMINATION" came out "ISCRIMINATION").
+        body = (text[m.end() - 1:] if m else text).strip()
+        if not body:
+            continue
+        off = run + (1 if joined else 0)
+        lines.append((off, off + len(body), _pn_line_is_prose(body)))
+        joined.append(body)
+        run = off + len(body)
+    text = " ".join(joined)
+    prep = (lines, [b.lower() for b in joined], text,
+            [m.end() for m in _PN_SENT_END_RE.finditer(text)])
+    _PN_CONTEXT_PREP.clear()
+    _PN_CONTEXT_PREP["k"] = (parsed, prep)
+    return prep
 
 
 def _pn_context(parsed, needle, width=_PN_CONTEXT_MAX):
@@ -16177,35 +16324,28 @@ def _pn_context(parsed, needle, width=_PN_CONTEXT_MAX):
     nl = str(needle).lower()
     if not nl:
         return ""
-    joined, first, prose_hit, lines = [], None, None, []
-    for _page, _gutter, text in parsed:
-        m = _PN_GUTTER_RE.match(text)
-        # The gutter number is furniture. Cut the number and its spacing only:
-        # the pattern's last atom is the first character of the body, so the
-        # slice stops one short of the match end or it eats that character
-        # ("DISCRIMINATION" came out "ISCRIMINATION").
-        body = (text[m.end() - 1:] if m else text).strip()
-        if not body:
+    lines, lowers, text, ends = _pn_context_prep(parsed)
+    first = prose_hit = None
+    for k, low in enumerate(lowers):
+        j = low.find(nl)
+        if j < 0:
             continue
-        off = len(" ".join(joined)) + (1 if joined else 0)
-        lines.append((off, off + len(body), _pn_line_is_prose(body)))
-        if nl in body.lower():
-            at = off + body.lower().index(nl)
-            if first is None:
-                first = at
-            # PROSE beats a heading, which is the whole question the cell is
-            # there to settle: "Charge" appears first in "CHARGE OF
-            # DISCRIMINATION" — a caption, and no evidence either way — and
-            # again in "served on Charge at his residence", which is a name.
-            # Quoting the first occurrence would show the operator the one that
-            # proves nothing. Same test `prune_heading_only_terms` uses.
-            if prose_hit is None and lines[-1][2]:
-                prose_hit = at
-        joined.append(body)
+        at = lines[k][0] + j
+        if first is None:
+            first = at
+        # PROSE beats a heading, which is the whole question the cell is there
+        # to settle: "Charge" appears first in "CHARGE OF DISCRIMINATION" — a
+        # caption, and no evidence either way — and again in "served on Charge
+        # at his residence", which is a name. Quoting the first occurrence would
+        # show the operator the one that proves nothing. Same test
+        # `prune_heading_only_terms` uses. The first prose hit settles it, so
+        # the walk stops there.
+        if lines[k][2]:
+            prose_hit = at
+            break
     hit = prose_hit if prose_hit is not None else first
     if hit is None:
         return ""
-    text = " ".join(joined)
     # A caption block is not part of the sentence beside it. Bound the quote by
     # the run of lines that read the same way as the one the hit is on, so a
     # sentence never swallows the heading above it (there is no full stop in a
@@ -16222,11 +16362,14 @@ def _pn_context(parsed, needle, width=_PN_CONTEXT_MAX):
         if lines[k][2] != mode:
             break
         ceiling = lines[k][1]
-    ends = [m.end() for m in _PN_SENT_END_RE.finditer(text)]
     # The sentence holding the hit: the terminator belongs to the sentence it
     # closes, so the span runs from the one before the hit to the one after.
-    before = [e for e in ends if floor <= e <= hit]
-    after = [e for e in ends if hit + len(nl) <= e <= ceiling]
+    # `ends` is sorted (finditer walks left to right), so the two windows are
+    # slices rather than a filter over every terminator in the document — which
+    # is another whole-export scan this used to pay per value.
+    before = ends[bisect.bisect_left(ends, floor):bisect.bisect_right(ends, hit)]
+    after = ends[bisect.bisect_left(ends, hit + len(nl)):
+                 bisect.bisect_right(ends, ceiling)]
     start = before[-1] if before else floor
     end = after[0] if after else ceiling
     # …and it grows outward while it is too short to be evidence, which is what
@@ -17481,10 +17624,11 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
             except OSError as e:
                 log.warning(f"  Could not write original text version "
                             f"(non-fatal): {e}")
-        # Held only as long as the evidence pass needs it; the export below is
-        # built from the same pages, so keeping two full bodies alive across the
-        # scrub buys nothing.
-        del original
+        # NOT dropped here: the key's Context column quotes the sentence a value
+        # stands in, and only this copy still contains the real value — the
+        # export below has already replaced it. Held across the scrub for that
+        # one reason and released at the end of the file (see `note_key_context`
+        # at the foot of this function).
 
     # Name the phase BEFORE it runs, and time it — the same rule the pre-scan
     # follows for filenames, for the same reason. These two phases are the long
@@ -17658,6 +17802,15 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
     # (The unscrubbed reference copy was written BEFORE the scrub — see above.
     # It is ready as soon as the pages are extracted, so making it wait behind
     # the scrub and the leak scans was pure delay.)
+    #
+    # Quote each tracked value's sentence for the key's Context column, from
+    # that same unscrubbed body — the only text that still holds the real value.
+    # Done HERE, at the end of the file, so every record this file minted (a
+    # display name, a detector hit) is included; they do not exist yet when the
+    # copy is written.
+    if pseudonymizer is not None:
+        pseudonymizer.note_key_context(original)
+        del original
     return True
 
 
