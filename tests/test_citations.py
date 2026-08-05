@@ -136,3 +136,64 @@ class TestNonVCaseNames:
         assert out.count("Conservatorship of Whitley") == 2
         # And the intact citation must not come back as a leak to triage.
         assert pl._pn_review_findings(out) == []
+
+
+class TestConnectorJoinedPartyNames:
+    """A party can be named with a lowercase word inside it — "Service by
+    Medallion, Inc.", "Committee for Green Foothills". The walk-back from
+    "v." stopped on the connector and captured only the tail, so the link
+    and the blue underline started mid-name. Legal style italicizes the
+    case name, so the visible result was an underline that began partway
+    through the italics."""
+
+    def _cite(self, text):
+        cites = [c for c in pl.find_all_citations(text) if c["kind"] == "case"]
+        assert len(cites) == 1, cites
+        return cites[0]
+
+    def test_by_is_kept_inside_the_party_name(self):
+        t = ("See Service by Medallion, Inc. v. Clorox Co. (1996) 44 "
+             "Cal.App.4th 1807, 1818-1819.")
+        c = self._cite(t)
+        assert c["plaintiff"] == "Service by Medallion, Inc."
+        # The whole italicized case name is inside the span that gets the
+        # link and the underline — not just "Medallion, Inc. v. Clorox Co."
+        assert c["match_text"].startswith("Service by Medallion, Inc. v.")
+
+    def test_for_is_kept_inside_the_party_name(self):
+        t = ("Committee for Green Foothills v. Santa Clara County (2010) "
+             "48 Cal.4th 32, 40.")
+        assert self._cite(t)["plaintiff"] == "Committee for Green Foothills"
+
+    def test_leading_preposition_in_prose_is_still_stripped(self):
+        """The connector is admitted only when a capitalized word precedes
+        it. In prose the word to its left is lowercase, so the walk-back
+        stops there and the signal-prefix strip removes the connector."""
+        for lead in ("The test articulated by", "The standard for",
+                     "relied on by", "as adopted by"):
+            t = f"{lead} Smith v. Jones (2001) 90 Cal.App.4th 1, 5."
+            assert self._cite(t)["plaintiff"] == "Smith"
+
+    def test_supra_still_resolves_for_a_connector_joined_party(self):
+        """SUPRA_RE captures one capitalized token, so "Service by
+        Medallion, supra" comes back as "Medallion" while the registered
+        short name is now "Service". The alias keeps the supra cite
+        resolvable."""
+        t = ("Service by Medallion, Inc. v. Clorox Co. (1996) 44 "
+             "Cal.App.4th 1807, 1818. Later, Service by Medallion, supra, "
+             "44 Cal.App.4th at p. 1818.")
+        supras = [c for c in pl.find_all_citations(t) if c.get("is_supra")]
+        assert [c["key"] for c in supras] == [
+            "Service by Medallion, Inc. v. Clorox Co. (1996) 44 Cal.App.4th 1807"]
+
+    def test_supra_alias_also_covers_of_joined_parties(self):
+        t = ("Bank of America, N.A. v. Smith (2019) 30 Cal.App.5th 1, 5. "
+             "See Bank of America, supra, 30 Cal.App.5th at p. 5.")
+        supras = [c for c in pl.find_all_citations(t) if c.get("is_supra")]
+        assert [c["key"] for c in supras] == [
+            "Bank of America, N.A. v. Smith (2019) 30 Cal.App.5th 1"]
+
+    def test_short_name_aliases_needs_a_capitalized_follower(self):
+        assert pl._short_name_aliases("Service by Medallion, Inc.") == ["Medallion"]
+        assert pl._short_name_aliases("Smith") == []
+        assert pl._short_name_aliases("Jones and") == []

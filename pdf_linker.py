@@ -765,6 +765,30 @@ _CORP_SUFFIX_LOWER = {
 }
 _CORP_SUFFIX_UPPER = {"LLC", "LLP", "LP", "LLLP", "PLLC", "PC", "PLC"}
 
+# Lowercase words that sit INSIDE a party name rather than ending it. The
+# walk-back from "v." keeps collecting through one of these; any other
+# lowercase token ends the name.
+#
+# "by" and "for" are here because real parties are named with them —
+# "Service by Medallion, Inc. v. Clorox Co." (1996) 44 Cal.App.4th 1807,
+# "Committee for Green Foothills v. Santa Clara County". Stopping at the
+# connector cut the name in half ("Medallion, Inc.", "Green Foothills"),
+# which is visible in the delivered PDF: legal style italicizes the case
+# name, so the blue underline started mid-italics and left the first words
+# of the party unlinked. It also sent the wrong party to `resolve_url`.
+#
+# The reason a preposition can be admitted here at all is that a leading
+# one is stripped afterwards: every word in this set is also in
+# SIGNAL_PREFIXES, so ordinary prose ("the test articulated by Smith v.
+# Jones") still yields "Smith" — the walk-back collects "by", stops on the
+# lowercase word to its left, and the signal-prefix strip removes it. The
+# connector only survives when a CAPITALIZED word precedes it, which is
+# what a party name looks like.
+_NAME_CONNECTORS = frozenset({
+    "of", "the", "and", "&", "de", "la", "du", "von", "van", "re",
+    "by", "for",
+})
+
 
 def _short_name(plaintiff: str) -> str:
     p = plaintiff.strip()
@@ -779,6 +803,30 @@ def _short_name(plaintiff: str) -> str:
                "", p, flags=re.IGNORECASE)
     parts = p.split()
     return parts[0].rstrip(",.;:") if parts else p
+
+
+def _short_name_aliases(plaintiff: str) -> list:
+    """Extra short names a supra cite may use for a connector-joined party.
+
+    `_short_name` takes the plaintiff's FIRST word, which is the right
+    answer for the supra form a brief usually writes. But SUPRA_RE captures
+    a single capitalized token, so a party name joined by a lowercase
+    connector is captured from the connector onward: "Service by Medallion,
+    supra" comes back as "Medallion" and "Bank of America, supra" as
+    "America", neither of which is the registered short name.
+
+    Return the first word after each connector ("Medallion", "America") so
+    the supra resolver can match on those too. Additive only — the real
+    short name is still registered first and still wins.
+    """
+    words = plaintiff.split()
+    out = []
+    for i, w in enumerate(words[:-1]):
+        if w.lower().rstrip(",.;:") in _NAME_CONNECTORS:
+            nxt = words[i + 1].rstrip(",.;:")
+            if nxt and nxt[0].isupper():
+                out.append(nxt)
+    return out
 
 
 def _walk_back_for_name(text: str, v_pos: int):
@@ -848,7 +896,7 @@ def _walk_back_for_name(text: str, v_pos: int):
             }:
                 break
 
-        connectors = {"of", "the", "and", "&", "de", "la", "du", "von", "van", "re"}
+        connectors = _NAME_CONNECTORS
         # Strip leading punctuation. We also strip a leading hyphen because
         # PDFs sometimes render hyphenated party names like "Bigler-Engler"
         # with a stray space-hyphen-space sequence ("Bigler -Engler"), which
@@ -1306,6 +1354,11 @@ def find_supra_citations(text: str, full_cites_in_order):
     for c in full_cites_in_order:
         if c["kind"] == "case" and c.get("short"):
             seen.setdefault(c["short"], c)
+            # A connector-joined party ("Service by Medallion, Inc.") is
+            # captured by SUPRA_RE from the connector onward, so register
+            # that spelling as well or the supra cite resolves to nothing.
+            for _alias in _short_name_aliases(c.get("plaintiff") or ""):
+                seen.setdefault(_alias, c)
 
     results = []
     for m in SUPRA_RE.finditer(text):

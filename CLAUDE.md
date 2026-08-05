@@ -1260,6 +1260,28 @@ method is built on. Relatedly, `_side_is_trusted` needs MOST of a side's
 identifying words, not any one — a case with a party named "North" cleared both
 sides of *BMW of North America* and stripped its protection outright.
 
+**A LOWERCASE word inside a party name is not the end of the name, and the
+italics say so.** `_walk_back_for_name` walks left from " v. " and stops on any
+lowercase token that is not a connector — the set was `of`/`the`/`and`/`&` plus
+the name particles, so *Service by Medallion, Inc. v. Clorox Co.* (1996) 44
+Cal.App.4th 1807 came back as "Medallion, Inc." and *Committee for Green
+Foothills* as "Green Foothills". The damage is VISIBLE in the delivered PDF,
+which is how it was found: legal style italicizes the case name, so the link
+rect and the blue underline began partway through the italic run and left the
+first words of the party bare. It also sent half a party name to `resolve_url`.
+`by` and `for` are now in `_NAME_CONNECTORS`. What makes admitting a preposition
+safe is the strip that follows: every word in the set is also in
+`SIGNAL_PREFIXES`, so ordinary prose ("the test articulated by Smith v. Jones")
+still yields "Smith" — the walk collects "by", stops on the lowercase word to
+its left, and the leading-signal strip removes it. The connector only survives
+when a CAPITALIZED word precedes it, which is what a party name looks like.
+The knock-on is supra: `SUPRA_RE` captures ONE capitalized token, so
+"Service by Medallion, supra" reads as "Medallion" while the registered short
+name is now "Service", and the supra cite resolved to nothing. `find_supra_
+citations` registers `_short_name_aliases` — the first word after each
+connector — beside the real short name. Additive only, and it fixes the `of`
+form ("Bank of America, supra") that never resolved at all.
+
 **A page must be APPENDABLE before anything is inserted into it**
 (`_repair_page_annots`, called once after the already-linked fast path so a
 document we would not have touched is never dirtied). `/Annots 175 0 R` is legal
