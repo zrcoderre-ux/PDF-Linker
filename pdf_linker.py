@@ -11548,6 +11548,30 @@ class Pseudonymizer:
         # INHERITED keep-spec contributes no such fragment terms, so it must
         # keep losing to the party match or the whole name would ride through.
         self.keep_strict_local = set()
+        # A `no` typed in THIS folder — its key's Replacement column or its
+        # LEAKS worksheet. Same reasoning as the bracket above, one step
+        # further: the operator named this exact value here and said leave it,
+        # so it must survive a party term. It did not, and the failure was
+        # silent — `_pn_retire_kept_key_terms` drops the KEY's own row, but the
+        # folder PRE-SCAN then re-harvests the same name out of the PDF as a
+        # fresh party term, the full-party override releases the keep, and the
+        # value is faked again by the leftover token rows ("Marcus Delacroix" ->
+        # "Rathmore Symington", composed from `Marcus` and `Delacroix`). The log
+        # meanwhile said the `no` "will be honored".
+        #
+        # Released only by a party match reaching BEYOND the kept text
+        # (`party_wider_only`, the rule `never` already uses), never by one the
+        # keep covers. That distinction is the whole safety of this tier: `no`
+        # on "Marcus Delacroix" keeps the name the operator named, while `no` on
+        # a single word cannot blow a hole in a longer party that contains it —
+        # "Court Reporter Services, LLC" still reaches past a `no` on "Court"
+        # and is still scrubbed whole.
+        #
+        # LOCAL only, exactly as the bracket is: an INHERITED `no` off the
+        # master sheet is another folder's lesson about a word, not an
+        # instruction about this case's parties, and must keep losing to the
+        # party match.
+        self.keep_soft_local = set()
         self.keep_strict = set() # a bracketed keep-spec part — "this fragment is
                                  # never a name": kept verbatim even next to
                                  # names ("[Plaintiff]" stays in "Plaintiff X").
@@ -12933,7 +12957,8 @@ class Pseudonymizer:
                 hash(frozenset(self.keep_soft)),
                 hash(frozenset(self.keep_strict)),
                 hash(frozenset(self.keep_nuclear)),
-                hash(frozenset(getattr(self, "keep_strict_local", ()) or ())))
+                hash(frozenset(getattr(self, "keep_strict_local", ()) or ())),
+                hash(frozenset(getattr(self, "keep_soft_local", ()) or ())))
 
     def _keep_spans(self, text):
         """Spans of operator-KEPT values in `text` — a value marked `no` (keep
@@ -13037,10 +13062,16 @@ class Pseudonymizer:
                     self.kept_hits.add(v.lower())
 
         local_strict = self.keep_strict_local & self.keep_strict
+        local_soft = getattr(self, "keep_soft_local", set()) & self.keep_soft
         collect(local_strict, soft=False, party_wins=False)
         collect(self.keep_nuclear, soft=False, party_wider_only=True)
         collect(self.keep_strict - local_strict, soft=False)
-        collect(self.keep_soft, soft=True)
+        # A `no` typed in THIS folder survives a party term that the keep
+        # COVERS — see `keep_soft_local`. One that reaches beyond the kept text
+        # still releases, so a single-word `no` can never leave a longer party
+        # standing. An inherited `no` takes the ordinary tier below it.
+        collect(local_soft, soft=True, party_wider_only=True)
+        collect(self.keep_soft - local_soft, soft=True)
         if len(memo) >= 2:          # hold the alternating pair, nothing older
             memo.clear()
         memo[memo_key] = spans
@@ -13538,6 +13569,12 @@ class Pseudonymizer:
             return []
         masked = self._mask_protected_citations(_NFKC(text))
         red, idx = self._reduce_with_index(masked)
+        # An operator KEEP is present ON PURPOSE, so it is not a leak — the rule
+        # `_surviving_records` already follows, which this tier never did. Both
+        # of the reduced passes ignored the keep set entirely, so an operator's
+        # own decision was the one thing they would not honour. Mirrored in
+        # `scrub_welded`, which must refuse the same spans.
+        keep = _PnSpanIndex(self._keep_spans(masked))
         out = []
         for core, short, rec in cores:
             k = red.find(core)
@@ -13548,6 +13585,7 @@ class Pseudonymizer:
                 # a weld. The two must stay identical, or detection out-runs
                 # replacement and quarantines an export nothing can clean.
                 if (_pn_span_is_unbroken(masked, o_s, o_e)
+                        and not keep.overlaps(o_s, o_e)
                         and (not short or _pn_span_is_welded(masked, o_s, o_e))
                         and (spliced
                              or _pn_span_has_hard_seam(masked, o_s, o_e)
@@ -13603,7 +13641,16 @@ class Pseudonymizer:
         # ("Sanchez v. Valencia Holding Co.") must survive byte-for-byte even
         # on a splice-flagged page — renaming an authority is a worse failure
         # than leaving a welded name in.
-        protected = _PnSpanIndex(self._protected_citation_spans(src))
+        # …and the operator's KEEP spans, which this pass alone did not consult.
+        # Every other write path is handed `_keep_spans` (`apply`, `apply_lines`,
+        # `scrub_survivors`), so a `no` held everywhere except here — and here it
+        # was undone silently, by a pass that reads through the reduction and so
+        # never sees the word boundaries the keep was matched on. A `no` typed
+        # against a full party name survived the substitution and was then faked
+        # back token by token. Mirrored in `surviving_reals_reduced`, which must
+        # not report what this refuses to touch.
+        protected = _PnSpanIndex(self._protected_citation_spans(src)
+                                 + self._keep_spans(src))
         cands.sort(key=lambda c: -len(c[0]))
         taken = [False] * len(reduced)
         repls = []
@@ -20013,8 +20060,9 @@ def _fix_leaks_mode(folder, args, cfg, log):
     pz = Pseudonymizer(terms, [], registry)
     pz.suppressed = suppressed
     pz.keep_strict, pz.keep_soft, pz.keep_nuclear = _pn_keep_values(decisions)
-    pz.keep_strict_local = _pn_keep_values(
-        {vl: d for vl, d in decisions.items() if vl in local_vls})[0]
+    _local_keeps = _pn_keep_values(
+        {vl: d for vl, d in decisions.items() if vl in local_vls})
+    pz.keep_strict_local, pz.keep_soft_local = _local_keeps[0], _local_keeps[1]
     pz._keep_decisions = {vl: d for vl, d in decisions.items()
                           if _pn_decision_is_keep(d)}
     pz._keep_local = {vl for vl in pz._keep_decisions if vl in local_vls}
@@ -20670,9 +20718,13 @@ def main():
          pseudonymizer.keep_nuclear) = _pn_keep_values(leak_decisions)
         # A bracket THIS folder typed also beats the party override: its
         # non-bracketed remainder is registered as its own term, so the party
-        # is scrubbed either way and the operator's split is honoured.
-        pseudonymizer.keep_strict_local = _pn_keep_values(
-            {vl: d for vl, d in leak_decisions.items() if vl in local_vls})[0]
+        # is scrubbed either way and the operator's split is honoured. A `no`
+        # typed here beats it too, but only where the keep COVERS the party
+        # match — see `Pseudonymizer.keep_soft_local`.
+        _local_keeps = _pn_keep_values(
+            {vl: d for vl, d in leak_decisions.items() if vl in local_vls})
+        pseudonymizer.keep_strict_local = _local_keeps[0]
+        pseudonymizer.keep_soft_local = _local_keeps[1]
         pseudonymizer._keep_decisions = {
             vl: d for vl, d in leak_decisions.items() if _pn_decision_is_keep(d)}
         pseudonymizer._keep_local = {vl for vl in pseudonymizer._keep_decisions

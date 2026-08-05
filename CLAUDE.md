@@ -154,10 +154,31 @@ never touches "California"):
 A keep normally loses to a **full party match** — a kept word inside a
 `_PN_PARTY_OVERRIDE_CATS` (person/entity/case_number) term is released so the real
 party is faked ("CAL EQUIPMENT FE RANCH, LLC" faked whole, "John Doe" faked).
-The ONE exception is `keep_strict_local`, a bracket typed in THIS folder: see the
-keep-spec rule below — the bracket already says how to split the name and its
-remainder is a term, so honouring it still scrubs the party. Bare
-`*-token`/short-name terms and detectors do NOT release a keep.
+Two exceptions, both LOCAL — a decision typed in THIS folder is an instruction
+about this case's parties, not another folder's lesson about a word.
+`keep_strict_local`, a bracket typed here: see the keep-spec rule below — the
+bracket already says how to split the name and its remainder is a term, so
+honouring it still scrubs the party. And `keep_soft_local`, a `no` typed here,
+which is released only by a party match reaching BEYOND the kept text (the
+`party_wider_only` rule `never` already uses). Bare `*-token`/short-name terms
+and detectors do NOT release a keep.
+**A local `no` needed that because RETIRING the key row is not enough.**
+`_pn_retire_kept_key_terms` drops the key's own binding, and the folder PRE-SCAN
+then re-reads the same name out of the PDF as a fresh party term — so the
+override released the keep and the value was faked again by the leftover token
+rows ("Marcus Delacroix" back as "Rathmore Symington", composed from `Marcus`
+and `Delacroix`), while the log said the `no` "will be honored". `wider_only` is
+what keeps that safe: a one-word `no` cannot leave a longer party standing,
+because "Court Reporter Services, LLC" reaches past a `no` on "Court" and is
+still scrubbed whole. An INHERITED `no` is unchanged and still loses.
+**…and `scrub_welded` was the pass actually undoing it.** Every other write path
+is handed `_keep_spans` (`apply`, `apply_lines`, `scrub_survivors`); the reduced
+cure alone was not, so a keep held through the substitution and was put back
+afterwards by a pass that reads the ALPHANUMERIC REDUCTION and therefore never
+sees the word boundaries the keep was matched on. Fixed with its detection
+mirror `surviving_reals_reduced`, which had the identical gap and had to move
+with it — a value one reports and the other refuses to touch quarantines an
+export nothing can clean.
 
 **The NUCLEAR keep is enforced where it cannot cost anything: at COMPOSITION
 time.** `{Law}` must survive inside "Alder Law, P.C." — but protecting the span
