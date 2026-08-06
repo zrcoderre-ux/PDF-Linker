@@ -112,9 +112,9 @@ def test_the_columns_carry_their_declared_widths(tmp_path):
     """Both workbooks arrive readable, so no column needs widening by hand.
 
     Excel's unit is character widths — how many "0" glyphs of the default font
-    fit. Real Value / Replacement (and the LEAKS Value and Fix? cells, which
-    take a typed replacement) get room for an ordinary party name; Context gets
-    the width a whole sentence needs.
+    fit. Real Value / Replacement and the LEAKS Value column get room for an
+    ordinary party name; Context gets the width a whole sentence needs; the
+    Fix? cell gets room for its longest control word and no more.
     """
     z = _pz(names=["Helen Rasho", "Someone Neverpresent"])
     z.apply(SOURCE)
@@ -135,7 +135,10 @@ def test_the_columns_carry_their_declared_widths(tmp_path):
          "where": "p.1:1", "context": "The complaint spells it Ashely."}], log)
     ws = openpyxl.load_workbook(tmp_path / "LEAKS.xlsx").active
     got = {c.value: ws.column_dimensions[c.column_letter].width for c in ws[1]}
-    assert got["Value"] == 30 and got["Fix? (yes/no)"] == 30, got
+    assert got["Value"] == 30, got
+    # Narrow on purpose: the cell holds "yes" / "no" / "never" almost always.
+    assert got["Fix? (yes/no)"] == 10, got
+    assert got["Fix? (yes/no)"] >= len("never") + 2, got
     assert got["Context"] == 120, got
 
 

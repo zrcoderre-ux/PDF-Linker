@@ -1726,9 +1726,12 @@ column the operator is meant to READ was the one they could not, without
 widening it by hand on every workbook. Vertical TOP with it, or a four-line
 quote sits centred against the one-line value it explains. Column WIDTHS come
 with it (`_PN_KEY_WIDTHS`, the third field of `_PN_LEAK_COLUMNS`), in Excel's
-unit of character widths: Real Value / Replacement at 30 — and the LEAKS Value
-and Fix? cells, since Fix? takes a typed replacement and not just yes/no — with
-Context at 120, the width a sentence needs. Row HEIGHT is
+unit of character widths: Real Value / Replacement and the LEAKS Value at 30,
+Context at 120 (the width a sentence needs), and Fix? at 10 — room for its
+longest control word and no more. Fix? also accepts a full typed replacement,
+but that is the exception, and sizing the column for it spent 30 characters of
+screen on every row to show "no"; a long one still shows, over two lines, in a
+row Excel grows to fit. Row HEIGHT is
 deliberately left unset: Excel auto-fits a wrapped row when no explicit height
 is stored, and a height written here would freeze the layout at this machine's
 font metrics. Costs 0.11 s on a 523-row key.
