@@ -107,6 +107,7 @@ pages. Those files are authoritative whenever they disagree with this one.
 Logs to <folder>/pdf_linker.log.
 """
 
+import bisect
 import datetime
 import logging
 import os
@@ -10007,8 +10008,22 @@ def _pn_terms_from_xlsx(path, extra_name_headers, log):
 # anything genuinely new in this file gets a fresh fake that can't collide with
 # one already in the key. The written-back key carries every loaded row forward
 # plus the new ones, so it never shrinks.
-_PN_KEY_HEADERS = ("Category", "Real Value", "Replacement", "Status", "Source",
-                   "Occurrences")
+_PN_KEY_HEADERS = ("Category", "Real Value", "Replacement", "Context", "Status",
+                   "Source", "Occurrences")
+# "Context" sits beside the Replacement it explains, which is where it is read:
+# the row's question is "is this binding right?", and the sentence is the
+# answer, so putting it three columns away from the fake was the wrong place.
+#
+# Safe to insert rather than append, which is worth stating because the reverse
+# is the obvious fear. `DeAnonymize.bas` does NOT read this sheet positionally —
+# it scans the header row for "real value" / "replacement" / "status" and uses
+# whatever columns they land in (`LoadKeyWorkbook`, and Status is already
+# optional there for keys written before it existed). `_pn_load_key` and
+# `_pn_key_context_on_disk` resolve by header name too. So the only thing a
+# moved column can break is a POSITIONAL fingerprint — hence the one below is
+# cut to the three headers both layouts share, and a six-column key from an
+# older version still reads as ours and still round-trips.
+_PN_KEY_FINGERPRINT = ("Category", "Real Value", "Replacement")
 # The regex-detector categories: in the batch these were computed live at
 # priority 3, so a loaded literal must sit ABOVE that to reproduce the exact
 # stored fake instead of letting the detector recompute a different one.
@@ -10240,7 +10255,45 @@ def _pn_key_looks_like_ours(path):
     except Exception:
         return False
     return tuple((h or "").strip() if isinstance(h, str) else h
-                 for h in (header or ())[:6]) == _PN_KEY_HEADERS
+                 for h in (header or ())[:3]) == _PN_KEY_FINGERPRINT
+
+
+def _pn_key_context_on_disk(path):
+    """{real_lower: Context} from the key already at `path`, both sheets.
+
+    A quote can only be re-derived from a document still in the folder, and the
+    key outlives the folder's contents — a party named only in a filing that was
+    delivered two runs ago keeps its binding, so it should keep its sentence
+    too. Read by header NAME, so a key written before the column existed simply
+    yields nothing.
+
+    Best-effort in every direction: no openpyxl, no file, an unreadable file or
+    a foreign spreadsheet all return {} rather than fail a run over a column
+    nothing reverses."""
+    try:
+        import openpyxl
+    except ImportError:
+        return {}
+    if not path.exists() or not _pn_key_looks_like_ours(path):
+        return {}
+    out = {}
+    try:
+        wb = openpyxl.load_workbook(path, read_only=True)
+        for ws in wb.worksheets:
+            rows = ws.iter_rows(values_only=True)
+            header = [_pn_norm_header(h) for h in (next(rows, ()) or ())]
+            if "real value" not in header or "context" not in header:
+                continue
+            rv, cx = header.index("real value"), header.index("context")
+            for row in rows:
+                if len(row) <= max(rv, cx) or not row[rv]:
+                    continue
+                if row[cx]:
+                    out.setdefault(str(row[rv]).lower(), str(row[cx]))
+        wb.close()
+    except Exception:
+        return out
+    return out
 
 
 def _pn_load_key(path, registry, log, remint_recycled=False):
@@ -11420,6 +11473,73 @@ def _pn_firm_names(text):
     return out
 
 
+# The two sides of `Pseudonymizer._in_name_run`, as a compiled pattern and as
+# character sets — it walks the neighbours by index rather than slicing the rest
+# of the export out on every call. Kept together so the two spellings of the one
+# rule ("[A-Za-z][A-Za-z.'’&\-]*", after a run of spaces or tabs) cannot drift.
+_PN_NAME_RUN_RIGHT_RE = re.compile(r"[ \t]+([A-Za-z][A-Za-z.'’&\-]*)")
+_PN_NAME_RUN_ALPHA = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                               "abcdefghijklmnopqrstuvwxyz")
+_PN_NAME_RUN_CHARS = _PN_NAME_RUN_ALPHA | frozenset(".'’&-")
+
+
+class _PnSpanIndex:
+    """"Does any of these spans overlap [s, e)?", answered in log time.
+
+    Four passes ask that question ONCE PER MATCH against a span list built over
+    the whole export — the party matches a KEEP yields to, the kept spans a leak
+    finding is filtered by, the citation spans the welded and the ordinary
+    substitutions refuse to touch. Each was a `for ... in spans` walk, so the
+    real cost was the PRODUCT: on a long filing both sides run to the thousands,
+    and one 130-page motion spent over half an hour comparing tuples. The run
+    then looks hung — no line is written while a phase is inside itself — which
+    is exactly how a folder reads as dead.
+
+    Sorted starts plus a running maximum of the ends is enough. Every span with
+    `start < e` is a prefix of the sorted list (`bisect_left` counts it), and one
+    of them overlaps iff the largest end in that prefix is past `s`. Same
+    answers, never an approximation: this replaces the walk, it does not screen
+    it.
+    """
+
+    __slots__ = ("_starts", "_maxend")
+
+    def __init__(self, spans):
+        ordered = sorted(spans)
+        self._starts = [s for s, _e in ordered]
+        self._maxend = []
+        run = None
+        for _s, e in ordered:
+            run = e if run is None or e > run else run
+            self._maxend.append(run)
+
+    def __bool__(self):
+        return bool(self._starts)
+
+    def __len__(self):
+        return len(self._starts)
+
+    def overlaps(self, s, e):
+        """True when some span [ps, pe) has ps < e and pe > s."""
+        i = bisect.bisect_left(self._starts, e)
+        return i > 0 and self._maxend[i - 1] > s
+
+    def overlaps_wider(self, s, e):
+        """True when some span overlaps [s, e) WITHOUT being contained in it —
+        the `party_wider_only` rule a nuclear keep is released by (a party match
+        the kept text already covers releases nothing).
+
+        An overlapping span escapes containment exactly when it starts before
+        `s` or ends after `e`, so the two prefix queries below are the whole
+        test: one for a span starting before `s` that reaches past `s`, one for
+        a span starting before `e` that reaches past `e`."""
+        i = bisect.bisect_left(self._starts, s)
+        if i > 0 and self._maxend[i - 1] > s:
+            return True
+        j = bisect.bisect_left(self._starts, e)
+        return j > 0 and self._maxend[j - 1] > e
+
+
 class Pseudonymizer:
 
     """Applies stable pseudonymization to plain text (the .txt export only).
@@ -11480,6 +11600,30 @@ class Pseudonymizer:
         # INHERITED keep-spec contributes no such fragment terms, so it must
         # keep losing to the party match or the whole name would ride through.
         self.keep_strict_local = set()
+        # A `no` typed in THIS folder — its key's Replacement column or its
+        # LEAKS worksheet. Same reasoning as the bracket above, one step
+        # further: the operator named this exact value here and said leave it,
+        # so it must survive a party term. It did not, and the failure was
+        # silent — `_pn_retire_kept_key_terms` drops the KEY's own row, but the
+        # folder PRE-SCAN then re-harvests the same name out of the PDF as a
+        # fresh party term, the full-party override releases the keep, and the
+        # value is faked again by the leftover token rows ("Marcus Delacroix" ->
+        # "Rathmore Symington", composed from `Marcus` and `Delacroix`). The log
+        # meanwhile said the `no` "will be honored".
+        #
+        # Released only by a party match reaching BEYOND the kept text
+        # (`party_wider_only`, the rule `never` already uses), never by one the
+        # keep covers. That distinction is the whole safety of this tier: `no`
+        # on "Marcus Delacroix" keeps the name the operator named, while `no` on
+        # a single word cannot blow a hole in a longer party that contains it —
+        # "Court Reporter Services, LLC" still reaches past a `no` on "Court"
+        # and is still scrubbed whole.
+        #
+        # LOCAL only, exactly as the bracket is: an INHERITED `no` off the
+        # master sheet is another folder's lesson about a word, not an
+        # instruction about this case's parties, and must keep losing to the
+        # party match.
+        self.keep_soft_local = set()
         self.keep_strict = set() # a bracketed keep-spec part — "this fragment is
                                  # never a name": kept verbatim even next to
                                  # names ("[Plaintiff]" stays in "Plaintiff X").
@@ -11506,6 +11650,11 @@ class Pseudonymizer:
         # pseudonymize+scan runtime). This cache is unbounded, so each pattern
         # compiles once for the whole run.
         self._rx_cache = {}
+        # {real_lower: the sentence it stands in, from the UNSCRUBBED source} —
+        # the key's Context column. Kept beside the records rather than in them
+        # so `write_key`'s own DERIVED token rows can look one up too, and so a
+        # value can be quoted once for the folder rather than once per record.
+        self._key_context = {}
         self.records = {}
         for t in terms:
             # Never install a self-identical mapping (fake == real): it is a
@@ -12848,6 +12997,26 @@ class Pseudonymizer:
                 spans.append(m.span())
         return spans
 
+    def _scan_state_key(self):
+        """Everything besides the TEXT that a keep-span or survivor answer
+        depends on — the memo key both of them extend.
+
+        Sizes alone are not a fingerprint. `--fix-leaks` and the tests both set
+        the keep sets on a live Pseudonymizer and ask the same question again,
+        and a `no` typed against one value while another is dropped leaves every
+        count where it was: the memo would then hand back the answer from BEFORE
+        the operator's decision, which on this path means reporting a kept value
+        as a leak or missing a real one. The sets are a few hundred short
+        strings, so hashing them costs microseconds against a scan that costs
+        seconds. `terms` and `records` only ever grow, so their lengths do say
+        whether they changed."""
+        return (len(self.terms), len(self.records),
+                hash(frozenset(self.keep_soft)),
+                hash(frozenset(self.keep_strict)),
+                hash(frozenset(self.keep_nuclear)),
+                hash(frozenset(getattr(self, "keep_strict_local", ()) or ())),
+                hash(frozenset(getattr(self, "keep_soft_local", ()) or ())))
+
     def _keep_spans(self, text):
         """Spans of operator-KEPT values in `text` — a value marked `no` (keep
         the whole value) or the bracketed part of a keep-spec. A candidate
@@ -12883,6 +13052,25 @@ class Pseudonymizer:
         text already declared safe."""
         if not self.keep_soft and not self.keep_strict and not self.keep_nuclear:
             return []
+        # Memoized for the same reason `_mask_protected_citations` is, and over
+        # the same two texts: the end-of-file block runs the cure passes and then
+        # the leak scans over the export body and its column-ordered twin, and
+        # every one of them asks for this. Rebuilding it means re-scanning every
+        # party term over the whole export — the single most expensive thing on
+        # that path. TWO entries, because the calls ALTERNATE between the two
+        # bodies and a one-entry memo would miss on every single one.
+        #
+        # Keyed on `_scan_state_key` as well as the text — the terms grow between
+        # files and the keeps can be reset outright. `kept_hits` is a set, so a
+        # memo hit re-recording nothing is exactly right: the values were
+        # recorded when this text was first walked.
+        memo_key = (text, self._scan_state_key())
+        memo = getattr(self, "_keep_span_memo", None)
+        if memo is None:
+            memo = self._keep_span_memo = {}
+        hit = memo.get(memo_key)
+        if hit is not None:
+            return hit
         # Spans of full party-name matches, which override EITHER kind of keep.
         party = []
         for t in self.terms:
@@ -12891,13 +13079,13 @@ class Pseudonymizer:
             for m in self._compiled(t.pattern, t.flags).finditer(text):
                 if m.start() != m.end():
                     party.append((m.start(), m.end()))
+        party = _PnSpanIndex(party)
 
         def in_party(s, e, wider_only=False):
             """A party match overlapping [s,e]. `wider_only` ignores one the kept
             span already covers — see the nuclear exception above."""
-            return any(s < pe and ps < e
-                       and not (wider_only and s <= ps and pe <= e)
-                       for ps, pe in party)
+            return (party.overlaps_wider(s, e) if wider_only
+                    else party.overlaps(s, e))
 
         spans = []
 
@@ -12910,8 +13098,13 @@ class Pseudonymizer:
                 # like an e-mail is kept on the full-party rule alone.
                 run_check = soft and bool(re.fullmatch(r"[A-Za-z][A-Za-z.'’\-]*", v))
                 hit = False
-                for m in re.finditer(r"(?<!\w)" + re.escape(v) + r"(?!\w)",
-                                     text, re.IGNORECASE):
+                # Through the run-long cache, not `re.finditer`: a folder with a
+                # few hundred master KEEPs rebuilt and recompiled every one of
+                # these on every page, and Python's own re cache (512) is shared
+                # with every term pattern in the case, so it thrashed.
+                keep_rx = self._compiled(r"(?<!\w)" + re.escape(v) + r"(?!\w)",
+                                         re.IGNORECASE)
+                for m in keep_rx.finditer(text):
                     s, e = m.span()
                     if s == e or (party_wins and in_party(s, e, party_wider_only)):
                         continue      # a full party match here — party fakes it
@@ -12926,22 +13119,61 @@ class Pseudonymizer:
                     self.kept_hits.add(v.lower())
 
         local_strict = self.keep_strict_local & self.keep_strict
+        local_soft = getattr(self, "keep_soft_local", set()) & self.keep_soft
         collect(local_strict, soft=False, party_wins=False)
         collect(self.keep_nuclear, soft=False, party_wider_only=True)
         collect(self.keep_strict - local_strict, soft=False)
-        collect(self.keep_soft, soft=True)
+        # A `no` typed in THIS folder survives a party term that the keep
+        # COVERS — see `keep_soft_local`. One that reaches beyond the kept text
+        # still releases, so a single-word `no` can never leave a longer party
+        # standing. An inherited `no` takes the ordinary tier below it.
+        collect(local_soft, soft=True, party_wider_only=True)
+        collect(self.keep_soft - local_soft, soft=True)
+        if len(memo) >= 2:          # hold the alternating pair, nothing older
+            memo.clear()
+        memo[memo_key] = spans
         return spans
 
     def _in_name_run(self, text, s, e):
         """True when the word at [s,e] is immediately adjacent to another
         name-shaped word (part of a multi-word proper-noun phrase like "Cal
         Equipment"), so a soft `no` keep there is released. Adjacency is a single
-        run of spaces/tabs — a comma, period or line break ends the phrase."""
-        r = re.match(r"[ \t]+([A-Za-z][A-Za-z.'’&\-]*)", text[e:])
+        run of spaces/tabs — a comma, period or line break ends the phrase.
+
+        Both neighbours are read by INDEX. The two obvious spellings — matching
+        against `text[e:]` and searching `text[:s]` — each copy the rest of the
+        export on every call, and the left one then makes the engine scan that
+        whole copy to find a `$`-anchored match. This runs once per occurrence of
+        a soft keep, and the master sheet's keeps are ordinary vocabulary
+        ("and", "the", "of", "court"), so a long filing carries thousands: the
+        product is quadratic in the document, and it is where a 130-page motion
+        spent over half an hour with nothing written to the log. Measured on a
+        143 KB body it was 19 of 24 seconds; the walks below are proportional to
+        one word.
+
+        Identical answers. The right-hand side is the same pattern matched at an
+        OFFSET instead of on a slice; the left-hand walk reproduces the regex's
+        leftmost match — the maximal run of name characters ending at the space
+        run, entered at its first LETTER, so a run opening on punctuation
+        (".Smith") yields "Smith" exactly as the search did, and `$`'s licence to
+        sit before one trailing newline is honoured."""
+        r = _PN_NAME_RUN_RIGHT_RE.match(text, e)
         if r and _pn_is_name_word(r.group(1)):
             return True
-        l = re.search(r"([A-Za-z][A-Za-z.'’&\-]*)[ \t]+$", text[:s])
-        return bool(l and _pn_is_name_word(l.group(1)))
+        i = s
+        if i > 0 and text[i - 1] == "\n":   # `$` may sit before a trailing newline
+            i -= 1
+        j = i
+        while j > 0 and text[j - 1] in " \t":
+            j -= 1
+        if j == i:                          # no space run: no phrase to be in
+            return False
+        k = j
+        while k > 0 and text[k - 1] in _PN_NAME_RUN_CHARS:
+            k -= 1
+        while k < j and text[k] not in _PN_NAME_RUN_ALPHA:
+            k += 1
+        return k < j and _pn_is_name_word(text[k:j])
 
     def _mask_protected_citations(self, text):
         """`text` with every protected citation span blanked to spaces, for the
@@ -12950,15 +13182,23 @@ class Pseudonymizer:
         counting it quarantined ten clean exports over text that was required
         to stay.
 
-        One-entry memo, because the mask runs the whole citation parser (~115
-        ms on a long export) and every scan over one export asks for the same
-        masked body: `surviving_reals`, then the fuzzy sweep, then the
-        half-scrub sweep. Keyed on the text itself and holding one entry, so
-        it cannot grow with the folder."""
-        if getattr(self, "_mask_memo", (None, None))[0] == text:
-            return self._mask_memo[1]
-        masked = self._mask_uncached(text)
-        self._mask_memo = (text, masked)
+        Memoized, because the mask runs the whole citation parser (~115 ms on a
+        long export) and every scan over one export asks for the same masked
+        body: `surviving_reals`, then the fuzzy sweep, then the half-scrub
+        sweep. TWO entries, not one: the block runs each scan over the export
+        body AND over its column-ordered twin, alternating between them, so a
+        single slot was evicted before it was ever read and the parser ran on
+        every call. Keyed on the text itself and capped at the alternating
+        pair, so it cannot grow with the folder."""
+        memo = getattr(self, "_mask_memo", None)
+        if memo is None:
+            memo = self._mask_memo = {}
+        masked = memo.get(text)
+        if masked is None:
+            masked = self._mask_uncached(text)
+            if len(memo) >= 2:
+                memo.clear()
+            memo[text] = masked
         return masked
 
     def _mask_uncached(self, text):
@@ -12978,6 +13218,12 @@ class Pseudonymizer:
         # Fail-closed authority guard, run only where the text has a "v." at all
         # so an ordinary page pays one search.
         guard = bool(_PN_AUTHORITY_V_RE.search(text))
+        # Indexed, not walked: `scrub_survivors` hands this pass the whole export
+        # and a candidate per surviving match, so the per-candidate scan over the
+        # protected spans was a product of two numbers that both grow with the
+        # document. (`occ` stays a walk — it holds only the spans actually
+        # chosen, and it is built as we go.)
+        protected = _PnSpanIndex(protected) if protected else None
         chosen, occ = [], []
         for _prio, s, e, rec in cands:
             if any(s < oe and os < e for os, oe in occ):
@@ -12985,7 +13231,7 @@ class Pseudonymizer:
             # Never rewrite inside a protected citation span (P0-A): a candidate
             # overlapping a cited decision's name is dropped so the authority
             # survives byte-for-byte.
-            if protected and any(s < pe and ps < e for ps, pe in protected):
+            if protected is not None and protected.overlaps(s, e):
                 continue
             # …and never in a citation-SHAPED context either, whether or not a
             # citation parsed there.
@@ -13140,8 +13386,32 @@ class Pseudonymizer:
         export nothing is able to clean. Every tracked value is checked, including one that was replaced
         ZERO times: a term whose only occurrences were line-wrapped used to
         match nothing, so it had no replacement count, so the old count>0 guard
-        skipped it and the leak was reported as clean."""
+        skipped it and the leak was reported as clean.
+
+        This is the most expensive thing on the end-of-file path — every tracked
+        value scanned across the whole export — and the block asks for it FOUR
+        times: the cure pass and then the leak scan, over the export body and
+        over its column-ordered twin. Two things keep that affordable, and
+        neither weakens the rule above. The answer is MEMOIZED on the text, and
+        the cure returns the body unchanged whenever nothing needed curing (the
+        ordinary case), so the scan that follows is asking the identical
+        question. And the per-record walk STOPS at the first match that survives
+        the filters: `finditer` is lazy, so a party named on page 1 is settled
+        without reading pages 2 to 130. Both give exactly what the full walk
+        gave — this decides MEMBERSHIP, and membership is decided by the first
+        survivor."""
+        raw = text
         text = self._mask_protected_citations(_NFKC(text))
+        # Keyed on `_scan_state_key` too: `register_*` grows the terms and
+        # records between files, and a keep decision reaching this instance
+        # changes the verdict on text that has not moved at all.
+        memo_key = (raw, self._scan_state_key())
+        memo = getattr(self, "_survivor_memo", None)
+        if memo is None:
+            memo = self._survivor_memo = {}
+        hit = memo.get(memo_key)
+        if hit is not None:
+            return list(hit)
         # A value the operator marked KEEP is present ON PURPOSE — that is what
         # the decision means — so it is not a leak. Reporting it anyway put a
         # permanent row in LEAKS.xlsx that no answer could ever clear: `no` is
@@ -13177,7 +13447,8 @@ class Pseudonymizer:
         # Whitelisted URL spans are in the set for the same mirroring reason:
         # `_substitute` refuses to rewrite inside a verification link, so a
         # tracked value standing there must not be reported as a leak.
-        keep = self._keep_spans(text) + self._whitelisted_url_spans(text)
+        keep = _PnSpanIndex(self._keep_spans(text)
+                            + self._whitelisted_url_spans(text))
         out = []
         for rec in self.records.values():
             if nuclear and str(rec["real"]).lower() in nuclear:
@@ -13186,8 +13457,7 @@ class Pseudonymizer:
                     and str(rec["real"]).lower() in kept):
                 continue
             try:
-                ms = list(self._compiled(rec["pattern"],
-                                         rec["flags"]).finditer(text))
+                ms = self._compiled(rec["pattern"], rec["flags"]).finditer(text)
             except re.error:
                 continue
             # MIRROR `_substitute`. A name-shaped value standing in a citation-
@@ -13200,16 +13470,19 @@ class Pseudonymizer:
             # Apply-Leak-Fixes passes can ever clear, because every pass refuses
             # to scrub it and every pass re-reports it. Detection must never
             # out-run replacement — the same discipline `_weld_core` exists for.
-            if guard and rec["category"] in _PN_AUTHORITY_GUARD_CATS:
-                ms = [m for m in ms
-                      if not self._in_authority_context(text, m.start(),
-                                                        m.end())]
-            if keep:
-                ms = [m for m in ms
-                      if not any(m.start() < ke and ks < m.end()
-                                 for ks, ke in keep)]
-            if ms:
+            in_authority = (guard
+                            and rec["category"] in _PN_AUTHORITY_GUARD_CATS)
+            for m in ms:            # lazy: stops at the first SURVIVING match
+                if in_authority and self._in_authority_context(text, m.start(),
+                                                               m.end()):
+                    continue
+                if keep and keep.overlaps(m.start(), m.end()):
+                    continue
                 out.append(rec)
+                break
+        if len(memo) >= 2:          # hold the alternating pair, nothing older
+            memo.clear()
+        memo[memo_key] = list(out)
         return out
 
     def surviving_reals(self, text):
@@ -13353,6 +13626,12 @@ class Pseudonymizer:
             return []
         masked = self._mask_protected_citations(_NFKC(text))
         red, idx = self._reduce_with_index(masked)
+        # An operator KEEP is present ON PURPOSE, so it is not a leak — the rule
+        # `_surviving_records` already follows, which this tier never did. Both
+        # of the reduced passes ignored the keep set entirely, so an operator's
+        # own decision was the one thing they would not honour. Mirrored in
+        # `scrub_welded`, which must refuse the same spans.
+        keep = _PnSpanIndex(self._keep_spans(masked))
         out = []
         for core, short, rec in cores:
             k = red.find(core)
@@ -13363,6 +13642,7 @@ class Pseudonymizer:
                 # a weld. The two must stay identical, or detection out-runs
                 # replacement and quarantines an export nothing can clean.
                 if (_pn_span_is_unbroken(masked, o_s, o_e)
+                        and not keep.overlaps(o_s, o_e)
                         and (not short or _pn_span_is_welded(masked, o_s, o_e))
                         and (spliced
                              or _pn_span_has_hard_seam(masked, o_s, o_e)
@@ -13418,7 +13698,16 @@ class Pseudonymizer:
         # ("Sanchez v. Valencia Holding Co.") must survive byte-for-byte even
         # on a splice-flagged page — renaming an authority is a worse failure
         # than leaving a welded name in.
-        protected = self._protected_citation_spans(src)
+        # …and the operator's KEEP spans, which this pass alone did not consult.
+        # Every other write path is handed `_keep_spans` (`apply`, `apply_lines`,
+        # `scrub_survivors`), so a `no` held everywhere except here — and here it
+        # was undone silently, by a pass that reads through the reduction and so
+        # never sees the word boundaries the keep was matched on. A `no` typed
+        # against a full party name survived the substitution and was then faked
+        # back token by token. Mirrored in `surviving_reals_reduced`, which must
+        # not report what this refuses to touch.
+        protected = _PnSpanIndex(self._protected_citation_spans(src)
+                                 + self._keep_spans(src))
         cands.sort(key=lambda c: -len(c[0]))
         taken = [False] * len(reduced)
         repls = []
@@ -13430,7 +13719,7 @@ class Pseudonymizer:
                     break
                 end = k + len(core)
                 o_s, o_e = idx[k], idx[end - 1] + 1
-                if any(o_s < pe and ps < o_e for ps, pe in protected):
+                if protected.overlaps(o_s, o_e):
                     start = k + 1
                     continue
                 # The reduction dropped every space and comma, so a core can be
@@ -14205,6 +14494,43 @@ class Pseudonymizer:
             log.info(f"      (+{len(folds) - 8} more; every one is a row in "
                      f"the key)")
 
+    def note_key_context(self, original):
+        """Quote, for every tracked value, the sentence it stands in — read from
+        the UNSCRUBBED source, which is the only text that still contains it.
+
+        The key's Context column answers the question the key itself cannot:
+        a row says `Rasho -> Strangeways`, and whether that binding is right
+        depends on how the document used the word. The LEAKS worksheet has had
+        this since it started asking "is this real?"; a key row asks the same
+        question of a decision already made.
+
+        It has to be the ORIGINAL, and that is a deliberate trade the operator
+        made: by the time the export exists the real value has been replaced, so
+        the scrubbed copy cannot quote it. The consequence is that
+        `pseudonym_key.xlsx` now carries sentences of the real document, not
+        merely its real values. The key was never shareable — it is the reversal
+        map — so this does not change which file is safe to send, but it does
+        make this one considerably more revealing if it goes astray.
+
+        FIRST non-empty wins, in processing order. A value named in several
+        documents is quoted from the first that used it, so the column is stable
+        across a re-run of the same folder; adding a document can move a quote,
+        which is acceptable for a column nothing reverses.
+
+        Cost is one `_pn_context` per value still lacking a quote, and
+        `_pn_context_prep` makes that a search rather than a scan — a few
+        tenths of a second for a folder-sized key, against the ~85 s the same
+        loop cost before that split."""
+        parsed = _pn_body_lines(original)
+        for rec in self.records.values():
+            real = str(rec["real"])
+            rl = real.lower()
+            if not rl or self._key_context.get(rl):
+                continue
+            quote = _pn_context(parsed, real)
+            if quote:
+                self._key_context[rl] = quote
+
     def write_key(self, path, log):
         """Write the REVERSAL key the Word macro consumes. A row is written when
         it MATCHED (Occurrences > 0), when it came from a REUSED key, or when it
@@ -14394,8 +14720,16 @@ class Pseudonymizer:
                 "short-name": 3, "entity": 4, "entity-token": 5}
         keyrows.sort(key=lambda r: (rank.get(r["category"], 50),
                                     r["category"], str(r["real"]).lower()))
-        headers = ["Category", "Real Value", "Replacement", "Status", "Source",
-                   "Occurrences"]
+        headers = list(_PN_KEY_HEADERS)
+        # A quote this run could not re-derive is preserved from the key already
+        # on disk: a folder whose documents have moved on still keeps what the
+        # last run learned, exactly as the bindings themselves are carried
+        # forward. This run's own quote wins where it has one.
+        carried = _pn_key_context_on_disk(path)
+
+        def row_context(r):
+            rl = str(r["real"]).lower()
+            return self._key_context.get(rl) or carried.get(rl, "")
 
         def row_status(r):
             key = (r["category"], str(r["real"]).lower())
@@ -14428,7 +14762,8 @@ class Pseudonymizer:
                                "replacement": r["fake"],
                                "status": row_status(r),
                                "source": r["source"],
-                               "occurrences": r["count"]}
+                               "occurrences": r["count"],
+                               "context": row_context(r)}
                               for r in keyrows]}, indent=2), encoding="utf-8")
             log.info(f"  openpyxl not installed; reversal key written as JSON: "
                      f"{kp.name} ({len(keyrows)} mapping(s))")
@@ -14461,17 +14796,21 @@ class Pseudonymizer:
         ws.title = "Pseudonym Key"
         ws.append(headers)
         for r in applied:
-            ws.append([r["category"], r["real"], r["fake"], row_status(r),
-                       r["source"], r["count"]])
+            ws.append([r["category"], r["real"], r["fake"], row_context(r),
+                       row_status(r), r["source"], r["count"]])
         if pinned:
             ps = wb.create_sheet(_PN_KEY_PINNED_SHEET)
             ps.append(headers)
             for r in pinned:
-                ps.append([r["category"], r["real"], r["fake"], row_status(r),
-                           r["source"], r["count"]])
+                ps.append([r["category"], r["real"], r["fake"],
+                           row_context(r), row_status(r), r["source"],
+                           r["count"]])
             log.info(f"  Pseudonymize: {len(pinned)} binding(s) no export "
                      f"carries moved to the '{_PN_KEY_PINNED_SHEET}' sheet — "
                      f"still pinned for a later run, never applied in reverse")
+        # The quote is a sentence; at default width the column is unreadable.
+        for sheet in wb.worksheets:
+            sheet.column_dimensions["D"].width = 60
         wb.save(path)
         self._check_key_completeness(keyrows, log)
         for cluster in self.alias_candidates():
@@ -15925,6 +16264,55 @@ _PN_CONTEXT_MIN = 60
 # Only a real terminator. A semicolon and a colon end a CLAUSE, and a label
 # ("PROCESS SERVER: Michael Rodgers") is exactly the context worth keeping.
 _PN_SENT_END_RE = re.compile(r"[.!?](?=\s|$)")
+# One-entry memo for `_pn_context_prep`, keyed on the parsed body's identity.
+_PN_CONTEXT_PREP = {}
+
+
+def _pn_context_prep(parsed):
+    """Everything a Context quote needs that depends on the BODY and not on the
+    value: the prose-rebuilt line table, each line lower-cased for searching,
+    the joined text, and the offsets of its sentence terminators.
+
+    Split out and memoized because it is identical for every value asked about
+    one body, and the caller asks about a great many — one per triage row, and
+    one per pseudonym-key binding, which runs to hundreds. Derived inside the
+    per-value path it was the whole cost: a 290 KB export spent 82 ms per value,
+    of which the search itself was 0.04 ms.
+
+    The running offset matters as much as the memo. `off` used to be
+    `len(" ".join(joined))` recomputed on every line, which re-joins the whole
+    document per line and is quadratic in it — the same shape as the
+    `_in_name_run` bug, and it made every Context cell pay for the length of the
+    export twice over. Accumulating the offset gives the identical numbers: the
+    join inserts one space between bodies, so each line starts one past the end
+    of the last.
+
+    One entry, keyed on the parsed body's identity: the callers ask about one
+    file's body at a time and then move on, so a second slot would never be
+    read. Cheap to rebuild if that stops being true."""
+    got = _PN_CONTEXT_PREP.get("k")
+    if got is not None and got[0] is parsed:
+        return got[1]
+    joined, lines, run = [], [], 0
+    for _page, _gutter, text in parsed:
+        m = _PN_GUTTER_RE.match(text)
+        # The gutter number is furniture. Cut the number and its spacing only:
+        # the pattern's last atom is the first character of the body, so the
+        # slice stops one short of the match end or it eats that character
+        # ("DISCRIMINATION" came out "ISCRIMINATION").
+        body = (text[m.end() - 1:] if m else text).strip()
+        if not body:
+            continue
+        off = run + (1 if joined else 0)
+        lines.append((off, off + len(body), _pn_line_is_prose(body)))
+        joined.append(body)
+        run = off + len(body)
+    text = " ".join(joined)
+    prep = (lines, [b.lower() for b in joined], text,
+            [m.end() for m in _PN_SENT_END_RE.finditer(text)])
+    _PN_CONTEXT_PREP.clear()
+    _PN_CONTEXT_PREP["k"] = (parsed, prep)
+    return prep
 
 
 def _pn_context(parsed, needle, width=_PN_CONTEXT_MAX):
@@ -15945,35 +16333,28 @@ def _pn_context(parsed, needle, width=_PN_CONTEXT_MAX):
     nl = str(needle).lower()
     if not nl:
         return ""
-    joined, first, prose_hit, lines = [], None, None, []
-    for _page, _gutter, text in parsed:
-        m = _PN_GUTTER_RE.match(text)
-        # The gutter number is furniture. Cut the number and its spacing only:
-        # the pattern's last atom is the first character of the body, so the
-        # slice stops one short of the match end or it eats that character
-        # ("DISCRIMINATION" came out "ISCRIMINATION").
-        body = (text[m.end() - 1:] if m else text).strip()
-        if not body:
+    lines, lowers, text, ends = _pn_context_prep(parsed)
+    first = prose_hit = None
+    for k, low in enumerate(lowers):
+        j = low.find(nl)
+        if j < 0:
             continue
-        off = len(" ".join(joined)) + (1 if joined else 0)
-        lines.append((off, off + len(body), _pn_line_is_prose(body)))
-        if nl in body.lower():
-            at = off + body.lower().index(nl)
-            if first is None:
-                first = at
-            # PROSE beats a heading, which is the whole question the cell is
-            # there to settle: "Charge" appears first in "CHARGE OF
-            # DISCRIMINATION" — a caption, and no evidence either way — and
-            # again in "served on Charge at his residence", which is a name.
-            # Quoting the first occurrence would show the operator the one that
-            # proves nothing. Same test `prune_heading_only_terms` uses.
-            if prose_hit is None and lines[-1][2]:
-                prose_hit = at
-        joined.append(body)
+        at = lines[k][0] + j
+        if first is None:
+            first = at
+        # PROSE beats a heading, which is the whole question the cell is there
+        # to settle: "Charge" appears first in "CHARGE OF DISCRIMINATION" — a
+        # caption, and no evidence either way — and again in "served on Charge
+        # at his residence", which is a name. Quoting the first occurrence would
+        # show the operator the one that proves nothing. Same test
+        # `prune_heading_only_terms` uses. The first prose hit settles it, so
+        # the walk stops there.
+        if lines[k][2]:
+            prose_hit = at
+            break
     hit = prose_hit if prose_hit is not None else first
     if hit is None:
         return ""
-    text = " ".join(joined)
     # A caption block is not part of the sentence beside it. Bound the quote by
     # the run of lines that read the same way as the one the hit is on, so a
     # sentence never swallows the heading above it (there is no full stop in a
@@ -15990,11 +16371,14 @@ def _pn_context(parsed, needle, width=_PN_CONTEXT_MAX):
         if lines[k][2] != mode:
             break
         ceiling = lines[k][1]
-    ends = [m.end() for m in _PN_SENT_END_RE.finditer(text)]
     # The sentence holding the hit: the terminator belongs to the sentence it
     # closes, so the span runs from the one before the hit to the one after.
-    before = [e for e in ends if floor <= e <= hit]
-    after = [e for e in ends if hit + len(nl) <= e <= ceiling]
+    # `ends` is sorted (finditer walks left to right), so the two windows are
+    # slices rather than a filter over every terminator in the document — which
+    # is another whole-export scan this used to pay per value.
+    before = ends[bisect.bisect_left(ends, floor):bisect.bisect_right(ends, hit)]
+    after = ends[bisect.bisect_left(ends, hit + len(nl)):
+                 bisect.bisect_right(ends, ceiling)]
     start = before[-1] if before else floor
     end = after[0] if after else ceiling
     # …and it grows outward while it is too short to be evidence, which is what
@@ -17210,9 +17594,67 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
                 out += "\n" + garbled
         return out
 
+    # The UNSCRUBBED text FIRST, because it is ready first and nothing about it
+    # has to wait. It is `build_body(None)` — pure string assembly over pages
+    # already extracted, no OCR and no second read — so it depends on the
+    # extraction and on nothing else, while the scrub and the leak scans that
+    # used to run ahead of it depend on every term and record in the case.
+    # Measured on a 130-page filing that is 1 second of work sitting behind
+    # 90, and on the folder that prompted this (before the quadratic in
+    # `_in_name_run` was found) 5 seconds sitting behind 65 MINUTES. The
+    # reference copy is what an operator reads while the export is still being
+    # checked, so the wait was pure cost: reordering moves it to the front and
+    # delays the export by exactly the 1 second it takes to write.
+    #
+    # ALWAYS built when pseudonymization is running — it is the evidence
+    # `confirm_findings` needs to tell this run's own stand-ins from the
+    # document's own words. Whether a READABLE COPY goes into the case folder
+    # stays exactly what `original_text_subfolder` says; the check must not
+    # depend on an output preference. `confirm_findings` runs once at the FOLDER
+    # level, so moving this earlier changes nothing it sees.
+    if pseudonymizer is not None:
+        original = build_body(None)
+        pseudonymizer.note_original(original)
+        # …and cached in TEMP, because `--fix-leaks` never reopens the PDFs and
+        # would otherwise have no evidence at all. Never in the case folder:
+        # that is the thing that gets synced and shared.
+        _cache_original(pdf_path.parent, pdf_path.stem, original)
+        # Optional reference copy in a sibling folder, under the real filename.
+        # Real names by design → never tracked for the leak gate, never
+        # quarantined.
+        if original_subdir:
+            orig_dir = pdf_path.parent / original_subdir
+            orig_path = orig_dir / (pdf_path.stem + ".txt")
+            try:
+                orig_dir.mkdir(parents=True, exist_ok=True)
+                orig_path.write_text(original, encoding="utf-8", newline="\n")
+                log.info(f"  Wrote original text version: "
+                         f"{original_subdir}/{orig_path.name}")
+            except OSError as e:
+                log.warning(f"  Could not write original text version "
+                            f"(non-fatal): {e}")
+        # NOT dropped here: the key's Context column quotes the sentence a value
+        # stands in, and only this copy still contains the real value — the
+        # export below has already replaced it. Held across the scrub for that
+        # one reason and released at the end of the file (see `note_key_context`
+        # at the foot of this function).
+
+    # Name the phase BEFORE it runs, and time it — the same rule the pre-scan
+    # follows for filenames, for the same reason. These two phases are the long
+    # ones on a big filing, and between them the log said nothing at all: one
+    # 130-page motion left 82 minutes of silence and then stopped mid-phase, so
+    # a reader could tell neither where the run was nor whether it was moving.
+    # A line written afterwards is a line never written when the interpreter
+    # dies, so the entry line goes first and the elapsed time follows it.
+    _pn_t0 = time.time()
+    if pseudonymizer is not None:
+        log.info(f"  Pseudonymize: scrubbing {len(page_blocks)} page(s) of text")
     body = build_body(pseudonymizer)
 
     if pseudonymizer is not None:
+        log.info(f"  Pseudonymize: scrubbed in {time.time() - _pn_t0:.0f}s; "
+                 f"running the leak scans over the export")
+        _pn_t0 = time.time()
         # Report (but do NOT withhold) any real value that survived the scrub —
         # the .txt is still written; the log flags it for review. Check the
         # column-ordered rendering as well as the display text: a name that the
@@ -17294,6 +17736,9 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
             log.warning(f"  Pseudonymization REVIEW on {pdf_path.name}: "
                         f"identifier(s) to check before sharing ({shown}).")
 
+        log.info(f"  Pseudonymize: leak scans done in "
+                 f"{time.time() - _pn_t0:.0f}s; locating findings")
+
         # Collect every finding into the run-wide triage worksheet, each located
         # to its printed page and gutter line so it can be found and judged.
         parsed = _pn_body_lines(body)
@@ -17363,33 +17808,18 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
     log.info(f"  Wrote {'pseudonymized ' if pseudonymizer else ''}text "
              f"version: {text_subdir}/{txt_path.name}")
 
-    # The UNSCRUBBED text, ALWAYS built when pseudonymization is running. It is
-    # pure string assembly over pages already extracted — no OCR, no second
-    # read — and it is the evidence `confirm_findings` needs to tell this run's
-    # own stand-ins from the document's own words. Whether a READABLE COPY goes
-    # into the case folder stays exactly what `original_text_subfolder` says;
-    # the check must not depend on an output preference.
+    # (The unscrubbed reference copy was written BEFORE the scrub — see above.
+    # It is ready as soon as the pages are extracted, so making it wait behind
+    # the scrub and the leak scans was pure delay.)
+    #
+    # Quote each tracked value's sentence for the key's Context column, from
+    # that same unscrubbed body — the only text that still holds the real value.
+    # Done HERE, at the end of the file, so every record this file minted (a
+    # display name, a detector hit) is included; they do not exist yet when the
+    # copy is written.
     if pseudonymizer is not None:
-        original = build_body(None)
-        pseudonymizer.note_original(original)
-        # …and cached in TEMP, because `--fix-leaks` never reopens the PDFs and
-        # would otherwise have no evidence at all. Never in the case folder:
-        # that is the thing that gets synced and shared.
-        _cache_original(pdf_path.parent, pdf_path.stem, original)
-        # Optional reference copy in a sibling folder, under the real filename.
-        # Real names by design → never tracked for the leak gate, never
-        # quarantined.
-        if original_subdir:
-            orig_dir = pdf_path.parent / original_subdir
-            orig_path = orig_dir / (pdf_path.stem + ".txt")
-            try:
-                orig_dir.mkdir(parents=True, exist_ok=True)
-                orig_path.write_text(original, encoding="utf-8", newline="\n")
-                log.info(f"  Wrote original text version: "
-                         f"{original_subdir}/{orig_path.name}")
-            except OSError as e:
-                log.warning(f"  Could not write original text version "
-                            f"(non-fatal): {e}")
+        pseudonymizer.note_key_context(original)
+        del original
     return True
 
 
@@ -19052,9 +19482,54 @@ def _install_crash_logging(log):
         (see `_repair_page_annots`), so this is the only thing that can leave a
         trace of one. It writes into the log file's own stream.
 
+    …and the hook has to survive the death it is reporting. Formatting a
+    traceback ALLOCATES — logging re-reads the source lines to print them — so
+    on the one failure a big folder is most likely to hit, running out of
+    memory, the rich report raised a second MemoryError INSIDE the hook, the
+    `except Exception: pass` below swallowed it, and the process exited having
+    written nothing: a log ending mid-file and no python left in Task Manager,
+    which is the exact silence this function exists to break. So the first thing
+    written is a fixed line, encoded here at install time and pushed straight at
+    the log file's descriptor — no formatting, no allocation, one syscall — and
+    only then is the traceback attempted. The raw line names the cause where the
+    cause is knowable, because "out of memory" and "some exception" ask the
+    operator to do very different things.
+
     Best-effort throughout: a diagnostic that fails must not itself end the run.
     """
+    # Pre-encoded, and the descriptor resolved now: at crash time neither may
+    # depend on being able to build a string.
+    stream = next((h.stream for h in logging.getLogger().handlers
+                   if isinstance(h, logging.FileHandler)), None)
+    fd = None
+    try:
+        if stream is not None and hasattr(stream, "fileno"):
+            fd = stream.fileno()
+    except Exception:
+        fd = None
+    died = (b"\r\n[CRITICAL] Run ended on an unhandled error - the tool stopped "
+            b"here; nothing after this line was done.\r\n")
+    oom = (b"\r\n[CRITICAL] Run ended: OUT OF MEMORY. This folder needs more "
+           b"than this Python could allocate - a 32-bit Python is capped near "
+           b"2 GB however much the machine has. Nothing after this line was "
+           b"done, and the PDFs were not modified. Re-run on a 64-bit Python, "
+           b"or split the folder and run the halves separately.\r\n")
+
+    def _raw(msg):
+        """The one line that must appear whatever else fails."""
+        if fd is None:
+            return
+        try:
+            stream.flush()      # keep the raw write after the buffered lines
+        except Exception:
+            pass
+        try:
+            os.write(fd, msg)
+        except Exception:
+            pass
+
     def _hook(exc_type, exc, tb):
+        _raw(oom if exc_type is MemoryError else died)
         try:
             log.critical("Run ended on an unhandled error — the tool stopped "
                          "here; nothing after this line was done.",
@@ -19073,9 +19548,7 @@ def _install_crash_logging(log):
         pass
     try:
         import faulthandler
-        stream = next((h.stream for h in logging.getLogger().handlers
-                       if isinstance(h, logging.FileHandler)), None)
-        if stream is not None and hasattr(stream, "fileno"):
+        if fd is not None:
             faulthandler.enable(file=stream, all_threads=True)
     except Exception:
         pass
@@ -19749,8 +20222,9 @@ def _fix_leaks_mode(folder, args, cfg, log):
     pz = Pseudonymizer(terms, [], registry)
     pz.suppressed = suppressed
     pz.keep_strict, pz.keep_soft, pz.keep_nuclear = _pn_keep_values(decisions)
-    pz.keep_strict_local = _pn_keep_values(
-        {vl: d for vl, d in decisions.items() if vl in local_vls})[0]
+    _local_keeps = _pn_keep_values(
+        {vl: d for vl, d in decisions.items() if vl in local_vls})
+    pz.keep_strict_local, pz.keep_soft_local = _local_keeps[0], _local_keeps[1]
     pz._keep_decisions = {vl: d for vl, d in decisions.items()
                           if _pn_decision_is_keep(d)}
     pz._keep_local = {vl for vl in pz._keep_decisions if vl in local_vls}
@@ -20406,9 +20880,13 @@ def main():
          pseudonymizer.keep_nuclear) = _pn_keep_values(leak_decisions)
         # A bracket THIS folder typed also beats the party override: its
         # non-bracketed remainder is registered as its own term, so the party
-        # is scrubbed either way and the operator's split is honoured.
-        pseudonymizer.keep_strict_local = _pn_keep_values(
-            {vl: d for vl, d in leak_decisions.items() if vl in local_vls})[0]
+        # is scrubbed either way and the operator's split is honoured. A `no`
+        # typed here beats it too, but only where the keep COVERS the party
+        # match — see `Pseudonymizer.keep_soft_local`.
+        _local_keeps = _pn_keep_values(
+            {vl: d for vl, d in leak_decisions.items() if vl in local_vls})
+        pseudonymizer.keep_strict_local = _local_keeps[0]
+        pseudonymizer.keep_soft_local = _local_keeps[1]
         pseudonymizer._keep_decisions = {
             vl: d for vl, d in leak_decisions.items() if _pn_decision_is_keep(d)}
         pseudonymizer._keep_local = {vl for vl in pseudonymizer._keep_decisions

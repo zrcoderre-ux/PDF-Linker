@@ -119,6 +119,33 @@ pin still does its job. "Carried" is REACHABILITY, not the row's own count: the
 macro reverses a composed fake word by word, so the token rows of a party whose
 full name is the only form the export used are load-bearing even though they
 matched nothing themselves.
+**Every key row QUOTES the sentence its value stood in** (`Context`,
+`note_key_context`). A row says `Rasho -> Strangeways`, and whether that binding
+is right depends on how the document used the word — the question the LEAKS
+Context column already answers for a decision not yet made, asked here of one
+already made. Read from the UNSCRUBBED body, of necessity: by the time the export
+exists the real value has been replaced, so only that copy still contains it.
+The consequence is deliberate and worth stating — `pseudonym_key.xlsx` now
+carries sentences of the real document, not merely its real values. It was never
+a shareable file (it is the reversal map), so this changes how revealing it is,
+not which file is safe to send. It sits at column **D**, beside the Replacement
+it explains, because that is where it is read: the row asks "is this binding
+right?" and the sentence is the answer. Inserting rather than appending is safe,
+and worth stating because the reverse is the obvious fear — `DeAnonymize.bas`
+does NOT read this sheet positionally, it scans the header row for
+`real value` / `replacement` / `status` and uses whatever columns they land in
+(`LoadKeyWorkbook`, where Status is already optional for keys predating it), and
+`_pn_load_key` / `_pn_key_context_on_disk` resolve by header name too. The only
+thing a moved column can break is a POSITIONAL fingerprint, so
+`_PN_KEY_FINGERPRINT` is cut to the three headers both layouts share and a
+six-column key from an older version still reads as ours. (A test that indexes a
+key row by number is making the same mistake — two did, and now take the index
+from `_PN_KEY_HEADERS`.) FIRST document to use a value owns
+its quote, so a re-run of the same folder reproduces the column; a quote this run
+cannot re-derive is carried forward from the key on disk
+(`_pn_key_context_on_disk`), because the key outlives the folder's contents.
+Costs ~0.24 s per file on a 130-page filing with ~470 records — and would have
+cost ~39 s before `_pn_context` was split (see the performance notes).
 
 `_pn_supplement_key_terms` is the fallback for what the key still cannot carry:
 a key written by an older version, or a template AMENDED between runs (a Doe
@@ -154,10 +181,31 @@ never touches "California"):
 A keep normally loses to a **full party match** — a kept word inside a
 `_PN_PARTY_OVERRIDE_CATS` (person/entity/case_number) term is released so the real
 party is faked ("CAL EQUIPMENT FE RANCH, LLC" faked whole, "John Doe" faked).
-The ONE exception is `keep_strict_local`, a bracket typed in THIS folder: see the
-keep-spec rule below — the bracket already says how to split the name and its
-remainder is a term, so honouring it still scrubs the party. Bare
-`*-token`/short-name terms and detectors do NOT release a keep.
+Two exceptions, both LOCAL — a decision typed in THIS folder is an instruction
+about this case's parties, not another folder's lesson about a word.
+`keep_strict_local`, a bracket typed here: see the keep-spec rule below — the
+bracket already says how to split the name and its remainder is a term, so
+honouring it still scrubs the party. And `keep_soft_local`, a `no` typed here,
+which is released only by a party match reaching BEYOND the kept text (the
+`party_wider_only` rule `never` already uses). Bare `*-token`/short-name terms
+and detectors do NOT release a keep.
+**A local `no` needed that because RETIRING the key row is not enough.**
+`_pn_retire_kept_key_terms` drops the key's own binding, and the folder PRE-SCAN
+then re-reads the same name out of the PDF as a fresh party term — so the
+override released the keep and the value was faked again by the leftover token
+rows ("Marcus Delacroix" back as "Rathmore Symington", composed from `Marcus`
+and `Delacroix`), while the log said the `no` "will be honored". `wider_only` is
+what keeps that safe: a one-word `no` cannot leave a longer party standing,
+because "Court Reporter Services, LLC" reaches past a `no` on "Court" and is
+still scrubbed whole. An INHERITED `no` is unchanged and still loses.
+**…and `scrub_welded` was the pass actually undoing it.** Every other write path
+is handed `_keep_spans` (`apply`, `apply_lines`, `scrub_survivors`); the reduced
+cure alone was not, so a keep held through the substitution and was put back
+afterwards by a pass that reads the ALPHANUMERIC REDUCTION and therefore never
+sees the word boundaries the keep was matched on. Fixed with its detection
+mirror `surviving_reals_reduced`, which had the identical gap and had to move
+with it — a value one reports and the other refuses to touch quarantines an
+export nothing can clean.
 
 **The NUCLEAR keep is enforced where it cannot cost anything: at COMPOSITION
 time.** `{Law}` must survive inside "Alder Law, P.C." — but protecting the span
@@ -730,6 +778,22 @@ the party), so its row stays reversible.
   `_real_remainder` returns the value untouched — no evidence is not evidence of
   absence, and without that guard every stand-in would look absent and every
   finding would be gutted.
+  **It is also written FIRST, because nothing about it has to wait.**
+  `build_body(None)` depends on the extraction and on nothing else, while the
+  scrub and the leak scans it used to sit behind depend on every term and record
+  in the case. Measured on a 130-page filing that is 1 second of work queued
+  behind 90 — and on the folder that exposed the `_in_name_run` quadratic, 5
+  seconds queued behind 65 MINUTES. The reference copy is what an operator reads
+  while the export is still being checked, so the wait was pure cost; moving it
+  ahead delays the export by exactly the second it takes to write. Safe because
+  `confirm_findings` runs once at the FOLDER level, so nothing it sees changes,
+  and `note_original` still happens whether or not `original_text_subfolder`
+  asked for a readable copy — the check must not depend on an output preference.
+  The one thing it changes: a run that dies mid-scrub now leaves the unscrubbed
+  copy in the folder with no export beside it. That file is meant to be there
+  when the option is on, and having the reference copy beats having neither.
+  Pinned on LOG ORDER (`test_original_text.py`), not on mtimes — a fast machine
+  writes both inside one filesystem timestamp tick.
 - **A triage row NAMES the authority it may have come from**
   (`_pn_authority_cite_index` / `authority_note`, the Notes column). "Angela
   White" in a worksheet is a question the operator can only answer by already
@@ -1426,6 +1490,21 @@ folder works on one machine and not another), and `faulthandler` writes into the
 log's own stream for a C-level abort, which raises nothing at all and so cannot
 be hooked — MuPDF calls `abort()` on a fatal error, so this is the only thing
 that leaves a trace of one.
+**…and the hook has to survive the death it is reporting.** Formatting a
+traceback ALLOCATES — logging re-reads the source lines to print them — so on
+the one failure a big folder is most likely to hit, running out of memory, the
+rich report raised a second `MemoryError` INSIDE the hook, the best-effort
+`except Exception: pass` swallowed it, and the process exited having written
+nothing: a log ending mid-file and no python left in Task Manager, which is the
+exact silence this exists to break. The FIRST thing written is now a fixed line,
+encoded at install time and pushed straight at the log file's descriptor with
+`os.write` — no formatting, no allocation, one syscall — and only then is the
+traceback attempted. The raw line names OUT OF MEMORY where that is the cause,
+because it asks the operator to do something different (a 32-bit Python is
+capped near 2 GB however much the machine has; split the folder or move to a
+64-bit one) from "some exception". Note what this still cannot catch: a run the
+OS kills outright leaves no line at all, which is why the long phases time
+themselves — see the performance notes.
 
 **A missing core dependency fails at STARTUP, by name**
 (`_require_pymupdf`). `fitz` is imported lazily at each use site, so its absence
@@ -1558,6 +1637,58 @@ source PDF), the moment every document in it has a fresh export of its own.
   large case recompiled every pattern on every page (was ~75% of the scrub pass).
 - Files are processed **heaviest-first** by OCR-weighted cost; the one-click
   re-run launcher is written **up front** so an interrupted run still leaves one.
+- **Nothing on the leak path may be QUADRATIC in the document, and one line
+  was.** A 130-page motion spent 82 minutes inside one file's scrub-and-scan
+  block, wrote nothing to the log the whole time, and the run then stopped
+  there — indistinguishable from a hang, and reported as one. Profiled on that
+  folder's shape (a few hundred terms, 220 master KEEPs) **19 of every 24
+  seconds** were in `_in_name_run`, which searched `text[:s]` for a
+  `$`-anchored match: every occurrence of a soft keep COPIED the export so far
+  and made the engine scan the copy. The master sheet keeps ordinary
+  vocabulary — "and", "the", "of", "court" — so a long filing carries thousands
+  of occurrences and the product is the document squared. It now walks the two
+  neighbours by INDEX (`_PN_NAME_RUN_RIGHT_RE.match(text, e)` and a backward
+  scan reproducing the regex's leftmost match, punctuation-opened runs and
+  `$`-before-a-trailing-newline included), so the cost is one word.
+  Three cuts beside it, all exact. `_PnSpanIndex` answers "does any of these
+  spans overlap [s,e)?" by bisect over sorted starts plus a running maximum of
+  the ends — four passes asked that ONCE PER MATCH against a whole-export span
+  list (the party matches a keep yields to, the kept spans a finding is filtered
+  by, the citation spans `scrub_welded` and `_substitute` refuse to touch), so
+  each was a product of two numbers that both grow. `_surviving_records` — the
+  most expensive thing on the path, every tracked value scanned across the whole
+  export, asked for FOUR times per file — is memoized and now stops at the first
+  match that SURVIVES the filters (`finditer` is lazy; membership is decided by
+  the first survivor). `_keep_spans` and `_mask_protected_citations` memoize
+  **two** entries, not one: the block alternates between the export body and its
+  column-ordered twin, so a single slot was evicted before it was ever read.
+  Every one of these memos keys on `_scan_state_key()` and not on the text
+  alone — `--fix-leaks` sets the keep sets on a live `Pseudonymizer` and asks
+  the same question again, and sizes are not a fingerprint, so a length-only key
+  answers from before the operator's decision. Measured end to end on a 381 KB
+  body: **274 s → 25 s**, with the quadratic term gone (`test_scan_cost.py`
+  pins the shape, and the two rewritten primitives against the code they
+  replaced).
+- **A per-value quote must not re-read the document per value**
+  (`_pn_context_prep`). `_pn_context` computed `off = len(" ".join(joined))` on
+  every line — re-joining the whole export per line, quadratic in it, the same
+  shape as `_in_name_run` — and then re-derived the line table, the prose flags
+  and the sentence-terminator list for EVERY value asked about the same body.
+  A 290 KB export cost **82 ms per value**, of which the search itself was
+  0.04 ms. Split into a one-entry memo keyed on the parsed body's identity, with
+  a running offset and bisected terminator windows: **446x faster**, byte-
+  identical on a 148-value differential test (headings vs prose, absent values,
+  multi-word phrases, the empty string). That is what makes a Context column on
+  the KEY affordable at all — 335 rows went from 28 s to 0.06 s per file, 1,042
+  rows from 87 s to 0.19 s — and it repays itself on the LEAKS column that
+  already existed.
+- **The long phases NAME themselves before they run** — the same rule the
+  pre-scan follows for filenames, and for the same reason. Between "exporting
+  text" and the first REVIEW warning the log said nothing for 82 minutes, so a
+  reader could tell neither where the run was nor whether it was moving. The
+  scrub and the leak scan each announce themselves and then report their
+  elapsed time; a line written afterwards is a line never written when the
+  interpreter dies.
 
 ## Folder artifacts (what a finished folder should contain)
 

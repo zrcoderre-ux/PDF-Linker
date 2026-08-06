@@ -65,6 +65,60 @@ def test_two_folders_written_scrubbed_and_original(tmp_path):
     assert all(p.parent.name == "Text Files" for p in z.written)
 
 
+def test_the_original_is_written_before_the_export(tmp_path):
+    """The unscrubbed copy lands FIRST, because nothing about it has to wait.
+
+    `build_body(None)` is pure string assembly over pages already extracted, so
+    it depends on the extraction and on nothing else — while the scrub and the
+    leak scans that used to run ahead of it depend on every term and record in
+    the case. Measured on a 130-page filing that is 1 second of work sitting
+    behind 90, and on the folder that prompted this (before the quadratic in
+    `_in_name_run` was found) 5 seconds sitting behind 65 MINUTES. The reference
+    copy is what an operator reads while the export is still being checked, so
+    the wait was pure cost.
+
+    Asserted on the LOG ORDER rather than on file mtimes: a fast machine writes
+    both inside one filesystem timestamp tick, so mtimes cannot tell them apart.
+    """
+    pdf = tmp_path / "Motion.pdf"
+    _doc().save(pdf)
+    seen = []
+
+    class _Recorder:
+        def info(self, msg, *a, **k):
+            seen.append(str(msg))
+        warning = error = critical = debug = info
+
+    with fitz.open(pdf) as doc:
+        pl._write_text_version(pdf, doc, _Recorder(), _pz(), "Text Files",
+                               "Original Text (real names - do not share)")
+
+    def first(fragment):
+        return next(i for i, m in enumerate(seen) if fragment in m)
+
+    i_orig = first("Wrote original text version")
+    i_export = first("Wrote pseudonymized text version")
+    assert i_orig < i_export, seen
+    # ...and ahead of the two long phases, not merely ahead of the write.
+    assert i_orig < first("scrubbing"), seen
+    assert i_orig < first("running the leak scans"), seen
+
+
+def test_the_evidence_pass_still_has_the_original(tmp_path):
+    # Moving the build earlier must not cost `confirm_findings` its evidence:
+    # `note_original` has to have run by the time the file is done, whichever
+    # side of the scrub it happens on.
+    pdf = tmp_path / "Motion.pdf"
+    _doc().save(pdf)
+    z = _pz()
+    with fitz.open(pdf) as doc:
+        pl._write_text_version(pdf, doc, log, z, "Text Files", None)
+    # The original is recorded even with NO reference folder requested — the
+    # check must never depend on an output preference.
+    assert z._orig_words, "the unscrubbed body was never noted as evidence"
+    assert "ramirez" in {w.lower() for w in z._orig_words}
+
+
 def test_no_original_folder_when_disabled(tmp_path):
     pdf = tmp_path / "Motion.pdf"
     _doc().save(pdf)

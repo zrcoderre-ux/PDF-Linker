@@ -146,6 +146,38 @@ def test_the_last_log_line_names_the_file_being_read(tmp_path):
     assert any("Fatal Python error" in ln for ln in lines[named[0]:])
 
 
+def test_running_out_of_memory_still_says_so(tmp_path):
+    # The one death the hook could not report, and the one a big folder is most
+    # likely to hit. Formatting a traceback ALLOCATES — logging re-reads the
+    # source lines to print them — so the rich report raised a second
+    # MemoryError inside the hook, `except Exception: pass` swallowed it, and
+    # the process exited having written nothing at all. A log ending mid-file
+    # with no python left in Task Manager is exactly the silence this exists to
+    # break, so the fixed line goes down first, pre-encoded and written straight
+    # at the descriptor.
+    done = _crash_child(tmp_path, "raise MemoryError()")
+    assert done.returncode != 0
+    text = (tmp_path / "pdf_linker.log").read_text()
+    assert "OUT OF MEMORY" in text
+    assert "Big Scanned Exhibit.pdf" in text   # ...still after the file it named
+
+
+def test_the_bare_line_lands_even_when_the_rich_report_cannot(tmp_path):
+    # Simulate the second failure directly: the traceback path is dead, and the
+    # operator must STILL be told the run ended rather than left reading a log
+    # that simply stops.
+    done = _crash_child(tmp_path, """
+        class _Dead:
+            def critical(self, *a, **k):
+                raise MemoryError()
+        pl._install_crash_logging(_Dead())
+        raise ValueError("boom")
+    """)
+    assert done.returncode != 0
+    text = (tmp_path / "pdf_linker.log").read_text()
+    assert "Run ended on an unhandled error" in text
+
+
 def test_installing_the_hooks_never_itself_fails():
     # A diagnostic that raises would end the very run it exists to explain.
     pl._install_crash_logging(logging.getLogger("no-handlers-at-all"))
