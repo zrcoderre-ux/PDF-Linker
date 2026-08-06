@@ -1690,6 +1690,22 @@ source PDF), the moment every document in it has a fresh export of its own.
   elapsed time; a line written afterwards is a line never written when the
   interpreter dies.
 
+**A Context cell BOLDS the value it is quoting** (`_pn_rich_context`, an
+openpyxl `CellRichText`). The cell is a whole sentence and the value is a word
+or two inside it, so finding the value means reading the sentence — bolding it
+makes the row answerable at a glance, which is the column's entire job. Only the
+QUOTE is styled: in the Value column beside it the value IS the cell, so
+emphasis would say nothing. Every occurrence, matched case-insensitively and
+emitted with the document's own casing (a caption shouts a name the Value column
+spells in title case). DERIVED at write time from (quote, value) and never
+stored, which is what makes it survive the two round-trips that matter: a quote
+carried forward from the key on disk reads back as plain text and is re-bolded
+next run, and `DeAnonymize.bas` — like anything not asking for rich text — sees
+the ordinary sentence. Falls back to plain on an older openpyxl or a value
+absent from its own quote (a welded or reduced finding, whose quote is the
+nearest readable sentence rather than one containing the value verbatim): an
+unbolded cell is a cosmetic loss, a raise would cost the operator the worksheet.
+
 **Every spreadsheet the tool writes WRAPS its text** (`_pn_wrap_sheet`, shared
 by the key and its pinned sibling, `LEAKS.xlsx`, and the master's KEEP and tally
 tabs — shared for the reason the two launcher builders are, so they cannot

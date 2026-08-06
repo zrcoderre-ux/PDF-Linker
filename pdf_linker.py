@@ -14796,15 +14796,16 @@ class Pseudonymizer:
         ws.title = "Pseudonym Key"
         ws.append(headers)
         for r in applied:
-            ws.append([r["category"], r["real"], r["fake"], row_context(r),
+            ws.append([r["category"], r["real"], r["fake"],
+                       _pn_rich_context(row_context(r), r["real"]),
                        row_status(r), r["source"], r["count"]])
         if pinned:
             ps = wb.create_sheet(_PN_KEY_PINNED_SHEET)
             ps.append(headers)
             for r in pinned:
                 ps.append([r["category"], r["real"], r["fake"],
-                           row_context(r), row_status(r), r["source"],
-                           r["count"]])
+                           _pn_rich_context(row_context(r), r["real"]),
+                           row_status(r), r["source"], r["count"]])
             log.info(f"  Pseudonymize: {len(pinned)} binding(s) no export "
                      f"carries moved to the '{_PN_KEY_PINNED_SHEET}' sheet — "
                      f"still pinned for a later run, never applied in reverse")
@@ -16990,6 +16991,57 @@ def _pn_master_leaks_path(cfg):
     return _pn_master_path(cfg)
 
 
+def _pn_rich_context(quote, value):
+    """`quote` with every occurrence of `value` in BOLD, as an Excel rich-text
+    cell — or the plain string when that cannot be done.
+
+    A Context cell is a whole sentence and the value is a word or two inside it,
+    so finding the value means reading the sentence. Bolding it makes the row
+    answerable at a glance, which is the entire job of the column. Only the
+    quote is styled: the Value column beside it stays in the ordinary font,
+    because there the value IS the cell and emphasis would say nothing.
+
+    Derived at WRITE time from (quote, value) rather than stored, so a quote
+    carried forward from the key already on disk — which reads back as plain
+    text — is re-bolded on the next run exactly like a fresh one.
+
+    Matched case-INSENSITIVELY and emitted with the quote's own casing: the
+    sentence is the document's text, so a caption may shout a name the Value
+    column spells in title case, and both are the same value.
+
+    Falls back to the plain string on anything unexpected — an openpyxl too old
+    for `CellRichText`, a value absent from its own quote (a welded or reduced
+    finding, where the quote is the nearest readable sentence rather than one
+    containing the value verbatim). A Context cell that is merely unbolded is a
+    cosmetic loss; one that raises would cost the operator the worksheet."""
+    text, needle = str(quote or ""), str(value or "")
+    if not text or not needle:
+        return text
+    try:
+        from openpyxl.cell.rich_text import CellRichText, TextBlock
+        from openpyxl.cell.text import InlineFont
+    except ImportError:
+        return text
+    low, nl = text.lower(), needle.lower()
+    parts, at, bold = [], 0, InlineFont(b=True)
+    while True:
+        k = low.find(nl, at)
+        if k < 0:
+            break
+        if k > at:
+            parts.append(text[at:k])
+        parts.append(TextBlock(bold, text[k:k + len(nl)]))
+        at = k + len(nl)
+    if not parts:                       # the value is not in its own quote
+        return text
+    if at < len(text):
+        parts.append(text[at:])
+    try:
+        return CellRichText(parts)
+    except Exception:
+        return text
+
+
 def _pn_wrap_sheet(ws):
     """Turn WRAP TEXT on for every cell of a sheet this tool writes.
 
@@ -17387,7 +17439,11 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
     ws.title = _PN_LEAK_SHEET
     ws.append(list(_PN_LEAK_HEADERS))
     for r in rows:
-        ws.append([r.get(key, "") for _hdr, key, _w in _PN_LEAK_COLUMNS])
+        # The flagged value is bolded inside its own quote, so the row is
+        # answerable at a glance; the Value column keeps the ordinary font.
+        ws.append([_pn_rich_context(r.get(key, ""), r.get("value", ""))
+                   if key == "context" else r.get(key, "")
+                   for _hdr, key, _w in _PN_LEAK_COLUMNS])
     for i, (_hdr, _key, width) in enumerate(_PN_LEAK_COLUMNS, start=1):
         ws.column_dimensions[get_column_letter(i)].width = width
     _pn_wrap_sheet(ws)
