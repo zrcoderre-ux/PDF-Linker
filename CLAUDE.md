@@ -1724,7 +1724,11 @@ Notes, the accumulating Cases list), and Excel's default spills a long cell
 across its empty neighbours then clips it the moment one is occupied — so the
 column the operator is meant to READ was the one they could not, without
 widening it by hand on every workbook. Vertical TOP with it, or a four-line
-quote sits centred against the one-line value it explains. Row HEIGHT is
+quote sits centred against the one-line value it explains. Column WIDTHS come
+with it (`_PN_KEY_WIDTHS`, the third field of `_PN_LEAK_COLUMNS`), in Excel's
+unit of character widths: Real Value / Replacement at 30 — and the LEAKS Value
+and Fix? cells, since Fix? takes a typed replacement and not just yes/no — with
+Context at 120, the width a sentence needs. Row HEIGHT is
 deliberately left unset: Excel auto-fits a wrapped row when no explicit height
 is stored, and a height written here would freeze the layout at this machine's
 font metrics. Costs 0.11 s on a 523-row key.
