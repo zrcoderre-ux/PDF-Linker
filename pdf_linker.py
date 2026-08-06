@@ -14808,9 +14808,11 @@ class Pseudonymizer:
             log.info(f"  Pseudonymize: {len(pinned)} binding(s) no export "
                      f"carries moved to the '{_PN_KEY_PINNED_SHEET}' sheet — "
                      f"still pinned for a later run, never applied in reverse")
-        # The quote is a sentence; at default width the column is unreadable.
+        # The quote is a sentence; at default width the column is unreadable,
+        # and without wrapping it is clipped by the Status cell beside it.
         for sheet in wb.worksheets:
             sheet.column_dimensions["D"].width = 60
+            _pn_wrap_sheet(sheet)
         wb.save(path)
         self._check_key_completeness(keyrows, log)
         for cluster in self.alias_candidates():
@@ -16988,6 +16990,36 @@ def _pn_master_leaks_path(cfg):
     return _pn_master_path(cfg)
 
 
+def _pn_wrap_sheet(ws):
+    """Turn WRAP TEXT on for every cell of a sheet this tool writes.
+
+    Every one of these sheets now carries a cell that is a SENTENCE — the LEAKS
+    Context column, the key's, the Notes and the accumulating Cases list on the
+    master KEEP sheet — and Excel's default is to spill a long cell across its
+    empty neighbours and then clip it the moment the neighbour is occupied. The
+    column the operator is meant to READ was therefore the one they could not,
+    without widening it by hand on every workbook the tool writes.
+
+    Shared by all four sheets (the key and its pinned sibling, LEAKS, and the
+    master's KEEP and tally tabs) for the reason the two launcher builders are
+    shared: they should not be able to drift apart.
+
+    Applied to the header row as well, so a two-word header wraps instead of
+    demanding a column wider than its data. Row HEIGHT is deliberately left
+    unset — Excel auto-fits a wrapped row when no explicit height is stored, and
+    a height written here would freeze the layout at whatever this machine's
+    font metrics happened to be.
+
+    Vertical TOP because the alternative reads badly: a four-line quote beside a
+    one-line real value would otherwise sit centred against it, and the eye has
+    to hunt for which row a value belongs to."""
+    from openpyxl.styles import Alignment
+    wrap = Alignment(wrap_text=True, vertical="top")
+    for row in ws.iter_rows():
+        for cell in row:
+            cell.alignment = wrap
+
+
 def _pn_master_load(master_path):
     """Load the master workbook for update (all sheets preserved), or a fresh
     empty one. Normal (not read-only) mode so a save keeps every OTHER sheet."""
@@ -17023,6 +17055,7 @@ def _pn_master_replace_sheet(wb, title, headers, data_rows, widths):
     from openpyxl.utils import get_column_letter
     for i, w in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(i)].width = w
+    _pn_wrap_sheet(ws)
     return ws
 
 
@@ -17357,6 +17390,7 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
         ws.append([r.get(key, "") for _hdr, key, _w in _PN_LEAK_COLUMNS])
     for i, (_hdr, _key, width) in enumerate(_PN_LEAK_COLUMNS, start=1):
         ws.column_dimensions[get_column_letter(i)].width = width
+    _pn_wrap_sheet(ws)
     try:                                    # a yes/no dropdown on the Fix? column
         from openpyxl.worksheet.datavalidation import DataValidation
         fix_col = get_column_letter(

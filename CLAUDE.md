@@ -1690,6 +1690,19 @@ source PDF), the moment every document in it has a fresh export of its own.
   elapsed time; a line written afterwards is a line never written when the
   interpreter dies.
 
+**Every spreadsheet the tool writes WRAPS its text** (`_pn_wrap_sheet`, shared
+by the key and its pinned sibling, `LEAKS.xlsx`, and the master's KEEP and tally
+tabs — shared for the reason the two launcher builders are, so they cannot
+drift). All four now carry a cell that is a SENTENCE (the two Context columns,
+Notes, the accumulating Cases list), and Excel's default spills a long cell
+across its empty neighbours then clips it the moment one is occupied — so the
+column the operator is meant to READ was the one they could not, without
+widening it by hand on every workbook. Vertical TOP with it, or a four-line
+quote sits centred against the one-line value it explains. Row HEIGHT is
+deliberately left unset: Excel auto-fits a wrapped row when no explicit height
+is stored, and a height written here would freeze the layout at this machine's
+font metrics. Costs 0.11 s on a 523-row key.
+
 ## Folder artifacts (what a finished folder should contain)
 
 **Both launchers run the work DETACHED AND MINIMIZED** and return at once
