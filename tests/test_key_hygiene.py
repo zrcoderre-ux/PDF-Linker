@@ -92,7 +92,8 @@ def test_a_case_variant_is_one_row_not_two(tmp_path):
     _p, macro, _pinned = _write(z, tmp_path)
     barry = [r for r in macro if str(r[1]).lower() == "barry"]
     assert len(barry) == 1, barry
-    assert barry[0][5] == 2, "both spellings must count toward the one row"
+    occ = list(P._PN_KEY_HEADERS).index("Occurrences")   # not a fixed column
+    assert barry[0][occ] == 2, "both spellings must count toward the one row"
 
 
 def test_two_spellings_of_one_address_each_reverse(tmp_path):

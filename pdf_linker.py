@@ -10008,14 +10008,22 @@ def _pn_terms_from_xlsx(path, extra_name_headers, log):
 # anything genuinely new in this file gets a fresh fake that can't collide with
 # one already in the key. The written-back key carries every loaded row forward
 # plus the new ones, so it never shrinks.
-_PN_KEY_HEADERS = ("Category", "Real Value", "Replacement", "Status", "Source",
-                   "Occurrences", "Context")
-# "Context" is APPENDED, never inserted, and that is load-bearing twice over.
-# `DeAnonymize.bas` reads this sheet by column position, and
-# `_pn_key_looks_like_ours` fingerprints a key by its first six headers — so a
-# column added on the end is invisible to both, while one added in the middle
-# would silently break the reversal macro on every key already in circulation.
-_PN_KEY_FINGERPRINT = _PN_KEY_HEADERS[:6]
+_PN_KEY_HEADERS = ("Category", "Real Value", "Replacement", "Context", "Status",
+                   "Source", "Occurrences")
+# "Context" sits beside the Replacement it explains, which is where it is read:
+# the row's question is "is this binding right?", and the sentence is the
+# answer, so putting it three columns away from the fake was the wrong place.
+#
+# Safe to insert rather than append, which is worth stating because the reverse
+# is the obvious fear. `DeAnonymize.bas` does NOT read this sheet positionally —
+# it scans the header row for "real value" / "replacement" / "status" and uses
+# whatever columns they land in (`LoadKeyWorkbook`, and Status is already
+# optional there for keys written before it existed). `_pn_load_key` and
+# `_pn_key_context_on_disk` resolve by header name too. So the only thing a
+# moved column can break is a POSITIONAL fingerprint — hence the one below is
+# cut to the three headers both layouts share, and a six-column key from an
+# older version still reads as ours and still round-trips.
+_PN_KEY_FINGERPRINT = ("Category", "Real Value", "Replacement")
 # The regex-detector categories: in the batch these were computed live at
 # priority 3, so a loaded literal must sit ABOVE that to reproduce the exact
 # stored fake instead of letting the detector recompute a different one.
@@ -10247,7 +10255,7 @@ def _pn_key_looks_like_ours(path):
     except Exception:
         return False
     return tuple((h or "").strip() if isinstance(h, str) else h
-                 for h in (header or ())[:6]) == _PN_KEY_FINGERPRINT
+                 for h in (header or ())[:3]) == _PN_KEY_FINGERPRINT
 
 
 def _pn_key_context_on_disk(path):
@@ -14788,20 +14796,21 @@ class Pseudonymizer:
         ws.title = "Pseudonym Key"
         ws.append(headers)
         for r in applied:
-            ws.append([r["category"], r["real"], r["fake"], row_status(r),
-                       r["source"], r["count"], row_context(r)])
+            ws.append([r["category"], r["real"], r["fake"], row_context(r),
+                       row_status(r), r["source"], r["count"]])
         if pinned:
             ps = wb.create_sheet(_PN_KEY_PINNED_SHEET)
             ps.append(headers)
             for r in pinned:
-                ps.append([r["category"], r["real"], r["fake"], row_status(r),
-                           r["source"], r["count"], row_context(r)])
+                ps.append([r["category"], r["real"], r["fake"],
+                           row_context(r), row_status(r), r["source"],
+                           r["count"]])
             log.info(f"  Pseudonymize: {len(pinned)} binding(s) no export "
                      f"carries moved to the '{_PN_KEY_PINNED_SHEET}' sheet — "
                      f"still pinned for a later run, never applied in reverse")
         # The quote is a sentence; at default width the column is unreadable.
         for sheet in wb.worksheets:
-            sheet.column_dimensions["G"].width = 60
+            sheet.column_dimensions["D"].width = 60
         wb.save(path)
         self._check_key_completeness(keyrows, log)
         for cluster in self.alias_candidates():

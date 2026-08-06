@@ -128,11 +128,19 @@ exists the real value has been replaced, so only that copy still contains it.
 The consequence is deliberate and worth stating — `pseudonym_key.xlsx` now
 carries sentences of the real document, not merely its real values. It was never
 a shareable file (it is the reversal map), so this changes how revealing it is,
-not which file is safe to send. APPENDED as column 7, never inserted:
-`DeAnonymize.bas` reads the sheet by column POSITION and `_pn_key_looks_like_ours`
-fingerprints a key by its first six headers (`_PN_KEY_FINGERPRINT`), so a column
-on the end is invisible to both while one in the middle would break the reversal
-macro on every key already in circulation. FIRST document to use a value owns
+not which file is safe to send. It sits at column **D**, beside the Replacement
+it explains, because that is where it is read: the row asks "is this binding
+right?" and the sentence is the answer. Inserting rather than appending is safe,
+and worth stating because the reverse is the obvious fear — `DeAnonymize.bas`
+does NOT read this sheet positionally, it scans the header row for
+`real value` / `replacement` / `status` and uses whatever columns they land in
+(`LoadKeyWorkbook`, where Status is already optional for keys predating it), and
+`_pn_load_key` / `_pn_key_context_on_disk` resolve by header name too. The only
+thing a moved column can break is a POSITIONAL fingerprint, so
+`_PN_KEY_FINGERPRINT` is cut to the three headers both layouts share and a
+six-column key from an older version still reads as ours. (A test that indexes a
+key row by number is making the same mistake — two did, and now take the index
+from `_PN_KEY_HEADERS`.) FIRST document to use a value owns
 its quote, so a re-run of the same folder reproduces the column; a quote this run
 cannot re-derive is carried forward from the key on disk
 (`_pn_key_context_on_disk`), because the key outlives the folder's contents.
