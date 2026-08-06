@@ -840,6 +840,16 @@ the party), so its row stays reversible.
   ("Labor Rasho" -> "Labor Yeardley"). NUCLEAR only: a soft `no` keep is
   released inside a name run precisely because the word may be part of a party
   there, so a phrase carrying one can still be a real leak.
+  **A word the composing faker KEPT is not one of our fakes**
+  (`name_fake_words`). The furniture of a party name is preserved verbatim
+  ("The Lovelace" -> "The Flintham") and a `{braced}` keep is too, but the
+  fake was split word by word and every word counted — so "the" became one of
+  "our person fake words" and `half_scrubbed_scan` read EVERY title-case
+  phrase as a half-scrubbed pair. One landlord-tenant filing reported 71, of
+  which "The Bane Act", "The Unruh Civil Rights Act", "The Stanley Mosk
+  Courthouse" and "TO THE HONORABLE COURT" are representative.
+  `registry.keeps_word` is the same hook `_pn_fake_person` consulted when it
+  decided to keep the word, so the two can only agree.
   These scans must never re-flag the run's OWN fakes: `_pn_word_is_own_fake`
   recognises a bare fake ("Keswick") AND a welded one where a splice glued the
   fake to a neighbour ("CORPORATIOLORNE10" carries "lorne10", "POSTBOX4.ORGPANY"
@@ -1770,6 +1780,22 @@ reads as "fully scrubbed".
 - **No real judge name in the repo** — court-personnel scrubbing is name-agnostic
   (discovered from the document); the fictional "Dana Whitaker" is used in tests/
   comments.
+- **One invisible byte must never cost the KEY** (`_pn_xl_text`, applied at
+  every sheet boundary). openpyxl refuses a C0 control character and a SCANNED
+  exhibit supplies them: OCR read a Bates stamp as
+  `EQUITY-WALTON_0007 - HOIISING<BEL>COMMl,/Nl't'Y`, writing it threw, and the
+  ENTIRE reversal key was lost while the exports were written — pseudonyms
+  nobody can undo, which this project treats as worse than a leak, reported as
+  one "non-fatal" warning. Stripped rather than dropped: the character is
+  invisible and came from a misrecognition, while dropping the row loses the
+  binding. The handler now says outright that nothing can restore the names.
+- **A word list is DATA, not code.** A `#` inside a triple-quoted word list is
+  not a comment. The housing block was first written with its rationale inside
+  the string and put "#", "Act", "Bane," and "Fair" into `_PN_COMMON_WORDS` —
+  swallowing the very surnames the rationale said to protect. Extra blocks go
+  in their own constant and are unioned in
+  (`_PN_HOUSING_WORDS`); `test_review_noise_and_bad_chars.py` asserts every
+  list holds nothing but lower-case words.
 - Runtime artifacts (`pdf_linker_eta_rate.txt`, logs, leaks/key xlsx, ETA/DONE
   markers, launchers) are gitignored — never commit them (a stray one broke a
   user's `git pull`).

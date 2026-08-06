@@ -9603,6 +9603,32 @@ attempts attempted receiving receive received recipient recipients
 registered registration registrant perfected effected commercial agency
 agencies household dwelling abode domicile counties departments
 confirmation portal institute institutes google scholar""".split())
+# LANDLORD-TENANT / HOUSING, from an unlawful-detainer and credit-reporting
+# batch — the next motion type revealing the next missing block, exactly as the
+# standing note below predicts. A lease is mostly this vocabulary in title case
+# or full caps, so without it every clause heading read as a name.
+#
+# A separate constant unioned in, NOT more lines inside the string above: a
+# `#` inside a triple-quoted word list is not a comment, it is data. Written
+# that way first, this block put "#", "Act", "Bane,", "Fair" and the rest of
+# its own rationale into the gazetteer — swallowing the very surnames the
+# rationale says to protect.
+#
+# Deliberately EXCLUDES anything that could be a party's surname: Fair, Bane,
+# Prior, Person, Bureau, Senior, Rent, Fee, Rate, Term, Total, Balance, Credit,
+# Default, Act and Public were all flagged by that batch and are all left out,
+# because a word swallowed here stops being REPORTABLE and a real party named
+# Fair costs far more than one more triage row.
+_PN_HOUSING_WORDS = frozenset("""
+premises utilities utility rental residential condominium prejudgment
+possession obligation obligations expiration amendment amendments
+interpretation constitutional significance eviction evictions writ legislature
+concession concessions monthly cleaning leasehold tenancy tenancies occupancy
+sublease subtenant forfeiture habitability relocation reimbursement delinquent
+arrears landlord landlords tenant tenants resident residents lessee lessor
+furnishings appliance appliances pest infestation detector detectors monoxide
+vacate vacating renter renters screening prorated""".split())
+_PN_COMMON_WORDS |= _PN_HOUSING_WORDS
 # The first service-of-process batch (above, from the motion-to-quash corpus
 # that shipped "Motion to Mabry", "Eldridge of Service" and "process radley"):
 # procedural vocabulary that is never anyone's name, so it belongs in the
@@ -14247,7 +14273,19 @@ class Pseudonymizer:
                 continue
             for w in str(rec["fake"]).split():
                 base = _pn_word_base(w)
-                if base and len(base) >= 3:
+                # A word the composing faker KEPT is not a stand-in — it is the
+                # document's own text, sitting inside our fake because the
+                # furniture of a party name is preserved verbatim ("The
+                # Lovelace" -> "The Flintham") and a `{braced}` keep is too.
+                # Counting it made "the" one of "our person fake words", so
+                # EVERY title-case phrase in the document read as a
+                # half-scrubbed pair: one landlord-tenant filing reported 71,
+                # of which "The Bane Act", "The Unruh Civil Rights Act", "The
+                # Stanley Mosk Courthouse" and "TO THE HONORABLE COURT" are
+                # representative. `registry.keeps_word` is the same hook
+                # `_pn_fake_person` consulted when it decided to keep the word,
+                # so the two can only agree.
+                if base and len(base) >= 3 and not self.registry.keeps_word(base):
                     words.add(base)
         return words
 
@@ -14796,16 +14834,17 @@ class Pseudonymizer:
         ws.title = "Pseudonym Key"
         ws.append(headers)
         for r in applied:
-            ws.append([r["category"], r["real"], r["fake"],
+            ws.append(_pn_xl_row([r["category"], r["real"], r["fake"],
                        _pn_rich_context(row_context(r), r["real"]),
-                       row_status(r), r["source"], r["count"]])
+                       row_status(r), r["source"], r["count"]]))
         if pinned:
             ps = wb.create_sheet(_PN_KEY_PINNED_SHEET)
             ps.append(headers)
             for r in pinned:
-                ps.append([r["category"], r["real"], r["fake"],
-                           _pn_rich_context(row_context(r), r["real"]),
-                           row_status(r), r["source"], r["count"]])
+                ps.append(_pn_xl_row(
+                    [r["category"], r["real"], r["fake"],
+                     _pn_rich_context(row_context(r), r["real"]),
+                     row_status(r), r["source"], r["count"]]))
             log.info(f"  Pseudonymize: {len(pinned)} binding(s) no export "
                      f"carries moved to the '{_PN_KEY_PINNED_SHEET}' sheet — "
                      f"still pinned for a later run, never applied in reverse")
@@ -16991,6 +17030,32 @@ def _pn_master_leaks_path(cfg):
     return _pn_master_path(cfg)
 
 
+def _pn_xl_text(value):
+    """`value` with the characters Excel refuses to hold stripped out.
+
+    openpyxl raises `IllegalCharacterError` on a C0 control character, and a
+    SCANNED exhibit supplies them: OCR read a Bates stamp as
+    "EQUITY-WALTON_0007 - HOIISING<BEL>COMMl,/Nl't'Y", the value was harvested
+    as an identifier, and writing it threw. One invisible byte in one junk value
+    therefore cost the ENTIRE pseudonym key — every fake in every export left
+    with nothing to reverse it, which is the failure this project treats as
+    worse than a leak, and all the run said was one "non-fatal" warning.
+
+    Stripped rather than dropped, because the row is a BINDING: losing the
+    character loses nothing (it is invisible and it came from a
+    misrecognition), while losing the row loses the reversal. Applied at the
+    sheet boundary, so nothing upstream has to know about Excel's rules."""
+    if not isinstance(value, str):
+        return value
+    from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
+    return ILLEGAL_CHARACTERS_RE.sub("", value)
+
+
+def _pn_xl_row(values):
+    """A row with every cell made safe for a worksheet — see `_pn_xl_text`."""
+    return [_pn_xl_text(v) for v in values]
+
+
 def _pn_rich_context(quote, value):
     """`quote` with every occurrence of `value` in BOLD, as an Excel rich-text
     cell — or the plain string when that cannot be done.
@@ -17014,7 +17079,8 @@ def _pn_rich_context(quote, value):
     finding, where the quote is the nearest readable sentence rather than one
     containing the value verbatim). A Context cell that is merely unbolded is a
     cosmetic loss; one that raises would cost the operator the worksheet."""
-    text, needle = str(quote or ""), str(value or "")
+    text = _pn_xl_text(str(quote or ""))
+    needle = _pn_xl_text(str(value or ""))
     if not text or not needle:
         return text
     try:
@@ -17103,7 +17169,7 @@ def _pn_master_replace_sheet(wb, title, headers, data_rows, widths):
     ws = wb.create_sheet(title)
     ws.append(list(headers))
     for row in data_rows:
-        ws.append(row)
+        ws.append(_pn_xl_row(row))
     from openpyxl.utils import get_column_letter
     for i, w in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(i)].width = w
@@ -17441,9 +17507,10 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
     for r in rows:
         # The flagged value is bolded inside its own quote, so the row is
         # answerable at a glance; the Value column keeps the ordinary font.
-        ws.append([_pn_rich_context(r.get(key, ""), r.get("value", ""))
-                   if key == "context" else r.get(key, "")
-                   for _hdr, key, _w in _PN_LEAK_COLUMNS])
+        ws.append(_pn_xl_row(
+            [_pn_rich_context(r.get(key, ""), r.get("value", ""))
+             if key == "context" else r.get(key, "")
+             for _hdr, key, _w in _PN_LEAK_COLUMNS]))
     for i, (_hdr, _key, width) in enumerate(_PN_LEAK_COLUMNS, start=1):
         ws.column_dimensions[get_column_letter(i)].width = width
     _pn_wrap_sheet(ws)
@@ -21219,7 +21286,18 @@ def main():
         try:
             pseudonymizer.write_key(key_out, log)
         except Exception as e:
-            log.warning(f"Could not write pseudonym key (non-fatal): {e}")
+            # NOT "non-fatal", whatever the exports look like. The key is the
+            # only thing that reverses them, so a run that writes exports and
+            # no key has produced pseudonyms nobody can undo — the failure this
+            # project treats as worse than a leak, because a leak is visible and
+            # an unreversible substitution is silent and permanent. One
+            # `IllegalCharacterError` on one OCR'd Bates stamp used to land here
+            # and cost the whole map (see `_pn_xl_text`); say plainly what was
+            # lost so it can never read as a formatting complaint again.
+            _warn(f"Pseudonymize: THE REVERSAL KEY WAS NOT WRITTEN ({e}). The "
+                  f".txt exports are pseudonymized but NOTHING can restore the "
+                  f"real names — do not send a draft written from them until "
+                  f"this run is repeated successfully.")
 
         # Report (do NOT delete): if pseudonymization ran on some .txt but the
         # spreadsheet key produced NO primary matches (full party names /
