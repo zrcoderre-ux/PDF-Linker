@@ -108,6 +108,43 @@ def test_the_header_row_wraps_with_the_data(tmp_path):
     assert all(c.alignment.wrap_text for c in ws[1] if c.value is not None)
 
 
+def test_the_columns_carry_their_declared_widths(tmp_path):
+    """Both workbooks arrive readable, so no column needs widening by hand.
+
+    Excel's unit is character widths — how many "0" glyphs of the default font
+    fit. Real Value / Replacement (and the LEAKS Value and Fix? cells, which
+    take a typed replacement) get room for an ordinary party name; Context gets
+    the width a whole sentence needs.
+    """
+    z = _pz(names=["Helen Rasho", "Someone Neverpresent"])
+    z.apply(SOURCE)
+    z.note_key_context(SOURCE)
+    key = tmp_path / "pseudonym_key.xlsx"
+    z.write_key(key, log)
+    wb = openpyxl.load_workbook(key)
+    assert len(wb.worksheets) == 2, wb.sheetnames    # pinned sheet too
+    for ws in wb.worksheets:
+        got = {c.value: ws.column_dimensions[c.column_letter].width
+               for c in ws[1]}
+        assert got["Real Value"] == 30, got
+        assert got["Replacement"] == 30, got
+        assert got["Context"] == 120, got
+
+    P._pn_write_leak_report(tmp_path, [
+        {"file": "M.pdf", "type": "name?", "value": "Ashely", "notes": "",
+         "where": "p.1:1", "context": "The complaint spells it Ashely."}], log)
+    ws = openpyxl.load_workbook(tmp_path / "LEAKS.xlsx").active
+    got = {c.value: ws.column_dimensions[c.column_letter].width for c in ws[1]}
+    assert got["Value"] == 30 and got["Fix? (yes/no)"] == 30, got
+    assert got["Context"] == 120, got
+
+
+def test_the_key_width_list_stays_in_step_with_its_headers():
+    # `_PN_KEY_WIDTHS` is positional; a column added to the headers without a
+    # width would silently leave the last column at Excel's default.
+    assert len(P._PN_KEY_WIDTHS) == len(P._PN_KEY_HEADERS)
+
+
 def test_row_height_is_left_for_excel_to_fit(tmp_path):
     """No explicit height is stored, so Excel auto-fits the wrapped rows.
 

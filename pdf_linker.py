@@ -10050,6 +10050,12 @@ _PN_KEY_HEADERS = ("Category", "Real Value", "Replacement", "Context", "Status",
 # cut to the three headers both layouts share, and a six-column key from an
 # older version still reads as ours and still round-trips.
 _PN_KEY_FINGERPRINT = ("Category", "Real Value", "Replacement")
+# Column widths, in Excel's unit: how many "0" glyphs of the default font fit.
+# Real Value and Replacement are the two the operator reads across, so they get
+# room for an ordinary party name without being widened by hand on every
+# workbook; Context is a whole SENTENCE and gets the width a sentence needs.
+# Positional, so it must stay in step with _PN_KEY_HEADERS.
+_PN_KEY_WIDTHS = (14, 30, 30, 120, 14, 16, 12)
 # The regex-detector categories: in the batch these were computed live at
 # priority 3, so a loaded literal must sit ABOVE that to reproduce the exact
 # stored fake instead of letting the detector recompute a different one.
@@ -14848,10 +14854,10 @@ class Pseudonymizer:
             log.info(f"  Pseudonymize: {len(pinned)} binding(s) no export "
                      f"carries moved to the '{_PN_KEY_PINNED_SHEET}' sheet — "
                      f"still pinned for a later run, never applied in reverse")
-        # The quote is a sentence; at default width the column is unreadable,
-        # and without wrapping it is clipped by the Status cell beside it.
+        from openpyxl.utils import get_column_letter as _col
         for sheet in wb.worksheets:
-            sheet.column_dimensions["D"].width = 60
+            for i, w in enumerate(_PN_KEY_WIDTHS, start=1):
+                sheet.column_dimensions[_col(i)].width = w
             _pn_wrap_sheet(sheet)
         wb.save(path)
         self._check_key_completeness(keyrows, log)
@@ -16475,13 +16481,15 @@ def _pn_locate_export(text, needle, limit=12):
 # here and the writer, widths and the Fix? dropdown all follow. The reader is
 # header-name driven, so column order never affects round-tripping.
 _PN_LEAK_COLUMNS = (
-    ("Value", "value", 34),
-    ("Fix? (yes/no)", "fixcell", 12),
+    ("Value", "value", 30),
+    # Wide enough to TYPE IN: this cell takes a full replacement value or a
+    # keep-spec, not just "yes"/"no", and a 12-wide column hid what was typed.
+    ("Fix? (yes/no)", "fixcell", 30),
     # The sentence the value stands in. Next to the decision because it is what
     # the decision is made ON: "Charge" is boilerplate in "CHARGE OF
     # DISCRIMINATION" and a surname in "served on Charge at his residence", and
     # without it the operator had to open the export and find the page to tell.
-    ("Context", "context", 70),
+    ("Context", "context", 120),
     ("File", "file", 20),
     ("Type", "type", 22),
     ("Where (page:line)", "where", 30),
