@@ -16482,9 +16482,12 @@ def _pn_locate_export(text, needle, limit=12):
 # header-name driven, so column order never affects round-tripping.
 _PN_LEAK_COLUMNS = (
     ("Value", "value", 30),
-    # Wide enough to TYPE IN: this cell takes a full replacement value or a
-    # keep-spec, not just "yes"/"no", and a 12-wide column hid what was typed.
-    ("Fix? (yes/no)", "fixcell", 30),
+    # Just wide enough for the longest control word plus its dropdown arrow.
+    # It also accepts a full typed replacement or a [keep-spec], but those are
+    # the exception and sizing the column for them cost 30 characters of screen
+    # on every row to show "no" — and wrapping means a long one still shows,
+    # over two lines, in a row Excel grows to fit.
+    ("Fix? (yes/no)", "fixcell", 10),
     # The sentence the value stands in. Next to the decision because it is what
     # the decision is made ON: "Charge" is boilerplate in "CHARGE OF
     # DISCRIMINATION" and a surname in "served on Charge at his residence", and
