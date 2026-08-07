@@ -1807,6 +1807,24 @@ font metrics. Costs 0.11 s on a 523-row key.
 
 ## Folder artifacts (what a finished folder should contain)
 
+**`Authorities Cited.txt` lists what the PARTIES cited**
+(`_write_authorities_list`, fed by `_note_authority`). It sits in the CASE
+FOLDER and deliberately NOT in `Text Files`: that folder is the deliverable,
+measured against the upload cap, so one more file there would cost a document —
+this is a work product for whoever reads the papers, and belongs beside the PDFs
+and the key. Real citation text, because published authorities are public record
+and the whole pipeline preserves them byte-for-byte precisely so a cite is never
+renamed; a list that scrubbed the names it exists to report would be useless.
+Grouped by kind (cases / statutes / rules), alphabetical within each, naming the
+documents that cite each and how often — the question a reader actually has.
+A short form and a `supra` FOLD onto the full cite they repeat (same `key`), or
+the file would be a list of mentions rather than of authorities. Collected as a
+side effect of the parse `_build_authorities_appendix` already pays for, so it
+costs no extra citation pass; the Word path has no appendix and asks directly.
+Rewritten whole every run and REMOVED when a folder cites nothing, so it never
+describes a batch that has moved on, and it carries nothing volatile so an
+unchanged folder reproduces it.
+
 **Both launchers run the work DETACHED AND MINIMIZED** and return at once
 (`_bg_launcher_bat` / `_bg_launcher_sh`, shared so the pair cannot drift). The
 re-run was already detached but echoed a five-line banner and sat on a
