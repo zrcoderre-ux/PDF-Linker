@@ -714,6 +714,25 @@ the party), so its row stays reversible.
   rule, `_surviving_records` ignores the same spans: a value standing where
   `_substitute` refuses to touch must never be REPORTED, or the export is
   quarantined by a leak nothing can ever clear.
+- **The tool NEVER takes its own output as a real value to scrub, and that is
+  enforced at ONE gate** (`_pn_build_terms`). A delivered key carried
+  `II -> EE` (2,281 occurrences, from an E-Court template that split
+  "Gregory Wayne Walton, II" across cells) and, downstream of it,
+  `Lowther Rolleston EE -> Winchcombe Penrose VENTRIS` — a Real Value composed
+  entirely of this tool's own stand-ins, which `DeAnonymize` can only walk back
+  to more of our output. Two refusals sit at the one point every source passes
+  through — the party template, `--term`, a worksheet `yes`, a key row read
+  back — rather than patched pass by pass:
+  `_pn_is_bare_suffix` (a bare Roman numeral or generational suffix is never a
+  party however authoritative the source: a brief is full of "II. ARGUMENT" and
+  "(ii) the date", and the professional suffixes md/rn/pa/**do** are
+  deliberately NOT on the list, because "Do" is a real surname); and a
+  whole-value check that the term is not something `registry.minted_fakes()`
+  already handed out. ENTIRELY ours, never merely containing one of our words —
+  a half-scrubbed pair is `_pn_strip_prior_fakes`'s case, and it fakes the real
+  remainder alone. Accepted cost: Roman VI-X shadow a few short given names, so
+  a template row of exactly "Vi" is refused; "Vi Nguyen" is not, and a party
+  template lists full names.
 - **A display name is never MINTED from text this tool already scrubbed.**
   `--fix-leaks` runs its detectors OFF because the exports were scrubbed on the
   full run and a detector meeting a fake would re-fake it; a display-name mint

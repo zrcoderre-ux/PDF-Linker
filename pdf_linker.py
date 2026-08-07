@@ -8301,9 +8301,33 @@ _PN_FORM_ID_RE = re.compile(
     r"[A-Z]{2,4}(?:-[A-Z]{1,3})?-\d{3}(?:\(\d{1,2}\))?\Z")
 
 
+# A generational suffix or a bare Roman numeral, standing ALONE. These are the
+# one shape that is never a party however authoritative the source, because a
+# legal document is full of them as ENUMERATION — "II. ARGUMENT", "(ii) the
+# date", "Part II", "Exhibit III". An E-Court template that split
+# "Gregory Wayne Walton, II" across cells offered "II" as its own party row; it
+# was trusted (a template is), became a case-insensitive person term, and faked
+# 2,281 occurrences to "EE", including every "(ii)" in a lease.
+_PN_NEVER_A_PARTY = frozenset(
+    {"i", "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x",
+     "jr", "sr", "2nd", "3rd", "4th"})
+
+
+def _pn_is_bare_suffix(value):
+    """True when `value` is nothing but a generational suffix / Roman numeral.
+
+    Deliberately narrow. The professional suffixes `_PN_SUFFIX_TOKENS` also
+    carries (md, rn, pa, do…) are NOT here: they do not collide with
+    enumeration, and "Do" is a real surname — refusing it would leave a party
+    unscrubbed, which is the worse failure."""
+    return re.sub(r"[^a-z0-9]", "", str(value).lower()) in _PN_NEVER_A_PARTY
+
+
 def _pn_is_never_fake(value):
     s = str(value).strip()
     if _PN_FORM_ID_RE.match(s):
+        return True
+    if _pn_is_bare_suffix(s):
         return True
     return re.sub(r"[^a-z0-9]", "", s.lower()) in _PN_NEVER_FAKE
 
@@ -10702,9 +10726,34 @@ def _pn_build_terms(names, casenos, extra_terms, registry=None, _prewarm=True):
             pool, tag = rec.pool_of[tok]
             registry.token(tok, pool, tag)      # bases before welds/extensions
     terms = []
+
+    def _is_our_own(value):
+        """True when `value` is a stand-in this run (or the key it reused)
+        already handed out — so faking it would start a SECOND GENERATION.
+
+        The tool must never take its own output as a real value to scrub. A
+        delivered key carried `Lowther Rolleston EE -> Winchcombe Penrose
+        VENTRIS`, where the Real Value is itself composed of this tool's
+        stand-ins: `DeAnonymize` walking that map lands on more of our output
+        and never on "Gregory". Refused HERE, at the one gate every source
+        passes through — the party template, `--term`, a worksheet `yes`, a
+        key row read back — rather than patched pass by pass.
+
+        ENTIRELY ours, never merely containing one of our words. A real party
+        whose surname happens to match a pool word must still be scrubbed, and a
+        HALF-scrubbed phrase ("Melissa Sable", where only the surname was bound)
+        is `_pn_strip_prior_fakes`'s case — it fakes the real remainder alone.
+        `registry.minted_fakes()` is keyed per DRAW, so it holds the stand-in
+        WORDS; a composed name is ours exactly when every one of its words is.
+        """
+        v = str(value).strip()
+        if not v:
+            return False
+        return _pn_strip_prior_fakes(v, set(registry.minted_fakes())) is None
+
     for raw in names:
         raw, is_short = raw if isinstance(raw, tuple) else (raw, False)
-        if _pn_is_never_fake(raw):
+        if _pn_is_never_fake(raw) or _is_our_own(raw):
             continue                      # court-form boilerplate — never faked
         if is_short:
             _pn_append_shortname_term(terms, raw, "spreadsheet", registry)
@@ -10717,7 +10766,7 @@ def _pn_build_terms(names, casenos, extra_terms, registry=None, _prewarm=True):
                              whole_word=True, case_sensitive=False, priority=2,
                              source="spreadsheet"))
     for raw in extra_terms or []:
-        if _pn_is_never_fake(raw):
+        if _pn_is_never_fake(raw) or _is_our_own(raw):
             continue
         if re.search(r"\d", raw) and not re.search(r"[A-Za-z]{2}", raw):
             terms.append(_PnTerm("case_number", raw, _pn_fake_caseno(raw, registry),
