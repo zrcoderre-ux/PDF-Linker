@@ -15145,14 +15145,44 @@ def _public_authority_url(cite, pseudonymizer=None):
     return None
 
 
-def _build_authorities_appendix(full_text, pseudonymizer=None):
+_AUTHORITIES_FILE = "Authorities Cited.txt"
+
+
+def _note_authority(into, cite, doc_name):
+    """Record one citation into the folder-wide authorities tally.
+
+    Keyed on the citation's canonical `key`, so a short form and a `supra`
+    fold onto the full cite they repeat — they are the same authority, and a
+    list that counted them separately would be a list of MENTIONS, which is
+    not what anyone reads it for."""
+    if into is None or not cite.get("key"):
+        return
+    rec = into.setdefault(cite["key"], {"kind": cite.get("kind", "case"),
+                                        "docs": [], "count": 0,
+                                        "order": len(into)})
+    rec["count"] += 1
+    if doc_name and doc_name not in rec["docs"]:
+        rec["docs"].append(doc_name)
+
+
+def _build_authorities_appendix(full_text, pseudonymizer=None, collect=None,
+                                doc_name=None):
     """Return an appendix block listing each UNIQUE cited authority (in order
     of first appearance) with a public verification URL, or '' if none. When a
     pseudonymizer is given, the displayed cite text and the search query are
     pseudonymized as plain text (so the current case's own caption is scrubbed
-    without the percent-encoding boundary issue that would sneak it through)."""
+    without the percent-encoding boundary issue that would sneak it through).
+
+    `collect` accumulates the folder-wide authorities list as a side effect of
+    the parse this function already pays for — `find_all_citations` runs the
+    whole citation pipeline (twice, over gutter-blanked text), so asking for it
+    a second time per document to build the same list would double that for
+    nothing. It records EVERY cite, not only the ones a public URL was found
+    for: an authority nobody can auto-link is still an authority the parties
+    cited."""
     seen = {}
     for c in find_all_citations(full_text):
+        _note_authority(collect, c, doc_name)
         if c["key"] in seen:
             continue
         url = _public_authority_url(c, pseudonymizer)
@@ -17683,7 +17713,7 @@ def _pn_drop_superseded_quarantine(txt_path, src_path, log):
 
 def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
                         pseudonymizer=None, text_subdir="Text Files",
-                        original_subdir=None) -> bool:
+                        original_subdir=None, authorities=None) -> bool:
     """Write a plain-text companion for the PDF into a `text_subdir` subfolder
     of the case folder (created if needed), with pdf_linker's own invisible
     right-margin markers stripped. Overwrites on re-runs. Returns True if
@@ -17819,9 +17849,13 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         pseudonymizer.register_localities(detect_full)
         pseudonymizer.register_addresses(detect_full)
 
-    def build_body(pz):
+    def build_body(pz, collect=None):
         """Assemble the page text — scrubbed when `pz` is given, the raw
-        extraction when `pz` is None (the original-text copy)."""
+        extraction when `pz` is None (the original-text copy).
+
+        `collect` is passed only on the FIRST call, so the folder-wide
+        authorities list counts each document once however many bodies are
+        built from it."""
         parts = []
         for header, content in page_blocks:
             if isinstance(content, list):   # pleading page: (line_num, segments)
@@ -17845,7 +17879,9 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         out = "\n\n".join(parts) + "\n"
         # Append a list of every cited authority with a free public
         # verification link — the text copy points somewhere anyone can open.
-        appendix = _build_authorities_appendix("\n\f\n".join(orig_pages), pz)
+        appendix = _build_authorities_appendix("\n\f\n".join(orig_pages), pz,
+                                               collect=collect,
+                                               doc_name=pdf_path.name)
         if appendix:
             out += "\n" + appendix + "\n"
         # The pre-rebuild text of any page this run replaced — the UNSCRUBBED
@@ -17912,7 +17948,7 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
     _pn_t0 = time.time()
     if pseudonymizer is not None:
         log.info(f"  Pseudonymize: scrubbing {len(page_blocks)} page(s) of text")
-    body = build_body(pseudonymizer)
+    body = build_body(pseudonymizer, collect=authorities)
 
     if pseudonymizer is not None:
         log.info(f"  Pseudonymize: scrubbed in {time.time() - _pn_t0:.0f}s; "
@@ -18867,6 +18903,75 @@ def _combine_write_group(text_dir, entry, cap, log, pseudonymizer, note=None):
 _WORD_DOC_SUFFIXES = (".docx", ".docm")
 
 
+def _write_authorities_list(folder, authorities, log):
+    """Write the folder-wide list of authorities the PARTIES cited.
+
+    It lives in the CASE FOLDER, not in `Text Files`: the exports folder is the
+    deliverable that goes to the drafting model under an upload cap, and one
+    more file there would cost a document. This is a work product for whoever
+    reads the papers, so it belongs beside the PDFs and the key.
+
+    Real citation text, deliberately. Published authorities are public record
+    and the pipeline preserves them byte-for-byte precisely so a cite is never
+    renamed — there is nothing here to pseudonymize, and a list that scrubbed
+    the very names it exists to report would be useless.
+
+    Grouped by kind and alphabetical within each, because that is how a table
+    of authorities reads. Each entry names the documents that cite it and how
+    often, which is the question a reader actually has: who relies on this, and
+    how heavily.
+
+    Rewritten whole on every run, and removed when a folder cites nothing, so
+    it never describes a batch that has moved on."""
+    target = folder / _AUTHORITIES_FILE
+    if not authorities:
+        try:
+            if target.exists():
+                target.unlink()
+                log.info(f"  No authorities cited — removed {target.name}.")
+        except OSError:
+            pass
+        return None
+
+    groups = {"case": [], "statute": [], "rule": []}
+    for key, rec in authorities.items():
+        groups.setdefault(rec.get("kind", "case"), []).append((key, rec))
+    titles = {"case": "CASES", "statute": "STATUTES AND CODES",
+              "rule": "RULES"}
+    docs = {d for rec in authorities.values() for d in rec["docs"]}
+    rule = "=" * 78
+    out = [rule,
+           "AUTHORITIES CITED",
+           f"{len(authorities)} authority(ies) cited across "
+           f"{len(docs)} document(s) in this folder.",
+           "",
+           "Written by PDF-Linker from the citations found in the documents "
+           "themselves.",
+           "It reports what the PARTIES cited. It is NOT a check that any of "
+           "them exists,",
+           "is good law, or says what it is cited for.",
+           rule]
+    for kind in ("case", "statute", "rule"):
+        items = sorted(groups.get(kind) or [], key=lambda kv: kv[0].lower())
+        if not items:
+            continue
+        out += ["", f"{titles.get(kind, kind.upper())} ({len(items)})", ""]
+        for key, rec in items:
+            times = rec["count"]
+            out.append(f"  {key}")
+            out.append(f"      cited {times} time{'' if times == 1 else 's'} "
+                       f"in: {', '.join(rec['docs'])}")
+    body = "\n".join(out) + "\n"
+    try:
+        target.write_text(body, encoding="utf-8", newline="\n")
+    except OSError as e:
+        log.warning(f"  Could not write {target.name} (non-fatal): {e}")
+        return None
+    log.info(f"  Wrote authorities list: {target.name} "
+             f"({len(authorities)} authority(ies) from {len(docs)} document(s))")
+    return target
+
+
 def _pdfs_in_folder(folder):
     """Source PDFs directly in `folder` (not recursive), excluding this tool's
     own `_linked` / `_temp` output. The single definition of "does this folder
@@ -18958,7 +19063,8 @@ def _word_locate(body, needle, limit=12):
 
 
 def _write_word_text_version(src_path, text, log, pseudonymizer=None,
-                             text_subdir="Text Files", original_subdir=None):
+                             text_subdir="Text Files", original_subdir=None,
+                             authorities=None):
     """Write a plain-text export of one Word document into the `text_subdir`
     subfolder, mirroring the PDF text pipeline: when a pseudonymizer is given the
     text is scrubbed, leak-scanned and given a name-scrubbed filename exactly as
@@ -18966,6 +19072,15 @@ def _write_word_text_version(src_path, text, log, pseudonymizer=None,
     hyperlinked. Returns True if written."""
     out_dir = src_path.parent / text_subdir
     txt_path = out_dir / (src_path.stem + ".txt")
+
+    # An all-Word folder is a real batch, so its authorities belong in the
+    # folder's list too. The PDF path collects as a side effect of the parse it
+    # already pays for to build the per-export appendix; this path has no
+    # appendix, so it asks directly. Outside the branch below: the list does not
+    # depend on whether pseudonymization is on.
+    if authorities is not None:
+        for _cite in find_all_citations(text):
+            _note_authority(authorities, _cite, src_path.name)
 
     if pseudonymizer is not None:
         # Per-file backstop to the folder pre-scan (mirrors _write_text_version):
@@ -19054,7 +19169,8 @@ def _write_word_text_version(src_path, text, log, pseudonymizer=None,
 
 
 def _convert_word_docs(word_texts, log, pseudonymizer=None,
-                       text_subdir="Text Files", original_subdir=None):
+                       text_subdir="Text Files", original_subdir=None,
+                       authorities=None):
     """Convert the already-extracted Word documents to .txt exports. `word_texts`
     is a list of (path, text) pairs (extraction/gating done by the caller).
     Returns the number of exports written."""
@@ -19062,7 +19178,8 @@ def _convert_word_docs(word_texts, log, pseudonymizer=None,
     for src_path, text in word_texts:
         try:
             if _write_word_text_version(src_path, text, log, pseudonymizer,
-                                        text_subdir, original_subdir):
+                                        text_subdir, original_subdir,
+                                        authorities=authorities):
                 written += 1
         except Exception as e:
             log.error(f"  Unhandled error converting Word doc "
@@ -19186,7 +19303,8 @@ def _pdf_stamp_linked(doc):
 def process_pdf(pdf_path: Path, log: logging.Logger,
                 provider: str = "lexis", extract_text: bool = True,
                 pseudonymizer=None, text_subdir="Text Files",
-                original_subdir=None, relink: bool = False) -> bool:
+                original_subdir=None, relink: bool = False,
+                authorities=None) -> bool:
     """Process one PDF. Returns True on success."""
     try:
         import fitz
@@ -19260,7 +19378,7 @@ def process_pdf(pdf_path: Path, log: logging.Logger,
     if want_text_export:
         try:
             _write_text_version(pdf_path, doc, log, pseudonymizer, text_subdir,
-                                original_subdir)
+                                original_subdir, authorities=authorities)
         except Exception as e:
             log.warning(f"  Text export failed (non-fatal): {e}")
 
@@ -21343,6 +21461,10 @@ def main():
         if partial:
             _pn_register_prefix_terms(pseudonymizer, corpus, log)
 
+    # Folder-wide tally of what the PARTIES cited, filled as each document's
+    # citations are parsed for the per-export appendix and written out once at
+    # the end — see `_write_authorities_list`.
+    authorities = {}
     success = 0
     failed = 0
     done_work = 0.0
@@ -21354,7 +21476,8 @@ def main():
                            pseudonymizer=pseudonymizer,
                            text_subdir=text_subdir,
                            original_subdir=original_subdir,
-                           relink=args.relink):
+                           relink=args.relink,
+                           authorities=authorities):
                 success += 1
             else:
                 failed += 1
@@ -21391,7 +21514,8 @@ def main():
     # finding lands in the same worksheet and the same quarantine gate below.
     if word_texts:
         n = _convert_word_docs(word_texts, log, pseudonymizer,
-                               text_subdir, original_subdir)
+                               text_subdir, original_subdir,
+                               authorities=authorities)
         log.info(f"Converted {n} Word doc(s) to text")
         # Stamp the folder the same way a PDF batch is stamped, so an all-Word
         # run shows at a glance that it FINISHED (a folder with neither marker
@@ -21399,6 +21523,12 @@ def main():
         # the projection is built from per-page OCR weights, and a Word
         # conversion has no OCR to project from — it is done in seconds.
         _write_done_marker(folder)
+
+    # What the parties cited, for whoever reads the papers. In the CASE FOLDER
+    # and not in `Text Files`: that folder is the deliverable, measured against
+    # an upload cap, and one more file there would cost a document.
+    if pdfs or word_texts:
+        _write_authorities_list(folder, authorities, log)
 
     # Every export is now written, so the folder can be measured against the
     # UPLOAD CAP and the excess combined. Before the leak worksheet and before
