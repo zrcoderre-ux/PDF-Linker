@@ -808,6 +808,16 @@ the party), so its row stays reversible.
 - **Two-tier leak detection**: `surviving_reals` (a tracked real still present)
   and the high-recall REVIEW scans (`review_scan`, `unknown_name_scan`,
   `reid_scan`) surface anything name-shaped for human triage in `LEAKS.xlsx`.
+  **…but a value that GATES delivery is always answerable.** A `no`/`never`
+  keep is in the gate's `suppressed` set, so it blocks nothing and rightly
+  keeps no worksheet row. A `[bracketed]` keep-spec is NOT:
+  `_pn_decision_is_keep` is true of it, so the worksheet dropped its row, while
+  its `fix` is "yes", so it never reaches `suppressed` and the gate still
+  quarantines. The operator was left with held exports, no worksheet to answer
+  and no Apply-Leak-Fixes launcher (it is written beside the worksheet), while
+  the gate's own message pointed at both. A LEAK-type finding now earns its row
+  whenever it is not suppressed, and the gate says outright when no worksheet
+  was written.
   **A KEPT value is not a leak** — it is present because the operator said so,
   so `surviving_reals` skips it (the REVIEW scans always did). Reporting it put
   a row in `LEAKS.xlsx` that no answer could clear: `no` is what produced it,

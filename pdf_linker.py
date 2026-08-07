@@ -16500,6 +16500,10 @@ _PN_LEAK_COLUMNS = (
 )
 _PN_LEAK_HEADERS = tuple(h for h, _k, _w in _PN_LEAK_COLUMNS)
 _PN_LEAK_ABSENT = "(no longer present)"
+# The type a tracked REAL value still standing is reported under. It is the one
+# class the leak GATE quarantines on, which is why it is the one class a KEEP
+# decision may not silently drop from the worksheet — see `_pn_write_leak_report`.
+_PN_LEAK_TYPE = "LEAK"
 
 # Sheet title of the per-folder genuine-leak triage.
 _PN_LEAK_SHEET = "LEAKS"
@@ -17424,7 +17428,19 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
     rows = []
     for vl, g in grouped.items():
         d = decisions.get(vl, {})
-        if _pn_decision_is_keep(d):
+        # …unless the value will still GATE delivery, in which case the
+        # operator has to be able to answer it. A `no`/`never` keep is in the
+        # gate's `suppressed` set, so it blocks nothing and rightly keeps no row
+        # — that is the decision working. A `[bracketed]` keep-spec is NOT:
+        # `_pn_decision_is_keep` is true of it, but its `fix` is "yes", so it
+        # never reaches `suppressed`, and `surviving_reals` reports a party
+        # real regardless of a keep (the full-party match RELEASES the keep, so
+        # a real still standing was faked nowhere). The result was quarantined
+        # exports, no worksheet to answer, and — because the launcher is written
+        # beside the worksheet — no Apply-Leak-Fixes either, while the gate's own
+        # message pointed at both.
+        if _pn_decision_is_keep(d) and not (g["type"] == _PN_LEAK_TYPE
+                                            and d.get("fix") != "no"):
             continue
         files = g["files"]
         file_cell = ", ".join(files) if len(files) <= 3 else f"{len(files)} files"
@@ -21495,12 +21511,21 @@ def main():
             # quarantine holds all of them for one document's leak. Say so —
             # the count of held exports otherwise reads as the count of held
             # documents, and it is not.
+            # Belt: the message below tells the operator to triage and to run
+            # Apply Leak Fixes. If no worksheet was written there is neither, so
+            # say what to do instead rather than name a file that is not there.
+            no_sheet = not _pn_leak_xlsx_path(folder).is_file()
             combos = [pseudonymizer.combined[t] for t in offenders
                       if t in pseudonymizer.combined]
             extra = (f" {len(combos)} of them are COMBINED files (the folder is "
                      f"over the upload cap), so {sum(len(c) for c in combos)} "
                      f"documents are held; Apply Leak Fixes releases each "
                      f"combined file whole." if combos else "")
+            if no_sheet:
+                extra += (" NOTE: no LEAKS.xlsx was written for this run, so "
+                          "there is nothing to triage and no Apply Leak Fixes "
+                          "launcher — add the survivor(s) with --term and "
+                          "re-run.")
             _warn(f"!! Pseudonymize FAILED: party name(s) survived in the "
                   f"exports ({shown}) — the case is recognizable on sight. "
                   f"{len(quarantined)} .txt export(s) with a leak quarantined to "

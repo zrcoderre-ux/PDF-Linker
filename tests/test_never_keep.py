@@ -343,3 +343,57 @@ def test_the_exact_value_never_becomes_a_row(tmp_path):
         tmp_path, [{"file": "A.txt", "type": "LEAK", "value": "Gregory Yu",
                     "where": "p.1:1"}], log, dec, cfg={})
     assert not (tmp_path / "LEAKS.xlsx").exists()
+
+
+# ─── A value that GATES delivery must always be answerable ──────────────────
+
+def test_a_keep_spec_leak_still_earns_a_row(tmp_path):
+    """A `[bracketed]` keep-spec is a KEEP, but it does not suppress the gate.
+
+    `_pn_decision_is_keep` is true of it, so the worksheet dropped its row —
+    while its `fix` is "yes", so it never reaches the gate's `suppressed` set,
+    and `surviving_reals` reports a party real regardless of a keep (the
+    full-party match RELEASES the keep, so a real still standing was faked
+    nowhere). The operator was left with quarantined exports, no worksheet to
+    answer, and — the launcher being written beside the worksheet — no
+    Apply-Leak-Fixes either, while the gate's own message pointed at both.
+    """
+    dec = P._pn_parse_decision_rows(
+        [["Type", "Value", "Fix? (yes/no)", "Notes", "Cases", "Origin"],
+         ["LEAK", "Lowther Rolleston EE", "[EE]", "", "", ""]])
+    d = dec["lowther rolleston ee"]
+    assert P._pn_decision_is_keep(d)          # it IS a keep…
+    assert d["fix"] != "no"                   # …but it does not suppress
+
+    P._pn_write_leak_report(
+        tmp_path, [{"file": "A.txt", "type": "LEAK",
+                    "value": "Lowther Rolleston EE", "where": "p.1:1"}],
+        log, dec, cfg={})
+    xlsx = tmp_path / "LEAKS.xlsx"
+    assert xlsx.exists(), "a gating value must be answerable"
+    ws = openpyxl.load_workbook(xlsx).active
+    vals = [r[0] for r in ws.iter_rows(min_row=2, values_only=True)]
+    assert "Lowther Rolleston EE" in vals, vals
+
+
+def test_a_suppressed_keep_still_keeps_no_row(tmp_path):
+    # The other half, unchanged: a `no`/`never` value is in `suppressed`, so it
+    # gates nothing and a row would be a question no answer could clear.
+    for word in ("no", "never"):
+        out = tmp_path / word
+        out.mkdir()
+        dec = _decision("Gregory Yu", word)
+        P._pn_write_leak_report(
+            out, [{"file": "A.txt", "type": "LEAK", "value": "Gregory Yu",
+                   "where": "p.1:1"}], log, dec, cfg={})
+        assert not (out / "LEAKS.xlsx").exists(), word
+
+
+def test_a_kept_review_finding_still_keeps_no_row(tmp_path):
+    # Only a LEAK is gating; a kept REVIEW-class finding is the operator's own
+    # answer and stays off the worksheet.
+    dec = _decision("Premises", "never")
+    P._pn_write_leak_report(
+        tmp_path, [{"file": "A.txt", "type": "half-scrubbed name?",
+                    "value": "Premises", "where": "p.2:3"}], log, dec, cfg={})
+    assert not (tmp_path / "LEAKS.xlsx").exists()
