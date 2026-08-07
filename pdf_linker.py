@@ -18264,6 +18264,29 @@ _COMBINE_PART_RE = re.compile(r"""(?ix)
 # marker at all. "1 of 3.txt" reduces to "1 of", which names no document — and
 # grouping on a base like that would sweep unrelated files into one pile.
 _COMBINE_BASE_MIN = 3
+# The name rule TWO gives its bundle, and the ONLY thing that distinguishes it
+# from a rule ONE part-group later. A part-group is named for the document it
+# rebuilds ("Brief (COMBINED 3 parts)"); the miscellaneous bundle is named for
+# nothing but its own count, because that is all its members have in common.
+# `(2)` tolerates `_combine_unique_name` having disambiguated it.
+_COMBINE_MISC_RE = re.compile(r"(?i)^COMBINED\s+\d+\s+documents(?:\s*\(\d+\))?$")
+
+
+def _combine_is_misc_bundle(name):
+    """True for a file rule TWO made: the folder's MISCELLANEOUS bundle.
+
+    It is the one combined file that may GROW. Its members share nothing but
+    having been small, so a document added to the folder on a later run belongs
+    in it as naturally as the ones already there — and folding it in keeps the
+    folder at ONE such file instead of accumulating a second and a third bundle
+    per re-run. A rule ONE part-group must never grow that way: its members are
+    the parts of a single document, and an unrelated filing dropped in among
+    them would make the file a lie."""
+    return bool(_COMBINE_MISC_RE.match(Path(name).stem.strip()))
+
+
+def _combine_misc_name(n):
+    return f"COMBINED {n} documents.txt"
 
 _ROMAN_VALS = {"i": 1, "v": 5, "x": 10, "l": 50, "c": 100, "d": 500, "m": 1000}
 
@@ -18566,7 +18589,8 @@ def _combine_exports_for_upload(folder, text_subdir, cfg, log,
             else:
                 keep_names.add(p.name)
             continue
-        plan.append({"name": p.name, "old": p, "members": members})
+        plan.append({"name": p.name, "old": p, "members": members,
+                     "misc": _combine_is_misc_bundle(p.name)})
     free = sorted(live.values(), key=lambda q: q.name.lower())
     count = len(plan) + len(free) + len(keep_names)
 
@@ -18579,24 +18603,63 @@ def _combine_exports_for_upload(folder, text_subdir, cfg, log,
                 _combine_same_name_groups(free), count - cap):
             of = "" if len(paths) == size else f" of {size}"
             plan.append({"name": f"{base} (COMBINED {len(paths)}{of} parts).txt",
-                         "old": None,
+                         "old": None, "misc": False,
                          "members": [(q.name, q, None) for q in paths]})
             for q in paths:
                 free.remove(q)
             count -= len(paths) - 1
 
-        if count > cap and len(free) >= 2:
+        if count > cap:
             # Rule TWO — the smallest exports, bundled until the count fits.
-            # One bundle of the (excess + 1) smallest lands exactly on the cap.
-            take = sorted(free, key=lambda q: (_combine_file_size(q),
-                                               q.name.lower()))[: count - cap + 1]
-            take.sort(key=lambda q: q.name.lower())
-            plan.append({"name": f"COMBINED {len(take)} documents.txt",
-                         "old": None,
-                         "members": [(q.name, q, None) for q in take]})
-            for q in take:
-                free.remove(q)
-            count -= len(take) - 1
+            #
+            # There is at most ONE such bundle per folder, and a later run GROWS
+            # it rather than starting another. Adding three documents to a
+            # folder already at the cap used to make a second
+            # "COMBINED n documents.txt" beside the first, and the run after
+            # that a third — so the operator ended up with a handful of
+            # miscellaneous files where the point of the pass was to have as few
+            # as possible. Its members share nothing but having been small, so a
+            # new arrival belongs in it as naturally as the ones already there.
+            misc = [e for e in plan if e.get("misc")]
+            # Fold any bundle an earlier version of this rule left behind into
+            # the first, so a folder already carrying several converges on one.
+            for extra in misc[1:]:
+                misc[0]["members"] += extra["members"]
+                misc[0].setdefault("stale", []).append(extra["old"])
+                plan.remove(extra)
+                count -= 1
+            del misc[1:]
+
+            if misc:
+                # Each absorbed export DISAPPEARS into a file that already
+                # counts, so the take is the excess itself — not excess + 1,
+                # which is what a NEW bundle needs (k files become 1).
+                want = max(count - cap, 0)
+                take = sorted(free, key=lambda q: (_combine_file_size(q),
+                                                   q.name.lower()))[:want]
+                take.sort(key=lambda q: q.name.lower())
+                if take:
+                    # APPENDED after the members already there, never merged and
+                    # re-sorted: the documents the operator has already sent
+                    # keep their order and their text, and only the header list
+                    # and the "OF n" counter move.
+                    misc[0]["members"] += [(q.name, q, None) for q in take]
+                    misc[0]["name"] = _combine_misc_name(len(misc[0]["members"]))
+                    for q in take:
+                        free.remove(q)
+                    count -= len(take)
+            elif len(free) >= 2:
+                # One bundle of the (excess + 1) smallest lands exactly on the
+                # cap.
+                take = sorted(free, key=lambda q: (_combine_file_size(q),
+                                                   q.name.lower()))[: count - cap + 1]
+                take.sort(key=lambda q: q.name.lower())
+                plan.append({"name": _combine_misc_name(len(take)),
+                             "old": None, "misc": True,
+                             "members": [(q.name, q, None) for q in take]})
+                for q in take:
+                    free.remove(q)
+                count -= len(take) - 1
 
         if count > cap:
             log.warning(
@@ -18683,6 +18746,11 @@ def _combine_write_group(text_dir, entry, cap, log, pseudonymizer, note=None):
     old = entry.get("old")
     if old is not None and old != target:
         _combine_unlink(old, log, "regrouped")
+    # A second miscellaneous bundle folded into this one — removed only now,
+    # after the write that carries its documents has succeeded.
+    for gone in entry.get("stale") or ():
+        if gone is not None and gone != target:
+            _combine_unlink(gone, log, "merged")
     for _name, path, _text in entry["members"]:
         if path is not None and path != target:
             _combine_unlink(path, log, "combined")

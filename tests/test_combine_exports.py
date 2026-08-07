@@ -233,13 +233,22 @@ def test_a_previous_grouping_is_reproduced_not_re_derived(tmp_path):
     assert combined.read_text() == before        # byte-identical delivery
     assert len(_txts(tdir)) == 20
 
-    # …and the incremental re-run — one more document dropped in — keeps the
-    # same members in the same file, combining afresh only what it must.
+    # …and the incremental re-run — one more document dropped in — GROWS the one
+    # miscellaneous bundle rather than starting a second beside it. The
+    # documents already sent stay first and keep their text; the new arrival is
+    # appended after them.
     _export(tdir, "Late Filing.txt", body="x" * 400)
     third = P._combine_exports_for_upload(tmp_path, "Text Files", cfg, log)
-    still = next(p for p, _m in third if p.name == combined.name)
-    assert [n for n, _b in P._combined_sections(still.read_text())] == members
-    assert still.read_text() == before
+    assert len(third) == 1, [p.name for p, _m in third]
+    still, still_members = third[0]
+    assert still_members[:len(members)] == members, still_members
+    assert len(still_members) == len(members) + 1
+    sections = dict(P._combined_sections(still.read_text()))
+    for name, body in P._combined_sections(before):
+        # Stripped: a section runs to the next banner, and the LAST one runs to
+        # end of file, so becoming a non-last member changes its trailing
+        # newlines and nothing else. The document's own text is what matters.
+        assert sections[name].strip("\n") == body.strip("\n")
     assert len(_txts(tdir)) == 20
 
 
@@ -524,3 +533,121 @@ def test_end_to_end_both_folders_land_at_the_cap(tmp_path, monkeypatch):
         all_text = "".join(p.read_text() for p in d.glob("*.txt"))
         for i in range(6):
             assert f"Body of filing {i}" in all_text     # nothing dropped
+
+
+# ─── The miscellaneous bundle is ONE growing file ────────────────────────────
+# Its members share nothing but having been small, so a document added on a
+# later run belongs in it as naturally as the ones already there — and folding
+# it in keeps the folder at one such file instead of accumulating a second and
+# a third bundle per re-run. A rule ONE part-group must never grow that way:
+# its members are the parts of a single document, and an unrelated filing
+# dropped in among them would make the file a lie.
+
+def _fill(tdir, n, size=400, first=0):
+    # Lettered, not numbered: "Filing 01" reads as a PART MARKER, so a numbered
+    # fixture would be swept up by rule ONE and never reach rule TWO at all.
+    for i in range(first, first + n):
+        _export(tdir, f"Filing {chr(65 + i)}.txt", body="x" * size)
+
+
+def test_the_bundle_is_recognised_by_its_own_name():
+    assert P._combine_is_misc_bundle("COMBINED 6 documents.txt")
+    assert P._combine_is_misc_bundle("COMBINED 12 documents (2).txt")
+    # A part-group is named for the document it rebuilds, and must not match.
+    assert not P._combine_is_misc_bundle("Brief (COMBINED 3 parts).txt")
+    assert not P._combine_is_misc_bundle("Brief (COMBINED 2 of 5 parts).txt")
+    assert not P._combine_is_misc_bundle("Opposition.txt")
+
+
+def test_three_re_runs_still_leave_exactly_one_bundle(tmp_path):
+    tdir = _tdir(tmp_path)
+    cfg = {"max_text_files": "20"}
+    _fill(tdir, 20)
+    _export(tdir, "Tiny A.txt", body="a")
+    _export(tdir, "Tiny B.txt", body="b")
+    P._combine_exports_for_upload(tmp_path, "Text Files", cfg, log)
+
+    # Two later runs, each dropping more documents in.
+    for round_no, (lo, hi) in enumerate(((20, 22), (22, 25)), start=1):
+        _fill(tdir, 20)                       # every export rewritten
+        for i in range(lo, hi):
+            _export(tdir, f"Late {chr(65 + i)}.txt", body="x" * 400)
+        out = P._combine_exports_for_upload(tmp_path, "Text Files", cfg, log)
+        bundles = [p for p, _m in out if P._combine_is_misc_bundle(p.name)]
+        assert len(bundles) == 1, (round_no, [p.name for p, _m in out])
+        assert len(_txts(tdir)) <= 20, (round_no, _txts(tdir))
+
+
+def test_the_documents_already_sent_stay_first_and_unchanged(tmp_path):
+    tdir = _tdir(tmp_path)
+    cfg = {"max_text_files": "20"}
+    _fill(tdir, 20)
+    _export(tdir, "Tiny A.txt", body="a")
+    _export(tdir, "Tiny B.txt", body="b")
+    first = P._combine_exports_for_upload(tmp_path, "Text Files", cfg, log)[0][0]
+    was = P._combined_sections(first.read_text())
+
+    _fill(tdir, 20)
+    _export(tdir, "Tiny A.txt", body="a")
+    _export(tdir, "Tiny B.txt", body="b")
+    _export(tdir, "Tiny C.txt", body="c")
+    out = P._combine_exports_for_upload(tmp_path, "Text Files", cfg, log)
+    bundle = next(p for p, _m in out if P._combine_is_misc_bundle(p.name))
+    now = P._combined_sections(bundle.read_text())
+
+    assert [n for n, _b in now][:len(was)] == [n for n, _b in was]
+    for (n1, b1), (n2, b2) in zip(was, now):
+        assert n1 == n2 and b1.strip("\n") == b2.strip("\n")
+
+
+def test_a_part_group_never_absorbs_an_unrelated_document(tmp_path):
+    # Rule ONE's file rebuilds ONE document out of its parts. A late filing
+    # must go to the miscellaneous bundle, never in among them.
+    tdir = _tdir(tmp_path)
+    cfg = {"max_text_files": "3"}
+    _export(tdir, "Brief (1).txt", body="x" * 400)
+    _export(tdir, "Brief (2).txt", body="x" * 400)
+    _export(tdir, "Brief (3).txt", body="x" * 400)
+    _export(tdir, "Opposition.txt", body="y" * 400)
+    P._combine_exports_for_upload(tmp_path, "Text Files", cfg, log)
+    parts = next(p for p in tdir.glob("*.txt")
+                 if "parts" in p.name and not P._combine_is_misc_bundle(p.name))
+    before = [n for n, _b in P._combined_sections(parts.read_text())]
+
+    _export(tdir, "Brief (1).txt", body="x" * 400)
+    _export(tdir, "Brief (2).txt", body="x" * 400)
+    _export(tdir, "Brief (3).txt", body="x" * 400)
+    _export(tdir, "Late Filing.txt", body="z" * 400)
+    _export(tdir, "Another Late.txt", body="z" * 400)
+    P._combine_exports_for_upload(tmp_path, "Text Files", cfg, log)
+    after = [n for n, _b in P._combined_sections(parts.read_text())]
+    assert after == before, after
+    assert all(n.startswith("Brief") for n in after), after
+
+
+def test_bundles_left_by_an_older_version_converge_on_one(tmp_path):
+    # A folder that already carries two bundles (the shape this change exists
+    # to stop) folds them together the next time combining is needed.
+    tdir = _tdir(tmp_path)
+    cfg = {"max_text_files": "20"}
+    _fill(tdir, 20)
+    _export(tdir, "Tiny A.txt", body="a")
+    _export(tdir, "Tiny B.txt", body="b")
+    one = P._combine_exports_for_upload(tmp_path, "Text Files", cfg, log)[0][0]
+    # ...forge a second bundle by hand, exactly as the old rule would have.
+    two = tdir / "COMBINED 2 documents.txt"
+    two.write_text(P._combined_body(
+        [("Tiny C.txt", None, "====== Page 1 ======\n 1  c\n"),
+         ("Tiny D.txt", None, "====== Page 1 ======\n 1  d\n")], 20),
+        encoding="utf-8")
+    assert P._combine_is_misc_bundle(one.name)
+    assert P._combine_is_misc_bundle(two.name)
+
+    _fill(tdir, 20)
+    _export(tdir, "Tiny E.txt", body="e")
+    out = P._combine_exports_for_upload(tmp_path, "Text Files", cfg, log)
+    bundles = [p for p, _m in out if P._combine_is_misc_bundle(p.name)]
+    assert len(bundles) == 1, [p.name for p, _m in out]
+    names = [n for n, _b in P._combined_sections(bundles[0].read_text())]
+    assert {"Tiny A.txt", "Tiny B.txt", "Tiny C.txt", "Tiny D.txt"} <= set(names)
+    assert not two.exists(), "the folded-in bundle should be gone"

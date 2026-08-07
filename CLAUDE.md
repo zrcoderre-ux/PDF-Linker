@@ -1600,6 +1600,26 @@ bare form demands a separator, or `\d{1,2}` takes the last two digits of
 "Order 2024" and files it under "Order 20". Rule TWO: the **smallest** exports,
 bundled — the (excess + 1) smallest lands exactly on the cap. Both may run.
 
+**The MISCELLANEOUS bundle is ONE file, and a later run GROWS it.** Rule TWO's
+members share nothing but having been small, so a document added to a folder
+already at the cap belongs in the existing bundle as naturally as the ones
+already there. Starting a fresh one instead left a second
+`COMBINED n documents.txt` beside the first, and the run after that a third —
+a handful of miscellaneous files where the whole point of the pass is to have
+as few as possible. `_combine_is_misc_bundle` tells the two rules' output apart
+by NAME, which is the only thing that distinguishes them: a part-group is named
+for the document it rebuilds (`Brief (COMBINED 3 parts)`), the bundle for
+nothing but its own count. A rule ONE part-group must NEVER grow this way — its
+members are the parts of a single document, and an unrelated filing dropped in
+among them would make the file a lie. New members are APPENDED, never merged and
+re-sorted, so the documents already sent keep their order and their text; only
+the header list and the `OF n` counter move, which is the honest cost of the
+file really holding more. A folder left carrying several bundles by an older
+version folds them into one the next time combining is needed (and only then —
+a folder that now fits is left alone). The take is the excess ITSELF rather than
+excess + 1, because an absorbed export disappears into a file that already
+counts.
+
 **Only as much as the cap asks.** `_combine_pick_groups` takes the smallest
 group first, whole while it fits, and SLICES the one that would overshoot to
 the first (excess + 1) parts. Combining is a cost — one leak holds every
