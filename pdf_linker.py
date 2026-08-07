@@ -11672,6 +11672,17 @@ class Pseudonymizer:
         self.kept_hits = set()   # kept strings (lowercased) that ACTUALLY matched
                                  # text this run — so the master KEEP log can bump
                                  # only the decisions a run really used
+        # `--fix-leaks` works on text this tool already scrubbed, so an
+        # open-world MINT there reads our own output as a fresh real value. The
+        # detectors are switched off for that reason; a display-name mint is the
+        # same hazard and was not. "Gregory Walton EE" came out as "Lowther
+        # Rolleston EE" (its "EE" kept by a master `no`), the next pass read
+        # that pair as a new person and minted "Winchcombe Penrose VENTRIS" over
+        # it 60 times, and the key ended up with one of OUR stand-ins in its
+        # Real Value column — a two-generation chain the macro can never walk
+        # back to "Gregory". Recognising an ALREADY-KNOWN display name is still
+        # wanted (it applies a binding that exists); only inventing one is not.
+        self.mint_display_names = True
         self._own_fakes = set()  # detector fakes we minted, so a re-scrub of
                                  # already-fake text never re-fakes them
         # (category, real_lower) -> record dict {category, real, fake, source,
@@ -12798,6 +12809,8 @@ class Pseudonymizer:
                 continue
             rk = ("display-name", name.lower())
             rec = self.records.get(rk)
+            if rec is None and not self.mint_display_names:
+                continue        # already-scrubbed text: see `mint_display_names`
             if rec is None:
                 rec = {"category": "display-name", "real": name,
                        "fake": _pn_fake_person(name, self.registry)[0],
@@ -13974,12 +13987,29 @@ class Pseudonymizer:
             seen_r.add((c, rest.lower()))
             keep_review.append((c, rest))
         self.review = keep_review
-        # `leaked` holds tracked REAL values, so a remainder makes no sense
-        # there — but a value the original never had must not gate delivery.
-        gone = {v.lower() for v in dropped if not reduce(v)}
-        self.leaked -= gone
+        # The GATE has to follow the reduction, not just the outright drops.
+        # A value reduced to nothing never gated. But one reduced to a REMAINDER
+        # was gating under its old phrasing while the worksheet showed the new
+        # one — so "Lowther Rolleston EE" (two of our own stand-ins around a
+        # kept "EE") held four exports while the only row written said "EE",
+        # which carries a KEEP and therefore no row at all. Quarantined,
+        # unanswerable, and no re-run could converge. Carry the remainder into
+        # `leaked` instead, so the gate asks exactly what the worksheet shows
+        # and a suppressed remainder suppresses the whole finding.
+        moved = {v.lower(): reduce(v).lower() for v in dropped}
+
+        def _regate(vals):
+            out = set()
+            for v in vals:
+                new = moved.get(v, v)
+                if new:
+                    out.add(new)
+                # ...and a value that reduced to nothing simply goes.
+            return out
+
+        self.leaked = _regate(self.leaked)
         for f, vals in list(self.leaked_by_file.items()):
-            self.leaked_by_file[f] = vals - gone
+            self.leaked_by_file[f] = _regate(vals)
         if dropped and log:
             log.info(f"  Pseudonymize: {len(dropped)} flagged value(s) reduced to "
                      f"their real part or dropped — a word marked never (or "
@@ -20472,6 +20502,10 @@ def _fix_leaks_mode(folder, args, cfg, log):
     # detector meeting a fake here could re-fake it. Only the term-based scrub
     # (party names + the flagged values) is wanted.
     pz = Pseudonymizer(terms, [], registry)
+    # Detectors OFF and, for the same reason, no new display names invented:
+    # this text was scrubbed by an earlier run, so an open-world mint here
+    # reads our own stand-in as a fresh real value (see `mint_display_names`).
+    pz.mint_display_names = False
     pz.suppressed = suppressed
     pz.keep_strict, pz.keep_soft, pz.keep_nuclear = _pn_keep_values(decisions)
     _local_keeps = _pn_keep_values(

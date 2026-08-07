@@ -714,6 +714,26 @@ the party), so its row stays reversible.
   rule, `_surviving_records` ignores the same spans: a value standing where
   `_substitute` refuses to touch must never be REPORTED, or the export is
   quarantined by a leak nothing can ever clear.
+- **A display name is never MINTED from text this tool already scrubbed.**
+  `--fix-leaks` runs its detectors OFF because the exports were scrubbed on the
+  full run and a detector meeting a fake would re-fake it; a display-name mint
+  is the same hazard and was exempt. "Gregory Walton EE" came out as "Lowther
+  Rolleston EE" (its "EE" kept by a master `no`), the next pass read that pair
+  as a fresh person and minted "Winchcombe Penrose VENTRIS" over it 60 times,
+  and the delivered key carried one of OUR stand-ins in its Real Value column —
+  a two-generation chain `DeAnonymize` can never walk back to "Gregory".
+  `mint_display_names` is off for that pass. Recognising an ALREADY-KNOWN
+  display name is still wanted (it applies a binding that exists); only
+  inventing one is not, and a FULL run over source text still mints one.
+- **The leak GATE follows a reduction, not only an outright drop.**
+  `confirm_findings` reduced that same finding to its real remainder ("EE") for
+  the worksheet but left the old phrasing in `leaked` — and "EE" carries a KEEP,
+  so it earned no row while "Lowther Rolleston EE" held four exports.
+  Quarantined with nothing to answer, and no re-run could converge. The
+  remainder is now carried into `leaked`/`leaked_by_file`, so the gate asks
+  exactly what the worksheet shows and a suppressed remainder suppresses the
+  whole finding — while a remainder that is a real name still gates, under the
+  value the operator can see. The reduction is not an amnesty.
 - **A `display-name` record is a record, not a term.** `_display_name_cands`
   recognises the NAME in a "Name <addr@domain>" pair and mints it into
   `self.records` — enough for `surviving_reals` to report it and `write_key` to
