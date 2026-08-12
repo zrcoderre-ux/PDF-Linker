@@ -1883,6 +1883,42 @@ reads as "fully scrubbed".
   one "non-fatal" warning. Stripped rather than dropped: the character is
   invisible and came from a misrecognition, while dropping the row loses the
   binding. The handler now says outright that nothing can restore the names.
+- **…and openpyxl's own net has TWO holes, which is why Excel kept offering to
+  REPAIR the key.** A repaired workbook is not a cosmetic complaint: Excel
+  repairs by DROPPING what it could not parse, and what it drops is reversal
+  rows. (1) Its filter covers the C0 controls and stops there, but XML 1.0 also
+  forbids the SURROGATES and U+FFFE/U+FFFF — written through verbatim, and the
+  sheet part that comes out is not well-formed at all, so no reader can open it.
+  The key's `Context` quotes the UNSCRUBBED body, which carries the garbled text
+  layer of every page with a broken encoding (`_garbled_appendix`), so that is
+  exactly the text producing them. `_PN_XL_BAD_CHARS_RE` strips precisely the
+  illegal set and no more — U+FFFD, U+FDD0-U+FDEF and a plane-end non-character
+  are legal `Char`s and stripping them would quietly edit the document. (2)
+  openpyxl truncates an over-long cell for you in `Cell._bind_value` and SKIPS
+  that step for a `CellRichText` (`elif dt == "s" and not isinstance(value,
+  CellRichText)`) — which is what the Context column is, so nothing enforced
+  Excel's 32,767-character cell. Both are cut in `_pn_xl_text`, where a plain
+  cell and a rich one both pass, rather than relying on a library step one of
+  them never reaches.
+- **A workbook is written BESIDE the one on disk and READ BACK before it
+  replaces it** (`_pn_xl_save` / `_pn_xl_verify`, shared by the key, `LEAKS.xlsx`
+  and the master for the reason `_pn_wrap_sheet` is). `wb.save(path)` TRUNCATES
+  the destination and then streams a zip into it over the following seconds, so
+  any death in that window — the OOM kill a big folder is likeliest to hit, a
+  full disk, a sync client seizing the file in a case folder that is by design
+  synced — leaves a truncated zip WHERE THE KEY USED TO BE, which is the other
+  thing Excel offers to repair. And nothing checked the result: openpyxl
+  validates a plain string on the way in, loudly, but writes the shapes above as
+  XML no reader can parse. Reading the file back is the only check that does not
+  depend on having predicted the shape — if openpyxl cannot open what openpyxl
+  just wrote, Excel will not either. Read-only mode is lazy, so `_pn_xl_verify`
+  WALKS every row; that walk is what makes it a check. Failure raises `OSError`,
+  so the key's existing handler still fires, and the key already on disk is
+  untouched — hence `_PN_KEY_LOST_MSG` (shared by the full run and `--fix-leaks`,
+  so the one message a run cannot afford to soften cannot be softened in half the
+  places) says the standing key survives AND cannot carry what this run minted.
+  The temp keeps the real EXTENSION: openpyxl refuses to open a `.tmp`, so a
+  plain one failed verification on its name alone.
 - **A word list is DATA, not code.** A `#` inside a triple-quoted word list is
   not a comment. The housing block was first written with its rationale inside
   the string and put "#", "Act", "Bane," and "Fair" into `_PN_COMMON_WORDS` —

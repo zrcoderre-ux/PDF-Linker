@@ -10103,6 +10103,20 @@ _PN_KEY_UNMATCHED_SOURCES = frozenset({"spreadsheet", "--term"})
 # pseudonym standing in the tentative. The marker tells the macro which of the
 # two rows owns the reversal so exactly one does. See write_key.
 _PN_KEY_ALT_STATUS = "alt spelling"
+# What a run says when the key could not be written. NOT "non-fatal", whatever
+# the exports look like: the key is the only thing that reverses them, so a run
+# with exports and no key has produced pseudonyms nobody can undo — the failure
+# this project treats as worse than a leak, because a leak is visible and an
+# unreversible substitution is silent and permanent. One `IllegalCharacterError`
+# on one OCR'd Bates stamp used to land here and cost the whole map (see
+# `_pn_xl_text`); it must never read as a formatting complaint. Shared by the
+# two sites that write the key — a full run and `--fix-leaks` — so the one
+# message a run cannot afford to soften cannot be softened in half the places.
+_PN_KEY_LOST_MSG = (
+    "Pseudonymize: THE REVERSAL KEY WAS NOT WRITTEN ({e}). A key already in the "
+    "folder is left standing and untouched, but it cannot carry what this run "
+    "minted — so the .txt exports hold pseudonyms NOTHING can restore. Do not "
+    "send a draft written from them until this run is repeated successfully.")
 # A binding no export has EVER carried lives on its own sheet. `write_key`
 # deliberately keeps a row the party template or a --term named even when this
 # batch never mentioned the party: the fake is already minted, and the row is
@@ -14938,7 +14952,7 @@ class Pseudonymizer:
             for i, w in enumerate(_PN_KEY_WIDTHS, start=1):
                 sheet.column_dimensions[_col(i)].width = w
             _pn_wrap_sheet(sheet)
-        wb.save(path)
+        _pn_xl_save(wb, path, "reversal key")
         self._check_key_completeness(keyrows, log)
         for cluster in self.alias_candidates():
             log.warning("  possible alias (same given name, different surname) "
@@ -17154,8 +17168,20 @@ def _pn_master_leaks_path(cfg):
     return _pn_master_path(cfg)
 
 
+# The rest of what XML 1.0 forbids, over and above openpyxl's own filter.
+# `Char ::= #x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF]`,
+# so beyond the C0 controls openpyxl already removes the illegal set is exactly
+# the surrogates and the two BMP non-characters. Everything else a mangled text
+# layer can produce — U+FFFD, U+FDD0-U+FDEF, a plane-end non-character — is
+# legal and is left alone.
+_PN_XL_BAD_CHARS_RE = re.compile("[\ud800-\udfff\ufffe\uffff]")
+# Excel's hard limit on the text of one cell.
+_PN_XL_CELL_MAX = 32767
+
+
 def _pn_xl_text(value):
-    """`value` with the characters Excel refuses to hold stripped out.
+    """`value` with the characters Excel refuses to hold stripped out, and cut
+    to the longest cell Excel will accept.
 
     openpyxl raises `IllegalCharacterError` on a C0 control character, and a
     SCANNED exhibit supplies them: OCR read a Bates stamp as
@@ -17168,16 +17194,110 @@ def _pn_xl_text(value):
     Stripped rather than dropped, because the row is a BINDING: losing the
     character loses nothing (it is invisible and it came from a
     misrecognition), while losing the row loses the reversal. Applied at the
-    sheet boundary, so nothing upstream has to know about Excel's rules."""
+    sheet boundary, so nothing upstream has to know about Excel's rules.
+
+    **openpyxl's own net has two holes, and the Context column falls through
+    both.** Its filter covers the C0 controls and nothing else, so a SURROGATE
+    half or a U+FFFE/U+FFFF — which XML 1.0 forbids outright — is written
+    through verbatim, and the sheet XML that comes out is not well-formed at
+    all. Excel then cannot parse the part and offers to repair the workbook,
+    which is the visible symptom; openpyxl says nothing on the way in. A key's
+    quotes are read from the UNSCRUBBED body (`note_key_context`), and that body
+    carries the garbled text layer of every page whose encoding is broken
+    (`_garbled_appendix`) — precisely the text that produces such characters —
+    so this is not a hypothetical shape for THIS column.
+
+    The second hole is length. openpyxl truncates an over-long cell for you, but
+    only in `Cell._bind_value`, which skips that step entirely for a
+    `CellRichText` (`elif dt == "s" and not isinstance(value, CellRichText)`).
+    The Context column is exactly that type, so nothing between
+    `_pn_rich_context` and the file enforces Excel's 32,767-character cell —
+    and a cell over it is another repair. Cut here, where both kinds of cell
+    pass, rather than relying on a library step one of them never reaches."""
     if not isinstance(value, str):
         return value
     from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
-    return ILLEGAL_CHARACTERS_RE.sub("", value)
+    value = _PN_XL_BAD_CHARS_RE.sub("", ILLEGAL_CHARACTERS_RE.sub("", value))
+    return value[:_PN_XL_CELL_MAX]
 
 
 def _pn_xl_row(values):
     """A row with every cell made safe for a worksheet — see `_pn_xl_text`."""
     return [_pn_xl_text(v) for v in values]
+
+
+def _pn_xl_save(wb, path, what):
+    """Save `wb` to `path` — via a temp file that is READ BACK before it is
+    allowed to replace what is already there.
+
+    Shared by every workbook this tool writes (the key, `LEAKS.xlsx`, the master)
+    for the reason `_pn_wrap_sheet` is: they should not be able to drift apart on
+    something this consequential.
+
+    Two separate things go wrong with `wb.save(path)`, and the operator sees the
+    same symptom for both — Excel announcing that it has to repair the file.
+
+    **It is not atomic.** `save` opens the destination for writing, which
+    TRUNCATES it, and then streams a zip into it over the following seconds. Any
+    death in that window — the interpreter killed for running out of memory (the
+    failure a big folder is likeliest to hit, see `_install_crash_logging`), a
+    full disk, a sync client seizing the file mid-write in a case folder that is
+    by design synced and shared — leaves a truncated zip WHERE THE KEY USED TO
+    BE. The good key is gone and what stands in its place is the thing Excel
+    offers to repair. Writing beside it and `os.replace`-ing means the previous
+    key survives every one of those, since a replace either happens or does not.
+
+    **And nothing checked the result.** openpyxl validates a plain string on the
+    way in and raises, which is loud and recoverable, but there are shapes it
+    passes through and writes as XML that no reader can parse — see `_pn_xl_text`
+    for the two this tool can actually produce. Reading the file back is the only
+    check that does not depend on having predicted the shape: if openpyxl cannot
+    open what openpyxl just wrote, Excel certainly will not, and the answer is to
+    keep the file that IS readable and say so — never to publish the broken one
+    and let the operator discover it.
+
+    Raises `OSError` on either failure, so the callers' existing handling
+    applies unchanged: for the key that is the loud "nothing can restore the real
+    names" warning, which is the right voice for it."""
+    # The temp keeps the real EXTENSION — openpyxl refuses to open a file whose
+    # suffix it does not recognise, so a plain ".tmp" would fail verification on
+    # its name alone and every save would report itself broken. It sits in the
+    # destination's own directory because `os.replace` is only atomic within one
+    # filesystem.
+    tmp = path.with_name(f"{path.stem}.tmp{path.suffix}")
+    try:
+        wb.save(tmp)
+        _pn_xl_verify(tmp)
+        os.replace(tmp, path)
+    except Exception as e:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
+        if isinstance(e, OSError):
+            raise
+        raise OSError(f"the {what} was written but could not be read back "
+                      f"({type(e).__name__}: {e}) — {path.name} on disk is "
+                      f"unchanged") from e
+
+
+def _pn_xl_verify(path):
+    """Open `path` and walk every cell of every sheet, so a workbook that cannot
+    be read raises HERE rather than in front of the operator.
+
+    Read-only mode is lazy — it parses a sheet's XML only as the rows are pulled
+    — so the walk is what makes this a check and not merely a directory listing.
+    It costs about a tenth of a second on a folder-sized key, against a key that
+    is silently unopenable."""
+    import openpyxl
+    wb = openpyxl.load_workbook(path, read_only=True)
+    try:
+        for ws in wb.worksheets:
+            for _row in ws.iter_rows(values_only=True):
+                pass
+    finally:
+        wb.close()
 
 
 def _pn_rich_context(quote, value):
@@ -17302,23 +17422,17 @@ def _pn_master_replace_sheet(wb, title, headers, data_rows, widths):
 
 
 def _pn_master_save(wb, master_path, log, what):
-    """Atomically save the master workbook (temp + replace). Ensures at least one
-    sheet exists. Best-effort: a master open in Excel is warned about, not fatal."""
+    """Save the master workbook through `_pn_xl_save` (temp + read-back +
+    replace). Ensures at least one sheet exists. Best-effort: a master open in
+    Excel is warned about, not fatal — unlike the key, whose loss is."""
     if not wb.worksheets:
         wb.create_sheet(_PN_MASTER_LEAK_SHEET)
-    tmp = master_path.with_name(master_path.name + ".tmp")
     try:
-        wb.save(tmp)
-        os.replace(tmp, master_path)
+        _pn_xl_save(wb, master_path, f"master {what}")
         return True
     except OSError as e:
         log.warning(f"  Master {what}: could not write {master_path} ({e}) — is "
                     f"it open in Excel? This run's values were not recorded.")
-        try:
-            if tmp.exists():
-                tmp.unlink()
-        except OSError:
-            pass
         return False
 
 
@@ -17669,7 +17783,7 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
     except Exception:
         pass
     try:
-        wb.save(xlsx)
+        _pn_xl_save(wb, xlsx, "leak-review worksheet")
         _remove((txt, *stale))
         log.warning(f"  Wrote leak-review worksheet: {xlsx.name} — {active} "
                     f"item(s) to triage (Fix?: 'yes' scrubs with an auto fake, "
@@ -20876,7 +20990,15 @@ def _fix_leaks_mode(folder, args, cfg, log):
             except OSError as e:
                 log.warning(f"  Could not un-quarantine {f.name}: {e}")
 
-    pz.write_key(key_path, log)                    # loaded rows preserved
+    try:
+        pz.write_key(key_path, log)                # loaded rows preserved
+    except Exception as e:
+        # This pass rewrites the SAME key it loaded, so a failure here is the
+        # one on the full run exactly: the exports carry fakes and the only
+        # thing that reverses them did not land. `_pn_xl_save` leaves the key
+        # already on disk intact, which is why the run continues to stamp DONE
+        # — but it must not do so quietly.
+        log.warning("  " + _PN_KEY_LOST_MSG.format(e=e))
 
     # Record this pass's throughput so the next run's ETA is sharper, then
     # replace the ETA marker with a DONE stamp (the actual finish time).
@@ -21594,18 +21716,7 @@ def main():
         try:
             pseudonymizer.write_key(key_out, log)
         except Exception as e:
-            # NOT "non-fatal", whatever the exports look like. The key is the
-            # only thing that reverses them, so a run that writes exports and
-            # no key has produced pseudonyms nobody can undo — the failure this
-            # project treats as worse than a leak, because a leak is visible and
-            # an unreversible substitution is silent and permanent. One
-            # `IllegalCharacterError` on one OCR'd Bates stamp used to land here
-            # and cost the whole map (see `_pn_xl_text`); say plainly what was
-            # lost so it can never read as a formatting complaint again.
-            _warn(f"Pseudonymize: THE REVERSAL KEY WAS NOT WRITTEN ({e}). The "
-                  f".txt exports are pseudonymized but NOTHING can restore the "
-                  f"real names — do not send a draft written from them until "
-                  f"this run is repeated successfully.")
+            _warn(_PN_KEY_LOST_MSG.format(e=e))
 
         # Report (do NOT delete): if pseudonymization ran on some .txt but the
         # spreadsheet key produced NO primary matches (full party names /
