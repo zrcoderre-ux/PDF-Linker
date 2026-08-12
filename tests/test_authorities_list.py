@@ -35,19 +35,26 @@ def _collect(*docs):
 
 def test_a_short_form_folds_onto_the_authority_it_repeats():
     # "Donlen, supra" is the same authority, not a second one. A list that
-    # counted mentions would not be a list of authorities.
+    # counted mentions would not be a list of authorities. The full cite and
+    # the supra therefore leave ONE entry between them.
     got = _collect(("Motion.pdf", MOTION))
     cases = [k for k, v in got.items() if v["kind"] == "case"]
     assert cases == ["Donlen v. Ford Motor Co. (2013) 217 Cal.App.4th 138"]
-    assert got[cases[0]]["count"] == 2          # the full cite and the supra
 
 
 def test_one_entry_per_authority_across_documents():
     got = _collect(("Motion.pdf", MOTION), ("Opposition.pdf", OPPO))
     donlen = got["Donlen v. Ford Motor Co. (2013) 217 Cal.App.4th 138"]
+    # The documents are kept for the header's "across N document(s)".
     assert donlen["docs"] == ["Motion.pdf", "Opposition.pdf"]
-    assert donlen["count"] == 3
     assert "Kremerman v. White (2021) 71 Cal.App.5th 358" in got
+
+
+def test_no_mention_count_is_tracked():
+    # The file no longer prints one, and a tally nothing reads is a number the
+    # next reader would take on trust.
+    got = _collect(("Motion.pdf", MOTION), ("Opposition.pdf", OPPO))
+    assert all("count" not in rec for rec in got.values())
 
 
 def test_the_file_lands_in_the_case_folder_not_the_exports(tmp_path):
@@ -60,17 +67,87 @@ def test_the_file_lands_in_the_case_folder_not_the_exports(tmp_path):
     assert not list((tmp_path / "Text Files").glob("*.txt"))
 
 
-def test_it_groups_by_kind_and_names_the_citing_documents(tmp_path):
+def test_it_groups_by_kind(tmp_path):
     got = _collect(("Motion.pdf", MOTION), ("Opposition.pdf", OPPO))
     body = P._write_authorities_list(tmp_path, got, log).read_text()
     assert "CASES (2)" in body, body
     assert "STATUTES AND CODES (1)" in body, body
     assert "RULES (1)" in body, body
     assert "Donlen v. Ford Motor Co. (2013) 217 Cal.App.4th 138" in body
-    assert "cited 3 times in: Motion.pdf, Opposition.pdf" in body, body
-    assert "cited 1 time in: Opposition.pdf" in body, body   # singular
     # It says plainly what it is NOT.
     assert "NOT a check" in body
+
+
+def test_an_entry_is_the_citation_and_nothing_else(tmp_path):
+    """No mention count and no citing documents under the entry.
+
+    Both were dropped at the owner's direction: the file answers "what did the
+    parties cite", and a count reads as a claim about how heavily an authority
+    is relied on that the number does not support.
+    """
+    got = _collect(("Motion.pdf", MOTION), ("Opposition.pdf", OPPO))
+    body = P._write_authorities_list(tmp_path, got, log).read_text()
+    assert "cited" not in body.split("RULES")[0].split("CASES")[1], body
+    assert "Motion.pdf" not in body, body
+    assert "Opposition.pdf" not in body, body
+    cases = [ln for ln in body.split("CASES (2)")[1].split("STATUTES")[0]
+             .splitlines() if ln.strip()]
+    assert cases == ["  Donlen v. Ford Motor Co. (2013) 217 Cal.App.4th 138",
+                     "  Kremerman v. White (2021) 71 Cal.App.5th 358"], cases
+
+
+def test_the_header_still_says_how_wide_the_batch_is(tmp_path):
+    # Context for the list, not a claim about any authority in it.
+    got = _collect(("Motion.pdf", MOTION), ("Opposition.pdf", OPPO))
+    body = P._write_authorities_list(tmp_path, got, log).read_text()
+    assert "4 authority(ies) cited across 2 document(s)" in body, body
+
+
+# ── cases run in year order ─────────────────────────────────────────────────
+
+YEARS = ("The court relied on Zeta v. Alpha (2019) 40 Cal.App.5th 1, on "
+         "Alpha v. Zeta (1974) 11 Cal.3d 1, and on Mid v. Range (2003) 30 "
+         "Cal.4th 1.")
+
+
+def _case_lines(tmp_path, text):
+    body = P._write_authorities_list(
+        tmp_path, _collect(("Brief.pdf", text)), log).read_text()
+    return [ln.strip() for ln in
+            body.split("CASES")[1].splitlines()[2:] if ln.strip()]
+
+
+def test_cases_are_sorted_by_year_oldest_first(tmp_path):
+    # Alphabetically this would be Alpha, Mid, Zeta — which says nothing, since
+    # the first word of a case name is one party's surname.
+    assert _case_lines(tmp_path, YEARS) == [
+        "Alpha v. Zeta (1974) 11 Cal.3d 1",
+        "Mid v. Range (2003) 30 Cal.4th 1",
+        "Zeta v. Alpha (2019) 40 Cal.App.5th 1"]
+
+
+def test_statutes_and_rules_keep_their_alphabetical_order(tmp_path):
+    # They carry no year, and a code section IS read by its number.
+    got = _collect(("Brief.pdf", "See Civil Code section 1750, Code of Civil "
+                                 "Procedure section 128.7, and Civil Code "
+                                 "section 51."))
+    body = P._write_authorities_list(tmp_path, got, log).read_text()
+    codes = [ln.strip() for ln in
+             body.split("STATUTES AND CODES")[1].splitlines()[2:] if ln.strip()]
+    assert codes == sorted(codes, key=str.lower), codes
+
+
+def test_a_cite_with_no_year_sorts_last_not_as_year_zero(tmp_path):
+    assert P._authority_year("Alpha v. Zeta (1974) 11 Cal.3d 1") == 1974
+    assert P._authority_year("Alpha v. Zeta, 11 Cal.3d 1") is None
+    got = _collect(("Brief.pdf", YEARS))
+    got["Undated v. Nobody, 1 Cal.5th 1"] = {"kind": "case", "docs": [],
+                                             "order": 9}
+    lines = [ln.strip() for ln in
+             P._write_authorities_list(tmp_path, got, log)
+             .read_text().split("CASES")[1].splitlines()[2:] if ln.strip()]
+    assert lines[-1] == "Undated v. Nobody, 1 Cal.5th 1", lines
+    assert lines[0] == "Alpha v. Zeta (1974) 11 Cal.3d 1", lines
 
 
 def test_the_citation_text_is_never_scrubbed(tmp_path):

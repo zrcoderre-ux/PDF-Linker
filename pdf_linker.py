@@ -15168,15 +15168,30 @@ def _note_authority(into, cite, doc_name):
     Keyed on the citation's canonical `key`, so a short form and a `supra`
     fold onto the full cite they repeat — they are the same authority, and a
     list that counted them separately would be a list of MENTIONS, which is
-    not what anyone reads it for."""
+    not what anyone reads it for.
+
+    The documents are kept because the file's header reports how wide the batch
+    is. A per-authority MENTION COUNT is not kept: the list no longer prints one
+    (see `_write_authorities_list`), and a tally nothing reads is a number the
+    next reader would take on trust."""
     if into is None or not cite.get("key"):
         return
     rec = into.setdefault(cite["key"], {"kind": cite.get("kind", "case"),
-                                        "docs": [], "count": 0,
-                                        "order": len(into)})
-    rec["count"] += 1
+                                        "docs": [], "order": len(into)})
     if doc_name and doc_name not in rec["docs"]:
         rec["docs"].append(doc_name)
+
+
+def _authority_year(key):
+    """The year of a citation's key, as an int, or None when it carries none.
+
+    Read off the `(YYYY)` a case cite states, via the same pattern the fake-pool
+    screen uses to decide that a cite is year-bearing at all
+    (`_PN_AUTHORITY_YEAR_RE`) — one definition of what a citation year looks
+    like, so the two cannot come to disagree. A statute or a rule has no year
+    and is not sorted by one."""
+    m = _PN_AUTHORITY_YEAR_RE.search(key or "")
+    return int(m.group(0)[1:-1]) if m else None
 
 
 def _build_authorities_appendix(full_text, pseudonymizer=None, collect=None,
@@ -19030,10 +19045,23 @@ def _write_authorities_list(folder, authorities, log):
     renamed — there is nothing here to pseudonymize, and a list that scrubbed
     the very names it exists to report would be useless.
 
-    Grouped by kind and alphabetical within each, because that is how a table
-    of authorities reads. Each entry names the documents that cite it and how
-    often, which is the question a reader actually has: who relies on this, and
-    how heavily.
+    Grouped by kind. CASES run in YEAR order, oldest first, because a case's
+    year is what a reader places it by — it says at a glance whether the parties
+    are arguing from settled law or from last term, and it puts a line of
+    authority in the order it actually developed. An alphabetical run says
+    nothing, since the first word of a case name is one party's surname. A cite
+    carrying no year sorts last rather than as year zero, so one bad parse never
+    displaces the sequence. Statutes and rules keep their alphabetical order:
+    they have no year to sort on, and a code section IS read by its number.
+
+    Each entry is the citation and nothing else. It used to carry the citing
+    documents and a mention count underneath, and both were dropped at the
+    owner's direction — the file answers "what did the parties cite", and a
+    tally of mentions reads as a claim about how heavily each authority is
+    relied on, which the count does not support: one cite in a controlling
+    passage outweighs six in a string cite. The header still says how many
+    documents the batch spans, which is context for the list and not a claim
+    about any authority in it.
 
     Rewritten whole on every run, and removed when a folder cites nothing, so
     it never describes a batch that has moved on."""
@@ -19065,16 +19093,18 @@ def _write_authorities_list(folder, authorities, log):
            "them exists,",
            "is good law, or says what it is cited for.",
            rule]
+    def by_year(kv):
+        y = _authority_year(kv[0])
+        return (y is None, y or 0, kv[0].lower())
+
     for kind in ("case", "statute", "rule"):
-        items = sorted(groups.get(kind) or [], key=lambda kv: kv[0].lower())
+        order = by_year if kind == "case" else (lambda kv: kv[0].lower())
+        items = sorted(groups.get(kind) or [], key=order)
         if not items:
             continue
         out += ["", f"{titles.get(kind, kind.upper())} ({len(items)})", ""]
-        for key, rec in items:
-            times = rec["count"]
+        for key, _rec in items:
             out.append(f"  {key}")
-            out.append(f"      cited {times} time{'' if times == 1 else 's'} "
-                       f"in: {', '.join(rec['docs'])}")
     body = "\n".join(out) + "\n"
     try:
         target.write_text(body, encoding="utf-8", newline="\n")
