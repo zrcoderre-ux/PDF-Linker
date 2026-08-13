@@ -1059,7 +1059,14 @@ the party), so its row stays reversible.
   folder. Three things make the quote worth reading. It is rebuilt as PROSE
   from the same parsed body the Where column uses (the gutter number dropped,
   wrapped lines joined), because a sentence on pleading paper is spread over
-  several numbered lines. It prefers an occurrence on a PROSE line over one in
+  several numbered lines. It looks for the value as a WHOLE WORD first and
+  falls back to a bare substring only when that finds nothing: searching with a
+  bare `find` quoted the sentence a value happened to sit INSIDE another word
+  of — "Arent" out of "Planned Parenthood", "Isl" out of "the Legislature" — so
+  the cell read as a sentence with nothing to do with the row and no answer
+  could be given. (The fallback stays because a WELDED or REDUCED finding has
+  no bounded occurrence by construction, and the nearest readable sentence
+  beats an empty cell.) It prefers an occurrence on a PROSE line over one in
   a heading (`_pn_line_is_prose`, the same test `prune_heading_only_terms`
   uses) — the first occurrence is often a caption that proves nothing, while a
   value found ONLY in a heading is quoted as that heading, which is itself the
@@ -1400,6 +1407,24 @@ extraction, which is what keeps the numbering.
   what is PROTECTED from faking, stays strict for the opposite reason. An ordinary filing fails both in ~1.6 ms/page and never reaches the
   `get_text("dict")` or the render. An ink form page costs ~150 ms — negligible
   beside the seconds of OCR a scanned page already pays.
+- **…and a printed checkbox is not always a SQUARE** (`_INK_USCORE_RE`,
+  `_ink_underscore_slot`, the third arm of the gate). A local LASC order form
+  rules its boxes as a run of UNDERSCORES and prints the check on top of them —
+  `__ with prejudice as to` beside `✔ without prejudice as to`. Nothing in that
+  page's line art is square and its footer reads "LACIV 140", a LASC LOCAL form
+  number `_JC_FORM_NO_RE` does not match, so BOTH arms declined and an Order of
+  Dismissal exported with every box reading `__`. On that form the checkbox IS
+  the ruling: the export could not say whether the dismissal was with or without
+  prejudice, or whether it reached the entire action, while reading like a
+  complete document. The marks were legible the whole time — ZapfDingbats
+  glyphs, each sitting ON the underscores of its own caption — so what was
+  missing was a gate that let the page in and a slot to match them to: the
+  ordinary probe window looks LEFT of a caption and this mark sits a point or
+  two INSIDE it. The run must OPEN the span (a trailing fill-in rule, "of
+  section _______", is not a box) and is CAPPED at four underscores, because a
+  signature rule opens its span too and reading one as a box put a phantom
+  `[ ]` beside the date. No raster pass: there is no printed square to measure
+  ink inside, so the state is the glyph or the box is empty.
 - **Widgets always win.** The ink pass runs only where they are absent, so an
   intact form is never read by inference.
 - **The banner and the log both say when a state was inferred**, and ask for a

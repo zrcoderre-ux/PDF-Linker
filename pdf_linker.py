@@ -16253,7 +16253,8 @@ def _ink_form_cells(page):
     # Judicial Council form id in the footer decides it. An ordinary filing fails
     # both in ~1.5 ms and never reaches the extraction or the render below.
     squares, all_rects = _ink_square_drawings(page)
-    if len(squares) < _INK_MIN_BOXES and not _form_page_number(page):
+    if (len(squares) < _INK_MIN_BOXES and not _form_page_number(page)
+            and _ink_underscore_count(page) < _INK_MIN_BOXES):
         return None
     try:
         blocks = page.get_text("dict").get("blocks", [])
@@ -16274,9 +16275,36 @@ def _ink_form_cells(page):
     consumed = []            # span bboxes that turned out to be marks
     seen = []                # centres of the boxes already reported
     claimed = set()          # spans already standing for a state box
+    uscore = {}              # span index -> its underscore slot rect
     for idx, sp in enumerate(spans):
         bb = bbs[idx]
         ym = (bb[1] + bb[3]) / 2
+        # An UNDERSCORE-style checkbox is its own slot, and the mark is drawn ON
+        # it — a point or two INSIDE the caption, never left of it — so the
+        # ordinary probe window cannot reach it. Handled first and completely:
+        # the state comes from a glyph or the box is empty, with no raster pass,
+        # because there is no printed square to measure the ink inside.
+        slot = _ink_underscore_slot(sp)
+        if slot is not None:
+            uscore[idx] = slot
+            state, stands_for = False, []
+            for j, o in enumerate(spans):
+                if j == idx or _ink_glyph_state(o) is not True:
+                    continue
+                ob = o["bbox"]
+                if (slot.x0 <= (ob[0] + ob[2]) / 2 <= slot.x1
+                        and ob[1] < bb[3] and ob[3] > bb[1]):
+                    state, stands_for = True, stands_for + [j]
+            if stands_for and all(j in claimed for j in stands_for):
+                continue
+            claimed.update(stands_for)
+            boxes += 1
+            marked += 1 if state else 0
+            cells.append(_form_cell(ym, (bb[3] - bb[1]) / 2, bb[0],
+                                    "[X]" if state else "[ ]"))
+            for j in stands_for:
+                consumed.append(fitz.Rect(spans[j]["bbox"]))
+            continue
         wx0, wy0 = bb[0] - _INK_WIN_LEFT, ym - _INK_WIN_HALF
         wx1, wy1 = bb[0] - _INK_WIN_RIGHT, ym + _INK_WIN_HALF
         if wx0 < page.rect.x0 or wx1 <= wx0:
@@ -16360,12 +16388,16 @@ def _ink_form_cells(page):
         return None
 
     # Static text, minus whatever the state boxes above now stand for.
-    for sp in spans:
+    for idx, sp in enumerate(spans):
         bb = sp["bbox"]
         mid = fitz.Point((bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2)
         if any(r.contains(mid) for r in consumed):
             continue
         text = _MARKER_DETECT_RE.sub("", sp["text"])
+        if idx in uscore:
+            # The leading underscores ARE the box, and a state cell now stands
+            # for them — leaving them would read "[X] __ entire action".
+            text = _INK_USCORE_RE.sub("", text)
         parts = text.split("\n")
         h = max((bb[3] - bb[1]) / max(len(parts), 1), 1.0)
         for k, part in enumerate(parts):
@@ -16420,6 +16452,57 @@ def _form_page_cells(page):
         except Exception:
             continue
     return cells, boxes, checked
+
+
+# A printed checkbox is not always a SQUARE. A local LASC order form rules its
+# boxes as a run of UNDERSCORES and prints the check on top of them:
+#
+#     __ with prejudice as to        ✔ without prejudice as to
+#     ✔ entire action                __ complaint only
+#
+# Nothing in the page's line art is square, and the footer carries a LASC local
+# form number rather than a Judicial Council one, so both halves of the ink
+# gate declined and an Order of Dismissal exported with every box reading "__".
+# On that form the checkbox IS the ruling: the export could not say whether the
+# dismissal was with or without prejudice, or whether it reached the entire
+# action. Two or more underscores so a single "_" inside a word is never one,
+# and the run must OPEN the span, which is what separates a checkbox from the
+# fill-in rule that trails a caption ("of section _______").
+#
+# CAPPED at four, because a signature line is a long rule that also opens its
+# span — "_______________________________________" above "Judicial Officer" —
+# and reading one as a checkbox put a phantom "[ ]" beside the date. A printed
+# checkbox is two or three underscores wide; nothing that ruled a blank for a
+# human to write on is that short.
+_INK_USCORE_RE = re.compile(r"^[ \t]*_{2,4}(?=[ \t]|$)")
+# How far right of the caption's own left edge the mark may sit and still be
+# this box's. The check is drawn ON the underscores, so it starts a point or two
+# INSIDE the caption span rather than left of it, which is why the ordinary
+# probe window — which looks left — never found it.
+_INK_USCORE_SLOT = 16.0
+
+
+def _ink_underscore_slot(sp):
+    """The rect a mark would occupy for an UNDERSCORE-style checkbox at the head
+    of span `sp`, or None when the span does not open with one."""
+    text = str(sp.get("text", ""))
+    if not _INK_USCORE_RE.match(text):
+        return None
+    import fitz
+    x0, y0, x1, y1 = sp["bbox"]
+    return fitz.Rect(x0 - 2.0, y0, min(x1, x0 + _INK_USCORE_SLOT), y1)
+
+
+def _ink_underscore_count(page):
+    """How many lines of `page` open with an underscore checkbox — the cheap,
+    text-only third arm of the ink gate. An ordinary filing scores 0; the form
+    above scores 10."""
+    try:
+        text = page.get_text("text")
+    except Exception:
+        return 0
+    return sum(1 for ln in (text or "").split("\n")
+               if _INK_USCORE_RE.match(ln))
 
 
 def _form_page_number(page):
@@ -16738,25 +16821,45 @@ def _pn_context(parsed, needle, width=_PN_CONTEXT_MAX):
     if not nl:
         return ""
     lines, lowers, text, ends = _pn_context_prep(parsed)
-    first = prose_hit = None
-    for k, low in enumerate(lowers):
-        j = low.find(nl)
-        if j < 0:
-            continue
-        at = lines[k][0] + j
-        if first is None:
-            first = at
-        # PROSE beats a heading, which is the whole question the cell is there
-        # to settle: "Charge" appears first in "CHARGE OF DISCRIMINATION" — a
-        # caption, and no evidence either way — and again in "served on Charge
-        # at his residence", which is a name. Quoting the first occurrence would
-        # show the operator the one that proves nothing. Same test
-        # `prune_heading_only_terms` uses. The first prose hit settles it, so
-        # the walk stops there.
-        if lines[k][2]:
-            prose_hit = at
-            break
-    hit = prose_hit if prose_hit is not None else first
+    # WHOLE-WORD first, bare substring only as a fallback.
+    #
+    # A bare `find` quotes the sentence a value happens to sit INSIDE another
+    # word of, and the cell then reads as a sentence with nothing to do with the
+    # row: "Arent" was quoted out of "Planned Parenthood", "Isl" out of "the
+    # Legislature". Those rows were unanswerable — and the quote is also the
+    # evidence that the finding itself is a fragment.
+    #
+    # The bare search stays, because a WELDED or REDUCED finding has no bounded
+    # occurrence by construction ("HELENRASHO" for "Rasho"), and the nearest
+    # readable sentence beats an empty cell.
+    def _scan(bounded):
+        first = prose_hit = None
+        rx = re.compile(r"(?<!\w)" + re.escape(nl) + r"(?!\w)") if bounded else None
+        for k, low in enumerate(lowers):
+            if rx is not None:
+                m = rx.search(low)
+                j = m.start() if m else -1
+            else:
+                j = low.find(nl)
+            if j < 0:
+                continue
+            at = lines[k][0] + j
+            if first is None:
+                first = at
+            # PROSE beats a heading, which is the whole question the cell is
+            # there to settle: "Charge" appears first in "CHARGE OF
+            # DISCRIMINATION" — a caption, and no evidence either way — and
+            # again in "served on Charge at his residence", which is a name.
+            # Quoting the first occurrence would show the operator the one that
+            # proves nothing. Same test `prune_heading_only_terms` uses; the
+            # first prose hit settles it, so the walk stops there.
+            if lines[k][2]:
+                return at
+        return first
+
+    hit = _scan(True)
+    if hit is None:
+        hit = _scan(False)
     if hit is None:
         return ""
     # A caption block is not part of the sentence beside it. Bound the quote by
