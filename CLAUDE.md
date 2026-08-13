@@ -1815,14 +1815,15 @@ this is a work product for whoever reads the papers, and belongs beside the PDFs
 and the key. Real citation text, because published authorities are public record
 and the whole pipeline preserves them byte-for-byte precisely so a cite is never
 renamed; a list that scrubbed the names it exists to report would be useless.
-Grouped by kind (cases / statutes / rules). **CASES run in YEAR order, oldest
-first** (`_authority_year`, reading the `(YYYY)` through the same
+Grouped by kind (cases / statutes / rules). **CASES run in YEAR order, MOST
+RECENT FIRST** (`_authority_year`, reading the `(YYYY)` through the same
 `_PN_AUTHORITY_YEAR_RE` the fake-pool screen uses, so there is one definition of
-a citation year): a year is what a reader places a case by — settled law or last
-term, and a line of authority in the order it developed — while alphabetical says
-nothing, since the first word of a case name is one party's surname. A cite with
-no year sorts LAST rather than as year zero, so one bad parse never displaces the
-sequence. Statutes and rules stay alphabetical; they have no year and a code
+a citation year): a year is what a reader places a case by, and the newest
+authority is the one most likely to state the current rule and least likely to
+be already known — while alphabetical says nothing, since the first word of a
+case name is one party's surname. A cite with no year sorts LAST and NOT as year
+zero, which under a descending sort would put it at the TOP as though it were
+the newest, so one bad parse never displaces the sequence. Statutes and rules stay alphabetical; they have no year and a code
 section is read by its number. **An entry is the citation and nothing else.** The
 citing documents and a mention count used to sit under each, and both were
 dropped at the owner's direction: the file answers "what did the parties cite",
