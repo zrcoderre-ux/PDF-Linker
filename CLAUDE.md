@@ -446,6 +446,30 @@ the party), so its row stays reversible.
   as often as capitalized is prose — no hand-kept gazetteer is ever complete)
   and `prune_fragment_terms` (a candidate the corpus only ever writes INSIDE a
   longer word is an OCR fragment).
+- **…and a STRUCTURED harvest's corroboration is worth nothing if the run walks
+  out of the structure.** `_PN_DECL_NAME_WORD` carried `.` inside its tail
+  class, so a whole word could swallow the period that ENDS A SENTENCE and the
+  declaration-reference harvester walked backwards out of the cite into the
+  sentence before it: "…enforce the Arbitration Provision. Carpenter Decl. ¶ 5"
+  was read as a declarant named "Provision. Carpenter". The bare token is
+  registered too, so a delivered folder's key shows `Provision` replaced by a
+  surname **321** times, `System` 370, `River` 262, `Cross` 108 and `Sunlight`
+  104 — about 1,370 ordinary nouns rewritten as people, off four sentences that
+  happened to end in front of a "Decl." The TRIAGE WORKSHEET was the visible
+  symptom two steps downstream, and reads as a gazetteer problem: an ordinary
+  noun replaced by a person fake stands beside real capitalised words, so
+  `half_scrubbed_scan` reports those too, and 33 of that folder's 54 rows were
+  solar-financing vocabulary ("Solar", "Energy", "Installation", "Dealer",
+  "Capital", "Funds"). Widening `_PN_COMMON_WORDS` would have hidden it and
+  fixed nothing. A period was only ever needed for an INITIAL ("Clark H.
+  Cameron", "Teresa C. Alarcón") and a professional suffix has its own group, so
+  the name word is now either a single letter with its period or a letters-only
+  word, the run stops at a multi-letter word's period, and the cite yields the
+  declarant that is actually there ("Carpenter"). Note what a REUSED key does
+  with a binding like this: `_pn_load_key` reads every row back as a live term,
+  so a folder already carrying one keeps applying it until the operator types
+  `never` in its Replacement cell — the in-place key correction is the remedy,
+  and it is why the fix alone does not clean a folder already run.
 - **A motion's own SUBJECT MATTER is not a party, and no word list will ever
   say so** (`prune_heading_only_terms`). Four hand-kept lists now exist to stop
   ordinary legal vocabulary being replaced by a surname — `_PN_COMMON_WORDS`
