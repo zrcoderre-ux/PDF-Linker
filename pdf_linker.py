@@ -8769,6 +8769,37 @@ _PN_FORM_LABEL_WORDS = frozenset({
     "check", "form", "forms", "declarant", "deponent", "amount", "amounts",
 })
 
+# The vocabulary of the TRADE a case is about, which is exactly what a business
+# in that trade names itself after: "All Premium Contractors, Inc.", "Sunlight
+# Financial LLC", "Cross River Bank". One home-improvement / solar-lending folder
+# replaced `Contractors` 204 times and `Sunlight` 356 because the bare words were
+# registered as tokens.
+#
+# A block in its own constant, unioned in below, because a `#` inside a
+# triple-quoted word list is DATA and not a comment — the housing block put "#",
+# "Act" and "Fair" into the gazetteer the first time this was written inline.
+#
+# Same contract as the rest of `_PN_SERVICE_GENERIC_WORDS`: never a bare token,
+# never swallowed into `_PN_COMMON_WORDS`, so a party who really is named Dealer
+# or Bright keeps their full name registered, keeps being scrubbed, and a bare
+# survivor is still surfaced for review. This is the belt; `_pn_term_is_cap_only`
+# and the corpus prunes are the braces, and they need no list at all.
+_PN_TRADE_GENERIC_WORDS = frozenset({
+    # construction / home improvement
+    "contractor", "contractors", "contracting", "construction",
+    "installer", "installers", "installation", "installations",
+    "roofing", "roof", "plumbing", "electric", "electrical", "remodeling",
+    "remodel", "improvement", "improvements", "permit", "permits",
+    "subcontractor", "subcontractors", "workmanship",
+    # solar / energy
+    "solar", "energy", "panel", "panels", "photovoltaic", "battery",
+    "batteries", "sunlight", "inverter", "inverters", "kilowatt",
+    # consumer lending / finance
+    "financing", "finance", "lender", "lenders", "lending",
+    "loan", "loans", "dealer", "dealers", "funding", "capital", "credit",
+    "mortgage", "escrow", "leasing",
+})
+
 # Service-of-process vocabulary that is ALSO a plausible surname (a real party
 # can be named Bond, Branch or Store). Same contract as the form-label words —
 # never a bare token ("The UPS Store" must not mint "Store" -> a surname, the
@@ -8780,7 +8811,7 @@ _PN_FORM_LABEL_WORDS = frozenset({
 _PN_SERVICE_GENERIC_WORDS = frozenset({
     "store", "stores", "bond", "bonds", "manager", "managers", "custodian",
     "custodians",
-})
+}) | _PN_TRADE_GENERIC_WORDS
 
 
 def _pn_is_generic_token(base):
@@ -9925,9 +9956,54 @@ def _pn_build_pattern(term, *, whole_word, follow=None):
     return body
 
 
+# Categories that exist ONLY because a multi-word name was split into its words,
+# or because a document defined a one-word short form for one. Such a term is
+# this tool's inference about the party's SHORTHAND — never a value the operator
+# named — and it is the shape that turns a business name made of ordinary words
+# into a rewrite of the vocabulary itself.
+_PN_TOKEN_CATS = frozenset({"person-token", "entity-token", "short-name"})
+# The BUSINESS half of that set. A company borrows ordinary words for its name —
+# "All Premium Contractors", "Sunlight Financial" — so a bare word of one is a
+# guess that corpus evidence may overturn outright. A PERSON's surname is not a
+# borrowed word, it IS their name, and a case can perfectly well have a declarant
+# named Carpenter while its documents are full of carpenters; dropping that token
+# would leave "Carpenter Decl." standing. So the corpus prunes reach only these,
+# while the CASE rule above reaches every bare token — it costs a real surname
+# nothing, because a filing capitalises one wherever it stands.
+_PN_ENTITY_TOKEN_CATS = frozenset({"entity-token", "short-name"})
+
+
+def _pn_term_is_cap_only(category):
+    """True for a term that must not match an occurrence written in LOWER CASE.
+
+    A business name is very often just a combination of generic words — "All
+    Premium Contractors, Inc.", "Sunlight Financial LLC", "Cross River Bank" —
+    and specifically the words its own documents are full of. The full name is
+    distinctive and is registered as its own term; its bare WORDS are not, and
+    matching them case-insensitively rewrote the vocabulary of the case. One
+    delivered folder replaced `Contractors` 204 times and `Sunlight` 356, so
+    "the contractors were unlicensed" and "converts sunlight into electricity"
+    came back carrying surnames.
+
+    The evidence that separates the two uses is CASE, and it is available in
+    every document: a party's name is capitalised wherever it stands — in
+    prose, in a caption, in a heading — while the ordinary noun is not. So a
+    bare token matches "Contractors" and "CONTRACTORS" and leaves "contractors"
+    alone. The FULL name is untouched by this and still scrubs in any casing,
+    which is what keeps the party covered: the cost is a missed bare occurrence,
+    never a party in the clear (the same trade `_pn_is_generic_token` already
+    makes when it withholds a token outright).
+
+    Residual, and accepted: a scan that lower-cases a real surname is no longer
+    caught by its bare token. The full name still matches, and the fuzzy and
+    unknown-name review scans still surface it."""
+    return category in _PN_TOKEN_CATS
+
+
 class _PnTerm:
     __slots__ = ("category", "real", "fake", "pattern", "flags", "priority",
-                 "source", "whole_word", "count", "loaded", "derived")
+                 "source", "whole_word", "count", "loaded", "derived",
+                 "cap_only")
 
     def __init__(self, category, real, fake, *, whole_word, case_sensitive,
                  priority, source, derived=False, follow=None):
@@ -9947,6 +10023,9 @@ class _PnTerm:
         # It is a real value only if a document actually contained it, so it
         # earns a reversal-key row by MATCHING and never merely by existing.
         self.derived = derived
+        # A bare word split out of a longer name never matches a LOWER-CASE
+        # occurrence — see `_pn_term_is_cap_only`.
+        self.cap_only = _pn_term_is_cap_only(category)
 
 
 # ── Spreadsheet key (the E-Court order-template export) ──────────────────────
@@ -11855,7 +11934,8 @@ class Pseudonymizer:
                 "category": t.category, "real": t.real, "fake": fake,
                 "source": t.source, "count": t.count, "pattern": t.pattern,
                 "flags": t.flags, "loaded": getattr(t, "loaded", False),
-                "derived": getattr(t, "derived", False)}
+                "derived": getattr(t, "derived", False),
+                "cap_only": _pn_term_is_cap_only(t.category)}
         # Real values pre-bound from a reused key: authoritative, so the
         # citation-only prune must never drop one (a party that happens to
         # appear only in a citation in THIS file is still a known party).
@@ -11934,7 +12014,8 @@ class Pseudonymizer:
                 "category": t.category, "real": t.real, "fake": fake,
                 "source": t.source, "count": 0, "pattern": t.pattern,
                 "flags": t.flags, "loaded": getattr(t, "loaded", False),
-                "derived": getattr(t, "derived", False)}
+                "derived": getattr(t, "derived", False),
+                "cap_only": _pn_term_is_cap_only(t.category)}
             added = True
         if added:
             # A declarant read off a signature block ("STEVEN W. BURT") routinely
@@ -12006,18 +12087,19 @@ class Pseudonymizer:
                             continue
                     else:
                         continue
-                    # A single-word BUSINESS short form that is a WORD of the
-                    # parent name requires capitalization (case-sensitive):
-                    # businesses borrow ordinary words ("Broadway", "Summit"), so
-                    # match only the capitalised form, never a lower-case prose
-                    # occurrence. An INITIALISM ("ToFF", written TOFF/Toff) stays
-                    # case-insensitive, and a person's bare surname stays
-                    # case-insensitive (OCR can lower-case it).
-                    require_cap = (t.category == "entity" and len(words) == 1
-                                   and is_parent_word)
+                    # Capitalisation is handled by `_pn_term_is_cap_only`, which
+                    # every `short-name` now carries: match "Glenwood" and
+                    # "GLENWOOD", never the "glenwood" of prose.
+                    #
+                    # This used to be `case_sensitive=True` on a single-word
+                    # business short form, which is the same rule one notch too
+                    # tight — a caption SHOUTS its parties, so the all-caps
+                    # occurrence the filing opens with matched nothing. An
+                    # initialism ("ToFF", written TOFF/Toff) is unaffected either
+                    # way: it has no lower-case form to refuse.
                     self._add_terms([_PnTerm("short-name", short, fake,
                                              whole_word=True,
-                                             case_sensitive=require_cap,
+                                             case_sensitive=False,
                                              priority=1, source="document")])
 
     def prune_citation_only_terms(self, text, sources=("document",), only=None):
@@ -12066,6 +12148,58 @@ class Pseudonymizer:
             self._fuzzy_idx = None
         return [t.real for t in doomed]
 
+    def _multiword_covered_words(self):
+        """The lower-cased WORDS of every multi-word term that is not itself a
+        bare token — the set a token may be dropped from without leaving the
+        party in the clear, because the full name still matches."""
+        out = set()
+        for t in self.terms:
+            if t.category in _PN_TOKEN_CATS:
+                continue
+            words = [_pn_word_base(w).lower() for w in str(t.real).split()]
+            words = [w for w in words if w]
+            if len(words) > 1:
+                out.update(words)
+        return out
+
+    def _corpus_prunable(self, t, loaded, covered):
+        """True when term `t` may be dropped on CORPUS evidence alone — the one
+        eligibility rule `prune_prose_word_terms` and `prune_heading_only_terms`
+        share, so a term one drops and the other keeps cannot exist.
+
+        A document-harvested guess and this tool's own derived spellings have
+        always qualified. A value the operator NAMED never does: a party really
+        called Green or Short keeps its term however the prose reads.
+
+        A bare BUSINESS token qualifies whatever its source, and that is the
+        interesting case. The operator's template names a PARTY; it does not
+        name the party's individual words. "All Premium Contractors, Inc." is
+        authoritative and "Contractors" is this tool's inference that the case
+        will use that word as shorthand — an inference a business name made of
+        ordinary words makes badly, which is how one folder replaced
+        `Contractors` 204 times. So the token is screened like any other guess,
+        and only while a LONGER term still covers the party (`covered`), which
+        is what makes dropping it cost a missed bare occurrence rather than a
+        party in the clear.
+
+        A PERSON's bare token is deliberately NOT in that branch — see
+        `_PN_ENTITY_TOKEN_CATS`. A surname is not a borrowed word, and a
+        construction case can have a declarant named Carpenter while its prose
+        is full of carpenters; dropping that token would leave "Carpenter Decl."
+        standing. The CASE rule (`_pn_term_is_cap_only`) already keeps the
+        lower-case occurrences out, at no cost to the name itself.
+
+        A value pinned by a reused key is never dropped: its row is the reversal
+        of a fake already standing in a delivered export."""
+        if (t.real.lower() in loaded
+                or t.category not in ("person", "entity") + tuple(_PN_TOKEN_CATS)
+                or not re.fullmatch(r"[A-Za-z][A-Za-z'’\-]*", t.real)):
+            return False
+        if t.source == "document" or t.derived:
+            return True
+        return (t.category in _PN_ENTITY_TOKEN_CATS
+                and t.real.lower() in covered)
+
     def prune_prose_word_terms(self, text):
         """Drop every DOCUMENT-harvested one-word name term that the corpus
         itself writes as ORDINARY PROSE — the corpus-wide answer to "is this a
@@ -12081,30 +12215,23 @@ class Pseudonymizer:
         The document says which it is. A surname in a filing is capitalised
         wherever it stands, in prose and caption alike; a verb is not. So a
         harvested candidate whose occurrences are lower-case at least as often
-        as capitalised is prose and earns no term. Scoped hard:
-          * DOCUMENT-harvested only. A value on the operator's party template or
-            a --term is authoritative — a party really named Green or Short
-            keeps their term however the prose reads.
-          * never a value pinned by a reused key (`loaded`), which would change
-            what an already-delivered export says; and
-          * at least two lower-case occurrences, so one OCR slip cannot unbind a
-            real name.
+        as capitalised is prose and earns no term. Scoped hard — see
+        `_corpus_prunable`, which both this and `prune_heading_only_terms` ask,
+        so the two cannot drift.
 
         Call with the FULL corpus text, beside `prune_citation_only_terms`."""
         text = _NFKC(text)
         self._pruned_reals = getattr(self, "_pruned_reals", set())
         loaded = getattr(self, "_loaded_reals", ())
+        covered = self._multiword_covered_words()
         doomed = []
         for t in list(self.terms):
             # A DERIVED spelling is one this tool invented, so it is screened
             # whatever its source: a transposition variant of a party's name can
             # land on an ordinary word ("Silver" -> "Sliver"), and the corpus
-            # writing it in lower-case is the proof.
-            if ((t.source != "document" and not t.derived)
-                    or t.real.lower() in loaded
-                    or t.category not in ("person", "entity", "person-token",
-                                          "entity-token", "short-name")
-                    or not re.fullmatch(r"[A-Za-z][A-Za-z'’\-]*", t.real)):
+            # writing it in lower-case is the proof. A bare TOKEN is screened for
+            # the same reason — see `_corpus_prunable`.
+            if not self._corpus_prunable(t, loaded, covered):
                 continue
             low = cap = 0
             for m in re.finditer(r"(?<!\w)" + re.escape(t.real) + r"(?!\w)",
@@ -12158,12 +12285,11 @@ class Pseudonymizer:
         occurrence anywhere in the corpus has no evidence behind it and earns
         no term.
 
-        Scoped exactly like `prune_prose_word_terms`, and for the same reasons —
-        DOCUMENT-harvested guesses and this tool's own DERIVED spellings only,
-        never the operator's party template, never a `--term`, never a value a
-        reused key pinned. A caption-only party keeps its term through the
-        template that names it; what this drops is the words nothing but a
-        heading ever offered.
+        Scoped exactly like `prune_prose_word_terms` — both ask
+        `_corpus_prunable`, so a term one drops and the other keeps cannot
+        exist. A caption-only party keeps its term through the template that
+        names it; what this drops is the words nothing but a heading ever
+        offered.
 
         Call with the FULL corpus text, beside the other corpus-wide prunes."""
         text = _NFKC(text)
@@ -12171,13 +12297,10 @@ class Pseudonymizer:
         loaded = getattr(self, "_loaded_reals", ())
         lines = text.split("\n")
         prose_line = [_pn_line_is_prose(ln) for ln in lines]
+        covered = self._multiword_covered_words()
         doomed = []
         for t in list(self.terms):
-            if ((t.source != "document" and not t.derived)
-                    or t.real.lower() in loaded
-                    or t.category not in ("person", "entity", "person-token",
-                                          "entity-token", "short-name")
-                    or not re.fullmatch(r"[A-Za-z][A-Za-z'’\-]*", t.real)):
+            if not self._corpus_prunable(t, loaded, covered):
                 continue
             rx = re.compile(r"(?<!\w)" + re.escape(t.real) + r"(?!\w)",
                             re.IGNORECASE)
@@ -12918,9 +13041,16 @@ class Pseudonymizer:
         out = []
         for t in self.terms:
             for m in self._compiled(t.pattern, t.flags).finditer(text):
-                if m.start() != m.end():
-                    out.append((t.priority, m.start(), m.end(),
-                                self.records[(t.category, t.real.lower())]))
+                if m.start() == m.end():
+                    continue
+                # A bare word split out of a longer name is the party only where
+                # the document capitalises it — see `_pn_term_is_cap_only`. The
+                # mirror of this test lives in `_surviving_records`, or the scan
+                # would report a value this pass is required to leave alone.
+                if t.cap_only and m.group(0)[:1].islower():
+                    continue
+                out.append((t.priority, m.start(), m.end(),
+                            self.records[(t.category, t.real.lower())]))
         return out
 
     def _display_name_cands(self, text, offset=0):
@@ -13663,6 +13793,12 @@ class Pseudonymizer:
             in_authority = (guard
                             and rec["category"] in _PN_AUTHORITY_GUARD_CATS)
             for m in ms:            # lazy: stops at the first SURVIVING match
+                # MIRROR `_term_cands`. A bare token deliberately does not match
+                # a LOWER-CASE occurrence (`_pn_term_is_cap_only`), so reporting
+                # one would quarantine an export that no pass is allowed to
+                # clean — the discipline this whole method exists to hold.
+                if rec.get("cap_only") and m.group(0)[:1].islower():
+                    continue
                 if in_authority and self._in_authority_context(text, m.start(),
                                                                m.end()):
                     continue
