@@ -1061,6 +1061,30 @@ the party), so its row stays reversible.
   so registering them faked the number where it could and leaked it (in
   citation-protected spans) where it couldn't — pure review noise; a 4+ digit
   or alphanumeric stamp ("DEAL# 23071") stays distinctive and is still scrubbed.
+- **A page whose TEXT LAYER IS DRAWN TWICE must export once**
+  (`_drop_overdrawn_spans`, applied to the body spans and the margin spans in
+  `_detect_line_anchors`). A page can carry its text twice and look perfectly
+  normal, because the copies land on top of each other: an e-filing stamp that
+  redraws the content, a faux-bold double strike, or an OCR overlay laid over a
+  text layer `_reocr_garbled_pages`' redaction failed to remove — the one this
+  tool can produce itself. `page.get_text("text")` survives it, returning the
+  duplicate as its own LINE, which is ugly and harmless; the SPAN path does not,
+  because it joins a row's pieces left to right and the two copies of each piece
+  sort ADJACENT: "BOWMAN BOWMAN AND BROOKE LLP AND BROOKE LLP Michael Michael
+  Chung (SBN 243204) Chung (SBN 243204)". Not cosmetic — a whole-word term
+  cannot match "Michael Michael Chung", so the party is left standing; the
+  harvester reads the doubled run as a NAME and mints it, so a delivered key
+  carried `Michael Michael Chung`, `Justin Justin Carpenter` and `SeeSee` as
+  party rows with their own stand-ins; and `_pn_context` quotes the wreckage
+  into the worksheet, where it reads as an unrelated extraction failure. A span
+  is a re-draw when it carries the SAME TEXT over OVERLAPPING ink
+  (`_spans_overdrawn`, half the smaller box) — overlap and not proximity,
+  because two genuinely different words cannot overlap at all without the page
+  being unreadable, while two copies of one line never sit exactly on top of
+  each other (a second layer is set in its own font at its own metrics).
+  Compared on exact text, so an OCR layer that MISREAD a word is left alone:
+  this can only ever remove a piece the page also has somewhere else. A copy far
+  enough away to be a real second column is untouched.
 - **Column-spliced captions**: a two-column caption interleaves in extraction,
   welding party names to neighbours. Extraction is column-aware up front: a
   page-level column band needs multi-row support (`_COLUMN_BAND_MIN_ROWS`,

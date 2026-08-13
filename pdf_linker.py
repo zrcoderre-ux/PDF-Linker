@@ -2657,6 +2657,62 @@ def _despliced_body_spans(page, body_x_min, footer_top):
     return spans
 
 
+# A span is a redundant RE-DRAW of another when it carries the same text over
+# the same ink. Half the smaller box is a deliberately loose bar: two copies of
+# one line never sit exactly on top of each other — an OCR layer is set in its
+# own font at its own metrics — while two genuinely different words cannot
+# overlap at all without the page being unreadable.
+_SPAN_OVERDRAW_MIN = 0.5
+
+
+def _spans_overdrawn(a, b):
+    """True when `a` and `b` are the same text drawn over the same ink."""
+    ax0, ay0, ax1, ay1 = a["bbox"]
+    bx0, by0, bx1, by1 = b["bbox"]
+    w = min(ax1, bx1) - max(ax0, bx0)
+    h = min(ay1, by1) - max(ay0, by0)
+    if w <= 0 or h <= 0:
+        return False
+    smaller = min(max((ax1 - ax0) * (ay1 - ay0), 1e-6),
+                  max((bx1 - bx0) * (by1 - by0), 1e-6))
+    return w * h >= _SPAN_OVERDRAW_MIN * smaller
+
+
+def _drop_overdrawn_spans(spans):
+    """`spans` with every redundant RE-DRAW removed — a page whose text layer is
+    drawn TWICE yields each piece once.
+
+    A page can carry its text twice and look perfectly normal, because the two
+    copies land on top of each other: an e-filing stamp that redraws the content,
+    a faux-bold double strike, or — the one this tool can produce itself — an OCR
+    overlay laid over a text layer the redaction failed to remove.
+
+    `page.get_text("text")` survives that: the duplicate comes back as its own
+    LINE, which is ugly and harmless. The span path does not, because it joins a
+    row's pieces left to right and the two copies of each piece sort ADJACENT:
+
+        BOWMAN BOWMAN AND BROOKE LLP AND BROOKE LLP Michael Michael Chung ...
+
+    That is not cosmetic. A whole-word term cannot match "Michael Michael Chung",
+    so the party is left standing; the harvester reads the doubled run as a name
+    and mints it ("SeeSee", "Justin Justin Carpenter"), which then gets its own
+    key row and its own stand-in; and `_pn_context` quotes the wreckage into the
+    worksheet, where it reads as an unrelated extraction failure.
+
+    Dropped rather than repaired, because there is nothing to repair: the second
+    copy carries no information the first does not. Compared on TEXT equality, so
+    an OCR layer that misread a word is left alone — this can only ever remove a
+    piece the page also has somewhere else."""
+    kept, out = {}, []
+    for sp in spans:
+        same = kept.setdefault(sp["text"], [])
+        if any(_spans_overdrawn(sp, k) for k in same):
+            continue
+        same.append(sp)
+        out.append(sp)
+    return out
+
+
 def _split_row_columns(spans, gap_min=_COLUMN_GAP_MIN):
     """Split one row's spans into column segments at wide horizontal gaps.
 
@@ -2766,6 +2822,10 @@ def _detect_line_anchors(page, desplice=False):
         cured = _despliced_body_spans(page, body_x_min, footer_top)
         if cured is not None:
             body_spans = cured
+    # A page whose text layer is drawn twice yields each piece twice, and this
+    # path welds the copies together — see `_drop_overdrawn_spans`. After the
+    # desplice branch, so both span sources are covered by the one call.
+    body_spans = _drop_overdrawn_spans(body_spans)
     rows = _cluster_rows(body_spans)
     if not rows:
         return []
@@ -2914,7 +2974,8 @@ def _detect_line_anchors(page, desplice=False):
               # dominant_x on the wider run. Matching only near dominant_x let
               # "1".."9" through as body text ("1 SERVICE LIST").
               and not re.fullmatch(r"\d{1,2}", sp["text"].strip())]
-    stray = [sp for sp in body_spans if id(sp) not in claimed] + margin
+    stray = ([sp for sp in body_spans if id(sp) not in claimed]
+             + _drop_overdrawn_spans(margin))
     for row in _cluster_rows(stray):
         segs = []
         for x, text in _split_row_columns(row["spans"]):
