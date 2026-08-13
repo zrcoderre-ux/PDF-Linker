@@ -1,13 +1,17 @@
 """
 Business entities borrow common words far more than people do, so a single-word
-partial token harvested from a business name must be tighter than a person's
-bare surname: a common/ordinal word ("Eighth" of "Eighth & Broadway Investments")
-is dropped outright, and any other single business word requires CAPITALIZATION
-(so a lower-case occurrence in prose is never faked). An initialism (ToFF) and a
-person's surname stay case-insensitive.
+partial token harvested from a business name must be tighter than the full name:
+a common/ordinal word ("Eighth" of "Eighth & Broadway Investments") is dropped
+outright, and any other bare word requires CAPITALIZATION, so a lower-case
+occurrence in prose is never faked.
 
 Regression for: "Eighth & Broadway Investments, LLC" faked every "eighth cause
 of action" in the document.
+
+The capitalisation rule used to be scoped to a single-word BUSINESS short form,
+on the reasoning that a person's surname is distinctive and OCR can lower-case
+it. It now covers every bare token (`_pn_term_is_cap_only`) — see
+`test_generic_business_words.py` for why, and for what that costs.
 
 Run:  cd PDF-Linker && python3 -m pytest tests/test_business_common_word_token.py -v
 """
@@ -58,10 +62,23 @@ def test_initialism_stays_case_insensitive():
     assert "ToFF" not in out and "TOFF" not in out and "Toff" not in out
 
 
-def test_person_surname_stays_case_insensitive():
-    # People's tokens must not tighten — OCR can lower-case a surname, and it
-    # should still scrub (a person's surname is distinctive, unlike a business's
-    # borrowed common word).
+def test_a_persons_bare_surname_is_capitalized_too():
+    """The one behaviour this file used to assert the other way.
+
+    A person's bare token was left case-insensitive because a surname is
+    distinctive and a scan can lower-case one. That exception did not survive
+    contact with a folder where the harvest had classified companies as people:
+    `Contractors` was a PERSON token there, applied 204 times, so scoping the
+    rule by category inherited the misclassification.
+
+    The justification is the same for both kinds of name — a party is
+    capitalised wherever it stands — and the FULL name still matches in any
+    casing, which is what keeps the party covered. The cost is stated plainly:
+    a lower-cased bare surname is no longer scrubbed by its token.
+    """
     z = _pz(["Gregory Yu"])
-    out = z.apply("Testimony of yu was heard.")     # lower-cased surname
-    assert "yu was heard" not in out                 # still scrubbed (case-insensitive)
+    assert "Yu was heard" not in z.apply("Testimony of Yu was heard.")
+    assert "YU was heard" not in z.apply("Testimony of YU was heard.")
+    assert "yu was heard" in z.apply("Testimony of yu was heard.")
+    # …and the full name is untouched by the rule, in any casing.
+    assert "gregory yu" not in z.apply("Testimony of gregory yu was heard.")

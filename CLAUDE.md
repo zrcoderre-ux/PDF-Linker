@@ -412,6 +412,38 @@ the party), so its row stays reversible.
 - **Terms** come from the spreadsheet key (E-Court `Order*.xlsx`), `--term`, and
   a folder **pre-scan** that harvests names/localities/identifiers. Built in
   `_pn_build_terms` / `_pn_append_name_terms` → person vs entity paths.
+- **A BUSINESS NAME is often just a combination of generic words, and a BARE
+  TOKEN of one must not rewrite the vocabulary of the case.** "All Premium
+  Contractors, Inc.", "Sunlight Financial LLC", "Cross River Bank" — and
+  specifically the words their own documents are full of. The FULL name is
+  distinctive and is registered as its own term; the bare WORDS are not, and
+  matching them case-insensitively replaced `Contractors` **204** times in one
+  delivered folder, so "the contractors were unlicensed" came back carrying a
+  surname. Three screens, and only the last is a word list. **CASE**
+  (`_pn_term_is_cap_only`, every `_PN_TOKEN_CATS` term): a party is capitalised
+  wherever it stands, in prose and caption alike, and the ordinary noun is not,
+  so a bare token matches "Contractors" and "CONTRACTORS" and leaves
+  "contractors" alone. It replaces the old `case_sensitive=True` on a one-word
+  business short form, which was the same rule a notch too tight — a caption
+  SHOUTS its parties, so the all-caps occurrence a filing opens with matched
+  nothing. **THE CORPUS** (`_corpus_prunable`, the single eligibility rule
+  `prune_prose_word_terms` and `prune_heading_only_terms` now share): a bare
+  BUSINESS token is screened whatever its source, because the operator's
+  template names a PARTY and not the party's individual words — but only while
+  a LONGER term still covers the party, which is what makes dropping it cost a
+  missed bare occurrence rather than a party in the clear. A PERSON's bare token
+  is deliberately excluded (`_PN_ENTITY_TOKEN_CATS`): a surname is not a
+  borrowed word, and a construction case can have a declarant named Carpenter
+  while its prose is full of carpenters — dropping that token would leave
+  "Carpenter Decl." standing, which the CASE rule already prevents at no cost.
+  **A WORD LIST** (`_PN_TRADE_GENERIC_WORDS`, unioned into
+  `_PN_SERVICE_GENERIC_WORDS`): the trade vocabulary a business in that trade
+  names itself after — contractor/installation/solar/lender/dealer — withheld
+  from ever becoming a bare token, and kept OUT of `_PN_COMMON_WORDS` so a party
+  really named Dealer stays reportable. Residual, and accepted at the owner's
+  direction: a scan that LOWER-CASES a real surname is no longer caught by its
+  bare token. The full name still matches in any casing, and the fuzzy and
+  unknown-name review scans still surface it.
 - **A term matches WHOLE WORDS.** Built without boundaries, `person` and
   `entity` terms matched inside longer printed words and ate the text around
   them: an OCR fragment "RS, LLC" fired inside "General Motors, LLC" eleven
