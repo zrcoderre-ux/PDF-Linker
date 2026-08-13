@@ -146,6 +146,95 @@ def test_an_over_long_quote_still_writes_a_readable_key(tmp_path):
                 assert not isinstance(cell, str) or len(cell) <= P._PN_XL_CELL_MAX
 
 
+# ── 2b. the cells openpyxl retypes out from under us ────────────────────────
+#
+# This tool writes no formulas. openpyxl writes them anyway, from the TEXT
+# alone: any string beginning with "=" becomes a formula, and any string that is
+# exactly one of the seven ERROR_CODES becomes a spreadsheet error. A flagged
+# value is exactly where such text turns up, because the review scans read OCR'd
+# exhibits and spreadsheet exports.
+#
+# `=Rasho v. Smith` is written as `<f>Rasho v. Smith</f>` — not a formula Excel
+# can parse, so it repairs the workbook by dropping the cell, losing the value
+# the operator opened the worksheet to decide. Neither shape is caught by the
+# read-back: openpyxl reads both perfectly happily. They have to be fixed on the
+# way out.
+
+RETYPED = ["=Rasho v. Smith", "=SUM(A1)", "#N/A", "#REF!", "#NAME?"]
+
+
+def _cell_types(path):
+    """Every cell's data type, straight out of the written file."""
+    return [c.data_type
+            for ws in openpyxl.load_workbook(path, read_only=True).worksheets
+            for row in ws.iter_rows() for c in row]
+
+
+def test_openpyxl_really_does_retype_them():
+    """The reason `_pn_xl_plain_cells` exists. If openpyxl ever stops, this
+    fails and the pass can be reconsidered — not dropped unnoticed."""
+    ws = openpyxl.Workbook().active
+    for i, v in enumerate(RETYPED, start=1):
+        ws.cell(row=i, column=1, value=v)
+    assert {c.data_type for c in ws["A"]} == {"f", "e"}
+
+
+def test_the_leaks_worksheet_writes_them_as_text(tmp_path):
+    P._pn_write_leak_report(tmp_path, [
+        {"file": "M.pdf", "type": "name?", "value": v, "where": "p.1:1",
+         "context": f"The column reads {v} there.", "notes": ""}
+        for v in RETYPED], log)
+    xlsx = tmp_path / "LEAKS.xlsx"
+    assert "f" not in _cell_types(xlsx) and "e" not in _cell_types(xlsx)
+    # And the value survives whole — the leading "=" included, or the operator
+    # is being asked about something the document does not say.
+    vals = [r[0] for r in openpyxl.load_workbook(xlsx).active
+            .iter_rows(min_row=2, values_only=True)]
+    assert sorted(vals) == sorted(RETYPED), vals
+
+
+def test_the_key_writes_them_as_text_too(tmp_path):
+    # Same hazard on the Real Value column, and there a dropped cell is a
+    # binding nothing can reverse.
+    z = _pz(["Helen Rasho"])
+    for v in RETYPED:
+        z.records[("identifier", v.lower())] = {
+            "category": "identifier", "real": v, "fake": f"X{len(v)}",
+            "source": "prescan", "count": 1, "pattern": "x", "flags": 0}
+    key = tmp_path / "pseudonym_key.xlsx"
+    z.write_key(key, log)
+    assert "f" not in _cell_types(key) and "e" not in _cell_types(key)
+    reals = [r[1] for ws in openpyxl.load_workbook(key).worksheets
+             for r in ws.iter_rows(min_row=2, values_only=True)]
+    for v in RETYPED:
+        assert v in reals, (v, reals)
+
+
+def test_a_retyped_value_round_trips_through_a_rewrite(tmp_path):
+    """Reading one back gives the plain string, and writing it out again must
+    not retype it a second time — every write goes through the same gate."""
+    xlsx = tmp_path / "LEAKS.xlsx"
+    rows = [{"file": "M.pdf", "type": "name?", "value": "=Rasho v. Smith",
+             "where": "p.1:1", "context": "Stamp: =Rasho v. Smith.",
+             "notes": ""}]
+    P._pn_write_leak_report(tmp_path, rows, log)
+    P._pn_write_leak_report(tmp_path, rows, log)   # the second run re-reads it
+    assert "f" not in _cell_types(xlsx)
+    vals = [r[0] for r in openpyxl.load_workbook(xlsx).active
+            .iter_rows(min_row=2, values_only=True)]
+    assert vals == ["=Rasho v. Smith"], vals
+
+
+def test_the_master_sheets_are_covered_by_the_same_gate(tmp_path, monkeypatch):
+    master = tmp_path / "master.xlsx"
+    monkeypatch.setenv("PDF_LINKER_MASTER", str(master))
+    P._pn_update_master_keep(
+        {}, {"=rasho v. smith": {"value": "=Rasho v. Smith", "type": "KEEP",
+                                 "fix": "no", "notes": "kept"}},
+        "23STCV1 Test", "2026-08-13", log)
+    assert "f" not in _cell_types(master) and "e" not in _cell_types(master)
+
+
 # ── 3. the write that was not atomic ────────────────────────────────────────
 
 def _one_row_workbook(text="ok"):

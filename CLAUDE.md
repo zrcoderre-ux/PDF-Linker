@@ -1935,6 +1935,24 @@ reads as "fully scrubbed".
   places) says the standing key survives AND cannot carry what this run minted.
   The temp keeps the real EXTENSION: openpyxl refuses to open a `.tmp`, so a
   plain one failed verification on its name alone.
+- **A cell is never a FORMULA and never an ERROR, and the read-back cannot say
+  so** (`_pn_xl_plain_cells`, run over every sheet inside `_pn_xl_save`). This
+  tool writes no formulas; openpyxl writes them anyway, from the TEXT alone —
+  `Cell._bind_value` types any string starting with `=` as a formula and any
+  string that is exactly one of the seven `ERROR_CODES` ("#N/A", "#REF!",
+  "#NAME?" …) as an error cell. A flagged value is exactly where such text turns
+  up, because the review scans read OCR'd exhibits and spreadsheet exports, and
+  `LEAKS.xlsx` is where it was seen. `=Rasho v. Smith` goes out as
+  `<f>Rasho v. Smith</f>`, which Excel cannot parse, so it repairs the workbook
+  by DROPPING the cell — the operator loses the value they opened the worksheet
+  to decide, or a Real Value out of the key. A formula that happens to PARSE is
+  worse: nothing is repaired, nothing is reported, the cell shows a computed
+  number and the value it stood for is gone. This is the one repair cause
+  `_pn_xl_verify` is structurally blind to — it asks whether the file can be
+  READ and openpyxl reads both shapes back happily — so it is fixed on the way
+  out rather than detected. Setting `data_type` after the fact is what keeps the
+  text: `_bind_value` already stored the string whole, leading `=` included, and
+  only the writer consults the type.
 - **A word list is DATA, not code.** A `#` inside a triple-quoted word list is
   not a comment. The housing block was first written with its rationale inside
   the string and put "#", "Act", "Bane," and "Fair" into `_PN_COMMON_WORDS` —

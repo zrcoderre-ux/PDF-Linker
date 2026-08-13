@@ -17271,6 +17271,11 @@ def _pn_xl_save(wb, path, what):
     keep the file that IS readable and say so — never to publish the broken one
     and let the operator discover it.
 
+    A third shape is neither unreadable nor unwritten but still costs a cell —
+    a value openpyxl typed as a formula or a spreadsheet error, which reads back
+    perfectly and makes Excel repair the workbook by dropping it. That one is
+    fixed rather than detected, on the way out, by `_pn_xl_plain_cells`.
+
     Raises `OSError` on either failure, so the callers' existing handling
     applies unchanged: for the key that is the loud "nothing can restore the real
     names" warning, which is the right voice for it."""
@@ -17281,6 +17286,8 @@ def _pn_xl_save(wb, path, what):
     # filesystem.
     tmp = path.with_name(f"{path.stem}.tmp{path.suffix}")
     try:
+        for ws in wb.worksheets:
+            _pn_xl_plain_cells(ws)
         wb.save(tmp)
         _pn_xl_verify(tmp)
         os.replace(tmp, path)
@@ -17295,6 +17302,42 @@ def _pn_xl_save(wb, path, what):
         raise OSError(f"the {what} was written but could not be read back "
                       f"({type(e).__name__}: {e}) — {path.name} on disk is "
                       f"unchanged") from e
+
+
+def _pn_xl_plain_cells(ws):
+    """Force every cell of `ws` back to TEXT that openpyxl decided was a formula
+    or a spreadsheet error.
+
+    This tool writes no formulas. openpyxl writes them anyway: `_bind_value`
+    types any string beginning with `=` as a FORMULA, and any string that is
+    exactly one of the seven `ERROR_CODES` ("#N/A", "#REF!", "#NAME?" …) as an
+    ERROR cell. Both are decided from the text alone, so a value the run merely
+    HARVESTED becomes one — and a flagged value is precisely where such text
+    turns up, because the review scans read OCR'd exhibits and spreadsheet
+    exports.
+
+    What Excel then does is the "we found a problem with some content" prompt
+    all over again, from the other side of the file. `=Rasho v. Smith` is
+    written as `<f>Rasho v. Smith</f>`, which is not a formula Excel can parse,
+    so it REPAIRS the workbook by dropping the cell — losing the very value the
+    operator opened `LEAKS.xlsx` to decide, or a Real Value out of the key. A
+    formula that happens to PARSE is worse still: nothing is repaired and
+    nothing is reported, the cell quietly shows a computed number, and the value
+    it stood for is simply gone.
+
+    `_pn_xl_verify` cannot catch this and is not meant to. It asks whether the
+    file can be READ, and openpyxl reads both shapes back perfectly happily —
+    they are well-formed, they are just not what any cell here should be. So the
+    guarantee has to be made on the way out, at the one boundary every workbook
+    passes through.
+
+    Setting `data_type` after the fact is what preserves the text: `_bind_value`
+    already stored the string whole, leading `=` included, and only the writer
+    consults the type."""
+    for row in ws.iter_rows():
+        for cell in row:
+            if cell.data_type in ("f", "e"):
+                cell.data_type = "s"
 
 
 def _pn_xl_verify(path):
