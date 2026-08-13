@@ -19045,12 +19045,13 @@ def _write_authorities_list(folder, authorities, log):
     renamed — there is nothing here to pseudonymize, and a list that scrubbed
     the very names it exists to report would be useless.
 
-    Grouped by kind. CASES run in YEAR order, oldest first, because a case's
-    year is what a reader places it by — it says at a glance whether the parties
-    are arguing from settled law or from last term, and it puts a line of
-    authority in the order it actually developed. An alphabetical run says
-    nothing, since the first word of a case name is one party's surname. A cite
-    carrying no year sorts last rather than as year zero, so one bad parse never
+    Grouped by kind. CASES run in YEAR order, MOST RECENT FIRST, because a
+    case's year is what a reader places it by and the newest authority is what
+    they reach for: it is the one most likely to state the current rule, and the
+    one they are least likely to already know. An alphabetical run says nothing,
+    since the first word of a case name is one party's surname. A cite carrying
+    no year sorts last — not as year zero, which under a descending sort would
+    float it to the TOP as though it were the newest — so one bad parse never
     displaces the sequence. Statutes and rules keep their alphabetical order:
     they have no year to sort on, and a code section IS read by its number.
 
@@ -19094,8 +19095,11 @@ def _write_authorities_list(folder, authorities, log):
            "is good law, or says what it is cited for.",
            rule]
     def by_year(kv):
+        # Undated LAST in both directions, so the year is negated and the
+        # missing-year flag is not — a `-year` sort would otherwise float a
+        # cite with no year to the top as though it were the newest.
         y = _authority_year(kv[0])
-        return (y is None, y or 0, kv[0].lower())
+        return (y is None, -(y or 0), kv[0].lower())
 
     for kind in ("case", "statute", "rule"):
         order = by_year if kind == "case" else (lambda kv: kv[0].lower())

@@ -92,8 +92,8 @@ def test_an_entry_is_the_citation_and_nothing_else(tmp_path):
     assert "Opposition.pdf" not in body, body
     cases = [ln for ln in body.split("CASES (2)")[1].split("STATUTES")[0]
              .splitlines() if ln.strip()]
-    assert cases == ["  Donlen v. Ford Motor Co. (2013) 217 Cal.App.4th 138",
-                     "  Kremerman v. White (2021) 71 Cal.App.5th 358"], cases
+    assert cases == ["  Kremerman v. White (2021) 71 Cal.App.5th 358",
+                     "  Donlen v. Ford Motor Co. (2013) 217 Cal.App.4th 138"], cases
 
 
 def test_the_header_still_says_how_wide_the_batch_is(tmp_path):
@@ -117,13 +117,13 @@ def _case_lines(tmp_path, text):
             body.split("CASES")[1].splitlines()[2:] if ln.strip()]
 
 
-def test_cases_are_sorted_by_year_oldest_first(tmp_path):
+def test_cases_are_sorted_by_year_most_recent_first(tmp_path):
     # Alphabetically this would be Alpha, Mid, Zeta — which says nothing, since
     # the first word of a case name is one party's surname.
     assert _case_lines(tmp_path, YEARS) == [
-        "Alpha v. Zeta (1974) 11 Cal.3d 1",
+        "Zeta v. Alpha (2019) 40 Cal.App.5th 1",
         "Mid v. Range (2003) 30 Cal.4th 1",
-        "Zeta v. Alpha (2019) 40 Cal.App.5th 1"]
+        "Alpha v. Zeta (1974) 11 Cal.3d 1"]
 
 
 def test_statutes_and_rules_keep_their_alphabetical_order(tmp_path):
@@ -138,6 +138,8 @@ def test_statutes_and_rules_keep_their_alphabetical_order(tmp_path):
 
 
 def test_a_cite_with_no_year_sorts_last_not_as_year_zero(tmp_path):
+    """Under a DESCENDING sort a year of zero is the newest, so an undated cite
+    would head the list. The missing-year flag is what keeps it at the foot."""
     assert P._authority_year("Alpha v. Zeta (1974) 11 Cal.3d 1") == 1974
     assert P._authority_year("Alpha v. Zeta, 11 Cal.3d 1") is None
     got = _collect(("Brief.pdf", YEARS))
@@ -147,7 +149,7 @@ def test_a_cite_with_no_year_sorts_last_not_as_year_zero(tmp_path):
              P._write_authorities_list(tmp_path, got, log)
              .read_text().split("CASES")[1].splitlines()[2:] if ln.strip()]
     assert lines[-1] == "Undated v. Nobody, 1 Cal.5th 1", lines
-    assert lines[0] == "Alpha v. Zeta (1974) 11 Cal.3d 1", lines
+    assert lines[0] == "Zeta v. Alpha (2019) 40 Cal.App.5th 1", lines
 
 
 def test_the_citation_text_is_never_scrubbed(tmp_path):
