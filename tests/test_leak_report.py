@@ -425,3 +425,28 @@ def test_one_sample_sentence_per_merged_row(tmp_path):
     ], log)
     body = _sheet(tmp_path / "LEAKS.xlsx")
     assert len(body) == 1 and body[0]["Context"] == "first sentence"
+
+
+# ── the Context quote finds the value as a WHOLE WORD ───────────────────────
+
+def test_the_quote_is_not_a_sentence_the_value_only_hides_inside():
+    """`_pn_context` searched with a bare `find`, so it quoted the sentence a
+    value happened to sit INSIDE another word of — "Arent" out of "Planned
+    Parenthood", "Isl" out of "the Legislature". The cell then read as a
+    sentence with nothing to do with the row, and no answer could be given.
+    """
+    parsed = [(1, None, "Planned Parenthood Fed'n, Inc. v. Center for Med. "
+                        "Progress."),
+              (1, None, "Retained Arent Fox LLP as co-counsel in the matter."),
+              (2, None, "The statutes the Legislature enacted protect it."),
+              (2, None, "Isl was typed on the signature line by mistake.")]
+    for value, wanted in (("Arent", "Arent Fox"), ("Isl", "Isl was typed")):
+        quote = P._pn_context(parsed, value)
+        assert wanted in quote, (value, quote)
+
+
+def test_a_welded_value_still_falls_back_to_the_bare_search():
+    """A welded or reduced finding has no bounded occurrence by construction,
+    and the nearest readable sentence beats an empty cell."""
+    parsed = [(1, None, "The plaintiff HELENRASHO signed the agreement.")]
+    assert "HELENRASHO" in P._pn_context(parsed, "ELENRASH")
