@@ -453,15 +453,23 @@ the party), so its row stays reversible.
   sentence before it: "…enforce the Arbitration Provision. Carpenter Decl. ¶ 5"
   was read as a declarant named "Provision. Carpenter". The bare token is
   registered too, so a delivered folder's key shows `Provision` replaced by a
-  surname **321** times, `System` 370, `River` 262, `Cross` 108 and `Sunlight`
-  104 — about 1,370 ordinary nouns rewritten as people, off four sentences that
-  happened to end in front of a "Decl." The TRIAGE WORKSHEET was the visible
-  symptom two steps downstream, and reads as a gazetteer problem: an ordinary
-  noun replaced by a person fake stands beside real capitalised words, so
-  `half_scrubbed_scan` reports those too, and 33 of that folder's 54 rows were
-  solar-financing vocabulary ("Solar", "Energy", "Installation", "Dealer",
-  "Capital", "Funds"). Widening `_PN_COMMON_WORDS` would have hidden it and
-  fixed nothing. A period was only ever needed for an INITIAL ("Clark H.
+  surname **321** times and `System` **370** — 692 ordinary nouns rewritten as
+  people, off a handful of sentences that happened to end in front of a "Decl."
+  (The same harvest also caught `River`, `Cross` and `Sunlight`, but those are
+  real parties the E-Court template registers independently, to the IDENTICAL
+  fakes, so removing the declarant rows costs no scrubbing — checked before the
+  change, because a harvest this wrong can still be the only thing covering a
+  real name.) The TRIAGE WORKSHEET was the visible symptom two steps
+  downstream, and reads as a gazetteer problem. The mechanism is precise: a
+  bogus row is a PERSON row, so its fake joins `name_fake_words()` — which
+  `half_scrubbed_scan` scopes to people deliberately, because an entity's fake
+  word sits beside ordinary capitalised prose all the time. "System" -> Hartwell
+  put an entity-shaped stand-in in the person set, so "the solar system" became
+  "the solar hartwell" and every capitalised neighbour read as a half-scrubbed
+  pair: 33 of that folder's 54 rows were solar-financing vocabulary ("Solar",
+  "Energy", "Installation", "Dealer", "Capital", "Funds"), and not one of the 54
+  was in any of the four gazetteers. Widening `_PN_COMMON_WORDS` would have
+  hidden it and fixed nothing. A period was only ever needed for an INITIAL ("Clark H.
   Cameron", "Teresa C. Alarcón") and a professional suffix has its own group, so
   the name word is now either a single letter with its period or a letters-only
   word, the run stops at a multi-letter word's period, and the cite yields the

@@ -7,16 +7,21 @@ the Arbitration Provision. Carpenter Decl. ¶ 5" was read as a declarant named
 "Provision. Carpenter".
 
 That is not a mis-flag in a worksheet. The bare token is registered too, so one
-delivered folder's key shows `Provision` replaced by a surname **321** times,
-`System` 370, `River` 262, `Cross` 108 and `Sunlight` 104 — roughly 1,370
-ordinary nouns rewritten as people, on the strength of four sentences that
-happened to end in front of a "Decl."
+delivered folder's key shows `Provision` replaced by a surname **321** times and
+`System` **370** — 692 ordinary nouns rewritten as people, on the strength of a
+handful of sentences that happened to end in front of a "Decl." (The same
+harvest also caught `River`, `Cross` and `Sunlight`; those are real parties the
+E-Court template registers independently, to the identical fakes, so dropping
+the declarant rows costs no scrubbing.)
 
-The triage worksheet was the visible symptom two steps downstream: an ordinary
-noun replaced by a person fake stands beside real capitalised words, so
-`half_scrubbed_scan` reports those too, and 33 of one folder's 54 rows were
-solar-financing vocabulary — "Solar", "Energy", "Installation", "Dealer",
-"Capital", "Funds", "Improvement".
+The triage worksheet was the visible symptom two steps downstream. A bogus row
+is a PERSON row, so its fake joins `name_fake_words()` — which
+`half_scrubbed_scan` scopes to people deliberately, because an entity's fake
+word sits beside ordinary capitalised prose all the time. "System" -> Hartwell
+put an entity-shaped stand-in in the person set, so "the solar system" became
+"the solar hartwell" and every capitalised neighbour read as a half-scrubbed
+pair: 33 of one folder's 54 rows were solar-financing vocabulary — "Solar",
+"Energy", "Installation", "Dealer", "Capital", "Funds", "Improvement".
 
 The period was only ever needed for an INITIAL, and a professional suffix has
 its own group, so the run stops at a multi-letter word's period and yields the
