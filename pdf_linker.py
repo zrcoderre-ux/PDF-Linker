@@ -2286,6 +2286,152 @@ def _reocr_improves(old: str, new: str) -> bool:
     return new_words >= _REOCR_MIN_YIELD * old_words
 
 
+# Hung on the Document like `_REOCR_ATTR`, and for the same reason.
+_IMG_OCR_ATTR = "_pdf_linker_img_ocr_pages"
+# An image smaller than this in either direction cannot hold a readable line, so
+# it is never rendered. A signature block runs ~215x91 pt, an e-filing stamp
+# ~150x95; an icon or a rule is far below it.
+_IMG_OCR_MIN_PT = 24.0
+# Word-shaped tokens the page's own text layer LACKS, before the region is worth
+# keeping. Two is deliberately low — "Alison Mackenzie" is the whole find — and
+# it is the NEWNESS that does the filtering, not the count.
+_IMG_OCR_MIN_NEW = 2
+_IMG_OCR_WORD_RE = re.compile(r"[A-Za-z]{3,}")
+
+
+def _note_img_ocr(page, count):
+    """Record that `count` image region(s) on `page` were read by OCR, so the
+    export's own banner can say so — an inferred reading is never presented as
+    equal to a read one."""
+    try:
+        doc = page.parent
+        seen = getattr(doc, _IMG_OCR_ATTR, None)
+        if seen is None:
+            seen = {}
+            setattr(doc, _IMG_OCR_ATTR, seen)
+        seen[page.number] = seen.get(page.number, 0) + count
+    except Exception:
+        pass
+
+
+def _image_ocr_rects(page):
+    """Rects of the images on `page` big enough to hold a line of text."""
+    import fitz
+    out = []
+    try:
+        xrefs = sorted({im[0] for im in page.get_images(full=True)})
+    except Exception:
+        return out
+    for xref in xrefs:
+        try:
+            rects = page.get_image_rects(xref)
+        except Exception:
+            continue
+        for r in rects:
+            if (r.width >= _IMG_OCR_MIN_PT and r.height >= _IMG_OCR_MIN_PT
+                    and r.width > 0 and r.height > 0):
+                out.append(fitz.Rect(r))
+    return out
+
+
+def _image_ocr_new_words(found, have_low):
+    """The word-shaped tokens of `found` that `have_low` does not already
+    carry — the whole filter, and the reason no word list is needed.
+
+    A logo or a barcode OCRs to letter-soup and offers no words at all. A court
+    SEAL offers real words ("SUPERIOR COURT OF CALIFORNIA COUNTY OF LOS
+    ANGELES") and is still rejected, because the page's own text says all of
+    them already: an image is only worth reading when it carries something the
+    text layer lacks."""
+    return [w for w in _IMG_OCR_WORD_RE.findall(found or "")
+            if w.lower() not in have_low]
+
+
+def _ocr_image_regions(doc, log):
+    """Read the text inside an IMAGE sitting on a page whose OWN text layer is
+    sound — a signature block, an e-filing stamp, a scanned exhibit pasted into
+    a born-digital brief.
+
+    OCR was an all-or-nothing PAGE decision, and both existing passes rightly
+    declined such a page: `_ocr_pdf` only touches a page with NO text, and
+    `_reocr_garbled_pages` only rebuilds one whose text reads as gibberish. So
+    an Order of Dismissal whose 1,300 characters extract perfectly still said
+    nothing about who signed it — the judge's name lived in a 215x91 pt image
+    and appeared nowhere in the document's text layer. Neither pass ever looked.
+
+    Text nothing reads is text nothing can scrub, report, or show the reader:
+    the same reasoning that put the out-of-band pleading text back
+    (`_detect_line_anchors` Step 7). Here it is the READER who loses — an order
+    that does not name its judge — since an image cannot leak through a .txt
+    export.
+
+    ADDITIVE, which is what separates this from `_reocr_garbled_pages`. Nothing
+    is redacted and no existing text is replaced; the worst case is a wasted
+    render. The result is kept only when it carries words the page does not
+    already have (`_image_ocr_new_words`), so a logo's letter-soup and a court
+    seal's echo of the caption are both discarded, and the page is banner-marked
+    so an inferred reading is never presented as equal to a read one."""
+    try:
+        import pytesseract
+        from PIL import Image
+    except ImportError:
+        return 0
+    tess = _find_tesseract()
+    if not tess or not _tesseract_usable(tess, log):
+        return 0
+    pytesseract.pytesseract.tesseract_cmd = tess
+
+    import io
+    import fitz
+
+    done = 0
+    for page in doc:
+        text = page.get_text("text")
+        if not text.strip():
+            continue                 # no text at all: `_ocr_pdf`'s page to take
+        rects = _image_ocr_rects(page)
+        if not rects:
+            continue
+        have_low = {w.lower() for w in _IMG_OCR_WORD_RE.findall(text)}
+        kept = 0
+        for rect in rects:
+            try:
+                pix = page.get_pixmap(dpi=_ocr_base_dpi(page), clip=rect)
+                img = Image.open(io.BytesIO(pix.tobytes("png")))
+                ocr_bytes = pytesseract.image_to_pdf_or_hocr(
+                    img, extension="pdf", config=_OCR_CONFIG,
+                    timeout=_ocr_page_timeout())
+                with fitz.open(stream=ocr_bytes, filetype="pdf") as probe:
+                    found = probe[0].get_text("text")
+            except Exception as e:
+                log.warning(f"  Image OCR: page {page.number + 1} region "
+                            f"({rect.width:.0f}x{rect.height:.0f} pt) could not "
+                            f"be read ({e}); leaving it")
+                continue
+            new = _image_ocr_new_words(found, have_low)
+            if len(new) < _IMG_OCR_MIN_NEW:
+                continue             # a logo, a seal, or a picture of the text
+            try:
+                with fitz.open(stream=ocr_bytes, filetype="pdf") as ocr_doc:
+                    page.show_pdf_page(rect, ocr_doc, 0, overlay=True)
+            except Exception as e:
+                log.warning(f"  Image OCR: could not overlay page "
+                            f"{page.number + 1} ({e})")
+                continue
+            have_low.update(w.lower() for w in new)
+            kept += 1
+            log.info(f"  Image OCR: page {page.number + 1} region recovered "
+                     f"{len(new)} word(s) the text layer lacked "
+                     f"({' '.join(new[:8])}…)")
+        if kept:
+            _note_img_ocr(page, kept)
+            done += kept
+    if done:
+        log.info(f"  Image OCR: read {done} image region(s) whose text the "
+                 f"page's own layer did not carry")
+    return done
+
+
 def _reocr_garbled_pages(doc, log):
     """Rebuild the text layer of any page whose extracted text looks garbled.
 
@@ -18287,11 +18433,18 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         # reading is never presented as equal to a read one. Both notes can
         # apply to one page (rebuilt, then ground down to finish).
         rebuilt = i in getattr(doc, _REOCR_ATTR, {})
+        # …and a page where an IMAGE was read by OCR. The page's own text is the
+        # document's, but those words are guesses sitting in the middle of it —
+        # a signature block, an e-filing stamp — and the reader has to be able
+        # to tell which is which.
+        img_ocr = getattr(doc, _IMG_OCR_ATTR, {}).get(i)
         header = (f"====== Page {i + 1}"
                   + (f" (printed p. {label})" if label else "")
                   + (" — REVIEW: the text layer was unreadable and was REBUILT "
                      "by OCR; spellings, numbers and citations on this page are "
                      "GUESSES" if rebuilt else "")
+                  + (f" — REVIEW: {img_ocr} image region(s) on this page were "
+                     f"READ BY OCR; those words are guesses" if img_ocr else "")
                   + (f" — REVIEW: recognised at only {low_dpi} dpi, "
                      f"text is LOW CONFIDENCE" if low_dpi else "")
                   + " ======")
@@ -19883,6 +20036,15 @@ def process_pdf(pdf_path: Path, log: logging.Logger,
             log.info(f"  {textless_count} page(s) lack text - running OCR "
                      f"on those page(s)")
         ocr_changed = bool(_ocr_pdf(doc, log)) or ocr_changed
+
+    # …and read the IMAGES on a page whose own text layer is fine. Both passes
+    # above are all-or-nothing page decisions and rightly decline such a page,
+    # so a signature block or an e-filing stamp went unread — see
+    # `_ocr_image_regions`. Additive and non-fatal: nothing is redacted.
+    try:
+        ocr_changed = bool(_ocr_image_regions(doc, log)) or ocr_changed
+    except Exception as e:
+        log.warning(f"  Image-region OCR failed (non-fatal): {e}")
 
     # Export the text version now (after OCR fills any minority scanned pages,
     # before marker injection pollutes the text). Non-fatal and independent of

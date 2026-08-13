@@ -1544,6 +1544,27 @@ survive to fail.
   page this heuristic exists to catch — a BROKEN encoding — fails the word test
   by construction. Every decision is logged, since a destructive pass that
   leaves no trace but a font name is not diagnosable.
+- **An IMAGE on a page whose own text layer is FINE is still text nobody read**
+  (`_ocr_image_regions`). OCR was an all-or-nothing PAGE decision and both
+  passes below rightly decline such a page — one wants NO text, the other wants
+  GIBBERISH — so an Order of Dismissal whose 1,300 characters extract perfectly
+  said nothing about who signed it: "Alison Mackenzie / Judge" sat in a
+  215x91 pt image and appeared nowhere in the document's text layer, in clean
+  printed type (only the scrawl above it is unreadable). Same reasoning that put
+  the out-of-band pleading text back — text nothing reads is text nothing can
+  scrub, report, or show the reader — except that here it is the READER who
+  loses, since an image cannot leak through a `.txt`. **ADDITIVE**, which is
+  what separates it from `_reocr_garbled_pages`: nothing is redacted, no
+  existing text is replaced, and the worst case is a wasted render. The filter
+  is NEWNESS (`_image_ocr_new_words`) and needs no word list — a region is kept
+  only when it carries words the page does not already have, so a logo's
+  letter-soup offers none and a court SEAL is rejected too, because the caption
+  it echoes is already in the text. Gated on size (`_IMG_OCR_MIN_PT`, below
+  which no line fits, so nothing is even rendered) and on the page having text
+  at all — a textless page belongs to `_ocr_pdf`, which gives it a WHOLE text
+  layer rather than one image out of it. The page is banner-marked
+  (`_IMG_OCR_ATTR`), because an inferred reading is never presented as equal to
+  a read one.
 - `_ocr_pdf` OCRs pages with **no** text; `_reocr_garbled_pages` rebuilds pages
   whose text extracts as gibberish (bad encoding). Both **parallelize** render+
   OCR across worker threads (Tesseract is a subprocess → releases the GIL);
