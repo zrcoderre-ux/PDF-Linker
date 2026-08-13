@@ -10949,7 +10949,28 @@ _PN_DECL_STOPWORDS = {
 # Alarcón" captures the whole surname instead of truncating to "Alarc" at the
 # "ó" — the truncated stem broke key round-trip and produced the welded fake
 # "Isleyón". The leading letter may itself be accented ("Óscar", "Ángela").
-_PN_DECL_NAME_WORD = rf"[{_PN_LAT_UPPER}][{_PN_LAT}.'’-]*"
+#
+# A PERIOD closes a name word only when the word is a single INITIAL. Written
+# with `.` inside the tail class, a whole word could swallow the period that
+# ENDS A SENTENCE, and the reference harvester then walked backwards out of the
+# declaration cite and into the sentence before it: "…enforce the Arbitration
+# Provision. Carpenter Decl. ¶ 5" was read as a declarant named
+# "Provision. Carpenter". That is not a mis-flag in a worksheet, it is a
+# substitution — the bare token is registered too, so one delivered folder had
+# `Provision` replaced by a surname **321** times, `System` 370, `River` 262,
+# `Cross` 108 and `Sunlight` 104, on the strength of four sentences that
+# happened to end in front of a "Decl." Every ordinary noun so replaced then
+# stands beside real capitalised words, so `half_scrubbed_scan` reports those
+# too and the triage worksheet fills with vocabulary — the visible symptom, two
+# steps downstream of the cause.
+#
+# An initial is the only thing the period was ever needed for ("Clark H.
+# Cameron", "Teresa C. Alarcón"); a professional suffix has its own group in
+# `_PN_DECL_NAME` below. So the run simply STOPS at a multi-letter word's
+# period, and "Provision. Carpenter Decl." yields the declarant that is
+# actually there: "Carpenter".
+_PN_DECL_NAME_WORD = (rf"(?:[{_PN_LAT_UPPER}]\.|"
+                      rf"[{_PN_LAT_UPPER}][{_PN_LAT}'’-]*)")
 _PN_DECL_NAME = (
     rf"{_PN_DECL_NAME_WORD}(?:\s+{_PN_DECL_NAME_WORD}){{0,3}}"
     r"(?:,\s*(?i:esq|jr|sr|ii|iii|iv|m\.?d|ph\.?d|c\.?p\.?a|r\.?n|d\.?d\.?s)\.?)?"
