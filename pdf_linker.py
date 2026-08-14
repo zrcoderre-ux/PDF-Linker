@@ -11491,6 +11491,23 @@ _PN_LABEL_RES = (
                r"(?:store|branch|office|general)[ \t]+manager|"
                r"custodian[ \t]+of[ \t]+(?:the[ \t]+)?records?)s?"
                r"[ \t]*[,:][ \t]*\n?[ \t]*(?P<n>" + _PN_LABEL_NAME + r")"),
+    # A CAPTION states its parties with a descriptor: "IRANI ROUZBAHNI, an
+    # individual; ANAHID CHAHREMANIANS, an individual,". Every other anchor here
+    # is a ROLE ("Plaintiff X") or a LABEL ("Attn:"), and a caption states the
+    # role in its own column — so a party named ONLY in an exhibit's caption
+    # reached no pass at all. That is how a fee motion shipped another matter's
+    # plaintiffs: the exhibits carry summonses and complaints from the firm's
+    # OTHER cases, whose parties are on nobody's template and which the review
+    # scans could only flag, never scrub.
+    #
+    # The descriptor IS the corroboration, which is what makes a shape this
+    # short safe. "X, an individual" is a caption's way of saying "this is a
+    # human party" and nothing else writes it: prose says "each plaintiff is an
+    # individual", which has no capitalised name in front of the comma, and
+    # `_pn_label_names` then requires two words, trims the role prefix, and
+    # rejects a bare party role and a protected locality.
+    re.compile(r"(?P<n>" + _PN_LABEL_NAME + r")[ \t]*,[ \t]*"
+               r"(?i:an[ \t]+individual|individually)(?![A-Za-z])"),
     # The POS-010 field that names the server: "Person who served papers:"
     # then its "a. Name:" sub-field. A bare "Name:" label is far too broad to
     # anchor on; the compound is not.
@@ -11530,6 +11547,16 @@ def _pn_label_names(text):
             for piece in pieces:
                 piece = _pn_trim_declarant(piece).strip()
                 words = piece.split()
+                # A caption prefixes its party with the ROLE ("Plaintiff HELEN
+                # RASHO, an individual"), and the screen below drops any piece
+                # carrying a role token — so the commonest caption form in
+                # California was refused outright. Trim a LEADING role word
+                # instead: it is expected in this shape, while a role word
+                # standing INSIDE a name run is the different thing that screen
+                # is there to catch.
+                while len(words) > 1 and _pn_is_role_token(words[0]):
+                    words = words[1:]
+                piece = " ".join(words)
                 if len(words) < 2 or _pn_is_party_role(piece):
                     continue
                 # Never harvest a protected locality as a person — a roster line
