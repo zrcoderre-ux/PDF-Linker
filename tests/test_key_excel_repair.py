@@ -309,3 +309,124 @@ def test_the_temp_file_keeps_the_real_extension(tmp_path, monkeypatch):
     assert seen and seen[0].endswith(".xlsx"), seen
     assert (tmp_path / "pseudonym_key.xlsx").exists()
     assert not list(tmp_path.glob("*.tmp.xlsx"))
+
+
+# ── 4. the control characters that are legal XML and still not text ─────────
+# DEL and the C1 block are inside XML 1.0's `Char` production, so neither
+# openpyxl's filter nor the XML-legality strip above touches them — and the file
+# they land in is well-formed, so `_pn_xl_verify` reads it back happily. Excel
+# never writes one raw: it escapes a control character as `_xHHHH_`. They arrive
+# the way the C0 controls did, off a page whose ToUnicode is broken.
+
+C1 = "\x7f\x80\x9f"
+
+
+@pytest.mark.parametrize("ch", list(C1))
+def test_a_control_character_is_legal_xml_and_still_stripped(ch):
+    doc = ET.fromstring(f"<t>a{ch}b</t>")        # well-formed: no reader objects
+    assert doc.text == f"a{ch}b"
+    from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
+    assert ILLEGAL_CHARACTERS_RE.sub("", ch) == ch      # openpyxl lets it past
+    assert P._pn_xl_text(f"a{ch}b") == "ab"             # and we do not
+
+
+def test_a_control_character_does_not_reach_the_key(tmp_path):
+    z = _pz(["Helen Rasho"])
+    src = f"====== Page 1 ======\n 1  Helen\x9f Rasho signed\x7f it today.\n"
+    z.apply(src)
+    z.note_key_context(src)
+    key = tmp_path / "pseudonym_key.xlsx"
+    z.write_key(key, log)
+    for part in _sheet_xml(key):
+        assert not P._PN_XL_AUDIT_BAD_RE.search(part.decode("utf-8"))
+
+
+# ── 5. the rich-text runs Excel reads differently from openpyxl ─────────────
+
+def test_a_whitespace_only_run_never_stands_alone():
+    """openpyxl's `whitespace()` helper tests the STRIPPED text for truthiness,
+    so a run that is all whitespace is written without `xml:space="preserve"`
+    and Excel drops its text: a quote using the value twice in a row came back
+    with the words run together."""
+    rich = P._pn_rich_context("Rasho Rasho performed the work.", "Rasho")
+    assert "".join(str(p) for p in rich) == "Rasho Rasho performed the work."
+    assert not any(str(p) and not str(p).strip() for p in rich), list(rich)
+
+
+@pytest.mark.parametrize("quote,value", [
+    ("Rasho Rasho performed the work.", "Rasho"),
+    ("  Rasho  ", "Rasho"),
+    ("RASHO, an individual. Rasho signed.", "Rasho"),
+    ("Rasho", "Rasho"),
+])
+def test_a_rich_quote_reaches_excel_whole(tmp_path, quote, value):
+    wb = openpyxl.Workbook()
+    wb.active["A1"] = P._pn_rich_context(quote, value)
+    path = tmp_path / "k.xlsx"
+    P._pn_xl_save(wb, path, "test")
+    assert P._pn_xl_audit(path) == []
+
+
+def test_the_bold_span_survives_a_length_changing_lower_case():
+    """`str.lower()` is not length-preserving — "İ" lowers to two code points —
+    so an index taken in the folded copy and used to slice the original walked
+    off by one and bolded "asho " of "Rasho"."""
+    rich = P._pn_rich_context("İSTANBUL CO. retained Rasho as its expert.",
+                              "Rasho")
+    bold = [str(p) for p in rich if not isinstance(p, str)]
+    assert bold == ["Rasho"], list(rich)
+
+
+# ── 6. the witness ─────────────────────────────────────────────────────────
+# Four causes have now been diagnosed from a recovery log that names a PART and
+# never a cell. `_pn_xl_audit` walks the saved file with Excel's own rules and
+# names sheet, cell and reason in the log.
+
+def _rich(*parts):
+    from openpyxl.cell.rich_text import CellRichText, TextBlock
+    from openpyxl.cell.text import InlineFont
+    bold = InlineFont(b=True)
+    return CellRichText([p if isinstance(p, str) else TextBlock(bold, p[0])
+                         for p in parts])
+
+
+@pytest.mark.parametrize("value,expected", [
+    ("plain text", ""),
+    ("carries \x7f a control", "control character U+007F"),
+    (_rich(("Rasho",), " ", ("Rasho",)), "loses its whitespace"),
+    (_rich(("Rasho",), ""), "empty text run"),
+    (_rich(("Rasho",), "y" * 40000), "over Excel's limit"),
+])
+def test_the_audit_names_the_cell_and_the_reason(tmp_path, value, expected):
+    wb = openpyxl.Workbook()
+    wb.active.title = "Pseudonym Key"
+    wb.active["A1"] = value
+    path = tmp_path / "k.xlsx"
+    wb.save(path)                       # not _pn_xl_save: the audit is the point
+    found = P._pn_xl_audit(path)
+    if not expected:
+        assert found == []
+    else:
+        assert any(expected in f and "Pseudonym Key!A1" in f for f in found), found
+
+
+def test_the_audit_never_raises_and_never_blocks_a_save(tmp_path):
+    """It reports. A cell Excel would quietly fix is not worth discarding a key
+    over, and the loud failure `_pn_xl_save` reserves for an unreadable file has
+    to keep meaning that."""
+    assert P._pn_xl_audit(tmp_path / "does-not-exist.xlsx")[0].startswith(
+        "could not be audited")
+    (tmp_path / "junk.xlsx").write_bytes(b"not a zip")
+    assert P._pn_xl_audit(tmp_path / "junk.xlsx")
+
+
+def test_what_the_tool_actually_writes_passes_the_audit(tmp_path):
+    z = _pz(["Helen Rasho", "Southern Cal Construction, Inc."])
+    src = ("====== Page 1 ======\n"
+           " 1  HELEN RASHO v. SOUTHERN CAL CONSTRUCTION, INC.\n"
+           " 2  Rasho Rasho, and Rasho again, performed the work.\n")
+    z.apply(src)
+    z.note_key_context(src)
+    key = tmp_path / "pseudonym_key.xlsx"
+    z.write_key(key, log)
+    assert P._pn_xl_audit(key) == []

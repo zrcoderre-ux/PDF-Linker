@@ -2165,7 +2165,39 @@ reads as "fully scrubbed".
   CellRichText)`) — which is what the Context column is, so nothing enforced
   Excel's 32,767-character cell. Both are cut in `_pn_xl_text`, where a plain
   cell and a rich one both pass, rather than relying on a library step one of
-  them never reaches.
+  them never reaches. (3) DEL and the C1 controls (U+007F-U+009F) are inside
+  XML 1.0's `Char` production, so neither filter touches them and the file they
+  land in is well-formed — `_pn_xl_verify` reads it back happily. Excel never
+  writes one raw; it escapes a control character as `_xHHHH_`. Same author as
+  (1), a broken ToUnicode, and the same trade: the character is invisible and
+  came from a misrecognition, while the row is a binding.
+- **…and the RICH text Excel reads differently from openpyxl.** Two shapes,
+  both in the `Context` column, both silent. openpyxl's `whitespace()` helper
+  tests the STRIPPED text for truthiness, so a run that is ALL whitespace is
+  written without `xml:space="preserve"` and Excel drops its text: a quote
+  using the value twice in a row ("Rasho Rasho performed") came back with the
+  words run together. `_pn_rich_context` folds such a run into the bold one
+  beside it, where the attribute is not needed and bolding a space shows
+  nothing. And the bold span was located with `str.lower()`, which is not
+  length-preserving — "İ" lowers to two code points — so an index taken in the
+  folded copy and used to slice the original walked off by one and bolded
+  "asho " of "Rasho"; the search runs through the regex engine on the original
+  instead.
+- **The recovery log names a PART, never a cell, so the run says which cell**
+  (`_pn_xl_audit`, called from `_pn_xl_save` after the read-back). Four causes
+  of "Excel found a problem with some content" have now been diagnosed from
+  nothing but `Repaired Records: String properties from /xl/worksheets/
+  sheet1.xml part`, and every one was a shape openpyxl passes through and
+  writes without complaint — so `_pn_xl_verify` cannot see them either: it asks
+  whether the file can be READ, and all of them read back perfectly. What was
+  missing was not another guard but a WITNESS. The audit walks the SAVED XML
+  with Excel's own rules — a cell's total text against 32,767 (a rich cell's
+  runs SUMMED, the count Excel applies and openpyxl never makes), the control
+  characters neither filter removes, a run that would lose its text to the
+  missing `xml:space`, an empty run — and names sheet, cell and reason in
+  `pdf_linker.log`. It REPORTS and never repairs or raises: a cell Excel would
+  quietly fix is not worth discarding a key over, and the loud failure
+  `_pn_xl_save` reserves for an unreadable file has to keep meaning that.
 - **A workbook is written BESIDE the one on disk and READ BACK before it
   replaces it** (`_pn_xl_save` / `_pn_xl_verify`, shared by the key, `LEAKS.xlsx`
   and the master for the reason `_pn_wrap_sheet` is). `wb.save(path)` TRUNCATES
