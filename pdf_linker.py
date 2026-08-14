@@ -14840,6 +14840,27 @@ class Pseudonymizer:
                 if not w:
                     continue
                 words.add(w)
+                # …and the word's BASE, because every consumer looks one up by
+                # base: `_pn_word_is_own_fake` through `_pn_word_base`, and
+                # `_pn_strip_prior_fakes` through `_pn_word_affixes`. Both strip
+                # a POSSESSIVE and this set did not, so a fake carrying one was
+                # invisible as ours: "Mr. Kool's Collision, LLC" is faked to
+                # "Mr. Redwood's Lightwell, LLC", the set held "redwood's", the
+                # scan asked for "redwood" — and the run reported its OWN
+                # stand-in as an unscrubbed name ("Plaintiff Mr. Redwood's").
+                # "Lightwell", which carries no possessive, was recognised
+                # perfectly, which is why this survived.
+                #
+                # The row was not merely noise. Marking it `yes` mints the
+                # flagged value as a real term, and `_pn_strip_prior_fakes` —
+                # which exists to leave an established stand-in alone — missed
+                # it the same way, so the phrase would have been faked a SECOND
+                # time: the two-generation chain that never reaches the real
+                # name. `name_fake_words` already contributes the base; this is
+                # the set that did not.
+                base = _pn_word_base(w)
+                if base:
+                    words.add(base)
                 host = re.sub(r"^https?://", "", w.split("@", 1)[-1])
                 if host.startswith("www."):
                     host = host[4:]

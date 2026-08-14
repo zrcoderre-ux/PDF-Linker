@@ -1107,7 +1107,20 @@ the party), so its row stays reversible.
   carries "postbox4"), and a phrase is suppressed once the fake tokens are
   removed and no real name still stands — so a fake dragged by a non-name
   prefix ("ASIC Pruett Keswick", "Nolan Relations") is not reported as
-  unscrubbed. A genuinely-new real name beside a fake is still surfaced —
+  unscrubbed.
+  **…and the set has to hold what the lookup asks for.** `known_fake_words`
+  stored the fake word as written while every consumer looks one up by its
+  BASE — `_pn_word_is_own_fake` through `_pn_word_base`, `_pn_strip_prior_fakes`
+  through `_pn_word_affixes` — and both of those strip a POSSESSIVE. So
+  "Mr. Kool's Collision, LLC" faked to "Mr. Redwood's Lightwell, LLC" put
+  `redwood's` in the set, the scan asked for `redwood`, and a delivered
+  worksheet carried **`Mr. Redwood's` as an unscrubbed name**: the run reporting
+  its own stand-in, a question with no right answer — `no` leaves what was
+  already correct and `yes` mints the stand-in as a real value. ("Lightwell",
+  carrying no possessive, was recognised perfectly, which is why this survived.)
+  Not merely noise: `_pn_strip_prior_fakes` missed it the same way, so a `yes`
+  would have faked the phrase a SECOND time — the chain below, reached from the
+  other end. The set contributes the base too; `name_fake_words` always did. A genuinely-new real name beside a fake is still surfaced —
   correctly, but the phrase is then HALF-SCRUBBED, and taking it at face value
   when the operator marks it yes fed our own fake back in as a REAL value. Only
   the surname was bound ("Penuela" -> "Sable"), the export reads "Melissa
