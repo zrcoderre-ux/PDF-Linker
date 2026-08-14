@@ -6456,7 +6456,23 @@ _PN_FIRM_WORDS = frozenset({
 # Deliberately NOT "a"/"an" (An is a real surname) nor "de"/"la" (Spanish name
 # particles the person pool has always faked as part of the surname).
 _PN_NAME_CONNECTORS = frozenset({"the", "of", "and", "for", "&"})
-_PN_NAME_FURNITURE = _PN_FIRM_WORDS | _PN_NAME_CONNECTORS
+# An HONORIFIC is a title in front of a name and never identity — the same
+# reasoning as the firm furniture above, and the same failure when it is missed.
+# One folder faked "Mr" to a pool word: the party came out
+# "EVERLINE. REDWOOD'S LIGHTWELL, LLC", where "Mr. Redwood's Lightwell, LLC"
+# says exactly as much and hides exactly as much, and the bare token that fell
+# out of it rewrote "Mr" **42 times** across the batch — every "Mr. Henriquez"
+# in the case became "Everline. Henriquez". It is also what let one party's
+# spellings disagree with each other, since only some of them carry the title.
+# Kept verbatim by the composing fakers (`keeps_word`) and refused a bare token
+# outright (`_pn_is_generic_token`), which is what retires such a row from a key
+# an earlier build already wrote.
+_PN_HONORIFICS = frozenset({
+    "mr", "mister", "mrs", "ms", "miss", "messrs", "mme", "mlle",
+    "dr", "doctor", "prof", "professor", "rev", "reverend",
+    "hon", "honorable", "honourable", "sir", "madam", "madame",
+})
+_PN_NAME_FURNITURE = _PN_FIRM_WORDS | _PN_NAME_CONNECTORS | _PN_HONORIFICS
 
 # The words a TITLE leaves in lower case. House style capitalises every word of
 # a heading except the articles, conjunctions and short prepositions, so their
@@ -6964,6 +6980,26 @@ class _PnFakeRegistry:
         if key in self._memo:
             return self._memo[key]
         low = real.lower()
+        # A POSSESSIVE that lost its apostrophe is the same word. `KOOL'S` and
+        # `Kool’s` both reduce to the core "kool" (`_pn_word_affixes` strips
+        # either mark), but a caption printing `MR. KOOLS COLLISION, LLC` — the
+        # commonest way an all-caps caption writes it — arrives as "kools",
+        # keys separately, and draws an unrelated pool word: one company came
+        # out "Verity's Lightwell" in most of the batch and "Orion Lightwell"
+        # wherever the apostrophe was missing, which reads as two defendants.
+        # The edit-distance fold below would catch it on a longer name and
+        # cannot here — "kool" is under `_PN_NAME_FOLD_MIN`, and shortening that
+        # for every token would make short names coincide.
+        #
+        # Mirroring the real's own deviation, exactly as the typo fold does: the
+        # fake takes the same trailing "s", so the two stay ONE party to a
+        # reader and two DISTINCT rows to the reversal macro. Forward only —
+        # `_pn_build_terms` pre-binds shortest-first, so the bare form is always
+        # the one already bound.
+        if len(low) > 2 and low.endswith("s"):
+            stem = self._memo.get((tag, low[:-1]))
+            if stem and (stem + "s").lower() not in self._used:
+                return self._take(key, stem + "s")
         # Fold an OCR/typo near-variant (edit distance 1) onto a TYPO of the
         # base token's fake, so "Palladina"/"Pallading" read as typos of the
         # same "Keswick" the canonical "Palladino" got, instead of three
@@ -8143,13 +8179,20 @@ def _pn_fake_entity_parts(name, registry, prefer=None):
     state_keep = _pn_state_keep_flags([_pn_word_affixes(t)[1].lower() for t in toks])
 
     def _furniture(idx, core):
-        # Firm furniture ("LAW OFFICES OF ..."), an operator `{braced}` keep,
-        # and a lone INITIAL, which is identity a whole entity word cannot
-        # carry: "Law Offices of Philip Y Kim" came out "... of Mercer SOLSTICE
-        # Whitby", where the person path has always left an initial alone.
+        # Firm furniture ("LAW OFFICES OF ..."), an HONORIFIC, an operator
+        # `{braced}` keep, and a lone INITIAL, which is identity a whole entity
+        # word cannot carry: "Law Offices of Philip Y Kim" came out "... of
+        # Mercer SOLSTICE Whitby", where the person path has always left an
+        # initial alone.
+        #
+        # Through `registry.keeps_word`, the hook the person path and
+        # `_pn_person_token_map` already share. Asking `_PN_FIRM_WORDS` directly
+        # answered a NARROWER question than they did, and the gap was the whole
+        # of `_PN_HONORIFICS`: "Mr. Kool's Collision, LLC" came out
+        # "EVERLINE. REDWOOD'S LIGHTWELL, LLC".
         base = _pn_word_base(core)
-        return ((base in _PN_FIRM_WORDS or base in registry.keep_words
-                 or len(core) == 1) and not state_keep[idx])
+        return ((registry.keeps_word(base) or len(core) == 1)
+                and not state_keep[idx])
     # Kept only while a distinctive word is still left to fake, so a name made
     # of nothing else ("The Law Firm", "M & M") never maps onto itself.
     keep_furniture = any(
@@ -9167,7 +9210,8 @@ def _pn_is_generic_token(base):
     corrupted document."""
     return (base in _PN_COMMON_WORDS or base in _PN_REVIEW_NAME_STOP
             or base in _PN_LOCALITY_WORDS or base in _PN_FORM_LABEL_WORDS
-            or base in _PN_SERVICE_GENERIC_WORDS or base in _PN_FIRM_WORDS)
+            or base in _PN_SERVICE_GENERIC_WORDS or base in _PN_FIRM_WORDS
+            or base in _PN_HONORIFICS)
 
 
 def _pn_is_protected_locality(city):
@@ -11036,7 +11080,16 @@ def _pn_load_key(path, registry, log, remint_recycled=False):
         # producing it however the words are bracketed. Restore the furniture
         # and keep the distinctive half of the binding, so the party stays
         # scrubbed under the fake it already shipped under.
-        if cat in ("person", "entity", "short-name", "display-name"):
+        # …including a TOKEN row, which is a phrase whenever the bare form of a
+        # name is one ("Mr. Kool's Collision" is the entity-token of "Mr. Kool's
+        # Collision, LLC"). Excluding them left the repaired full name beside an
+        # unrepaired short form — "Mr. Redwood's Lightwell, LLC" in one line and
+        # "Everline. Redwood's Lightwell" in the next, which is the two-parties
+        # reading this exists to prevent. A single-word row has no furniture to
+        # restore, so it is refused here anyway (the repair would equal the real
+        # value).
+        if cat in ("person", "entity", "short-name", "display-name",
+                   "person-token", "entity-token"):
             fixed = _pn_restore_furniture(real, fake, registry.keep_words)
             if fixed:
                 log.info(f"  Pseudonymize: repaired key row {real!r} -> {fixed!r} "
