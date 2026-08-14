@@ -741,6 +741,42 @@ the party), so its row stays reversible.
   repairs a stored composed fake on load, since a loaded row is applied
   literally and would otherwise keep reproducing the very output being
   bracketed away; it refuses any repair that would leave fake == real.
+- **An HONORIFIC is furniture too, and the entity path was asking a NARROWER
+  question** (`_PN_HONORIFICS`). "Mr. Kool's Collision, LLC" came out
+  "EVERLINE. REDWOOD'S LIGHTWELL, LLC" — a title turned into a name word, with a
+  sentence-ending period left in the middle of the party — where "Mr. Redwood's
+  Lightwell, LLC" says exactly as much and hides exactly as much. The bare token
+  that fell out of it then rewrote `Mr` **42 times** across the batch, so every
+  "Mr. Henriquez" in the case became "Everline. Henriquez". The cause is one
+  line: `_pn_fake_entity_parts` read `_PN_FIRM_WORDS` DIRECTLY where
+  `_pn_fake_person` and `_pn_person_token_map` call `registry.keeps_word` —
+  which is `_PN_NAME_FURNITURE`, the wider set — so the two composing paths
+  answered "is this furniture?" differently and the gap was every honorific.
+  They ask through the one hook now. Note what a delivered key does with a
+  binding like this: a loaded row is applied literally, so
+  `_pn_restore_furniture` runs over `*-token` rows as well as full names — the
+  short form is a phrase whenever the bare form of a name is one ("Mr. Kool's
+  Collision"), and repairing only the full name left "Mr. Redwood's Lightwell,
+  LLC" in one line beside "Everline. Redwood's Lightwell" in the next, which is
+  the two-parties reading the repair exists to prevent. A fake not composed word
+  for word is still refused (the delivered key's "MR. KOOL'S COLLISION,LLC" lost
+  the space before its suffix, so its four words cannot be matched to the fake's
+  three).
+- **A POSSESSIVE that lost its apostrophe is the same word.** `KOOL'S` and
+  `Kool’s` both reduce to the core "kool" (`_pn_word_affixes` strips either
+  mark), but an all-caps caption printing `MR. KOOLS COLLISION, LLC` — the
+  commonest way one is written — arrives as "kools", keys separately in the
+  registry memo, and draws an unrelated pool word. One company came out
+  "Redwood's Lightwell" through most of a batch and "Orion Lightwell" wherever
+  the apostrophe was missing: two defendants to a reader, off one party. The
+  edit-distance fold would catch it on a longer name and cannot here — "kool" is
+  under `_PN_NAME_FOLD_MIN`, and lowering that for every token would make short
+  names coincide. `_PnFakeRegistry.token` mirrors the real's own deviation
+  instead, exactly as the typo fold does: the fake takes the same trailing "s"
+  ("Redwood" → "Redwoods"), so the two stay ONE party to a reader and two
+  DISTINCT rows to the reversal macro. Forward only — `_pn_build_terms`
+  pre-binds shortest-first, so the bare form is always the one already bound —
+  and never onto a fake another value already holds.
 - **…and the two ends must ask the SAME question of a bare token.**
   `_pn_load_key` screened a loaded `*-token` row on `_pn_is_generic_token`,
   while the BUILDER screens a bare token on `_pn_is_name_token` — a different
