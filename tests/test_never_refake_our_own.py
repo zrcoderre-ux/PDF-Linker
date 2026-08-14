@@ -135,3 +135,82 @@ def test_the_chain_cannot_grow_a_second_generation():
     fake_name = scrubbed.split(" signed")[0]
     again = P._pn_build_terms([fake_name], [], [], registry=reg)
     assert not [t for t in again if str(t.real) == fake_name], again
+
+
+# ── …and the REVIEW scans must not report it either ────────────────────────
+# The same rule from the other side. A run that flags its own stand-in as an
+# unscrubbed name asks the operator a question with no right answer: `no` leaves
+# what was already correct, and `yes` mints the stand-in as a real value — the
+# second generation the gate above exists to refuse.
+#
+# `known_fake_words` held the fake word as written and every consumer looks one
+# up by its BASE (`_pn_word_is_own_fake` through `_pn_word_base`,
+# `_pn_strip_prior_fakes` through `_pn_word_affixes`), both of which strip a
+# POSSESSIVE. So "Mr. Kool's Collision, LLC" faked to "Mr. Redwood's Lightwell,
+# LLC" put "redwood's" in the set, the scan asked for "redwood", and one
+# delivered folder's worksheet carried `Mr. Redwood's` as an unscrubbed name.
+# "Lightwell", which has no possessive, was recognised perfectly — which is why
+# it survived this long.
+
+POSSESSIVE_PARTY = "Mr. Kool's Collision, LLC"
+
+
+def _known(party=POSSESSIVE_PARTY):
+    reg = P._PnFakeRegistry()
+    terms = P._pn_build_terms([party], [], [party], registry=reg)
+    z = P.Pseudonymizer(terms, {}, registry=reg)
+    return z, z.known_fake_words()
+
+
+def test_a_fake_carrying_a_possessive_is_recognised_as_ours():
+    z, known = _known()
+    fake = z.records[("entity", POSSESSIVE_PARTY.lower())]["fake"]
+    possessive = next(w for w in fake.split() if "'" in w or "’" in w)
+    assert P._pn_word_is_own_fake(possessive, known), (possessive, sorted(known))
+    # the bare spelling of the same word, as a scan meets it
+    assert P._pn_word_is_own_fake(P._pn_word_base(possessive), known)
+
+
+@pytest.mark.parametrize("sentence", [
+    "Plaintiff Mr. Redwood's counsel appeared.",       # the delivered row
+    "Defendant Redwood's moved to strike.",
+    "Attorneys for Redwood's Lightwell filed it.",
+])
+def test_our_own_stand_in_is_never_reported_as_an_unscrubbed_name(sentence):
+    z, known = _known()
+    fake = z.records[("entity", POSSESSIVE_PARTY.lower())]["fake"]
+    words = {P._pn_word_base(w) for w in fake.split()}
+    # The sentences above are written against the fake this build actually
+    # mints; skip if a pool resize moved it rather than assert on a pool word.
+    if "redwood" not in words:
+        pytest.skip(f"pool moved: {fake}")
+    assert P._pn_unknown_name_findings(sentence, known) == []
+    assert z.review_scan(sentence) == []
+
+
+def test_a_name_it_has_never_seen_is_still_reported():
+    """The suppression must not widen into blindness."""
+    _z, known = _known()
+    assert P._pn_unknown_name_findings(
+        "Defendant Sarkisyan moved to strike.", known)
+
+
+def test_a_yes_on_such_a_row_could_not_have_minted_a_generation():
+    """`_pn_strip_prior_fakes` missed it the same way, so the phrase would have
+    been faked a second time — the chain that never reaches the real name."""
+    z, known = _known()
+    fake = z.records[("entity", POSSESSIVE_PARTY.lower())]["fake"]
+    assert P._pn_strip_prior_fakes(fake, known) is None
+    assert P._pn_strip_prior_fakes(fake.rsplit(",", 1)[0], known) is None
+
+
+def test_the_two_sets_agree_on_every_fake_this_run_minted():
+    """The invariant behind it: whatever `known_fake_words` holds, a consumer
+    asking by base must find."""
+    z, known = _known()
+    for rec in z.records.values():
+        for w in str(rec["fake"]).split():
+            base = P._pn_word_base(w)
+            if len(base) >= 3:
+                assert P._pn_word_is_own_fake(w, known), (w, rec["fake"])
+                assert P._pn_word_is_own_fake(base, known), (base, rec["fake"])
