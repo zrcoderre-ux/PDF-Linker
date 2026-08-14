@@ -1681,6 +1681,25 @@ survive to fail.
   layer rather than one image out of it. The page is banner-marked
   (`_IMG_OCR_ATTR`), because an inferred reading is never presented as equal to
   a read one.
+  **…and a page ALREADY READ is not read again** (`_image_ocr_already_read`).
+  Newness is the right question for a seal echoing the caption and the wrong
+  one for a scanned exhibit that arrives with its FILER'S OWN OCR layer over
+  it — the commonest scanned exhibit there is. There the page's text IS the
+  image's text, so the only words this pass can find that the page "lacks" are
+  the handful the two engines read differently (`foregolng` for `foregoing`,
+  `lnterested` for `interested`), which clears `_IMG_OCR_MIN_NEW` on any page
+  of prose. The overlay then lands a SECOND reading of the whole page on top of
+  the first and every word is exported twice: measured on a declaration of
+  service, 23 words became 46. It is the same shape `_drop_overdrawn_spans`
+  exists for and it slips past that too, because the two readings differ in
+  their text and their span geometry, which is exactly what that pass refuses
+  to collapse. So the second rule is scoped to the RECT — a seal's words are
+  echoed elsewhere on the page and there is nothing underneath it, while a
+  re-read scan's words are already exactly where this is about to put them
+  again — and each rule answers its own failure. It also makes the pass
+  IDEMPOTENT, which matters because the tool replaces the source PDF: the
+  overlay is in the file the next run opens, and until now nothing but our own
+  OCR being deterministic stopped a re-run stacking another copy.
 - `_ocr_pdf` OCRs pages with **no** text; `_reocr_garbled_pages` rebuilds pages
   whose text extracts as gibberish (bad encoding). Both **parallelize** render+
   OCR across worker threads (Tesseract is a subprocess → releases the GIL);
