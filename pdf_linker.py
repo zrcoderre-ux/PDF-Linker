@@ -2824,6 +2824,61 @@ def _spans_overdrawn(a, b):
     return w * h >= _SPAN_OVERDRAW_MIN * smaller
 
 
+def _page_is_overdrawn(page):
+    """True when this page's own spans carry a redundant RE-DRAW.
+
+    The positive evidence that lets `_page_flowing_text` collapse a repeated
+    line: on a page nothing is drawn twice, a document that legitimately repeats
+    a line is left exactly as it is."""
+    try:
+        spans = [sp for blk in page.get_text("dict").get("blocks", [])
+                 for ln in blk.get("lines", [])
+                 for sp in ln.get("spans", []) if str(sp.get("text", "")).strip()]
+    except Exception:
+        return False
+    return len(_drop_overdrawn_spans(spans)) < len(spans)
+
+
+def _page_flowing_text(page):
+    """`page.get_text("text")` with a DOUBLED text layer collapsed.
+
+    `_drop_overdrawn_spans` fixes the span path, where the two copies of each
+    piece sort adjacent and weld together. This is the same page seen the other
+    way: `get_text` returns the duplicate as its own LINE, which looked merely
+    ugly — until a weld-cure pass matched a party's reduced core ACROSS the seam
+    between the copies and rewrote the text ("Best Formulations" came back
+    "Best FonnuFalcon lations"). A page that is doubled is also the page most
+    likely to defeat the gutter-number detection, so it falls to THIS rendering
+    rather than the row path that was already fixed.
+
+    Gated on POSITIVE evidence: only a page whose own spans carry a redundant
+    re-draw is rebuilt. A document that repeats a line on purpose (a table row,
+    a signature block) is untouched, because nothing on that page is
+    over-drawn — and an ordinary page is returned byte-for-byte as
+    `get_text` gave it, so nothing about the usual export moves.
+
+    REBUILT from the deduped spans rather than post-processed as a string: the
+    two copies are separate content blocks, so `get_text` returns all of copy
+    one and then all of copy two, and the duplicate lines are nowhere near each
+    other. Only a broken page pays the different rendering."""
+    text = page.get_text("text")
+    try:
+        spans = [sp for blk in page.get_text("dict").get("blocks", [])
+                 for ln in blk.get("lines", [])
+                 for sp in ln.get("spans", []) if str(sp.get("text", "")).strip()]
+    except Exception:
+        return text
+    kept = _drop_overdrawn_spans(spans)
+    if len(kept) == len(spans):
+        return text
+    rows = _cluster_rows(kept)
+    if not rows:
+        return text
+    return "\n".join(
+        _join_spans_spaced(sorted(r["spans"], key=lambda s: s["bbox"][0]))
+        for r in sorted(rows, key=lambda r: r["y"]))
+
+
 def _drop_overdrawn_spans(spans):
     """`spans` with every redundant RE-DRAW removed — a page whose text layer is
     drawn TWICE yields each piece once.
@@ -16830,7 +16885,7 @@ def _page_detect_text(page, form=_FORM_UNDECIDED):
         return form
     rows = _page_lined_rows(page)
     if not rows:
-        return _MARKER_DETECT_RE.sub("", page.get_text("text"))
+        return _MARKER_DETECT_RE.sub("", _page_flowing_text(page))
     out = []
     for _band, items in _page_column_streams(rows):
         out.append("\n".join(rows[i][1][j][1] for i, j in items))
@@ -18427,7 +18482,7 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
     has_fields = _doc_has_form_fields(doc)
     forms_seen, ink_seen = [], []
     for i, page in enumerate(doc):
-        raw = page.get_text("text")
+        raw = _page_flowing_text(page)
         # Drop our invisible citation markers (present when re-processing an
         # already-linked PDF) so the export is clean prose.
         clean = _MARKER_DETECT_RE.sub("", raw)

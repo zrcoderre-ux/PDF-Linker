@@ -134,3 +134,60 @@ def test_dedupe_keeps_the_first_and_preserves_order():
     a, b = _sp("A", 0, 0, 10, 10), _sp("B", 20, 0, 30, 10)
     dup = _sp("A", 0.5, 0.5, 10.5, 10.5)
     assert P._drop_overdrawn_spans([a, dup, b]) == [a, b]
+
+
+# ── the same page seen the other way: the FLOWING-text path ─────────────────
+#
+# `_drop_overdrawn_spans` fixes the row path. `get_text` returns the duplicate
+# as its own LINE, which looked merely ugly — until a weld-cure pass matched a
+# party's reduced core ACROSS the seam between the two copies and rewrote the
+# text. One export came back:
+#
+#   4 Defendant Defendant Best Best FonnuFalcon lations LLC is a tenant ...
+#
+# for "Defendant Best Formulations LLC is a tenant at the Property." A doubled
+# page is also the page most likely to defeat the gutter-number detection, so it
+# falls to this rendering rather than the row path.
+
+REAL = "Defendant Best Formulations LLC is a tenant at the Property."
+
+
+def _flat(page):
+    return [l for l in P._page_flowing_text(page).split("\n") if l.strip()]
+
+
+def _flow_page(times, dx=0.0, dy=0.0):
+    doc = fitz.open()
+    pg = doc.new_page(width=612, height=792)
+    for i in range(times):
+        y = 100
+        for txt in (REAL, "The lease was signed in 2021.",
+                    "Plaintiff seeks possession of the premises."):
+            pg.insert_text((72 + dx * i, y + dy * i), txt, fontsize=11)
+            y += 22
+    return doc[0]
+
+
+@pytest.mark.parametrize("times,dx,dy", [(2, 0, 0), (2, 1.5, 0.4), (3, 0.8, 0.4)])
+def test_a_doubled_page_reads_once_on_the_flowing_path(times, dx, dy):
+    assert _flat(_flow_page(times, dx, dy)) == _flat(_flow_page(1))
+
+
+def test_a_clean_page_is_returned_untouched():
+    page = _flow_page(1)
+    assert P._page_flowing_text(page) == page.get_text("text")
+    assert not P._page_is_overdrawn(page)
+
+
+def test_a_document_that_repeats_a_line_on_purpose_is_untouched():
+    """The gate is POSITIVE evidence: nothing on this page is over-drawn, so
+    the repeated row stays. Collapsing it would delete content."""
+    doc = fitz.open()
+    pg = doc.new_page(width=612, height=792)
+    y = 100
+    for txt in ("Item      100.00", "Item      100.00", "Total     200.00"):
+        pg.insert_text((72, y), txt, fontsize=11)
+        y += 22
+    assert not P._page_is_overdrawn(doc[0])
+    assert _flat(doc[0]) == ["Item      100.00", "Item      100.00",
+                             "Total     200.00"]

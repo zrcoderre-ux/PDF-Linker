@@ -1161,6 +1161,20 @@ the party), so its row stays reversible.
   Compared on exact text, so an OCR layer that MISREAD a word is left alone:
   this can only ever remove a piece the page also has somewhere else. A copy far
   enough away to be a real second column is untouched.
+  **The FLOWING-text path needed it too** (`_page_flowing_text`). `get_text`
+  returns the duplicate as its own LINE, which reads as merely ugly — until a
+  weld-cure pass matches a party's reduced core ACROSS the seam between the two
+  copies and rewrites the text: "Defendant Best Formulations LLC is a tenant at
+  the Property." came back "Defendant Defendant Best Best FonnuFalcon lations
+  LLC is a tenant LLC is a tenant at the Propc1ty." A doubled page is also the
+  page most likely to defeat the gutter-number detection, so it lands HERE
+  rather than on the row path that was fixed first. Rebuilt from the deduped
+  spans, not post-processed as a string: the copies are separate content
+  blocks, so `get_text` returns all of copy one and then all of copy two and
+  the duplicate lines are nowhere near each other. Gated on the same POSITIVE
+  evidence — a page with no re-draw is returned byte-for-byte as `get_text`
+  gave it, so a document that repeats a line on purpose (a table row) is
+  untouched and the ordinary export does not move.
 - **Column-spliced captions**: a two-column caption interleaves in extraction,
   welding party names to neighbours. Extraction is column-aware up front: a
   page-level column band needs multi-row support (`_COLUMN_BAND_MIN_ROWS`,
