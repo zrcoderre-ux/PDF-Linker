@@ -538,6 +538,25 @@ the party), so its row stays reversible.
   `prune_prose_word_terms` — document-harvested guesses and this tool's own
   DERIVED spellings only, never the operator's template, a `--term`, or a value
   a reused key pinned.
+- **A CAPTION states its parties with a DESCRIPTOR, and nothing was reading
+  it.** "IRANI ROUZBAHNI, an individual; ANAHID CHAHREMANIANS, an individual,".
+  Every other anchor in `_PN_LABEL_RES` is a role PREFIX ("Defendant
+  Travelers") or a LABEL ("Attn:", "/s/"), and a caption states the role in its
+  own COLUMN — so a party named only in a caption reached no pass at all. That
+  is how a fee motion shipped another matter's plaintiffs: the exhibits carry
+  summonses and complaints from the firm's OTHER cases, whose parties are on
+  nobody's template, and the review scans could only flag them REVIEW-tier,
+  which does not gate delivery. The descriptor IS the corroboration, which is
+  what makes an anchor this short safe: "X, an individual" is a caption saying
+  "this is a human party", while prose that carries the words ("each plaintiff
+  is an individual") has no capitalised name in front of the comma, and
+  `_pn_label_names` still requires two words and rejects a bare party role and
+  a protected locality. **A LEADING role word is now TRIMMED rather than
+  fatal** — the screen that drops any piece carrying a role token refused
+  "Plaintiff HELEN RASHO, an individual", which is the commonest caption form
+  in California, so the shape yielded nothing at all. Trimming is for the
+  LEADING word only; a role word standing INSIDE a name run is the different
+  thing that screen exists to catch.
 - **The people a SERVICE document names carry no party role, and a DOCKET names
   its parties role-LAST.** Every harvest anchor was a role PREFIX ("Defendant
   Travelers", "Attorneys for X"), so two whole populations reached no pass at
