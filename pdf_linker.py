@@ -7503,6 +7503,71 @@ def _pn_name_variants(word):
             if _keep(v) and len(v) >= 4 and _pn_is_name_token(v)}
 
 
+# A token shorter than this is not split: the halves carry too little to make
+# the concatenation evidence of anything, and a 4-letter surname has only two
+# interior positions worth having.
+_PN_SPACE_SPLIT_MIN = 5
+# The RIGHT half must be at least this long. A trailing single letter is the
+# shape of a middle INITIAL ("Sarkisya N"), which is a thing a filing really
+# writes; the leading half has no such twin, so a one-letter LEFT half is
+# allowed — and is exactly where the observed breaks fell.
+_PN_SPACE_SPLIT_TAIL_MIN = 2
+
+
+def _pn_space_split_spellings(word):
+    """Spellings of one token carrying a single space INSIDE it ("SARKISY AN"
+    for "SARKISYAN"), so a name the page prints whole and extraction breaks in
+    half is still scrubbed.
+
+    A born-digital pleading kerns a capital pair tightly ("VA", "YA"), and the
+    gap the kern leaves is wide enough that the character joiner reads it as a
+    space. The page is perfectly normal; the export is not. One Song-Beverly fee
+    batch shipped
+
+        V ADIM SARKISY AN and RESTARICK MIRZOY ANS
+
+    in its captions, its attorney line, its proof of service and its service
+    list, across four exports — while the same key's tokens scrubbed the same
+    two surnames 287 and 234 times everywhere the spelling came out whole. The
+    complaint's first page carries both spellings four lines apart: line 10
+    reads `SHARNBROOK WRIGHTSON` and line 11 `RESTARICK MIRZOY ANS`, which is
+    worse than a plain leak — a drafting pass read the two spellings as two
+    different sets of plaintiffs and reported a record inconsistency. No OCR
+    setting reaches this: the document was never scanned.
+
+    The reduced weld pass would match it (`SARKISY AN` folds to `sarkisyan`)
+    and deliberately refuses: `_pn_span_is_unbroken` rejects any match holding a
+    printed word boundary, which is the rule that stopped it deleting the text
+    between two real words ("Further, a substantial" -> "Furtthorpe
+    substantial"). That rule stands. This registers the split spelling as a real
+    TERM instead, so it still yields to citation protection and to an operator
+    KEEP, which a blind reduced substitution cannot.
+
+    The corroboration is the CONCATENATION: two printed words that join to
+    exactly a party's own token. That is why a ONE-letter left half is safe
+    ("V adim" — the break the corpus actually shows), and why the screen that
+    matters is the pair of halves being ordinary words: "Ashe" would offer
+    "As he" and "Newman" "New man", which a sentence writes by accident all
+    day. The category carries `_pn_term_is_cap_only`, so a lower-case
+    occurrence is left alone whatever this returns."""
+    core = _pn_word_affixes(word)[1]
+    if len(core) < _PN_SPACE_SPLIT_MIN or not core[0].isupper():
+        return set()
+    out = set()
+    for i in range(1, len(core) - _PN_SPACE_SPLIT_TAIL_MIN + 1):
+        left, right = core[:i], core[i:]
+        # Split BETWEEN LETTERS only — a hyphen or an inner dot is already a
+        # printed boundary, and the wrap-split spelling of a compound surname
+        # has its own registration.
+        if not (left[-1].isalpha() and right[0].isalpha()):
+            continue
+        if (_pn_is_generic_token(left.lower())
+                and _pn_is_generic_token(right.lower())):
+            continue
+        out.add(left + " " + right)
+    return out
+
+
 _PN_INITIAL_POOL = tuple("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 
 # Two-letter English words a reader meets in running text. A fake for a set of
@@ -8304,6 +8369,21 @@ def _pn_append_person_terms(terms, raw, source, registry):
             terms.append(_PnTerm("person-token", var, fake_tok,
                                  whole_word=True, case_sensitive=False,
                                  priority=0, source=source, derived=True))
+        # The same token with a space extraction opened INSIDE it ("SARKISY AN")
+        # — see `_pn_space_split_spellings`. Same fake, so the split spelling and
+        # the whole one read as the one party and no pool word is drawn.
+        #
+        # AUTHORITATIVE sources only. A split spelling is a guess about how a
+        # printed word came apart, and stacking it on a guess about who the
+        # party is doubles the way it can be wrong; the operator's own party
+        # list is the one place the name itself is not in question. A document
+        # harvest that read the split spelling as a name in its own right is
+        # what the review scans are for.
+        if source in _PN_KEY_UNMATCHED_SOURCES:
+            for var in _pn_space_split_spellings(real_tok):
+                terms.append(_PnTerm("person-token", var, fake_tok,
+                                     whole_word=True, case_sensitive=False,
+                                     priority=0, source=source, derived=True))
         # A HYPHENATED surname is one token to the tokenizer, so nothing else
         # can see its halves — and a brief uses them freely: a line wrap opens
         # the hyphen ("Ardeshirpour- Zartoshti"), a shorthand reference drops

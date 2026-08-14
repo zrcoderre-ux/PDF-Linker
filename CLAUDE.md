@@ -405,6 +405,45 @@ the party), so its row stays reversible.
   ("Ardeshirpour- Zartoshti", same fake) and each half as its own token, so the
   shorthand a brief actually uses is never left standing beside a faked given
   name as a half-scrubbed pair.
+- **A SPACE can open inside a printed word, and the name is then never matched**
+  (`_pn_space_split_spellings`). A born-digital pleading kerns a capital pair
+  tightly and extraction reads the gap as a space, so the page is perfectly
+  normal and the export carries `V ADIM SARKISY AN` where the caption says
+  `VADIM SARKISYAN`. A whole-word term matches neither half, so the real party
+  shipped in the captions, the attorney line, the proof of service and the
+  service list of four exports — while the SAME key's tokens scrubbed those two
+  surnames 287 and 234 times everywhere the spelling came out whole. One
+  complaint page carries both forms four lines apart (`SHARNBROOK WRIGHTSON` on
+  line 10, `RESTARICK MIRZOY ANS` on line 11), which is worse than a plain leak:
+  a drafting pass read the two spellings as two different sets of plaintiffs and
+  reported a record inconsistency. No OCR setting reaches this — nothing was
+  scanned; it is an EXTRACTION failure, the same class as the column splice.
+  The reduced weld pass would match it (`SARKISY AN` folds to `sarkisyan`) and
+  is right to refuse: `_pn_span_is_unbroken` rejects a match holding a printed
+  word boundary, which is what stopped it deleting the text between two real
+  words ("Further, a substantial" → "Furtthorpe substantial"). So the split
+  spelling is registered as a real TERM instead, one per split position, sharing
+  the token's own fake — the way the wrap-split spelling above already is. It
+  therefore yields to citation protection and to an operator KEEP, which a blind
+  reduced substitution cannot, and it draws NO pool word and moves no binding
+  (measured: the used-pool is identical with and without it), so a folder
+  already delivered re-runs byte-identically. The corroboration is the
+  CONCATENATION — two printed words that join to exactly a party's own token —
+  which is why a ONE-letter left half is kept (`V adim` is where the breaks
+  actually fell) and why the screen that matters is both halves being ordinary
+  vocabulary ("Ashe" would offer "As he", "Newman" "New man"). Guards: an
+  AUTHORITATIVE source only, since stacking a guess about how a word came apart
+  on a guess about who the party is doubles the ways it can be wrong; the token
+  at least `_PN_SPACE_SPLIT_MIN` long; and a right half of at least
+  `_PN_SPACE_SPLIT_TAIL_MIN`, because a trailing single letter is the shape of a
+  middle INITIAL and the leading half has no such twin. The category is
+  cap-only, so a lower-case occurrence is still left alone. Cost: +53% terms on
+  a 40-party case and +3% on the scrub; measured false positives across 4,447
+  variants of 769 name words over 2.3 MB of real filings and this repo's own
+  prose: **zero**. Residual, and accepted: a split at a punctuation mark
+  (`SARKISYA.N`, off a scanned exhibit) is a different failure and is surfaced
+  by `fuzzy_survivor_scan`, not cured here; and a surname whose true break falls
+  between two ordinary words is refused by the screen above.
 - **Registry** (`_PnFakeRegistry`): injective, deterministic real→fake fakes,
   seeded on the real value (same input → same fake across runs, no two reals
   collide onto one fake). Draw every fake through it so the used-pool stays
