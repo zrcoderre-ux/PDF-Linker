@@ -17904,7 +17904,17 @@ def _pn_master_leaks_path(cfg):
 # the surrogates and the two BMP non-characters. Everything else a mangled text
 # layer can produce — U+FFFD, U+FDD0-U+FDEF, a plane-end non-character — is
 # legal and is left alone.
-_PN_XL_BAD_CHARS_RE = re.compile("[\ud800-\udfff\ufffe\uffff]")
+#
+# …plus DEL and the C1 controls (U+007F-U+009F), which are legal XML 1.0 and are
+# still not text. Excel never writes one raw — it escapes a control character as
+# `_xHHHH_` — and openpyxl's own filter stops at U+001F, so these reached the
+# file verbatim. They arrive exactly the way the C0 controls did: a page whose
+# ToUnicode is broken maps glyphs to arbitrary code points, and
+# `_garbled_appendix` puts that text into the unscrubbed body the Context column
+# quotes. Stripped for the same reason and at the same cost — the character is
+# invisible, it came from a misrecognition, and the row is a binding worth more
+# than it is.
+_PN_XL_BAD_CHARS_RE = re.compile("[\x7f-\x9f\ud800-\udfff\ufffe\uffff]")
 # Excel's hard limit on the text of one cell.
 _PN_XL_CELL_MAX = 32767
 
@@ -18005,6 +18015,10 @@ def _pn_xl_save(wb, path, what):
             _pn_xl_plain_cells(ws)
         wb.save(tmp)
         _pn_xl_verify(tmp)
+        for problem in _pn_xl_audit(tmp):
+            logging.getLogger("pdf_linker").warning(
+                f"  REVIEW: the {what} carries a cell Excel may repair — "
+                f"{problem}")
         os.replace(tmp, path)
     except Exception as e:
         try:
@@ -18073,6 +18087,82 @@ def _pn_xl_verify(path):
         wb.close()
 
 
+# One cell's worth of what Excel refuses in a string, checked on the FILE.
+_PN_XL_AUDIT_BAD_RE = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f"
+                                 "\ud800-\udfff￾￿]")
+_PN_XL_NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+_PN_XL_SPACE_ATTR = "{http://www.w3.org/XML/1998/namespace}space"
+
+
+def _pn_xl_audit(path):
+    """`["Pseudonym Key!D42: …", …]` — every cell of the written workbook that
+    Excel would object to, or `[]`.
+
+    "Excel found a problem with some content" has now been diagnosed four times
+    from nothing but the operator's recovery log, which names a PART and never a
+    cell:
+
+        Repaired Records: String properties from /xl/worksheets/sheet1.xml part
+
+    Each cause was a shape openpyxl passes through and writes without
+    complaint — an over-long cell, a control character, a value it typed as a
+    formula — so `_pn_xl_verify` cannot see them either: it asks whether the
+    file can be READ, and every one of them reads back perfectly. What was
+    missing was not another guard but a WITNESS. This walks the saved XML with
+    Excel's own rules and names the sheet, the cell and the reason in
+    `pdf_linker.log`, so the next one is a line to read rather than a round of
+    inference.
+
+    Checks the string content only, because that is what the message is about:
+    the total text of a cell against `_PN_XL_CELL_MAX` (a rich cell's runs
+    summed, which is the count Excel applies and the one openpyxl never makes),
+    the control characters neither filter removes, and a run that would lose its
+    text to the missing `xml:space` (see `_pn_rich_context`).
+
+    Reports; never raises and never repairs. A cell Excel would quietly fix is
+    not worth discarding a key over — the key already on disk may be older, and
+    the loud failure `_pn_xl_save` reserves for an unreadable file must keep
+    meaning that."""
+    from xml.etree import ElementTree as ET
+    import zipfile
+
+    out = []
+    try:
+        with zipfile.ZipFile(path) as zf:
+            names = {}
+            wbx = ET.fromstring(zf.read("xl/workbook.xml"))
+            for i, sh in enumerate(wbx.iter(_PN_XL_NS + "sheet"), start=1):
+                names[f"xl/worksheets/sheet{i}.xml"] = sh.get("name", f"sheet{i}")
+            for part, title in names.items():
+                if part not in zf.namelist():
+                    continue
+                for c in ET.fromstring(zf.read(part)).iter(_PN_XL_NS + "c"):
+                    ist = c.find(_PN_XL_NS + "is")
+                    if ist is None:
+                        continue
+                    ref = f"{title}!{c.get('r')}"
+                    total = 0
+                    for t in ist.iter(_PN_XL_NS + "t"):
+                        txt = t.text or ""
+                        total += len(txt)
+                        if not txt:
+                            out.append(f"{ref}: empty text run")
+                        elif (txt != txt.strip()
+                              and t.get(_PN_XL_SPACE_ATTR) != "preserve"):
+                            out.append(f"{ref}: run loses its whitespace "
+                                       f"(no xml:space) {txt!r}")
+                        bad = _PN_XL_AUDIT_BAD_RE.search(txt)
+                        if bad:
+                            out.append(f"{ref}: control character "
+                                       f"U+{ord(bad.group(0)):04X}")
+                    if total > _PN_XL_CELL_MAX:
+                        out.append(f"{ref}: {total} characters, over Excel's "
+                                   f"limit of {_PN_XL_CELL_MAX}")
+    except Exception as e:          # the audit must never be the thing that fails
+        return [f"could not be audited: {e}"]
+    return out
+
+
 def _pn_rich_context(quote, value):
     """`quote` with every occurrence of `value` in BOLD, as an Excel rich-text
     cell — or the plain string when that cannot be done.
@@ -18089,7 +18179,19 @@ def _pn_rich_context(quote, value):
 
     Matched case-INSENSITIVELY and emitted with the quote's own casing: the
     sentence is the document's text, so a caption may shout a name the Value
-    column spells in title case, and both are the same value.
+    column spells in title case, and both are the same value. Through the regex
+    engine and not `str.lower()`, because lower-casing is not length-preserving
+    — "İ" lowers to two code points — so an index taken in the folded copy and
+    used to slice the original walked off by one and bolded "asho " of "Rasho".
+
+    No run is ever empty or nothing but WHITESPACE, which openpyxl writes as
+    `<t> </t>` with no `xml:space="preserve"` (its `whitespace()` helper tests
+    the STRIPPED text for truthiness, so a run that is all whitespace fails it).
+    Excel then drops that run's text on the way in, and a quote that used a
+    value twice in a row came back with the words run together —
+    "Rasho Rasho performed" read as "RashoRasho performed". The space is folded
+    into the bold run instead, where a preserve attribute is not needed and
+    bolding a space shows nothing.
 
     Falls back to the plain string on anything unexpected — an openpyxl too old
     for `CellRichText`, a value absent from its own quote (a welded or reduced
@@ -18105,20 +18207,26 @@ def _pn_rich_context(quote, value):
         from openpyxl.cell.text import InlineFont
     except ImportError:
         return text
-    low, nl = text.lower(), needle.lower()
     parts, at, bold = [], 0, InlineFont(b=True)
-    while True:
-        k = low.find(nl, at)
-        if k < 0:
-            break
-        if k > at:
-            parts.append(text[at:k])
-        parts.append(TextBlock(bold, text[k:k + len(nl)]))
-        at = k + len(nl)
+    for m in re.finditer(re.escape(needle), text, re.IGNORECASE):
+        if m.start() < at:              # an overlapping match of itself
+            continue
+        plain, hit = text[at:m.start()], m.group(0)
+        # A whitespace-only plain run loses its `xml:space` (see above), so it
+        # rides along with the bold run instead of standing on its own.
+        if plain and not plain.strip():
+            hit, plain = plain + hit, ""
+        if plain:
+            parts.append(plain)
+        parts.append(TextBlock(bold, hit))
+        at = m.end()
     if not parts:                       # the value is not in its own quote
         return text
-    if at < len(text):
-        parts.append(text[at:])
+    tail = text[at:]
+    if tail.strip():
+        parts.append(tail)
+    elif tail:
+        parts[-1] = TextBlock(bold, str(parts[-1]) + tail)
     try:
         return CellRichText(parts)
     except Exception:
