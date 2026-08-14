@@ -7503,21 +7503,30 @@ def _pn_name_variants(word):
             if _keep(v) and len(v) >= 4 and _pn_is_name_token(v)}
 
 
-# A token shorter than this is not split: the halves carry too little to make
-# the concatenation evidence of anything, and a 4-letter surname has only two
-# interior positions worth having.
-_PN_SPACE_SPLIT_MIN = 5
-# The RIGHT half must be at least this long. A trailing single letter is the
-# shape of a middle INITIAL ("Sarkisya N"), which is a thing a filing really
-# writes; the leading half has no such twin, so a one-letter LEFT half is
-# allowed — and is exactly where the observed breaks fell.
-_PN_SPACE_SPLIT_TAIL_MIN = 2
+# A token shorter than this is never treated as breakable: the halves carry too
+# little to make the concatenation evidence of anything, and a 4-letter surname
+# has only two interior positions worth having.
+_PN_WORD_BREAK_MIN = 5
+# ONE character, with a letter hard against it on BOTH sides. A space is the
+# kern the extractor read as one; a period or comma is the speck a scan dropped
+# into the middle of a word. The single-character class is what keeps a real
+# sentence boundary out: "v. Smith. Anderson testified" has a space after the
+# mark, so no branch built here can reach across it.
+_PN_WORD_BREAK = r"[\s.,]"
+# …and where the tail is a SINGLE LETTER, a mark only. "Debora H" is how a
+# filing writes a middle initial, so a space there would rewrite Debora H.
+# Smith as Deborah; "Debora.H" is not a shape prose has, and refusing it cost
+# the scanned exhibits of the batch below, which carry `SARKISYA.N` and
+# `SARKISYA,N`. The leading half has no such twin, so a one-letter LEFT half is
+# allowed either way — and is exactly where the observed breaks fell.
+_PN_WORD_BREAK_MARK = r"[.,]"
+_PN_WORD_BREAK_TAIL_MIN = 2
 
 
-def _pn_space_split_spellings(word):
-    """Spellings of one token carrying a single space INSIDE it ("SARKISY AN"
-    for "SARKISYAN"), so a name the page prints whole and extraction breaks in
-    half is still scrubbed.
+def _pn_word_breaks(word):
+    """`[(left, right, break_re)]` — the positions a printed word may have come
+    apart at, and what may sit in the gap, so a name the page prints whole and
+    extraction breaks in half is still matched by its own term.
 
     A born-digital pleading kerns a capital pair tightly ("VA", "YA"), and the
     gap the kern leaves is wide enough that the character joiner reads it as a
@@ -7535,15 +7544,33 @@ def _pn_space_split_spellings(word):
     different sets of plaintiffs and reported a record inconsistency. No OCR
     setting reaches this: the document was never scanned.
 
-    The reduced weld pass would match it (`SARKISY AN` folds to `sarkisyan`)
-    and deliberately refuses: `_pn_span_is_unbroken` rejects any match holding a
-    printed word boundary, which is the rule that stopped it deleting the text
-    between two real words ("Further, a substantial" -> "Furtthorpe
-    substantial"). That rule stands. This registers the split spelling as a real
-    TERM instead, so it still yields to citation protection and to an operator
-    KEEP, which a blind reduced substitution cannot.
+    A SCAN breaks the same word a second way, with a speck instead of a gap: the
+    exhibits of that batch carry `SARKISYA.N` and `SARKISYA,N`, which read as
+    the surname to any human. One break, two authors — so one rule, and the mark
+    is admitted only with letters hard against it on both sides.
 
-    The corroboration is the CONCATENATION: two printed words that join to
+    The reduced weld pass would match either (`SARKISY AN` folds to
+    `sarkisyan`) and deliberately refuses: `_pn_span_is_unbroken` rejects any
+    match holding a printed word boundary, which is the rule that stopped it
+    deleting the text between two real words ("Further, a substantial" ->
+    "Furtthorpe substantial"). That rule stands. The tolerance goes into the
+    TOKEN'S OWN PATTERN instead (`_pn_build_pattern(breakable=True)`), so a
+    broken spelling is matched by a real term — yielding to citation protection
+    and to an operator KEEP, which a blind reduced substitution cannot — and
+    reported by `_surviving_records`, which scans with that same pattern, so
+    detection and replacement cannot drift apart.
+
+    A pattern rather than a term PER SPELLING, which is what this first shipped
+    as: a term's real value is decomposed into WORDS by passes that have nothing
+    to do with matching, and a phantom space makes half a word look like one.
+    `_trusted_party_tokens` (the caption exemption that decides when a citation
+    loses its protection) took `sar`, `sark`, `syan`, `yan`, `vad` and `dim` as
+    party names off two split spellings, and `_weld_core` — which strips a
+    trailing connector, right for `Schilleci & Tortorici, P.C.` and meaningless
+    for half a surname — reduced "Sarkisy an" to the seven-letter prefix
+    `sarkisy` and blindly rewrote `SARKISYA.N` as `WRIGHTSONA.N`.
+
+    The corroboration is the CONCATENATION: two printed pieces that join to
     exactly a party's own token. That is why a ONE-letter left half is safe
     ("V adim" — the break the corpus actually shows), and why the screen that
     matters is the pair of halves being ordinary words: "Ashe" would offer
@@ -7551,20 +7578,22 @@ def _pn_space_split_spellings(word):
     day. The category carries `_pn_term_is_cap_only`, so a lower-case
     occurrence is left alone whatever this returns."""
     core = _pn_word_affixes(word)[1]
-    if len(core) < _PN_SPACE_SPLIT_MIN or not core[0].isupper():
-        return set()
-    out = set()
-    for i in range(1, len(core) - _PN_SPACE_SPLIT_TAIL_MIN + 1):
+    if len(core) < _PN_WORD_BREAK_MIN or not core[0].isupper():
+        return []
+    out = []
+    for i in range(1, len(core)):
         left, right = core[:i], core[i:]
-        # Split BETWEEN LETTERS only — a hyphen or an inner dot is already a
-        # printed boundary, and the wrap-split spelling of a compound surname
-        # has its own registration.
+        # BETWEEN LETTERS only — a hyphen or an inner dot is already a printed
+        # boundary, and the wrap-split spelling of a compound surname has its
+        # own registration.
         if not (left[-1].isalpha() and right[0].isalpha()):
             continue
         if (_pn_is_generic_token(left.lower())
                 and _pn_is_generic_token(right.lower())):
             continue
-        out.add(left + " " + right)
+        out.append((left, right,
+                    _PN_WORD_BREAK if len(right) >= _PN_WORD_BREAK_TAIL_MIN
+                    else _PN_WORD_BREAK_MARK))
     return out
 
 
@@ -8369,21 +8398,6 @@ def _pn_append_person_terms(terms, raw, source, registry):
             terms.append(_PnTerm("person-token", var, fake_tok,
                                  whole_word=True, case_sensitive=False,
                                  priority=0, source=source, derived=True))
-        # The same token with a space extraction opened INSIDE it ("SARKISY AN")
-        # — see `_pn_space_split_spellings`. Same fake, so the split spelling and
-        # the whole one read as the one party and no pool word is drawn.
-        #
-        # AUTHORITATIVE sources only. A split spelling is a guess about how a
-        # printed word came apart, and stacking it on a guess about who the
-        # party is doubles the way it can be wrong; the operator's own party
-        # list is the one place the name itself is not in question. A document
-        # harvest that read the split spelling as a name in its own right is
-        # what the review scans are for.
-        if source in _PN_KEY_UNMATCHED_SOURCES:
-            for var in _pn_space_split_spellings(real_tok):
-                terms.append(_PnTerm("person-token", var, fake_tok,
-                                     whole_word=True, case_sensitive=False,
-                                     priority=0, source=source, derived=True))
         # A HYPHENATED surname is one token to the tokenizer, so nothing else
         # can see its halves — and a brief uses them freely: a line wrap opens
         # the hyphen ("Ardeshirpour- Zartoshti"), a shorthand reference drops
@@ -10207,7 +10221,7 @@ def _pn_address_adjacency(records):
     return warns
 
 
-def _pn_build_pattern(term, *, whole_word, follow=None):
+def _pn_build_pattern(term, *, whole_word, follow=None, breakable=False):
     """Literal-match regex body (NFKC-normalized, escaped), with optional
     word-boundary guards. Runs of whitespace in the term match ANY whitespace
     run in the text, so a party name broken across a line wrap ("Toyota of\\n
@@ -10228,9 +10242,21 @@ def _pn_build_pattern(term, *, whole_word, follow=None):
     was reported either, because `_surviving_records` scans with this same
     pattern: replacement and detection agreed, and both were blind. `_NFKC` does
     not fold the marks (they are distinct characters, not a compatibility pair),
-    so the pattern has to."""
-    body = _PN_APOS_RE.sub(_PN_APOS_CLASS,
-                           r"\s+".join(re.escape(p) for p in _NFKC(term).split()))
+    so the pattern has to.
+
+    `breakable` additionally matches the term written with ONE stray break
+    inside a printed word — the kern gap extraction read as a space, the speck a
+    scan dropped in ("V ADIM", "SARKISY AN", "SARKISYA.N"). One alternation
+    branch per position `_pn_word_breaks` allows, whole spelling first so an
+    intact word always matches as itself. Deliberately not a term per spelling:
+    a real value carrying a phantom space makes half a word look like a word to
+    every pass that decomposes one (see `_pn_word_breaks`)."""
+    body = r"\s+".join(re.escape(p) for p in _NFKC(term).split())
+    if breakable:
+        broken = [re.escape(left) + brk + re.escape(right)
+                  for left, right, brk in _pn_word_breaks(_NFKC(term))]
+        body = "(?:" + "|".join([body] + broken) + ")"
+    body = _PN_APOS_RE.sub(_PN_APOS_CLASS, body)
     if whole_word:
         right = rf"(?:(?!\w)|(?={follow}))" if follow else r"(?!\w)"
         body = rf"(?<!\w)(?:{body}){right}"
@@ -10281,6 +10307,24 @@ def _pn_term_is_cap_only(category):
     return category in _PN_TOKEN_CATS
 
 
+def _pn_term_is_breakable(category, source):
+    """True for a term whose pattern also matches the value written with ONE
+    stray break inside a printed word — see `_pn_word_breaks`.
+
+    A bare PERSON token, from an AUTHORITATIVE source only. A split spelling is
+    a guess about how a printed word came apart, and stacking it on a guess
+    about who the party is doubles the ways it can be wrong; the operator's own
+    party list is the one place the name itself is not in question. Entity
+    tokens are excluded for the reason they are excluded everywhere else — a
+    company's words are ordinary vocabulary, so its halves are too.
+
+    Asked by `_PnTerm` itself, so the term BUILDER and `_pn_load_key` cannot
+    answer it differently: a first run and a re-run off the key alone must
+    scrub alike."""
+    return (category == "person-token"
+            and source in _PN_KEY_UNMATCHED_SOURCES)
+
+
 class _PnTerm:
     __slots__ = ("category", "real", "fake", "pattern", "flags", "priority",
                  "source", "whole_word", "count", "loaded", "derived",
@@ -10292,8 +10336,9 @@ class _PnTerm:
         self.real = real
         self.fake = fake
         self.whole_word = whole_word
-        self.pattern = _pn_build_pattern(real, whole_word=whole_word,
-                                         follow=follow)
+        self.pattern = _pn_build_pattern(
+            real, whole_word=whole_word, follow=follow,
+            breakable=_pn_term_is_breakable(category, source))
         self.flags = 0 if case_sensitive else re.IGNORECASE
         self.priority = priority
         self.source = source
@@ -13452,13 +13497,23 @@ class Pseudonymizer:
         """Distinctive lower-cased word bases of the parties named in the
         spreadsheet key (and any --term), used to decide the caption exemption.
         Corporate suffixes, connectors and role words are excluded so only a
-        genuinely identifying token ("orellana", "acquisition") counts."""
+        genuinely identifying token ("orellana", "acquisition") counts.
+
+        A SYNTHETIC spelling this tool invented is excluded too (`derived`): the
+        operator named the party, not our guesses about it, and this set decides
+        both the caption exemption — when a cited authority LOSES its protection
+        — and which short cores the blind reduced pass may rewrite. A near-miss
+        variant is at least a whole word; a spelling registered per split
+        position was not, and put `sar`, `sark`, `syan`, `yan`, `vad` and `dim`
+        in here as party names off two surnames."""
         cached = getattr(self, "_trusted_tok_cache", None)
         if cached is not None:
             return cached
         toks = set()
         for t in self.terms:
             if t.source not in ("spreadsheet", "--term"):
+                continue
+            if getattr(t, "derived", False):
                 continue
             if t.category not in ("person", "entity", "person-token",
                                   "entity-token"):
@@ -14218,7 +14273,17 @@ class Pseudonymizer:
         when the record is not eligible at all. See `_PN_WELD_CORE_MIN`."""
         if rec["category"] not in _PN_WELD_CORE_CATS:
             return "", False
-        core = _pn_alnum_core(rec["real"])
+        # `_pn_alnum_core` drops a trailing corporate suffix or connector, which
+        # is right for `Schilleci & Tortorici, P.C.` and meaningless for a
+        # PERSON: a person's name carries no such furniture, so anything it
+        # dropped there was part of the name. It cost a whole word — a term
+        # written "Sarkisy an" (a surname a kern gap broke in half) reduced to
+        # the seven-letter prefix `sarkisy`, which this pass then hunted for
+        # unanchored and rewrote `SARKISYA.N` as `WRIGHTSONA.N`.
+        core = (_pn_alnum_core(rec["real"])
+                if rec["category"] not in _PN_WELD_SHORT_CORE_CATS
+                else re.sub(r"[^a-z0-9]", "",
+                            _pn_ascii_fold(rec["real"]).lower()))
         if len(core) >= _PN_WELD_CORE_MIN:
             return core, False
         if (len(core) >= _PN_WELD_SHORT_CORE_MIN
