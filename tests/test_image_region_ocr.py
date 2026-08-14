@@ -167,3 +167,89 @@ def test_new_words_ignores_what_the_page_already_says():
         "Alison", "Mackenzie", "Judge"]
     # Short tokens and punctuation are not words — a barcode offers nothing.
     assert P._image_ocr_new_words("|| ~ @@ 1 // ab", have) == []
+
+
+# ── …and a page that was already read is not read AGAIN ────────────────────
+# The newness filter asks whether the region carries anything the PAGE lacks.
+# That is the right question for a seal echoing the caption and the wrong one
+# for a scanned exhibit arriving with its filer's own OCR layer over it: there
+# the page's text IS the image's text, so the only "new" words are the handful
+# the two engines read differently — and the overlay then lands a SECOND
+# reading of the whole page on top of the first.
+
+SCAN = ("DECLARATION OF SERVICE I am employed in the County of Los Angeles "
+        "I served the foregoing document on the interested parties herein")
+# What a second engine makes of the same page: two words differently.
+REREAD = SCAN.replace("foregoing", "foregolng").replace("interested",
+                                                        "lnterested")
+
+
+def _scanned_doc(layer=SCAN):
+    """A scanned page whose filer's OCR layer already sits over the image."""
+    doc = fitz.open()
+    pg = doc.new_page(width=612, height=792)
+    pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 612, 792))
+    pix.clear_with(250)
+    pg.insert_image(fitz.Rect(0, 0, 612, 792), pixmap=pix)
+    y = 100
+    for i in range(0, len(layer), 60):
+        pg.insert_text((60, y), layer[i:i + 60], fontsize=11)
+        y += 16
+    return doc
+
+
+def test_a_scan_that_already_carries_an_ocr_layer_is_not_read_again(monkeypatch):
+    _stub_tesseract(monkeypatch, REREAD)
+    doc = _scanned_doc()
+    before = doc[0].get_text("text")
+    assert P._ocr_image_regions(doc, log) == 0
+    assert doc[0].get_text("text") == before
+
+
+def test_the_export_does_not_carry_the_page_twice(monkeypatch):
+    """The symptom, counted: 23 words became 46."""
+    _stub_tesseract(monkeypatch, REREAD)
+    doc = _scanned_doc()
+    before = len(doc[0].get_text("text").split())
+    P._ocr_image_regions(doc, log)
+    assert len(doc[0].get_text("text").split()) == before
+
+
+def test_the_words_the_two_engines_read_differently_are_not_a_find(monkeypatch):
+    """`foregolng` and `lnterested` clear `_IMG_OCR_MIN_NEW` on any page of
+    prose — which is why the page-wide test cannot be the only one."""
+    have = {w.lower() for w in P._IMG_OCR_WORD_RE.findall(SCAN)}
+    assert len(P._image_ocr_new_words(REREAD, have)) >= P._IMG_OCR_MIN_NEW
+
+
+def test_running_the_pass_twice_adds_nothing(monkeypatch):
+    """The tool REPLACES the source PDF, so the overlay is in the file the next
+    run opens. Idempotence used to rest on our own OCR being deterministic;
+    now the region says it has been read."""
+    _stub_tesseract(monkeypatch, SIGNATURE)
+    doc = _doc()
+    assert P._ocr_image_regions(doc, log) == 1
+    once = doc[0].get_text("text")
+    assert P._ocr_image_regions(doc, log) == 0
+    assert doc[0].get_text("text") == once
+
+
+def test_a_signature_block_beside_body_text_is_still_read(monkeypatch):
+    """The rule is scoped to the RECT, so text elsewhere on the page — even
+    text the OCR happens to echo — never suppresses a real find."""
+    _stub_tesseract(monkeypatch, SIGNATURE)
+    doc = _doc()
+    assert P._ocr_image_regions(doc, log) == 1
+    assert "Mackenzie" in doc[0].get_text("text")
+
+
+@pytest.mark.parametrize("found,expected", [
+    (SCAN, True),                 # exactly what is printed there
+    (REREAD, True),               # the same page, read a second way
+    ("Alison Mackenzie Judge", False),        # nothing of it is there
+    ("", False),                  # a logo: no words at all
+])
+def test_already_read_is_measured_inside_the_rect(found, expected):
+    doc = _scanned_doc()
+    rect = fitz.Rect(0, 0, 612, 792)
+    assert P._image_ocr_already_read(doc[0], rect, found) is expected

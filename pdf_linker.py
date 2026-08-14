@@ -2334,6 +2334,46 @@ def _image_ocr_rects(page):
     return out
 
 
+# How much of what the OCR read inside an image may already be sitting there in
+# the page's OWN text before the image counts as ALREADY READ. Half is generous
+# on purpose: two OCR engines never agree on every word, and it is the bulk
+# agreeing that says the layer is a reading of this same image.
+_IMG_OCR_READ_MIN = 0.5
+
+
+def _image_ocr_already_read(page, rect, found):
+    """True when the page's own text layer already sits INSIDE `rect` and says
+    what the OCR has just read there.
+
+    `_image_ocr_new_words` asks whether the region carries anything the PAGE
+    lacks, which is the right question for a court seal echoing the caption and
+    the wrong one for a scanned exhibit that arrives with its filer's own OCR
+    layer over it. There the page's text IS the image's text, so the only words
+    this pass can find that the page "lacks" are the handful the two engines
+    read differently — `foregolng` for `foregoing`, `lnterested` for
+    `interested` — which clears `_IMG_OCR_MIN_NEW` on any page of prose. The
+    overlay then lands a SECOND reading of the whole page on top of the first
+    and every word is exported twice.
+
+    Scoped to the RECT, because that is what separates the two cases: a seal's
+    words are echoed elsewhere on the page and there is nothing under the seal,
+    while a re-read scan's words are already exactly where we are about to put
+    them again. So both rules apply, each to its own failure — the page-wide
+    newness test refuses the seal, this refuses the second reading."""
+    words = _IMG_OCR_WORD_RE.findall(found or "")
+    if not words:
+        return False
+    try:
+        inside = page.get_text("text", clip=rect)
+    except Exception:
+        return False
+    have = {w.lower() for w in _IMG_OCR_WORD_RE.findall(inside)}
+    if not have:
+        return False
+    same = sum(1 for w in words if w.lower() in have)
+    return same >= _IMG_OCR_READ_MIN * len(words)
+
+
 def _image_ocr_new_words(found, have_low):
     """The word-shaped tokens of `found` that `have_low` does not already
     carry — the whole filter, and the reason no word list is needed.
@@ -2411,6 +2451,11 @@ def _ocr_image_regions(doc, log):
             new = _image_ocr_new_words(found, have_low)
             if len(new) < _IMG_OCR_MIN_NEW:
                 continue             # a logo, a seal, or a picture of the text
+            if _image_ocr_already_read(page, rect, found):
+                log.info(f"  Image OCR: page {page.number + 1} region already "
+                         f"carries the page's own text — a second reading of "
+                         f"one already there, not read again")
+                continue
             try:
                 with fitz.open(stream=ocr_bytes, filetype="pdf") as ocr_doc:
                     page.show_pdf_page(rect, ocr_doc, 0, overlay=True)
