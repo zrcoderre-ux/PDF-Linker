@@ -95,7 +95,54 @@ def test_every_keyed_fake_is_reused_exactly(folder):
     z2 = _rerun(folder)
     z2.apply(ADDED)                       # the new document draws its own fakes
     for real, fake in rows.items():
+        # A bare token the BUILDER refuses a term ("Roe" is an ordinary word) is
+        # exempt: its row stays in the key because the macro reverses a composed
+        # fake word by word off it, but it builds no forward term — see
+        # `test_a_withheld_token_is_reversible_but_matches_nothing`.
+        if len(real.split()) == 1 and not P._pn_is_name_token(real):
+            continue
         assert z2.apply(real) == fake, f"{real!r} moved: {z2.apply(real)!r}"
+
+
+def test_a_withheld_token_is_reversible_but_matches_nothing(folder):
+    """The two ends of the key must answer the same question the same way.
+
+    `_pn_build_terms` refuses "Roe" a bare token — it is an ordinary English
+    word, and the full name still scrubs. `write_key` harvests a row per word
+    anyway, and `_pn_load_key` used to read every row back as a LIVE term, so
+    the word the build had declined came back through the key: a first run left
+    a bare "Roe" standing and the re-run scrubbed it, one folder answering one
+    question two ways.
+
+    The row must STAY, because the macro undoes "Jane Roe" -> "Widdecombe
+    Lassiter" word by word off it. Only the forward term goes.
+    """
+    _first_run(folder)
+    rows = {(str(r[0]), str(r[1])): str(r[2]) for ws in
+            openpyxl.load_workbook(folder / "pseudonym_key.xlsx").worksheets
+            for r in ws.iter_rows(min_row=2, values_only=True) if r[1]}
+    assert not P._pn_is_name_token("Roe")            # the builder's own verdict
+    assert ("person-token", "Roe") in rows           # kept, for the reversal
+    z2 = _rerun(folder)
+    assert z2.apply("Roe declares.") == "Roe declares."      # no forward term
+    assert "Jane Roe" not in z2.apply("Declaration of Jane Roe.")   # full name
+
+
+def test_the_first_run_and_the_rerun_scrub_alike(folder):
+    """The point of the rule: adding a document must not change what a value in
+    the ALREADY-SENT batch would have been scrubbed to, and a re-run must not
+    quietly scrub more than the run that produced the exports."""
+    _first_run(folder)
+    names, casenos = P._pn_terms_from_xlsx(
+        folder / "Order_Template_Input.xlsx", None, log)
+    reg = P._PnFakeRegistry()
+    fresh = P.Pseudonymizer(P._pn_build_terms(names, casenos, [], registry=reg),
+                            DET, registry=reg)
+    z2 = _rerun(folder)
+    for probe in ("Declaration of Jane Roe.", "Roe declares.",
+                  "Ms. Roe's exhibit.", "Jane A. Roe signed.",
+                  "JANE ROE testified.", "Roe, Jane, declarant."):
+        assert fresh.apply(probe) == z2.apply(probe), probe
 
 
 def _street(text):
