@@ -10886,8 +10886,20 @@ def _pn_load_key(path, registry, log, remint_recycled=False):
         # full party match, and the loaded row IS one). The registry memo above
         # still carries the binding, so a previously delivered export stays
         # reversible; it just does not match anything again.
+        #
+        # `_pn_is_name_token` is asked here for the same reason and by the same
+        # rule the BUILDER applies to a bare token, whatever its parent's
+        # source. Without it the two ends of the key disagreed: the builder
+        # refuses "Roe" and "Cruz" a token — they are ordinary vocabulary and a
+        # locality word — while `write_key` harvested a row per word anyway (it
+        # screened on `_pn_is_generic_token`, a DIFFERENT test, which passes
+        # both), so the round-trip quietly resurrected what the build had
+        # declined. A first run left a bare "Roe" standing and the re-run
+        # scrubbed it, which is the same folder answering the same question two
+        # ways.
         if (cat in ("person-token", "entity-token") and len(real.split()) == 1
                 and (_pn_is_generic_token(_pn_word_base(real))
+                     or not _pn_is_name_token(real)
                      or _pn_word_base(real) in registry.keep_words)):
             continue
         # The same rule for a single-word HARVESTED person/entity row. A
@@ -15168,6 +15180,15 @@ class Pseudonymizer:
                 # in one folder: the word was correctly refused a term at build
                 # time, harvested into the key anyway, and handed back as a term
                 # on the next run, where no amount of bracketing could retire it.
+                #
+                # `_pn_is_name_token` is deliberately NOT asked here, though the
+                # BUILDER asks it of a bare token and `_pn_load_key` now does
+                # too. The row is load-bearing in the REVERSE direction: "Doe"
+                # is refused a term (it is an ordinary word) and is still FAKED
+                # inside "Jane Doe" -> "Marlow Deverell", which the macro undoes
+                # word by word off this very row. A generic word is different
+                # and can be dropped, because the composing faker KEEPS it
+                # verbatim, so there is no binding to reverse.
                 if (_pn_is_generic_token(_pn_word_base(rtok))
                         or self.registry.keeps_word(_pn_word_base(rtok))):
                     continue

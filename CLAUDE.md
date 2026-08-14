@@ -676,6 +676,24 @@ the party), so its row stays reversible.
   repairs a stored composed fake on load, since a loaded row is applied
   literally and would otherwise keep reproducing the very output being
   bracketed away; it refuses any repair that would leave fake == real.
+- **…and the two ends must ask the SAME question of a bare token.**
+  `_pn_load_key` screened a loaded `*-token` row on `_pn_is_generic_token`,
+  while the BUILDER screens a bare token on `_pn_is_name_token` — a different
+  test, which "Roe" (an ordinary word) and "Cruz" (a locality word) pass. So
+  the round-trip quietly resurrected what the build had declined: the FIRST run
+  left a bare "Roe" standing and the re-run scrubbed it, one folder answering
+  one question two ways. `_pn_load_key` now asks the builder's question too,
+  whatever the parent's source, so a first run and a re-run scrub alike
+  (`test_the_first_run_and_the_rerun_scrub_alike`). The row itself STAYS in the
+  key, and `write_key` deliberately does NOT gain the same screen: it is
+  load-bearing in the REVERSE direction, because "Doe" is refused a term and is
+  still FAKED inside "Jane Doe" -> "Marlow Deverell", which the macro undoes
+  word by word off that very row. A GENERIC word is the different case that may
+  be dropped from the key outright — the composing faker keeps it verbatim, so
+  there is no binding to reverse. Accepted cost, and it is the direction the
+  owner chose: a re-run now scrubs a little LESS than it used to, so a folder
+  already delivered under the old behaviour can come back with a bare
+  common-word surname standing where the previous re-run had faked it.
 - **A POSSESSIVE is the party's own fake, not a second party.** The registry
   memoizes on the string it is handed, so `_pn_fake_name_token` drawing on the
   RAW token made "RASHO'S" a different real value from "Rasho" and it drew an
