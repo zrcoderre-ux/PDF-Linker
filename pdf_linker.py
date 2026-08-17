@@ -17154,6 +17154,175 @@ def _form_banner(page, boxes, checked, unsure=0, source="fields"):
     return f"[printed {what} — {read}: {tally}]"
 
 
+# ── A SPREADSHEET printed into an exhibit ───────────────────────────────────
+# A billing export, a damages schedule, a payment history: the page is a grid,
+# and plain extraction reads it a cell at a time, top to bottom. Every value
+# survives and the document still says nothing, because a rate no longer sits
+# beside the entry it belongs to:
+#
+#     Date / • / Type / Description / Matter / User / Qty / Rate($) /
+#     Non-billable ($) / Billable($) / 04/04/2025 / Telephonic conference with /
+#     Wrightson, Sharnbrook & / Buckminster / 0.40h / $375.00 / $150.00 / …
+#
+# On a fee motion that is the exhibit the court actually reads.
+#
+# The GATE is the symptom itself and costs nothing: a page whose text comes out
+# as a tall stack of very short lines is a grid that came apart into one cell
+# per line. Measured on the batch that reported this, the three billing pages
+# ran 99-100% short lines at a median length of 10 characters, against 4-21% at
+# a median of 94 on the same document's prose pages — so the cut has an enormous
+# margin, and `find_tables` (~73 ms a page, against ~2 ms for the extraction
+# itself) is only ever paid on a page that already looks like this.
+_TABLE_STACK_MIN_LINES = 20
+_TABLE_STACK_SHORT_MAX = 40
+_TABLE_STACK_SHORT_MIN = 0.8
+# A grid must be at least this big to be worth rendering as one.
+_TABLE_MIN_ROWS = 3
+_TABLE_MIN_COLS = 2
+# …and this full. A stray 3x2 of empty cells is line art, not a table.
+_TABLE_MIN_FILLED = 0.5
+_TABLE_WORD_RE = re.compile(r"[^\s|]+")
+# Per-document memo, so `find_tables` runs once for a page the export
+# loop and the detection pass both ask about.
+_TABLE_TEXT_ATTR = "_pdf_linker_table_text"
+
+
+def _page_reads_as_cells(text):
+    """True when `text` is a tall stack of very short lines — the shape a grid
+    takes when plain extraction reads it one cell at a time."""
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    if len(lines) < _TABLE_STACK_MIN_LINES:
+        return False
+    short = sum(1 for ln in lines if len(ln) < _TABLE_STACK_SHORT_MAX)
+    return short >= _TABLE_STACK_SHORT_MIN * len(lines)
+
+
+def _table_cell(value):
+    """One cell's text on a single line, with the delimiter escaped."""
+    return re.sub(r"\s+", " ", str(value or "")).replace("|", r"\|").strip()
+
+
+def _table_grid(table):
+    """`table` as a pipe-delimited grid with a header rule, or None when it is
+    too small or too empty to be one.
+
+    Pipe-delimited because the export is read by a person AND by a drafting
+    model, and that is the one table shape both read without being told."""
+    try:
+        rows = [[_table_cell(c) for c in r] for r in table.extract()]
+    except Exception:
+        return None
+    rows = [r for r in rows if any(r)]
+    if len(rows) < _TABLE_MIN_ROWS:
+        return None
+    width = max(len(r) for r in rows)
+    if width < _TABLE_MIN_COLS:
+        return None
+    cells = sum(len(r) for r in rows)
+    if sum(1 for r in rows for c in r if c) < _TABLE_MIN_FILLED * cells:
+        return None
+    out = []
+    for i, r in enumerate(rows):
+        out.append("| " + " | ".join(list(r) + [""] * (width - len(r))) + " |")
+        if i == 0:
+            out.append("|" + "|".join([" --- "] * width) + "|")
+    return "\n".join(out)
+
+
+def _table_keeps_every_word(page, bbox, grid):
+    """True when `grid` carries every word the page prints inside `bbox`.
+
+    The pass has to PROVE it lost nothing, for the reason `_reocr_improves`
+    does: this replaces the page's own text for that region, and a cell the
+    table finder failed to read would be a value gone from the export with
+    nothing to say so. Cheap, and it is the whole safety of the pass — a grid
+    that drops a word is discarded and the region keeps its ordinary text."""
+    import collections
+    import fitz
+
+    try:
+        inside = page.get_text("text", clip=fitz.Rect(bbox))
+    except Exception:
+        return False
+    have = collections.Counter(_TABLE_WORD_RE.findall(inside))
+    got = collections.Counter(_TABLE_WORD_RE.findall(grid))
+    return all(got[w] >= n for w, n in have.items())
+
+
+def _page_table_text(page, flowing=None):
+    """The page with every TABLE on it rendered as a grid and everything else
+    left where it was, or None when the page carries no table worth rendering.
+
+    Scoped to a page that is neither pleading paper nor a court form: those have
+    their own renderings, and swapping a whole page to this one to gain a grid
+    would cost the gutter numbers a pinpoint cite lands on. An exhibit
+    spreadsheet has no gutter numbers, which is exactly why nothing was reading
+    it as a table."""
+    # The export loop and `_page_detect_text` both ask, and they must get the
+    # same answer anyway — memoized per page so `find_tables` is run once.
+    memo = None
+    doc = getattr(page, "parent", None)
+    if doc is not None:
+        memo = getattr(doc, _TABLE_TEXT_ATTR, None)
+        if memo is None:
+            memo = {}
+            try:
+                setattr(doc, _TABLE_TEXT_ATTR, memo)
+            except Exception:
+                memo = None
+    if memo is not None and page.number in memo:
+        return memo[page.number]
+
+    def _done(value):
+        if memo is not None:
+            memo[page.number] = value
+        return value
+
+    if flowing is None:
+        flowing = _page_flowing_text(page)
+    if not _page_reads_as_cells(flowing):
+        return _done(None)
+    try:
+        found = list(page.find_tables().tables)
+        if not found:
+            # An UNRULED grid — a UI export that separates its rows by shading
+            # or by nothing at all — is invisible to the line strategy. The
+            # text strategy reads the column alignment instead; it is eager, so
+            # it only runs where the line strategy found nothing and the page
+            # already reads as cells, and its result faces the same no-loss
+            # test as any other.
+            found = list(page.find_tables(strategy="text").tables)
+    except Exception:
+        return _done(None)
+    grids = []
+    for t in found:
+        grid = _table_grid(t)
+        if grid and _table_keeps_every_word(page, t.bbox, grid):
+            grids.append((tuple(t.bbox), grid))
+    if not grids:
+        return _done(None)
+    items = [(bbox[1], bbox[0], grid) for bbox, grid in grids]
+    try:
+        blocks = page.get_text("dict").get("blocks", [])
+    except Exception:
+        blocks = []
+    for blk in blocks:
+        if not blk.get("lines"):
+            continue
+        bx0, by0, bx1, by1 = blk["bbox"]
+        cx, cy = (bx0 + bx1) / 2.0, (by0 + by1) / 2.0
+        if any(x0 <= cx <= x1 and y0 <= cy <= y1
+               for (x0, y0, x1, y1), _g in grids):
+            continue                    # this block IS the table
+        text = "\n".join(
+            "".join(sp.get("text", "") for sp in ln.get("spans", ()))
+            for ln in blk["lines"]).strip()
+        if text:
+            items.append((by0, bx0, text))
+    items.sort(key=lambda it: (round(it[0], 1), it[1]))
+    return _done("\n\n".join(it[2] for it in items).strip() or None)
+
+
 def _form_page_text(page):
     """Reading-order text for a court form: every checkbox rendered as [X], [ ]
     (or [?] when it could not be read) beside the caption it governs, and every
@@ -17217,7 +17386,11 @@ def _page_detect_text(page, form=_FORM_UNDECIDED):
         return form
     rows = _page_lined_rows(page)
     if not rows:
-        return _MARKER_DETECT_RE.sub("", _page_flowing_text(page))
+        flowing = _MARKER_DETECT_RE.sub("", _page_flowing_text(page))
+        # Detection reads exactly what the export writes — the rule the form
+        # path already follows. A grid's cells are in reading order by
+        # construction, so a party named in one is contiguous here too.
+        return _page_table_text(page, flowing) or flowing
     out = []
     for _band, items in _page_column_streams(rows):
         out.append("\n".join(rows[i][1][j][1] for i, j in items))
@@ -18920,7 +19093,7 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
     page_blocks = []  # (header, rows_or_text) before pseudonymization; rows is
                       # a list of (line_num, segments) for pleading pages, else a str
     has_fields = _doc_has_form_fields(doc)
-    forms_seen, ink_seen = [], []
+    forms_seen, ink_seen, tables_seen = [], [], []
     for i, page in enumerate(doc):
         raw = _page_flowing_text(page)
         # Drop our invisible citation markers (present when re-processing an
@@ -18953,6 +19126,16 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
                 ink_seen.append(i + 1)
             rows = None
             clean = form
+        elif not rows:
+            # An exhibit that is a SPREADSHEET — a billing export, a damages
+            # schedule — reads one cell at a time otherwise, and a rate no
+            # longer sits beside the entry it belongs to. Only where the page
+            # is neither pleading paper nor a form: both have their own
+            # rendering, and neither would be worth a grid.
+            table = _page_table_text(page, clean)
+            if table is not None:
+                tables_seen.append(i + 1)
+                clean = table
         orig_pages.append(clean)
         # Pass the DECIDED form text (None when this page's form rendering was
         # suppressed above), so detection reads exactly what the export writes.
@@ -18997,6 +19180,10 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         return (", ".join(str(p) for p in nums[:12])
                 + (f" (+{len(nums) - 12} more)" if len(nums) > 12 else ""))
 
+    if tables_seen:
+        log.info(f"  Page(s) rendered as a TABLE — a spreadsheet printed into "
+                 f"the document, which plain extraction reads one cell at a "
+                 f"time: {_pages(tables_seen)}")
     if forms_seen:
         log.info(f"  Court-form page(s) rendered with checkbox state: "
                  f"{_pages(forms_seen)}")
