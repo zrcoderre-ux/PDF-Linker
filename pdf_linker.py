@@ -2956,7 +2956,75 @@ def _drop_overdrawn_spans(spans):
             continue
         same.append(sp)
         out.append(sp)
-    return out
+    return _drop_redrawn_fragments(out)
+
+
+# How far outside a span's box a piece may stick and still count as drawn INSIDE
+# it — one point, for the rounding two renderings of the same row disagree by.
+_SPAN_INSIDE_PAD = 1.0
+# Vertical banding for the containment scan, so it compares a span against its
+# own row rather than the whole page.
+_SPAN_BAND_PT = 6.0
+
+
+def _span_is_redraw_fragment(sp, big):
+    """True when `sp` is a PIECE of `big` drawn on top of it — its box inside
+    `big`'s box, its text inside `big`'s text.
+
+    The other half of a doubled text layer, and the half `_drop_overdrawn_spans`
+    could not see. That pass compares on exact TEXT equality, so it collapses two
+    copies only when both split their row the same way. They routinely do not:
+    an OCR layer emits one span per WORD while the layer underneath has one span
+    per styled run, so nothing matches and the row joins left to right as
+
+        EDGECOMBE EDGECOMBE N. DENHOLM, ESQ. (SBN 584673) N. DENHOLM, ESQ. (SBN 584673)
+
+    — which is why the operator sees the duplication as "always the first word
+    on the line": both copies start at the same left edge, so their first pieces
+    sort adjacent and the rest of the word-by-word copy trails after the long
+    span.
+
+    Dropping such a piece can lose nothing, and that is the whole safety
+    argument: its text is already on the page, at that same place, as part of
+    the span it sits inside. Both conditions are needed and neither is loose —
+    ordinary typesetting never nests one span's box inside another's (spans on a
+    line abut, they do not overlap), so this can only fire where something was
+    genuinely drawn twice. A page-wide watermark is untouched: its box is not
+    inside a body span's, and the body span's text is not inside "COPY"."""
+    if sp is big:
+        return False
+    sx0, sy0, sx1, sy1 = sp["bbox"]
+    bx0, by0, bx1, by1 = big["bbox"]
+    if not (bx0 - _SPAN_INSIDE_PAD <= sx0 and sx1 <= bx1 + _SPAN_INSIDE_PAD
+            and by0 - _SPAN_INSIDE_PAD <= sy0 and sy1 <= by1 + _SPAN_INSIDE_PAD):
+        return False
+    small, whole = sp["text"].strip(), big["text"].strip()
+    return bool(small) and len(small) < len(whole) and small in whole
+
+
+def _drop_redrawn_fragments(spans):
+    """`spans` with every `_span_is_redraw_fragment` piece removed.
+
+    Banded by row so the comparison is against a span's own line and never a
+    product over the page — a clean page pays one bucket lookup per span and
+    drops nothing."""
+    if len(spans) < 2:
+        return spans
+    bands = {}
+    for i, sp in enumerate(spans):
+        y0, y1 = sp["bbox"][1], sp["bbox"][3]
+        for b in range(int(y0 // _SPAN_BAND_PT), int(y1 // _SPAN_BAND_PT) + 1):
+            bands.setdefault(b, []).append(i)
+    drop = set()
+    for i, sp in enumerate(spans):
+        y0, y1 = sp["bbox"][1], sp["bbox"][3]
+        near = {j for b in range(int(y0 // _SPAN_BAND_PT),
+                                 int(y1 // _SPAN_BAND_PT) + 1)
+                for j in bands.get(b, ())}
+        if any(j != i and j not in drop and _span_is_redraw_fragment(sp, spans[j])
+               for j in near):
+            drop.add(i)
+    return [sp for i, sp in enumerate(spans) if i not in drop]
 
 
 def _split_row_columns(spans, gap_min=_COLUMN_GAP_MIN):

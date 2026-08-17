@@ -1275,6 +1275,23 @@ the party), so its row stays reversible.
   Compared on exact text, so an OCR layer that MISREAD a word is left alone:
   this can only ever remove a piece the page also has somewhere else. A copy far
   enough away to be a real second column is untouched.
+  **…and the copies routinely do NOT split their row the same way**
+  (`_span_is_redraw_fragment`). Exact-text equality collapses two copies only
+  when both cut the row into the same pieces, and an OCR layer emits one span
+  per WORD while the layer underneath has one per styled run — so nothing
+  matched and the row joined left to right as `EDGECOMBE EDGECOMBE N. DENHOLM,
+  ESQ. (SBN 584673) N. DENHOLM, ESQ. (SBN 584673)`. That is why the operator
+  reports the duplication as "always the first word on the line": both copies
+  start at the same left edge, so their first pieces sort adjacent and the
+  word-by-word copy trails after the long span. A piece whose BOX is inside
+  another span's box and whose TEXT is inside that span's text is dropped, and
+  dropping it can lose nothing — its text is on the page, in that same place,
+  as part of the span it sits inside. Both conditions are load-bearing and
+  neither is loose: ordinary typesetting never nests one span's box inside
+  another's (spans on a line abut), so this fires only where something really
+  was drawn twice, and a page-wide watermark is untouched because its box is
+  not inside a body span's and the body text is not inside "COPY". Banded by
+  row, so a clean page pays one bucket lookup per span and drops nothing.
   **The FLOWING-text path needed it too** (`_page_flowing_text`). `get_text`
   returns the duplicate as its own LINE, which reads as merely ugly — until a
   weld-cure pass matches a party's reduced core ACROSS the seam between the two

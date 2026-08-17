@@ -191,3 +191,84 @@ def test_a_document_that_repeats_a_line_on_purpose_is_untouched():
     assert not P._page_is_overdrawn(doc[0])
     assert _flat(doc[0]) == ["Item      100.00", "Item      100.00",
                              "Total     200.00"]
+
+
+# ── …and the copies that do NOT split their row the same way ────────────────
+# The dedupe above compares on exact TEXT, so it collapses two copies only when
+# both split their row identically. They routinely do not: an OCR layer emits
+# one span per WORD while the layer underneath has one span per styled run. A
+# delivered fee motion carried
+#
+#   EDGECOMBE EDGECOMBE N. DENHOLM, ESQ. (SBN 584673) N. DENHOLM, ESQ. (SBN 584673)
+#
+# on 26 of its pages — which is why the operator sees the duplication as
+# "always the first word on the line": both copies start at the same left edge,
+# so their first pieces sort adjacent and the word-by-word copy trails after the
+# long span.
+
+RUN = "EDGECOMBE N. DENHOLM, ESQ. (SBN 584673)"
+
+
+def _word_copy_over_a_run():
+    """One span for the printed run, one per word of a second reading of it."""
+    spans = [_sp(RUN, 72, 100, 400, 112)]
+    x = 72.0
+    for w in RUN.split():
+        spans.append(_sp(w, x, 101, x + 6 * len(w), 111))
+        x += 6 * len(w) + 3
+    return spans
+
+
+def test_a_word_by_word_re_draw_collapses_to_the_printed_run():
+    kept = P._drop_overdrawn_spans(_word_copy_over_a_run())
+    joined = " ".join(s["text"] for s in sorted(kept, key=lambda s: s["bbox"][0]))
+    assert joined == RUN, joined
+
+
+def test_the_first_word_is_not_doubled():
+    """The symptom as the operator described it."""
+    kept = P._drop_overdrawn_spans(_word_copy_over_a_run())
+    words = " ".join(s["text"] for s in
+                     sorted(kept, key=lambda s: s["bbox"][0])).split()
+    assert words[0] != words[1], words[:4]
+
+
+@pytest.mark.parametrize("piece", RUN.split())
+def test_every_piece_survives_inside_the_run_it_came_from(piece):
+    """Dropping one can lose nothing: its text is on the page, in that same
+    place, as part of the span it sits inside."""
+    kept = P._drop_overdrawn_spans(_word_copy_over_a_run())
+    assert any(piece in s["text"] for s in kept)
+
+
+def test_a_clean_line_of_separate_words_is_untouched():
+    """Ordinary typesetting never nests one span's box inside another's — spans
+    on a line abut, they do not overlap."""
+    spans = [_sp("Plaintiff", 72, 100, 120, 112),
+             _sp("moved", 124, 100, 160, 112),
+             _sp("to strike the answer", 164, 100, 280, 112)]
+    assert P._drop_overdrawn_spans(spans) == spans
+
+
+def test_a_watermark_and_the_text_under_it_both_survive():
+    """Its box is not inside a body span's, and the body span's text is not
+    inside "COPY"."""
+    spans = [_sp("COPY", 60, 95, 500, 140),
+             _sp("a COPY of the lease", 72, 110, 300, 122)]
+    assert P._drop_overdrawn_spans(spans) == spans
+
+
+def test_a_repeated_word_elsewhere_on_the_line_is_kept():
+    """Containment is not enough on its own — the box has to be inside too."""
+    spans = [_sp("the lease and the rent", 72, 100, 240, 112),
+             _sp("the", 260, 100, 275, 112)]
+    assert P._drop_overdrawn_spans(spans) == spans
+
+
+def test_a_fragment_is_never_dropped_for_a_fragment():
+    """Two pieces of one copy do not remove each other, or a row would erode
+    down to its longest span."""
+    spans = [_sp("DENHOLM", 100, 100, 160, 112),
+             _sp("HOLM", 100, 101, 130, 111)]
+    kept = P._drop_overdrawn_spans(spans)
+    assert [s["text"] for s in kept] == ["DENHOLM"]
