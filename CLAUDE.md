@@ -1640,6 +1640,38 @@ page whose 10-29 outnumber its 1-9 puts `dominant_x` on the wider run
 ("1 SERVICE LIST"). `_FOOTER_MASK_PT` still masks the running footer, which
 repeats the document title on every page and carries nothing else.
 
+**A SPREADSHEET printed into an exhibit exports as a TABLE** (`_page_table_text`).
+A billing export, a damages schedule, a payment history: the page is a grid, and
+plain extraction reads it a cell at a time, top to bottom. Every value survives
+and the document still says nothing, because a rate no longer sits beside the
+entry it belongs to — `Date / • / Type / Description / Matter / User / Qty /
+Rate($) / Non-billable ($) / Billable($) / 04/04/2025 / Telephonic conference
+with / …`. On a fee motion that is the exhibit the court actually reads. The
+GATE is the symptom itself and costs nothing (`_page_reads_as_cells`): a page
+whose text comes out as a tall stack of very short lines is a grid that came
+apart one cell per line. Measured on the batch that reported it, the three
+billing pages ran **99-100%** short lines at a median length of **10**
+characters against **4-21%** at a median of **94** on the same document's prose
+pages, so the cut has an enormous margin — and `find_tables` (~73 ms a page,
+against ~2 ms for the extraction itself) is only ever paid on a page that
+already looks like this, memoized so the export loop and `_page_detect_text`
+run it once. Rendered pipe-delimited with a header rule, because the export is
+read by a person AND by a drafting model and that is the one table shape both
+read without being told; the text around the table keeps its place by y. The
+line strategy runs first and the **text** strategy only where it found nothing
+(an unruled UI export separates its rows by shading or by nothing at all) — it
+is eager, so it never runs on a page the line strategy could read. And the
+rendering must PROVE it lost nothing (`_table_keeps_every_word`), for the
+reason `_reocr_improves` must: this replaces the page's own text for that
+region, and a cell the finder failed to read would be a value gone from the
+export with nothing to say so — a grid that drops a word is discarded and the
+region keeps its ordinary text. Scoped to a page that is neither pleading paper
+nor a court form: both have their own rendering, and swapping a whole page to
+this one would cost the gutter numbers a pinpoint cite lands on. Residual, and
+accepted: the text strategy splits on word gaps, so an unruled table can put
+`Rasho v. Quillmark` in three columns — the row grouping, which is the point, is
+still right.
+
 ## Citation linking
 
 `find_all_citations` (full/short-form/supra/statute/rule) over the combined
