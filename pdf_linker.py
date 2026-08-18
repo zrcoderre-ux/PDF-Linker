@@ -2021,6 +2021,36 @@ def _ocr_page_to_pdf(page, pytesseract, Image, io, log, label, start=0):
             return None
 
 
+def _unrotated_bound(page):
+    """The page's full bound in UNROTATED coordinate space.
+
+    `page.rect` reflects /Rotate — a rot-90 letter page reads 792x612 — while
+    `get_text`, span geometry, redaction rects and `show_pdf_page` targets all
+    live in the UNROTATED space, where the same page is 612x792. Every mixed
+    use of the two was a real loss on rotated scans (exactly the pages the OCR
+    family exists for): an overlay clipped a whole band of recognised text out
+    of extraction, and a full-page redaction left a band of garbled text
+    standing under the fresh layer."""
+    import fitz
+    mb = page.mediabox
+    return fitz.Rect(0, 0, mb.width, mb.height)
+
+
+def _overlay_ocr_layer(page, ocr_doc):
+    """Place a Tesseract-rendered page (laid out in DISPLAY orientation,
+    because it was recognised from the rotated render) onto `page`, rotation
+    compensated. On a /Rotate page the naive `show_pdf_page(page.rect, …)`
+    put the text 90° off and CLIPPED every word past the unrotated mediabox
+    out of extraction entirely — of four corner words only the two nearest
+    the origin survived. Verified: the unrotated target plus
+    `rotate=page.rotation` lands all four at their display positions."""
+    if page.rotation:
+        page.show_pdf_page(_unrotated_bound(page), ocr_doc, 0, overlay=True,
+                           rotate=page.rotation)
+    else:
+        page.show_pdf_page(page.rect, ocr_doc, 0, overlay=True)
+
+
 def _ocr_pdf(doc, log):
     """OCR pages of a PyMuPDF doc that have no text. Adds an invisible text
     layer using the recognised text. Modifies doc in place."""
@@ -2053,7 +2083,7 @@ def _ocr_pdf(doc, log):
         nonlocal ocr_count
         try:
             ocr_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-            page.show_pdf_page(page.rect, ocr_doc, 0, overlay=True)
+            _overlay_ocr_layer(page, ocr_doc)
             ocr_doc.close()
             ocr_count += 1
         except Exception as e:
@@ -2281,7 +2311,14 @@ def _reocr_improves(old: str, new: str) -> bool:
         return False                     # nothing was recognised at all
     if _text_looks_garbled(new):
         return False                     # no better than the text it replaces
-    old_words = len(re.findall(r"[A-Za-z]{2,}", old or ""))
+    # The old layer's word count is taken on the CID-STRIPPED text, exactly as
+    # `_garbled_keepable` measures it: every `(cid:NN)` token otherwise counts
+    # as the word "cid", so a page of unmapped glyphs — the page class this
+    # pass most exists for — measured ~one phantom word per GLYPH, a perfect
+    # rebuild could never clear the yield bar, and the export kept its cid
+    # soup on every run while still paying for the render and the OCR.
+    old_body = _CID_TOKEN_RE.sub(" ", old or "").replace("�", " ")
+    old_words = len(re.findall(r"[A-Za-z]{2,}", old_body))
     new_words = len(re.findall(r"[A-Za-z]{2,}", new))
     return new_words >= _REOCR_MIN_YIELD * old_words
 
@@ -2382,9 +2419,17 @@ def _image_ocr_new_words(found, have_low):
     SEAL offers real words ("SUPERIOR COURT OF CALIFORNIA COUNTY OF LOS
     ANGELES") and is still rejected, because the page's own text says all of
     them already: an image is only worth reading when it carries something the
-    text layer lacks."""
-    return [w for w in _IMG_OCR_WORD_RE.findall(found or "")
-            if w.lower() not in have_low]
+    text layer lacks.
+
+    DISTINCT words, so the `_IMG_OCR_MIN_NEW` floor cannot be cleared by one
+    junk token repeated ("QQXZW QQXZW" is one non-word, not two new words)."""
+    out, seen = [], set()
+    for w in _IMG_OCR_WORD_RE.findall(found or ""):
+        wl = w.lower()
+        if wl not in have_low and wl not in seen:
+            seen.add(wl)
+            out.append(w)
+    return out
 
 
 def _ocr_image_regions(doc, log):
@@ -2436,7 +2481,14 @@ def _ocr_image_regions(doc, log):
         kept = 0
         for rect in rects:
             try:
-                pix = page.get_pixmap(dpi=_ocr_base_dpi(page), clip=rect)
+                # `get_pixmap(clip=)` takes DISPLAY-space coordinates while
+                # `get_image_rects` returns unrotated ones, so on a /Rotate
+                # page the naive clip rendered blank and the region — the
+                # judge's signature block this pass exists for — was never
+                # read. Map the rect through the rotation first.
+                clip = fitz.Rect(rect * page.rotation_matrix)
+                clip.normalize()
+                pix = page.get_pixmap(dpi=_ocr_base_dpi(page), clip=clip)
                 img = Image.open(io.BytesIO(pix.tobytes("png")))
                 ocr_bytes = pytesseract.image_to_pdf_or_hocr(
                     img, extension="pdf", config=_OCR_CONFIG,
@@ -2458,7 +2510,12 @@ def _ocr_image_regions(doc, log):
                 continue
             try:
                 with fitz.open(stream=ocr_bytes, filetype="pdf") as ocr_doc:
-                    page.show_pdf_page(rect, ocr_doc, 0, overlay=True)
+                    # The OCR page is display-oriented (it was recognised from
+                    # the rotated render), and the target rect is unrotated —
+                    # `rotate=page.rotation` reconciles the two, exactly as
+                    # `_overlay_ocr_layer` does for a whole page.
+                    page.show_pdf_page(rect, ocr_doc, 0, overlay=True,
+                                       rotate=page.rotation)
             except Exception as e:
                 log.warning(f"  Image OCR: could not overlay page "
                             f"{page.number + 1} ({e})")
@@ -2614,9 +2671,12 @@ def _reocr_garbled_pages(doc, log):
             refused.append(pno)
             continue
         # Strip the garbled text (text only; keep images and line art, no fill)
-        # so get_text no longer returns the gibberish.
+        # so get_text no longer returns the gibberish. The UNROTATED bound,
+        # not `page.rect`: a redaction rect lives in unrotated space, so on a
+        # /Rotate page the display-shaped rect missed a whole band and the
+        # garbled text there survived UNDER the fresh overlay — doubled text.
         try:
-            page.add_redact_annot(page.rect, fill=False)
+            page.add_redact_annot(_unrotated_bound(page), fill=False)
             try:
                 page.apply_redactions(images=keep_img, graphics=keep_art)
             except TypeError:
@@ -2627,7 +2687,7 @@ def _reocr_garbled_pages(doc, log):
         # Overlay the fresh OCR render (rendered image + clean invisible text).
         try:
             ocr_doc = fitz.open(stream=ocr_bytes, filetype="pdf")
-            page.show_pdf_page(page.rect, ocr_doc, 0, overlay=True)
+            _overlay_ocr_layer(page, ocr_doc)
             ocr_doc.close()
             done += 1
             # Noted only once the rebuild has actually landed: a refused page
@@ -2997,6 +3057,15 @@ def _span_is_redraw_fragment(sp, big):
     bx0, by0, bx1, by1 = big["bbox"]
     if not (bx0 - _SPAN_INSIDE_PAD <= sx0 and sx1 <= bx1 + _SPAN_INSIDE_PAD
             and by0 - _SPAN_INSIDE_PAD <= sy0 and sy1 <= by1 + _SPAN_INSIDE_PAD):
+        return False
+    # A redraw fragment is a piece of the SAME printed line, so the glyphs are
+    # the same size. Without the height check, a big stamp or watermark span
+    # ("EXHIBIT A", "CONFIDENTIAL") whose box covered body text swallowed any
+    # short word its text happened to contain — the article "A" under an
+    # exhibit stamp, the "I" that opens a declaration ("I, JANE DOE, declare")
+    # — and real words were silently deleted from the export. Two renderings
+    # of one line differ by rounding; a stamp is many times the body height.
+    if (by1 - by0) > 2.0 * max(sy1 - sy0, 0.001):
         return False
     small, whole = sp["text"].strip(), big["text"].strip()
     return bool(small) and len(small) < len(whole) and small in whole
@@ -6664,6 +6733,12 @@ _PN_COMMON_WORD_SURNAMES = {
     "dawn", "hall", "moore", "west", "east", "north", "south", "case", "law",
     "field", "flowers", "banks", "waters", "rivers", "stone", "reed", "fields",
     "love", "just", "good", "power", "peace", "sharp", "swift", "noble",
+    # Short Vietnamese/Chinese/Korean/Turkish surnames that are also ordinary
+    # English words. Absent from this guard, `_pn_trim_edge_vocabulary` read
+    # the surname of the operator's own template row as sentence vocabulary
+    # and TRIMMED it — "Anh Do" built a term for "Anh" alone, so the party
+    # shipped half-scrubbed ("Newcombe Do") in every occurrence.
+    "an", "do", "than", "can", "to", "so",
 }
 # Fake street-name pool. Kept deliberately arboreal-but-uncommon; a name that
 # turns up as a REAL street corrupts the record (an earlier build minted "Maple",
@@ -6748,12 +6823,30 @@ _PN_SUFFIX_TOKENS = {"jr", "jr.", "sr", "sr.", "ii", "iii", "iv", "v", "esq",
                      "j.d.", "llm", "ll.m.", "np", "pa", "dvm", "psyd", "psy.d."}
 # Matched dot/space-insensitively so "M.D.", "MD", "M.D" and "m.d." all count.
 _PN_SUFFIX_NODOT = frozenset(re.sub(r"[.\s]", "", s) for s in _PN_SUFFIX_TOKENS)
+# The undotted forms that are ALSO real surnames — Do, Pa, Md, Np and Rn are
+# all common Vietnamese/Korean/Indian family names, and treating every bare
+# "Do" as a degree left "Anh Do" composed as "<fake> Do": the surname shipped
+# verbatim in every occurrence, as a half-scrubbed pair. The COMPOSING paths
+# treat one of these as a suffix only on evidence — the token carries its dots
+# ("D.O."), a comma precedes it in the name ("Smith, MD"), or it is ALL-CAPS
+# inside a mixed-case name ("Bob Jones MD" — a degree is shouted, a surname is
+# not); bare "Do" with none of those is a name word and is faked. The review
+# filters keep the wide reading (a suffix guess there only mutes noise).
+_PN_SUFFIX_AMBIG = frozenset({"do", "pa", "md", "np", "rn"})
 
 
-def _pn_is_suffix_token(word):
+def _pn_is_suffix_token(word, *, bare_ambiguous=True):
     """True for a generational/degree suffix in any punctuation ("M.D.", "MD",
-    "Ph.D.", "Esq", "Jr.") — never pseudonymized, always kept as written."""
-    return re.sub(r"[.\s]", "", word).lower().removesuffix("'s") in _PN_SUFFIX_NODOT
+    "Ph.D.", "Esq", "Jr.") — never pseudonymized, always kept as written.
+
+    `bare_ambiguous=False` is the composing paths' question: an UNDOTTED
+    `_PN_SUFFIX_AMBIG` form ("Do", "Pa", "MD") then does NOT count, because
+    with no punctuation evidence it is at least as likely a surname."""
+    stripped = re.sub(r"[.\s]", "", word).lower().removesuffix("'s")
+    if stripped not in _PN_SUFFIX_NODOT:
+        return False
+    return (bare_ambiguous or stripped not in _PN_SUFFIX_AMBIG
+            or "." in word)
 
 
 # Latin letters INCLUDING the accented forms that appear in California party
@@ -7635,7 +7728,16 @@ def _pn_name_variants(word):
     # "Ashely" beside the faked surname: a half-scrubbed pair naming the party.
     for i in range(len(core) - 1):
         if core[i].lower() != core[i + 1].lower():
-            out.add(core[:i] + core[i + 1] + core[i] + core[i + 2:])
+            v = core[:i] + core[i + 1] + core[i] + core[i + 2:]
+            # Swapping the FIRST pair of a Title-case name moves the capital
+            # inward ("Ashley" -> "sAhley"), and the name-token screen below
+            # rightly refuses a lower-case first letter — so the commonest
+            # transposition position was silently never registered, while an
+            # ALL-CAPS input kept it. Restore the capital; matching is
+            # case-insensitive, so only the screen ever sees the casing.
+            if v[0].islower() and core[0].isupper():
+                v = v[0].upper() + v[1].lower() + v[2:]
+            out.add(v)
     # y <-> ie
     if low.endswith("ie"):
         out.add(core[:-2] + "y")
@@ -7862,8 +7964,19 @@ def _pn_fake_person(name, registry):
                 if (trail and words
                     and _pn_word_base(words[-1].group(0)) == _pn_word_base(trail))
                 else None)
-    def _keep(w):
-        return (len(w) == 1 or _pn_is_suffix_token(w)
+    def _keep(w, at=None):
+        # An undotted ambiguous suffix ("Do", "MD") counts as a suffix here
+        # only on evidence: a comma precedes it ("John Smith, MD"), or it is
+        # ALL-CAPS inside a mixed-case name ("Bob Jones MD") — a degree is
+        # shouted, a surname is not. Bare "Do" at the end of "Anh Do" has
+        # neither and is the surname; treating it as a degree shipped the
+        # party half-scrubbed ("Newcombe Do"). An all-caps NAME gives the
+        # casing signal nothing, and the safe direction is to fake: a degree
+        # word faked is cosmetic, a surname kept verbatim is a leak.
+        evidence = (at is not None and "," in name[:at]
+                    or w.isupper() and not name.isupper())
+        return (len(w) == 1
+                or _pn_is_suffix_token(w, bare_ambiguous=evidence)
                 or w.strip(".,").lower() in _PN_DOC_ABBREV)
     # Firm furniture, connectors ("LAW OFFICES OF Stratman", "the Waggoner") and
     # the operator's own `{braced}` keeps are kept verbatim — but only while a
@@ -7872,11 +7985,11 @@ def _pn_fake_person(name, registry):
     furniture = {m.start() for m in words
                  if registry.keeps_word(_pn_word_base(m.group(0)))}
     if not [m for m in words
-            if not _keep(m.group(0)) and m.start() != trail_at
+            if not _keep(m.group(0), m.start()) and m.start() != trail_at
             and m.start() not in furniture]:
         furniture = set()
     mappable = [m for m in words
-                if not _keep(m.group(0)) and m.start() != trail_at
+                if not _keep(m.group(0), m.start()) and m.start() != trail_at
                 and m.start() not in furniture]
     # An all-initials name ("M & M", "J&J", "A. B.") has no mappable token, so
     # the loop below would keep every character verbatim and return the input —
@@ -7895,7 +8008,7 @@ def _pn_fake_person(name, registry):
     for m in words:
         w = m.group(0)
         parts.append(name[cursor:m.start()])
-        if _keep(w) or m.start() == trail_at or m.start() in furniture:
+        if _keep(w, m.start()) or m.start() == trail_at or m.start() in furniture:
             parts.append(w)
         else:
             fake = _pn_fake_name_token(w, registry)
@@ -8293,15 +8406,28 @@ def _pn_person_token_map(name, registry):
     the two stay in step and no pool word is spent on "Law"/"of" — the pools are
     drawn without replacement, and a case with three firms in its caption used
     to burn a third of a dozen surnames on the word "Offices"."""
+    def _suffix(m):
+        # Same evidence rule as `_pn_fake_person._keep`: a bare "Do"/"MD" is a
+        # suffix only behind a comma or when it is ALL-CAPS inside a
+        # mixed-case name; with dots, always.
+        w = m.group(0)
+        evidence = ("," in name[:m.start()]
+                    or w.isupper() and not name.isupper())
+        return _pn_is_suffix_token(w, bare_ambiguous=evidence)
+
     keep_furniture = any(
-        len(m.group(0)) > 1 and not _pn_is_suffix_token(m.group(0))
+        len(m.group(0)) > 1 and not _suffix(m)
         and m.group(0).strip(".,").lower() not in _PN_DOC_ABBREV
         and not registry.keeps_word(_pn_word_base(m.group(0)))
         for m in _PN_WORD_RE.finditer(name))
     out = {}
     for m in _PN_WORD_RE.finditer(name):
         w = m.group(0)
-        if _pn_is_suffix_token(w):
+        # A single letter is an INITIAL and `_pn_fake_person` keeps it verbatim
+        # — minting a whole pool surname for it here burned one pool word per
+        # distinct initial letter in the case and left a live bare-letter
+        # binding ("w" -> a surname) in the registry.
+        if len(w) == 1 or _suffix(m) or w.strip(".,").lower() in _PN_DOC_ABBREV:
             continue
         base = _pn_word_base(w)
         if keep_furniture and registry.keeps_word(base):
@@ -8974,16 +9100,22 @@ _PN_ADDR_SUFFIX = (
 # span ("414–416"), so the leading half is never left stranded next to a fake.
 _PN_ADDR_NUM = r"\d{1,6}(?:[ \t]*[-–—][ \t]*\d{1,6})?"
 # A name word: a capitalised word (no IGNORECASE, so "the court" can't qualify),
-# an ordinal ("5th", "101st"), or a directional ("N", "S.", "NW").
-_PN_ADDR_WORD = r"(?:[NSEW]{1,3}\.?|\d{1,3}(?:st|nd|rd|th)|[A-Z][A-Za-z0-9.'&-]*)"
+# an ordinal ("5th", "101st" — its suffix in either case, or "1234 5TH STREET"
+# in an all-caps caption never matched), or a directional ("N", "S.", "NW").
+# The word class carries the accented letters and BOTH apostrophes for the
+# reason `_PN_WORD_RE` does: "123 O’Farrell Street" and "1234 La Cañada
+# Boulevard" are real California addresses, and an ASCII straight-quote class
+# left each of them — house number included — in clear text.
+_PN_ADDR_WORD = (r"(?:[NSEW]{1,3}\.?|\d{1,3}(?i:st|nd|rd|th)"
+                 rf"|[{_PN_LAT_UPPER}][{_PN_LAT}0-9.'’&-]*)")
 # Optional trailing suite/floor and City, ST ZIP, so the locality is kept too.
 # The floor form is "<ordinal> Floor" — value BEFORE the label, unlike Suite.
 _PN_ADDR_SUITE = (
     r"(?:[ \t]*,?[ \t]*(?:(?i:Suite|Ste|Unit|Apt|Bldg|#)[ \t]*[\w-]+"
-    r"|\d{1,3}(?:st|nd|rd|th)[ \t]+(?i:Floor|Fl)\b\.?))?")
+    r"|\d{1,3}(?i:st|nd|rd|th)[ \t]+(?i:Floor|Fl)\b\.?))?")
 _PN_ADDR_CITYZIP = (
-    r"(?:[ \t]*,?[ \t]*(?:[A-Z][A-Za-z]+[ \t]*,?[ \t]*){1,3}[A-Za-z]{2}\.?[ \t]+"
-    r"\d{5}(?:-\d{4})?)?")
+    rf"(?:[ \t]*,?[ \t]*(?:[{_PN_LAT_UPPER}][{_PN_LAT}]+[ \t]*,?[ \t]*){{1,3}}"
+    r"[A-Za-z]{2}\.?[ \t]+\d{5}(?:-\d{4})?)?")
 # A street with no street-TYPE suffix ("1888 Century Park East") may close on a
 # trailing directional or plaza-head word instead — but ONLY when a suite/floor
 # token or a City, ST ZIP tail actually follows, so prose that merely starts
@@ -8991,8 +9123,9 @@ _PN_ADDR_CITYZIP = (
 _PN_ADDR_CLOSE = r"(?i:East|West|North|South|Park|Center|Centre|Plaza)"
 _PN_ADDR_TAIL_CUE = (
     r"[ \t]*,?[ \t]*(?:(?i:Suite|Ste|Unit|Apt|Bldg|#)[ \t]*[\w-]"
-    r"|\d{1,3}(?:st|nd|rd|th)[ \t]+(?i:Floor|Fl)\b"
-    r"|(?:[A-Z][A-Za-z]+[ \t]*,?[ \t]*){1,3}[A-Za-z]{2}\.?[ \t]+\d{5})")
+    r"|\d{1,3}(?i:st|nd|rd|th)[ \t]+(?i:Floor|Fl)\b"
+    rf"|(?:[{_PN_LAT_UPPER}][{_PN_LAT}]+[ \t]*,?[ \t]*){{1,3}}"
+    r"[A-Za-z]{2}\.?[ \t]+\d{5})")
 _PN_ADDR_STREET_PAT = (
     rf"{_PN_ADDR_NUM}[ \t]+"
     rf"(?:(?:{_PN_ADDR_WORD}[ \t]+){{1,4}}{_PN_ADDR_SUFFIX}\b\.?"
@@ -9049,8 +9182,17 @@ def _pn_addr_canon(real):
 def _pn_addr_name_of(street):
     """The NAME words of a street, with the house number and the street-type
     suffix removed ("7227 Hickory Blvd" -> "Hickory"). The name is the only part
-    the tool fakes, so it is the only part the registry memoizes."""
-    out = re.sub(r"^[\s\d\-\u2013\u2014]+", "", str(street)).strip()
+    the tool fakes, so it is the only part the registry memoizes.
+
+    Only WHOLE leading number tokens are stripped \u2014 a bare character class ate
+    the digits of an ORDINAL street name too, so "100 5th Street" and "200 9th
+    Street" both reduced to "th street": every numbered street on one suffix
+    shared one identity, and therefore one fake, which is the many-reals-onto-
+    one-fake collapse the registry exists to prevent (and the reversal macro
+    answers by restoring none of them). A digit run is consumed only when a
+    separator follows it, so the "5" of "5th" stays with its name."""
+    out = re.sub(r"^\s*(?:\d+(?:[ \t]*[-\u2013\u2014][ \t]*\d+)?[ \t]+)+", "",
+                 str(street)).strip()
     out = re.sub(rf"[ \t]+{_PN_ADDR_SUFFIX}\b\.?[ \t]*$", "", out).strip()
     return out
 
@@ -9070,7 +9212,10 @@ def _pn_addr_street_key(real):
     nums = [int(n) for n in re.findall(r"\d{1,6}", street)]
     # canon of the STREET part only (no locality), then drop the leading
     # number(s) / range so only the directional+name+suffix identity remains.
-    core = re.sub(r"^[\d\- \u2013\u2014]+", "", _pn_addr_canon(street)).strip()
+    # WHOLE number tokens only, for the reason `_pn_addr_name_of` states: a
+    # character class also ate the digits of "5th", collapsing every ordinal
+    # street onto one identity ("th street") and so onto one fake.
+    core = re.sub(r"^(?:\d+ +)+", "", _pn_addr_canon(street)).strip()
     return core, nums
 
 
@@ -9522,7 +9667,11 @@ _PN_DETECTORS = {
     # match. The run-together "123456789" form is deliberately NOT here (it is
     # indistinguishable from a Bates/account/reservation number) — it is caught
     # only behind an SSN label, in _PN_ID_RES below.
-    "ssn": (re.compile(r"(?<!\d)\d{3}[-. ]\d{2}[-. ]\d{4}(?!\d)"), _pn_fake_ssn),
+    # The dash class carries the en/em dash too: Word autoformats "552-81-9081"
+    # into "552–81–9081", and a dash-only class shipped that spelling verbatim
+    # with nothing else reporting it.
+    "ssn": (re.compile(r"(?<!\d)\d{3}[-–—. ]\d{2}[-–—. ]\d{4}(?!\d)"),
+            _pn_fake_ssn),
     # The TLD tail tolerates ONE step of OCR whitespace after the final dot
     # ("BARRYLAW7@GMAIL. COM" shipped in clear text because of it) — but only
     # for a KNOWN TLD, or the first word of the next sentence would be read as
@@ -9539,9 +9688,15 @@ _PN_DETECTORS = {
     # the bracketed one — three digits inside brackets followed by seven more
     # is a phone number whatever precedes it. So the guard moves onto the
     # alternative that needs it.
+    # Between the groups, up to THREE separator characters rather than one:
+    # this tool's own `preserve_interword_spaces=1` extraction hands a tabular
+    # letterhead back with a double space ("(818)  953-0150"), and a scan pads
+    # the hyphen ("953 - 0150") — both shipped in clear text under a
+    # single-character class. The digit groups stay strict (3-3-4), so the
+    # widening admits no new digit shapes, only more air between them.
     "phone": (re.compile(
         r"(?:\+?1[\s.\-]?)?(?:[(\[{]\d{3}[)\]}]|(?<!\d)\d{3})"
-        r"[\s.\-]?\d{3}[\s.\-]?\d{4}(?!\d)"),
+        r"[\s.\-]{0,3}\d{3}[\s.\-]{0,3}\d{4}(?!\d)"),
         _pn_fake_phone),
     # Street address — anchored on a leading street number on the same row, then
     # 1-4 name words (capitalised, or an ordinal/directional), then a street-type
@@ -9556,11 +9711,16 @@ _PN_DETECTORS = {
     # ending “…onelegal.com/.” swallowed the closing `.”` into the match, so
     # the same URL was tracked twice (with and without the tail) and the
     # duplicate row survived every dedup keyed on the exact value.
+    # Compiled IGNORECASE: a letterhead or caption block prints its firm site
+    # ALL-CAPS ("WWW.SMITHLAWFIRM.COM"), and a case-sensitive scheme/TLD left
+    # that spelling in clear text — unflagged too, since the review scan reads
+    # this same regex. Every host consumer already case-folds (`_pn_url_host`,
+    # `_pn_fake_domain`), so the caps spelling seeds the same fake.
     "url": (re.compile(
         r"(?:https?://|www\.)[^\s<>()\"'‘’“”]*[^\s<>()\"'‘’“”.,;:!?]"
         r"|(?<!@)(?<![\w.])[A-Za-z0-9][\w-]*(?:\.[\w-]+)*"
         r"\.(?:com|net|org|law|gov|edu|us|biz|info)\b"
-        r"(?:/[^\s<>()\"'‘’“”.,;:!?]*)?"),
+        r"(?:/[^\s<>()\"'‘’“”.,;:!?]*)?", re.IGNORECASE),
         _pn_fake_url),
 }
 _PN_DEFAULT_DETECTORS = ["ssn", "email", "phone", "address", "url"]
@@ -11189,7 +11349,14 @@ def _pn_load_key(path, registry, log, remint_recycled=False):
         if cat in ("email", "url"):
             rh = real.split("@", 1)[-1] if cat == "email" else _pn_url_host(real)
             fh = fake.split("@", 1)[-1] if cat == "email" else _pn_url_host(fake)
-            rh, fh = rh.lower().lstrip("www."), fh.lower()
+            # `str.lstrip` strips a CHARACTER SET, not a prefix — it ate the
+            # real host's own leading w's ("wwlaw.com" -> "law.com"), so the
+            # memo was seeded under a mangled key, a re-run drew a SECOND fake
+            # for the firm's own domain, and the memo bound the unrelated real
+            # host "law.com" to this firm's fake besides. Prefix removal only,
+            # mirroring `_pn_fake_domain`.
+            rh, fh = rh.lower(), fh.lower()
+            rh = rh[4:] if rh.startswith("www.") else rh
             if rh and fh and "." in rh:
                 registry._memo.setdefault(("domain", rh), fh)
                 registry._domain_reals.setdefault(rh, fh)
@@ -12457,8 +12624,12 @@ class Pseudonymizer:
         for t in terms:
             # Never install a self-identical mapping (fake == real): it is a
             # no-op scrub that ships the real value and loops --fix-leaks.
+            # The TERM goes with the record — `_term_cands` looks each match
+            # up by (category, real), so a term whose record was refused here
+            # would crash the first substitution pass that matched it.
             fake = _pn_guard_distinct_fake(t.real, t.fake, self.registry)
             if fake is None:
+                self.terms = [x for x in self.terms if x is not t]
                 continue
             t.fake = fake
             self.records[(t.category, t.real.lower())] = {
@@ -13434,9 +13605,15 @@ class Pseudonymizer:
                 fake = self._fake_ssn(real)
             else:
                 fake = faker(real)
+            # The record's own pattern is what `_surviving_records` and
+            # `scrub_survivors` scan with, so it must be no LOOSER than any
+            # substitution pass: a bare escape matched inside unrelated longer
+            # values and the cure then spliced a fake mid-word. Word-bounded
+            # and case-insensitive, like every term pattern.
             rec = {"category": cat, "real": real, "fake": fake,
                    "source": "regex", "count": 0,
-                   "pattern": re.escape(_NFKC(real)), "flags": 0}
+                   "pattern": r"(?<!\w)" + re.escape(_NFKC(real)) + r"(?!\w)",
+                   "flags": re.IGNORECASE}
             self.records[rk] = rec
             # Store trimmed of trailing punctuation so a re-detected match that
             # picks up a following period (a fake suffix like "Ave." meeting a
@@ -13618,10 +13795,18 @@ class Pseudonymizer:
             if rec is None and not self.mint_display_names:
                 continue        # already-scrubbed text: see `mint_display_names`
             if rec is None:
+                # Word-bounded and case-insensitive, exactly the pattern
+                # `_display_name_repeat_cands` substitutes with — the record's
+                # pattern is the SCAN's pattern, and a looser one made
+                # `scrub_survivors` splice this name's fake into an unrelated
+                # longer name ("Wei Lin" -> "<fake of Wei Li>n") while the
+                # leak scan reported the same phantom against clean text.
                 rec = {"category": "display-name", "real": name,
                        "fake": _pn_fake_person(name, self.registry)[0],
                        "source": "regex", "count": 0,
-                       "pattern": re.escape(_NFKC(name)), "flags": 0}
+                       "pattern": (r"(?<!\w)" + re.escape(_NFKC(name))
+                                   + r"(?!\w)"),
+                       "flags": re.IGNORECASE}
                 self.records[rk] = rec
                 # Register the mint as an own-fake (as _detector_record does), so
                 # it is recognised and skipped on the next pass and re-run.
@@ -13963,7 +14148,14 @@ class Pseudonymizer:
                 # few hundred master KEEPs rebuilt and recompiled every one of
                 # these on every page, and Python's own re cache (512) is shared
                 # with every term pattern in the case, so it thrashed.
-                keep_rx = self._compiled(r"(?<!\w)" + re.escape(v) + r"(?!\w)",
+                # Built through `_pn_build_pattern`, NOT a bare escape: the
+                # term the keep must beat folds whitespace runs and both
+                # apostrophe marks, so an escaped literal matched neither the
+                # occurrence wrapped across a pleading line nor Word's
+                # typographic "’" — and the party term then faked exactly the
+                # occurrences the operator's `no` could not see, with no
+                # worksheet row to say so (kept values are suppressed there).
+                keep_rx = self._compiled(_pn_build_pattern(v, whole_word=True),
                                          re.IGNORECASE)
                 for m in keep_rx.finditer(text):
                     s, e = m.span()
@@ -16711,9 +16903,19 @@ class _InkRaster:
             self.buf = self.pix.samples
         self.k = dpi / 72.0
         self.ox, self.oy = page.rect.x0, page.rect.y0
+        # The pixmap is DISPLAY space; the probe windows are built from span
+        # bboxes, which are UNROTATED space. On a /Rotate scan the mismatch
+        # made every window land off its box, so the page found no boxes at
+        # all and a scanned form lost its checkbox states. Windows map in
+        # through the rotation and the measured box maps back out.
+        self.mat = page.rotation_matrix
+        self.inv = page.derotation_matrix
 
     def _dark_rows(self, rect):
         """([dark x's] per row, window bounds) for `rect`, in raster pixels."""
+        import fitz
+        rect = fitz.Rect(rect) * self.mat
+        rect.normalize()
         pix, k, buf = self.pix, self.k, self.buf
         x0 = max(0, int((rect.x0 - self.ox) * k))
         x1 = min(pix.width - 1, int((rect.x1 - self.ox) * k))
@@ -16777,11 +16979,18 @@ class _InkRaster:
         dark = sum(1 for y in range(iy0, iy1 + 1) for x in rows[y]
                    if ix0 <= x <= ix1)
         fill = dark / ((ix1 - ix0 + 1) * (iy1 - iy0 + 1))
-        # rows are indexed from the window's top edge, columns absolutely
-        wy0 = max(0, int((window.y0 - self.oy) * self.k))
+        # rows are indexed from the window's top edge, columns absolutely.
+        # The raster (and so this arithmetic) is DISPLAY space; the callers
+        # lay cells out beside span geometry, so the box goes back out through
+        # the derotation to the UNROTATED space the windows came in as.
+        disp = fitz.Rect(window) * self.mat
+        disp.normalize()
+        wy0 = max(0, int((disp.y0 - self.oy) * self.k))
         rect = fitz.Rect(self.ox + bx0 / self.k, self.oy + (wy0 + r0) / self.k,
                          self.ox + (bx1 + 1) / self.k,
                          self.oy + (wy0 + r1 + 1) / self.k)
+        rect = fitz.Rect(rect * self.inv)
+        rect.normalize()
         return fill, rect
 
 
@@ -17094,6 +17303,12 @@ def _form_page_number(page):
         import fitz
         r = page.rect
         foot = fitz.Rect(r.x0, r.y1 - (r.y1 - r.y0) * 0.18, r.x1, r.y1)
+        # The band is where the READER sees the footer — display space — but
+        # `get_text(clip=)` takes unrotated coordinates, so on a /Rotate scan
+        # the display-shaped band extracted nothing and the ink gate's form-id
+        # arm went blind. Derotate the band before clipping.
+        foot = fitz.Rect(foot * page.derotation_matrix)
+        foot.normalize()
         text = page.get_text("text", clip=foot)
     except Exception:
         return ""
@@ -17245,7 +17460,11 @@ def _table_keeps_every_word(page, bbox, grid):
     except Exception:
         return False
     have = collections.Counter(_TABLE_WORD_RE.findall(inside))
-    got = collections.Counter(_TABLE_WORD_RE.findall(grid))
+    # The grid escaped its delimiter (`|` -> `\|`), and the word split reads
+    # the backslash as part of the word — so any table containing a literal
+    # pipe tokenized differently from the page and could never pass, silently
+    # costing that page the grid rendering. Unescape before counting.
+    got = collections.Counter(_TABLE_WORD_RE.findall(grid.replace(r"\|", "|")))
     return all(got[w] >= n for w, n in have.items())
 
 
