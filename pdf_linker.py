@@ -2281,7 +2281,14 @@ def _reocr_improves(old: str, new: str) -> bool:
         return False                     # nothing was recognised at all
     if _text_looks_garbled(new):
         return False                     # no better than the text it replaces
-    old_words = len(re.findall(r"[A-Za-z]{2,}", old or ""))
+    # The old layer's word count is taken on the CID-STRIPPED text, exactly as
+    # `_garbled_keepable` measures it: every `(cid:NN)` token otherwise counts
+    # as the word "cid", so a page of unmapped glyphs — the page class this
+    # pass most exists for — measured ~one phantom word per GLYPH, a perfect
+    # rebuild could never clear the yield bar, and the export kept its cid
+    # soup on every run while still paying for the render and the OCR.
+    old_body = _CID_TOKEN_RE.sub(" ", old or "").replace("�", " ")
+    old_words = len(re.findall(r"[A-Za-z]{2,}", old_body))
     new_words = len(re.findall(r"[A-Za-z]{2,}", new))
     return new_words >= _REOCR_MIN_YIELD * old_words
 
@@ -2382,9 +2389,17 @@ def _image_ocr_new_words(found, have_low):
     SEAL offers real words ("SUPERIOR COURT OF CALIFORNIA COUNTY OF LOS
     ANGELES") and is still rejected, because the page's own text says all of
     them already: an image is only worth reading when it carries something the
-    text layer lacks."""
-    return [w for w in _IMG_OCR_WORD_RE.findall(found or "")
-            if w.lower() not in have_low]
+    text layer lacks.
+
+    DISTINCT words, so the `_IMG_OCR_MIN_NEW` floor cannot be cleared by one
+    junk token repeated ("QQXZW QQXZW" is one non-word, not two new words)."""
+    out, seen = [], set()
+    for w in _IMG_OCR_WORD_RE.findall(found or ""):
+        wl = w.lower()
+        if wl not in have_low and wl not in seen:
+            seen.add(wl)
+            out.append(w)
+    return out
 
 
 def _ocr_image_regions(doc, log):
@@ -2997,6 +3012,15 @@ def _span_is_redraw_fragment(sp, big):
     bx0, by0, bx1, by1 = big["bbox"]
     if not (bx0 - _SPAN_INSIDE_PAD <= sx0 and sx1 <= bx1 + _SPAN_INSIDE_PAD
             and by0 - _SPAN_INSIDE_PAD <= sy0 and sy1 <= by1 + _SPAN_INSIDE_PAD):
+        return False
+    # A redraw fragment is a piece of the SAME printed line, so the glyphs are
+    # the same size. Without the height check, a big stamp or watermark span
+    # ("EXHIBIT A", "CONFIDENTIAL") whose box covered body text swallowed any
+    # short word its text happened to contain — the article "A" under an
+    # exhibit stamp, the "I" that opens a declaration ("I, JANE DOE, declare")
+    # — and real words were silently deleted from the export. Two renderings
+    # of one line differ by rounding; a stamp is many times the body height.
+    if (by1 - by0) > 2.0 * max(sy1 - sy0, 0.001):
         return False
     small, whole = sp["text"].strip(), big["text"].strip()
     return bool(small) and len(small) < len(whole) and small in whole
@@ -17368,7 +17392,11 @@ def _table_keeps_every_word(page, bbox, grid):
     except Exception:
         return False
     have = collections.Counter(_TABLE_WORD_RE.findall(inside))
-    got = collections.Counter(_TABLE_WORD_RE.findall(grid))
+    # The grid escaped its delimiter (`|` -> `\|`), and the word split reads
+    # the backslash as part of the word — so any table containing a literal
+    # pipe tokenized differently from the page and could never pass, silently
+    # costing that page the grid rendering. Unescape before counting.
+    got = collections.Counter(_TABLE_WORD_RE.findall(grid.replace(r"\|", "|")))
     return all(got[w] >= n for w, n in have.items())
 
 
