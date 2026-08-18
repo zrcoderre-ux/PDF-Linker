@@ -2021,6 +2021,36 @@ def _ocr_page_to_pdf(page, pytesseract, Image, io, log, label, start=0):
             return None
 
 
+def _unrotated_bound(page):
+    """The page's full bound in UNROTATED coordinate space.
+
+    `page.rect` reflects /Rotate — a rot-90 letter page reads 792x612 — while
+    `get_text`, span geometry, redaction rects and `show_pdf_page` targets all
+    live in the UNROTATED space, where the same page is 612x792. Every mixed
+    use of the two was a real loss on rotated scans (exactly the pages the OCR
+    family exists for): an overlay clipped a whole band of recognised text out
+    of extraction, and a full-page redaction left a band of garbled text
+    standing under the fresh layer."""
+    import fitz
+    mb = page.mediabox
+    return fitz.Rect(0, 0, mb.width, mb.height)
+
+
+def _overlay_ocr_layer(page, ocr_doc):
+    """Place a Tesseract-rendered page (laid out in DISPLAY orientation,
+    because it was recognised from the rotated render) onto `page`, rotation
+    compensated. On a /Rotate page the naive `show_pdf_page(page.rect, …)`
+    put the text 90° off and CLIPPED every word past the unrotated mediabox
+    out of extraction entirely — of four corner words only the two nearest
+    the origin survived. Verified: the unrotated target plus
+    `rotate=page.rotation` lands all four at their display positions."""
+    if page.rotation:
+        page.show_pdf_page(_unrotated_bound(page), ocr_doc, 0, overlay=True,
+                           rotate=page.rotation)
+    else:
+        page.show_pdf_page(page.rect, ocr_doc, 0, overlay=True)
+
+
 def _ocr_pdf(doc, log):
     """OCR pages of a PyMuPDF doc that have no text. Adds an invisible text
     layer using the recognised text. Modifies doc in place."""
@@ -2053,7 +2083,7 @@ def _ocr_pdf(doc, log):
         nonlocal ocr_count
         try:
             ocr_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-            page.show_pdf_page(page.rect, ocr_doc, 0, overlay=True)
+            _overlay_ocr_layer(page, ocr_doc)
             ocr_doc.close()
             ocr_count += 1
         except Exception as e:
@@ -2451,7 +2481,14 @@ def _ocr_image_regions(doc, log):
         kept = 0
         for rect in rects:
             try:
-                pix = page.get_pixmap(dpi=_ocr_base_dpi(page), clip=rect)
+                # `get_pixmap(clip=)` takes DISPLAY-space coordinates while
+                # `get_image_rects` returns unrotated ones, so on a /Rotate
+                # page the naive clip rendered blank and the region — the
+                # judge's signature block this pass exists for — was never
+                # read. Map the rect through the rotation first.
+                clip = fitz.Rect(rect * page.rotation_matrix)
+                clip.normalize()
+                pix = page.get_pixmap(dpi=_ocr_base_dpi(page), clip=clip)
                 img = Image.open(io.BytesIO(pix.tobytes("png")))
                 ocr_bytes = pytesseract.image_to_pdf_or_hocr(
                     img, extension="pdf", config=_OCR_CONFIG,
@@ -2473,7 +2510,12 @@ def _ocr_image_regions(doc, log):
                 continue
             try:
                 with fitz.open(stream=ocr_bytes, filetype="pdf") as ocr_doc:
-                    page.show_pdf_page(rect, ocr_doc, 0, overlay=True)
+                    # The OCR page is display-oriented (it was recognised from
+                    # the rotated render), and the target rect is unrotated —
+                    # `rotate=page.rotation` reconciles the two, exactly as
+                    # `_overlay_ocr_layer` does for a whole page.
+                    page.show_pdf_page(rect, ocr_doc, 0, overlay=True,
+                                       rotate=page.rotation)
             except Exception as e:
                 log.warning(f"  Image OCR: could not overlay page "
                             f"{page.number + 1} ({e})")
@@ -2629,9 +2671,12 @@ def _reocr_garbled_pages(doc, log):
             refused.append(pno)
             continue
         # Strip the garbled text (text only; keep images and line art, no fill)
-        # so get_text no longer returns the gibberish.
+        # so get_text no longer returns the gibberish. The UNROTATED bound,
+        # not `page.rect`: a redaction rect lives in unrotated space, so on a
+        # /Rotate page the display-shaped rect missed a whole band and the
+        # garbled text there survived UNDER the fresh overlay — doubled text.
         try:
-            page.add_redact_annot(page.rect, fill=False)
+            page.add_redact_annot(_unrotated_bound(page), fill=False)
             try:
                 page.apply_redactions(images=keep_img, graphics=keep_art)
             except TypeError:
@@ -2642,7 +2687,7 @@ def _reocr_garbled_pages(doc, log):
         # Overlay the fresh OCR render (rendered image + clean invisible text).
         try:
             ocr_doc = fitz.open(stream=ocr_bytes, filetype="pdf")
-            page.show_pdf_page(page.rect, ocr_doc, 0, overlay=True)
+            _overlay_ocr_layer(page, ocr_doc)
             ocr_doc.close()
             done += 1
             # Noted only once the rebuild has actually landed: a refused page
@@ -16858,9 +16903,19 @@ class _InkRaster:
             self.buf = self.pix.samples
         self.k = dpi / 72.0
         self.ox, self.oy = page.rect.x0, page.rect.y0
+        # The pixmap is DISPLAY space; the probe windows are built from span
+        # bboxes, which are UNROTATED space. On a /Rotate scan the mismatch
+        # made every window land off its box, so the page found no boxes at
+        # all and a scanned form lost its checkbox states. Windows map in
+        # through the rotation and the measured box maps back out.
+        self.mat = page.rotation_matrix
+        self.inv = page.derotation_matrix
 
     def _dark_rows(self, rect):
         """([dark x's] per row, window bounds) for `rect`, in raster pixels."""
+        import fitz
+        rect = fitz.Rect(rect) * self.mat
+        rect.normalize()
         pix, k, buf = self.pix, self.k, self.buf
         x0 = max(0, int((rect.x0 - self.ox) * k))
         x1 = min(pix.width - 1, int((rect.x1 - self.ox) * k))
@@ -16924,11 +16979,18 @@ class _InkRaster:
         dark = sum(1 for y in range(iy0, iy1 + 1) for x in rows[y]
                    if ix0 <= x <= ix1)
         fill = dark / ((ix1 - ix0 + 1) * (iy1 - iy0 + 1))
-        # rows are indexed from the window's top edge, columns absolutely
-        wy0 = max(0, int((window.y0 - self.oy) * self.k))
+        # rows are indexed from the window's top edge, columns absolutely.
+        # The raster (and so this arithmetic) is DISPLAY space; the callers
+        # lay cells out beside span geometry, so the box goes back out through
+        # the derotation to the UNROTATED space the windows came in as.
+        disp = fitz.Rect(window) * self.mat
+        disp.normalize()
+        wy0 = max(0, int((disp.y0 - self.oy) * self.k))
         rect = fitz.Rect(self.ox + bx0 / self.k, self.oy + (wy0 + r0) / self.k,
                          self.ox + (bx1 + 1) / self.k,
                          self.oy + (wy0 + r1 + 1) / self.k)
+        rect = fitz.Rect(rect * self.inv)
+        rect.normalize()
         return fill, rect
 
 
@@ -17241,6 +17303,12 @@ def _form_page_number(page):
         import fitz
         r = page.rect
         foot = fitz.Rect(r.x0, r.y1 - (r.y1 - r.y0) * 0.18, r.x1, r.y1)
+        # The band is where the READER sees the footer — display space — but
+        # `get_text(clip=)` takes unrotated coordinates, so on a /Rotate scan
+        # the display-shaped band extracted nothing and the ink gate's form-id
+        # arm went blind. Derotate the band before clipping.
+        foot = fitz.Rect(foot * page.derotation_matrix)
+        foot.normalize()
         text = page.get_text("text", clip=foot)
     except Exception:
         return ""
