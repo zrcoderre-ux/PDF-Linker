@@ -9555,6 +9555,56 @@ def _pn_url_whitelisted(real):
     return any(host == w or host.endswith("." + w) for w in _PN_URL_WHITELIST)
 
 
+# Public-infrastructure hosts for the url/domain REVIEW class only — never a
+# faking decision. A court's own site, an ADR provider, an e-filing/e-signature
+# vendor, a news publisher, a public-interest data source, a university, a
+# vehicle manufacturer in a lemon-law brief: each names an institution, not a
+# party, and a review row for one is a question with one answer. The evidence
+# is the operator's own master KEEP log: every one of its 51 url/domain
+# decisions — lacourt.org and its OCR misspellings, evictionlab.org, ucla.edu,
+# reuters.com, jamsadr.org, usps.com, and the rest — is a `no`. Scrubbing is
+# untouched: the detector still fakes what it matches, and `.gov`/`.mil` and
+# the citation hosts keep their own (stronger) whitelist above. Kept as DATA
+# (see the word-list rule): registrable hosts only, lower-case, extended as
+# more public infrastructure appears.
+_PN_PUBLIC_REVIEW_HOSTS = frozenset("""
+lacourt.org courts.ca.gov jamsadr.com jamsadr.org adr.org onelegal.com
+docusign.com docusign.net avvo.com lawyers.com martindale.com nolo.com
+justia.com courtlistener.com uscourts.gov
+reuters.com dailyjournal.com businesswire.com bloomberg.com prnewswire.com
+apnews.com nytimes.com latimes.com wsj.com law360.com law.com
+evictionlab.org nclc.org nsc.org safekids.org usps.com ups.com fedex.com
+wikipedia.org tandfonline.com jstor.org ssrn.com
+gm.com gmc.com chevrolet.com cadillac.com buick.com onstar.com ford.com
+lincoln.com honda.com acura.com toyota.com lexus.com nissanusa.com
+infinitiusa.com hyundaiusa.com kia.com bmwusa.com mbusa.com vw.com
+audiusa.com subaru.com mazdausa.com stellantis.com chrysler.com jeep.com
+dodge.com ramtrucks.com tesla.com rivian.com carfax.com kbb.com edmunds.com
+nhtsa.gov siriusxm.com
+instagram.com facebook.com youtube.com tiktok.com twitter.com x.com
+linkedin.com yelp.com google.com apple.com roku.com
+""".split())
+
+
+def _pn_host_is_public_infra(host):
+    """True when `host` is public infrastructure for REVIEW purposes: a
+    whitelisted/government host, a `.edu`, one of the hosts above, or a
+    one-slip OCR misspelling of one ("facourt.org", "locourt.org" — the
+    operator answered each spelling of lacourt.org separately, ten `no`s for
+    one court website)."""
+    host = (host or "").lower().lstrip(".")
+    if not host:
+        return False
+    if host == "edu" or host.endswith(".edu"):
+        return True
+    if any(host == w or host.endswith("." + w) for w in _PN_PUBLIC_REVIEW_HOSTS):
+        return True
+    # The registrable tail (label + tld) against each public host, one edit.
+    tail = ".".join(host.split(".")[-2:])
+    return any(_pn_edit_distance_le1(tail, w, min_len=6)
+               for w in _PN_PUBLIC_REVIEW_HOSTS if tail != w)
+
+
 # Consumer mail providers shared by millions: the host identifies no one, and
 # faking it both protects nothing and, once two distinct real hosts collapse
 # onto one fake, misleads a reader into thinking opposing parties shared an
@@ -9815,6 +9865,53 @@ _PN_REID_CLASSES = frozenset({
     "bar number", "license number", "reservation id", "account id",
     "confirmation code", "ssn", "production number",
 })
+
+# The NAME-shaped review tiers whose findings take the edge-vocabulary trim in
+# `confirm_findings` — a scan-flagged heading is a sentence around a name, and
+# the name is the question. Never the gating LEAK tier (a gating value must
+# stay the tracked real it names) and never the identifier/url tiers (their
+# values are opaque strings a trim would corrupt).
+_PN_NAME_TRIM_CLASSES = frozenset({
+    "unscrubbed name?", "possible person name", "half-scrubbed name?",
+    "unscrubbed declarant name?", "possible business (purchase)",
+})
+
+# Statute-code abbreviations whose section number reads exactly like a Bates
+# prefix to the identifier shapes: "CCP1013" is Code of Civil Procedure
+# section 1013 with its space lost, not a production stamp, and one delivered
+# master log carried it as a REID row. Letters-only, lower-cased; matched with
+# a short digit tail (a code section runs 1-5 digits, a real Bates run is
+# longer or letter-mixed). Two-letter codes ("CC") are deliberately absent —
+# they are exactly the shape a real Bates prefix takes.
+_PN_STATUTE_CODE_ABBREVS = frozenset({
+    "ccp", "crc", "usc", "cfr", "evid", "bpc", "wic", "veh", "pen", "lab",
+    "fam", "prob", "ins", "hsc", "corp", "cacr",
+})
+
+# Pool words long enough that reading one as the letter-run of an identifier
+# cannot be a coincidence — the same length gate `_pn_word_is_own_fake` uses.
+_PN_POOL_WORDS_LONG = frozenset(w for w in _PN_POOL_WORDS if len(w) >= 5)
+
+
+def _pn_own_stamp_shape(val):
+    """True when `val` reads as one of this tool's OWN faked identifiers: a
+    POOL WORD opening the letter run, hard against digits.
+
+    A Bates stamp built on a party's surname is deliberately faked
+    ("WALTON0058" -> "AINSWORTH0058"), and the run's records suppress the
+    exact result — but a stamp the SOURCE spelled several ways
+    ("AINSWORTHGO0058" beside "AINSWORTHOO0311") or re-scanned OCR of one
+    yields spellings no record holds, and `reid_scan` then reported the tool's
+    own output as a re-identification key: a worksheet row with no right
+    answer, and 100+ rows of one delivered master log. Per the
+    `_pn_recycled_fake` argument, nothing else this tool writes puts a pool
+    word hard against a number — a real address separates them with a space
+    and a case number's letters are not a pool word."""
+    m = re.match(r"[^A-Za-z0-9]*([A-Za-z]+)[\s#-]*\d", str(val))
+    if not m:
+        return False
+    prefix = m.group(1).lower()
+    return any(prefix.startswith(w) for w in _PN_POOL_WORDS_LONG)
 
 # A Vehicle Identification Number: 17 chars in the VIN alphabet (no I/O/Q). A
 # strong unique key — decodes to make/model/year/plant and links to title and
@@ -10458,6 +10555,12 @@ def _pn_review_findings(text, known_fakes=()):
                 # Our own fake domain — the base pool OR a numbered mint of it
                 # (`postbox2.org`) that known_fakes now carries — is not a leak.
                 if host in _PN_EMAIL_DOMAINS or host in known_fakes:
+                    continue
+                # Public infrastructure — a court, an ADR provider, a news
+                # site, a manufacturer — names an institution, not a party.
+                # Every url/domain decision in the delivered master KEEP log
+                # is a `no`; this tier stops asking.
+                if _pn_host_is_public_infra(host):
                     continue
                 # A WELDED own fake: a column splice glued the fake host to its
                 # neighbour ("www.wadsworth.com.mallory", "drvance.com" where
@@ -13057,6 +13160,18 @@ class Pseudonymizer:
         shown = "; ".join(hits[:2]) + (" …" if len(hits) > 2 else "")
         return f"cited authority: {shown}"
 
+    def variant_note(self, value):
+        """The variant-fold note for a worksheet row (see
+        `_fold_url_findings`), or ""."""
+        return getattr(self, "variant_notes", {}).get(str(value).lower(), "")
+
+    def triage_note(self, value):
+        """Everything the worksheet's Notes cell should say about `value`:
+        the cited-authority hint and the OCR-variant fold, joined."""
+        parts = [n for n in (self.authority_note(value),
+                             self.variant_note(value)) if n]
+        return " | ".join(parts)
+
     def reserve_authority_names(self, text, log=None):
         """Take the authorities `text` cites out of the fake pools, re-minting
         any stand-in already drawn on one. Returns [(old, new), ...].
@@ -14962,6 +15077,140 @@ class Pseudonymizer:
             value, lambda piece, base: (_pn_word_is_own_fake(piece, known)
                                         and base not in self._orig_words))
 
+    def _fold_url_findings(self, log=None):
+        """Fold the url/domain REVIEW findings that are OCR spellings or
+        fragments of one host onto a single worksheet row.
+
+        A fax-generation scan spells one host as many ways as it has pages —
+        one delivered master log carried `benefitcenter.com`,
+        `benefiteenter.com`, three misspellings of `outlook.office365.us` and
+        the wrap-tail fragments `heon.com`, `ters.org` and `n.com` as separate
+        rows — and every spelling was a separate value, a separate row, and a
+        separate operator decision about the SAME host. The registry already
+        folds such spellings onto one fake at substitution time; this is the
+        same fold applied where the rows are aggregated.
+
+        REVIEW tier only, and folding is never silent: the surviving row's
+        Notes names every spelling folded into it (`triage_note`), so nothing
+        the scans saw disappears from the record. A row folded onto a TRACKED
+        host keeps one representative row — the host is already faked, so the
+        variant is a survivor worth one question, not eight. LEAK-tier rows
+        are never dropped (the gate must keep asking exactly what the
+        worksheet shows); they are ANNOTATED with the host they are a spelling
+        of, so eight rows read as one decision repeated."""
+        notes = {}
+        dropped = set()
+
+        def _red(h):
+            return re.sub(r"[^a-z0-9]", "", (h or "").lower())
+
+        def _host_of(value):
+            m = re.search(r"(?:https?://)?(?:www\.)?"
+                          r"([A-Za-z0-9][\w.\-]*\.[A-Za-z]{2,})(?![\w.])",
+                          str(value))
+            return m.group(1).lower() if m else ""
+
+        def _near(a, b):
+            if a == b:
+                return True
+            # containment either way: a wrap-tail fragment of the other, or a
+            # subdomained spelling of it (sir.int.benefitcenter.com carries
+            # benefitcenter.com whole).
+            if len(b) >= len(a) + 2 and a in b:
+                return True
+            if len(a) >= len(b) + 2 and b in a:
+                return True
+            return _pn_osa_distance(a, b) <= _pn_name_fold_dist(a, b)
+
+        tracked = {}
+        for (cat, _rl), rec in self.records.items():
+            if cat == "url":
+                h = _pn_url_host(str(rec["real"]))
+            elif cat == "email":
+                h = str(rec["real"]).split("@", 1)[-1].strip().lower()
+                h = h[4:] if h.startswith("www.") else h
+            else:
+                continue
+            r = _red(h)
+            if len(r) >= 6:
+                tracked.setdefault(r, h)
+
+        review_rows = [row for row in self.leak_report
+                       if str(row.get("type")) == "url/domain"
+                       and _host_of(row.get("value", ""))]
+        # Longest hosts first, so the fullest spelling is the one that survives
+        # and every shorter variant or fragment folds onto it.
+        review_rows.sort(key=lambda row: -len(_red(_host_of(row["value"]))))
+        survivors = {}                   # host reduction -> surviving value
+        anchor_of = {}                   # tracked reduction -> surviving value
+        for row in review_rows:
+            value = str(row["value"])
+            red = _red(_host_of(value))
+            if len(red) < 4:
+                continue
+            target = next((s for s in survivors if _near(red, s)), None)
+            if target is not None:
+                keep = survivors[target]
+                notes.setdefault(keep.lower(), []).append(value)
+                dropped.add(value)
+                continue
+            troot = next((t for t in tracked if _near(red, t)), None)
+            if troot is not None:
+                first = anchor_of.get(troot)
+                if first is None:
+                    anchor_of[troot] = value
+                    if red != troot:
+                        notes.setdefault(value.lower(), []).insert(
+                            0, f"spelling of tracked host {tracked[troot]}")
+                else:
+                    notes.setdefault(first.lower(), []).append(value)
+                    dropped.add(value)
+                    continue
+            survivors[red] = value
+
+        # LEAK-tier url rows: annotate, never drop — eight OCR spellings of one
+        # tracked link read as one decision repeated once the Notes say so.
+        by_host = {}
+        for row in self.leak_report:
+            if str(row.get("type")) != "LEAK":
+                continue
+            red = _red(_host_of(row.get("value", "")))
+            if len(red) < 4:
+                continue
+            troot = next((t for t in tracked if _near(red, t)), None)
+            if troot is not None:
+                by_host.setdefault(troot, []).append(str(row["value"]))
+        for troot, vals in by_host.items():
+            if len(vals) < 2:
+                continue
+            for v in vals:
+                notes.setdefault(v.lower(), []).insert(
+                    0, f"one of {len(vals)} flagged spellings of "
+                       f"{tracked[troot]}")
+
+        if dropped:
+            self.leak_report = [row for row in self.leak_report
+                                if str(row.get("value")) not in dropped]
+            low = {v.lower() for v in dropped}
+            self.review = [(c, s) for c, s in self.review
+                           if str(s).lower() not in low]
+        self.variant_notes = {}
+        for v, ns in notes.items():
+            lead = [n for n in ns if n.startswith(("spelling of", "one of"))]
+            folded = [n for n in ns if not n.startswith(("spelling of",
+                                                         "one of"))]
+            parts = lead[:1]
+            if folded:
+                parts.append("also seen as: " + "; ".join(folded[:6]))
+            if parts:
+                self.variant_notes[v] = "; ".join(parts)
+        if dropped and log:
+            log.info(f"  Pseudonymize: folded {len(dropped)} url/domain "
+                     f"finding(s) that are OCR spellings or fragments of a "
+                     f"host already in the worksheet — one row per host, the "
+                     f"folded spellings listed in its Notes")
+        return sorted(dropped)
+
     def confirm_findings(self, log=None):
         """Reduce every leak / review finding to the part still worth asking
         about, and drop the ones nothing is left of. Returns the values that
@@ -14976,18 +15225,30 @@ class Pseudonymizer:
             one check that can tell the tool's output from the document's by
             EVIDENCE rather than inference, so it also stops such a value being
             marked `yes` and minted into an authoritative term, which is how
-            one folder came to rename a cited decision."""
-        if not self._orig_words and not getattr(self.registry, "keep_words", ()):
-            return []
+            one folder came to rename a cited decision.
 
-        def reduce(value):
-            return "" if self._all_words_kept(value) else self._real_remainder(value)
+        A third, class-aware reduction rides along for the NAME-shaped REVIEW
+        tiers: the edge-vocabulary trim already applied to a worksheet `yes`
+        (`_pn_trim_edge_vocabulary`). A heading the scans flag is flagged once
+        per PHRASING — "Alleges That Lin Intended" and "Alleges That Lin
+        Participated" were two rows asking one question — and the question in
+        each is the name, not the sentence it stood in. Trimmed here, the
+        phrasings MERGE into the one row the answer belongs to. Never applied
+        to a LEAK row: a gating value must stay exactly the tracked real it
+        names, or the gate and the worksheet stop agreeing."""
+
+        def reduce(value, kind=None):
+            rest = ("" if self._all_words_kept(value)
+                    else self._real_remainder(value))
+            if rest and kind in _PN_NAME_TRIM_CLASSES and " " in rest:
+                rest = _pn_trim_edge_vocabulary(rest)
+            return rest
 
         dropped, seen = set(), set()
         keep_rows = []
         for row in self.leak_report:
             value = str(row.get("value", ""))
-            rest = reduce(value)
+            rest = reduce(value, str(row.get("type")))
             if not rest:
                 dropped.add(value)
                 continue
@@ -15002,7 +15263,7 @@ class Pseudonymizer:
         self.leak_report = keep_rows
         keep_review, seen_r = [], set()
         for c, s in self.review:
-            rest = reduce(str(s))
+            rest = reduce(str(s), c)
             if not rest:
                 dropped.add(str(s))
                 continue
@@ -15040,6 +15301,9 @@ class Pseudonymizer:
                      f"brace-kept) is the operator's own answer, and this run's "
                      f"own stand-ins are absent from the ORIGINAL text; neither "
                      f"is a leak ({', '.join(sorted(dropped)[:6])})")
+        # Fold the url/domain OCR-variant rows last, over the reduced set, so
+        # a spelling that survived the evidence pass still lands on one row.
+        dropped.update(self._fold_url_findings(log))
         return sorted(dropped)
 
     def note_leaks(self, reals):
@@ -15197,8 +15461,26 @@ class Pseudonymizer:
         for cls, val in _pn_identifier_values(text):
             if cls not in _PN_REID_CLASSES:
                 continue
-            if re.sub(r"[^a-z0-9]", "", val.lower()) in fake_vals:
+            red = re.sub(r"[^a-z0-9]", "", val.lower())
+            if red in fake_vals:
                 continue          # our own stand-in, riding under its label
+            # …or our own stand-in with a RANGE tail the record does not carry
+            # ("KQWSCUTPJ254405-439" beside the recorded fake "KQWSCUTPJ254405"
+            # — a differently-joined rendering of the same stamp), or a pool-
+            # word-prefixed stamp no record holds because the SOURCE spelled
+            # the stamp several ways. Either way the letters are this tool's
+            # output, and a row for it is a question with no right answer.
+            if any(len(f) >= 8 and red.startswith(f)
+                   and red[len(f):].isdigit() for f in fake_vals):
+                continue
+            if _pn_own_stamp_shape(val):
+                continue
+            # A statute section that lost its space ("CCP1013") is a cite, not
+            # a Bates stamp — reporting it buries the real identifiers.
+            letters = "".join(c for c in val if c.isalpha()).lower()
+            if (letters in _PN_STATUTE_CODE_ABBREVS
+                    and len(re.sub(r"\D", "", val)) <= 5):
+                continue
             # When in doubt, a short bare number is not a re-identification key.
             # A retail "DEAL# 512" / "Inventory No. 55" resolves to nothing on
             # its own, so reporting it is noise. Bar numbers (a definite State
@@ -22521,7 +22803,7 @@ def _fix_leaks_mode(folder, args, cfg, log):
         _pn_write_leak_report(folder, pz.leak_report, log, decisions=decisions,
                               cfg=cfg,
                               bound=[r["real"] for r in pz.records.values()],
-                              note_for=pz.authority_note)
+                              note_for=pz.triage_note)
     else:
         # Every LEAK file is fixed: the worksheet and the Apply-Leak-Fixes
         # launcher have done their job — remove them instead of leaving stale
@@ -23196,7 +23478,7 @@ def main():
                               leak_decisions, cfg=cfg,
                               bound=[r["real"] for r in
                                      pseudonymizer.records.values()],
-                              note_for=pseudonymizer.authority_note)
+                              note_for=pseudonymizer.triage_note)
         # Record this run's KEEP decisions into the single cross-folder master
         # KEEP sheet: every LOCAL keep (made in this folder), plus any GLOBAL
         # keep that actually protected text here (a real hit) — so Times Seen /
