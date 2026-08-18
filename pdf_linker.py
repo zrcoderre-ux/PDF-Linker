@@ -6664,6 +6664,12 @@ _PN_COMMON_WORD_SURNAMES = {
     "dawn", "hall", "moore", "west", "east", "north", "south", "case", "law",
     "field", "flowers", "banks", "waters", "rivers", "stone", "reed", "fields",
     "love", "just", "good", "power", "peace", "sharp", "swift", "noble",
+    # Short Vietnamese/Chinese/Korean/Turkish surnames that are also ordinary
+    # English words. Absent from this guard, `_pn_trim_edge_vocabulary` read
+    # the surname of the operator's own template row as sentence vocabulary
+    # and TRIMMED it — "Anh Do" built a term for "Anh" alone, so the party
+    # shipped half-scrubbed ("Newcombe Do") in every occurrence.
+    "an", "do", "than", "can", "to", "so",
 }
 # Fake street-name pool. Kept deliberately arboreal-but-uncommon; a name that
 # turns up as a REAL street corrupts the record (an earlier build minted "Maple",
@@ -6748,12 +6754,30 @@ _PN_SUFFIX_TOKENS = {"jr", "jr.", "sr", "sr.", "ii", "iii", "iv", "v", "esq",
                      "j.d.", "llm", "ll.m.", "np", "pa", "dvm", "psyd", "psy.d."}
 # Matched dot/space-insensitively so "M.D.", "MD", "M.D" and "m.d." all count.
 _PN_SUFFIX_NODOT = frozenset(re.sub(r"[.\s]", "", s) for s in _PN_SUFFIX_TOKENS)
+# The undotted forms that are ALSO real surnames — Do, Pa, Md, Np and Rn are
+# all common Vietnamese/Korean/Indian family names, and treating every bare
+# "Do" as a degree left "Anh Do" composed as "<fake> Do": the surname shipped
+# verbatim in every occurrence, as a half-scrubbed pair. The COMPOSING paths
+# treat one of these as a suffix only on evidence — the token carries its dots
+# ("D.O."), a comma precedes it in the name ("Smith, MD"), or it is ALL-CAPS
+# inside a mixed-case name ("Bob Jones MD" — a degree is shouted, a surname is
+# not); bare "Do" with none of those is a name word and is faked. The review
+# filters keep the wide reading (a suffix guess there only mutes noise).
+_PN_SUFFIX_AMBIG = frozenset({"do", "pa", "md", "np", "rn"})
 
 
-def _pn_is_suffix_token(word):
+def _pn_is_suffix_token(word, *, bare_ambiguous=True):
     """True for a generational/degree suffix in any punctuation ("M.D.", "MD",
-    "Ph.D.", "Esq", "Jr.") — never pseudonymized, always kept as written."""
-    return re.sub(r"[.\s]", "", word).lower().removesuffix("'s") in _PN_SUFFIX_NODOT
+    "Ph.D.", "Esq", "Jr.") — never pseudonymized, always kept as written.
+
+    `bare_ambiguous=False` is the composing paths' question: an UNDOTTED
+    `_PN_SUFFIX_AMBIG` form ("Do", "Pa", "MD") then does NOT count, because
+    with no punctuation evidence it is at least as likely a surname."""
+    stripped = re.sub(r"[.\s]", "", word).lower().removesuffix("'s")
+    if stripped not in _PN_SUFFIX_NODOT:
+        return False
+    return (bare_ambiguous or stripped not in _PN_SUFFIX_AMBIG
+            or "." in word)
 
 
 # Latin letters INCLUDING the accented forms that appear in California party
@@ -7635,7 +7659,16 @@ def _pn_name_variants(word):
     # "Ashely" beside the faked surname: a half-scrubbed pair naming the party.
     for i in range(len(core) - 1):
         if core[i].lower() != core[i + 1].lower():
-            out.add(core[:i] + core[i + 1] + core[i] + core[i + 2:])
+            v = core[:i] + core[i + 1] + core[i] + core[i + 2:]
+            # Swapping the FIRST pair of a Title-case name moves the capital
+            # inward ("Ashley" -> "sAhley"), and the name-token screen below
+            # rightly refuses a lower-case first letter — so the commonest
+            # transposition position was silently never registered, while an
+            # ALL-CAPS input kept it. Restore the capital; matching is
+            # case-insensitive, so only the screen ever sees the casing.
+            if v[0].islower() and core[0].isupper():
+                v = v[0].upper() + v[1].lower() + v[2:]
+            out.add(v)
     # y <-> ie
     if low.endswith("ie"):
         out.add(core[:-2] + "y")
@@ -7862,8 +7895,19 @@ def _pn_fake_person(name, registry):
                 if (trail and words
                     and _pn_word_base(words[-1].group(0)) == _pn_word_base(trail))
                 else None)
-    def _keep(w):
-        return (len(w) == 1 or _pn_is_suffix_token(w)
+    def _keep(w, at=None):
+        # An undotted ambiguous suffix ("Do", "MD") counts as a suffix here
+        # only on evidence: a comma precedes it ("John Smith, MD"), or it is
+        # ALL-CAPS inside a mixed-case name ("Bob Jones MD") — a degree is
+        # shouted, a surname is not. Bare "Do" at the end of "Anh Do" has
+        # neither and is the surname; treating it as a degree shipped the
+        # party half-scrubbed ("Newcombe Do"). An all-caps NAME gives the
+        # casing signal nothing, and the safe direction is to fake: a degree
+        # word faked is cosmetic, a surname kept verbatim is a leak.
+        evidence = (at is not None and "," in name[:at]
+                    or w.isupper() and not name.isupper())
+        return (len(w) == 1
+                or _pn_is_suffix_token(w, bare_ambiguous=evidence)
                 or w.strip(".,").lower() in _PN_DOC_ABBREV)
     # Firm furniture, connectors ("LAW OFFICES OF Stratman", "the Waggoner") and
     # the operator's own `{braced}` keeps are kept verbatim — but only while a
@@ -7872,11 +7916,11 @@ def _pn_fake_person(name, registry):
     furniture = {m.start() for m in words
                  if registry.keeps_word(_pn_word_base(m.group(0)))}
     if not [m for m in words
-            if not _keep(m.group(0)) and m.start() != trail_at
+            if not _keep(m.group(0), m.start()) and m.start() != trail_at
             and m.start() not in furniture]:
         furniture = set()
     mappable = [m for m in words
-                if not _keep(m.group(0)) and m.start() != trail_at
+                if not _keep(m.group(0), m.start()) and m.start() != trail_at
                 and m.start() not in furniture]
     # An all-initials name ("M & M", "J&J", "A. B.") has no mappable token, so
     # the loop below would keep every character verbatim and return the input —
@@ -7895,7 +7939,7 @@ def _pn_fake_person(name, registry):
     for m in words:
         w = m.group(0)
         parts.append(name[cursor:m.start()])
-        if _keep(w) or m.start() == trail_at or m.start() in furniture:
+        if _keep(w, m.start()) or m.start() == trail_at or m.start() in furniture:
             parts.append(w)
         else:
             fake = _pn_fake_name_token(w, registry)
@@ -8293,15 +8337,28 @@ def _pn_person_token_map(name, registry):
     the two stay in step and no pool word is spent on "Law"/"of" — the pools are
     drawn without replacement, and a case with three firms in its caption used
     to burn a third of a dozen surnames on the word "Offices"."""
+    def _suffix(m):
+        # Same evidence rule as `_pn_fake_person._keep`: a bare "Do"/"MD" is a
+        # suffix only behind a comma or when it is ALL-CAPS inside a
+        # mixed-case name; with dots, always.
+        w = m.group(0)
+        evidence = ("," in name[:m.start()]
+                    or w.isupper() and not name.isupper())
+        return _pn_is_suffix_token(w, bare_ambiguous=evidence)
+
     keep_furniture = any(
-        len(m.group(0)) > 1 and not _pn_is_suffix_token(m.group(0))
+        len(m.group(0)) > 1 and not _suffix(m)
         and m.group(0).strip(".,").lower() not in _PN_DOC_ABBREV
         and not registry.keeps_word(_pn_word_base(m.group(0)))
         for m in _PN_WORD_RE.finditer(name))
     out = {}
     for m in _PN_WORD_RE.finditer(name):
         w = m.group(0)
-        if _pn_is_suffix_token(w):
+        # A single letter is an INITIAL and `_pn_fake_person` keeps it verbatim
+        # — minting a whole pool surname for it here burned one pool word per
+        # distinct initial letter in the case and left a live bare-letter
+        # binding ("w" -> a surname) in the registry.
+        if len(w) == 1 or _suffix(m) or w.strip(".,").lower() in _PN_DOC_ABBREV:
             continue
         base = _pn_word_base(w)
         if keep_furniture and registry.keeps_word(base):
