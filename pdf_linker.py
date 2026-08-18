@@ -12555,8 +12555,12 @@ class Pseudonymizer:
         for t in terms:
             # Never install a self-identical mapping (fake == real): it is a
             # no-op scrub that ships the real value and loops --fix-leaks.
+            # The TERM goes with the record — `_term_cands` looks each match
+            # up by (category, real), so a term whose record was refused here
+            # would crash the first substitution pass that matched it.
             fake = _pn_guard_distinct_fake(t.real, t.fake, self.registry)
             if fake is None:
+                self.terms = [x for x in self.terms if x is not t]
                 continue
             t.fake = fake
             self.records[(t.category, t.real.lower())] = {
@@ -13532,9 +13536,15 @@ class Pseudonymizer:
                 fake = self._fake_ssn(real)
             else:
                 fake = faker(real)
+            # The record's own pattern is what `_surviving_records` and
+            # `scrub_survivors` scan with, so it must be no LOOSER than any
+            # substitution pass: a bare escape matched inside unrelated longer
+            # values and the cure then spliced a fake mid-word. Word-bounded
+            # and case-insensitive, like every term pattern.
             rec = {"category": cat, "real": real, "fake": fake,
                    "source": "regex", "count": 0,
-                   "pattern": re.escape(_NFKC(real)), "flags": 0}
+                   "pattern": r"(?<!\w)" + re.escape(_NFKC(real)) + r"(?!\w)",
+                   "flags": re.IGNORECASE}
             self.records[rk] = rec
             # Store trimmed of trailing punctuation so a re-detected match that
             # picks up a following period (a fake suffix like "Ave." meeting a
@@ -13716,10 +13726,18 @@ class Pseudonymizer:
             if rec is None and not self.mint_display_names:
                 continue        # already-scrubbed text: see `mint_display_names`
             if rec is None:
+                # Word-bounded and case-insensitive, exactly the pattern
+                # `_display_name_repeat_cands` substitutes with — the record's
+                # pattern is the SCAN's pattern, and a looser one made
+                # `scrub_survivors` splice this name's fake into an unrelated
+                # longer name ("Wei Lin" -> "<fake of Wei Li>n") while the
+                # leak scan reported the same phantom against clean text.
                 rec = {"category": "display-name", "real": name,
                        "fake": _pn_fake_person(name, self.registry)[0],
                        "source": "regex", "count": 0,
-                       "pattern": re.escape(_NFKC(name)), "flags": 0}
+                       "pattern": (r"(?<!\w)" + re.escape(_NFKC(name))
+                                   + r"(?!\w)"),
+                       "flags": re.IGNORECASE}
                 self.records[rk] = rec
                 # Register the mint as an own-fake (as _detector_record does), so
                 # it is recognised and skipped on the next pass and re-run.
@@ -14061,7 +14079,14 @@ class Pseudonymizer:
                 # few hundred master KEEPs rebuilt and recompiled every one of
                 # these on every page, and Python's own re cache (512) is shared
                 # with every term pattern in the case, so it thrashed.
-                keep_rx = self._compiled(r"(?<!\w)" + re.escape(v) + r"(?!\w)",
+                # Built through `_pn_build_pattern`, NOT a bare escape: the
+                # term the keep must beat folds whitespace runs and both
+                # apostrophe marks, so an escaped literal matched neither the
+                # occurrence wrapped across a pleading line nor Word's
+                # typographic "’" — and the party term then faked exactly the
+                # occurrences the operator's `no` could not see, with no
+                # worksheet row to say so (kept values are suppressed there).
+                keep_rx = self._compiled(_pn_build_pattern(v, whole_word=True),
                                          re.IGNORECASE)
                 for m in keep_rx.finditer(text):
                     s, e = m.span()
