@@ -8974,16 +8974,22 @@ _PN_ADDR_SUFFIX = (
 # span ("414–416"), so the leading half is never left stranded next to a fake.
 _PN_ADDR_NUM = r"\d{1,6}(?:[ \t]*[-–—][ \t]*\d{1,6})?"
 # A name word: a capitalised word (no IGNORECASE, so "the court" can't qualify),
-# an ordinal ("5th", "101st"), or a directional ("N", "S.", "NW").
-_PN_ADDR_WORD = r"(?:[NSEW]{1,3}\.?|\d{1,3}(?:st|nd|rd|th)|[A-Z][A-Za-z0-9.'&-]*)"
+# an ordinal ("5th", "101st" — its suffix in either case, or "1234 5TH STREET"
+# in an all-caps caption never matched), or a directional ("N", "S.", "NW").
+# The word class carries the accented letters and BOTH apostrophes for the
+# reason `_PN_WORD_RE` does: "123 O’Farrell Street" and "1234 La Cañada
+# Boulevard" are real California addresses, and an ASCII straight-quote class
+# left each of them — house number included — in clear text.
+_PN_ADDR_WORD = (r"(?:[NSEW]{1,3}\.?|\d{1,3}(?i:st|nd|rd|th)"
+                 rf"|[{_PN_LAT_UPPER}][{_PN_LAT}0-9.'’&-]*)")
 # Optional trailing suite/floor and City, ST ZIP, so the locality is kept too.
 # The floor form is "<ordinal> Floor" — value BEFORE the label, unlike Suite.
 _PN_ADDR_SUITE = (
     r"(?:[ \t]*,?[ \t]*(?:(?i:Suite|Ste|Unit|Apt|Bldg|#)[ \t]*[\w-]+"
-    r"|\d{1,3}(?:st|nd|rd|th)[ \t]+(?i:Floor|Fl)\b\.?))?")
+    r"|\d{1,3}(?i:st|nd|rd|th)[ \t]+(?i:Floor|Fl)\b\.?))?")
 _PN_ADDR_CITYZIP = (
-    r"(?:[ \t]*,?[ \t]*(?:[A-Z][A-Za-z]+[ \t]*,?[ \t]*){1,3}[A-Za-z]{2}\.?[ \t]+"
-    r"\d{5}(?:-\d{4})?)?")
+    rf"(?:[ \t]*,?[ \t]*(?:[{_PN_LAT_UPPER}][{_PN_LAT}]+[ \t]*,?[ \t]*){{1,3}}"
+    r"[A-Za-z]{2}\.?[ \t]+\d{5}(?:-\d{4})?)?")
 # A street with no street-TYPE suffix ("1888 Century Park East") may close on a
 # trailing directional or plaza-head word instead — but ONLY when a suite/floor
 # token or a City, ST ZIP tail actually follows, so prose that merely starts
@@ -8991,8 +8997,9 @@ _PN_ADDR_CITYZIP = (
 _PN_ADDR_CLOSE = r"(?i:East|West|North|South|Park|Center|Centre|Plaza)"
 _PN_ADDR_TAIL_CUE = (
     r"[ \t]*,?[ \t]*(?:(?i:Suite|Ste|Unit|Apt|Bldg|#)[ \t]*[\w-]"
-    r"|\d{1,3}(?:st|nd|rd|th)[ \t]+(?i:Floor|Fl)\b"
-    r"|(?:[A-Z][A-Za-z]+[ \t]*,?[ \t]*){1,3}[A-Za-z]{2}\.?[ \t]+\d{5})")
+    r"|\d{1,3}(?i:st|nd|rd|th)[ \t]+(?i:Floor|Fl)\b"
+    rf"|(?:[{_PN_LAT_UPPER}][{_PN_LAT}]+[ \t]*,?[ \t]*){{1,3}}"
+    r"[A-Za-z]{2}\.?[ \t]+\d{5})")
 _PN_ADDR_STREET_PAT = (
     rf"{_PN_ADDR_NUM}[ \t]+"
     rf"(?:(?:{_PN_ADDR_WORD}[ \t]+){{1,4}}{_PN_ADDR_SUFFIX}\b\.?"
@@ -9049,8 +9056,17 @@ def _pn_addr_canon(real):
 def _pn_addr_name_of(street):
     """The NAME words of a street, with the house number and the street-type
     suffix removed ("7227 Hickory Blvd" -> "Hickory"). The name is the only part
-    the tool fakes, so it is the only part the registry memoizes."""
-    out = re.sub(r"^[\s\d\-\u2013\u2014]+", "", str(street)).strip()
+    the tool fakes, so it is the only part the registry memoizes.
+
+    Only WHOLE leading number tokens are stripped \u2014 a bare character class ate
+    the digits of an ORDINAL street name too, so "100 5th Street" and "200 9th
+    Street" both reduced to "th street": every numbered street on one suffix
+    shared one identity, and therefore one fake, which is the many-reals-onto-
+    one-fake collapse the registry exists to prevent (and the reversal macro
+    answers by restoring none of them). A digit run is consumed only when a
+    separator follows it, so the "5" of "5th" stays with its name."""
+    out = re.sub(r"^\s*(?:\d+(?:[ \t]*[-\u2013\u2014][ \t]*\d+)?[ \t]+)+", "",
+                 str(street)).strip()
     out = re.sub(rf"[ \t]+{_PN_ADDR_SUFFIX}\b\.?[ \t]*$", "", out).strip()
     return out
 
@@ -9070,7 +9086,10 @@ def _pn_addr_street_key(real):
     nums = [int(n) for n in re.findall(r"\d{1,6}", street)]
     # canon of the STREET part only (no locality), then drop the leading
     # number(s) / range so only the directional+name+suffix identity remains.
-    core = re.sub(r"^[\d\- \u2013\u2014]+", "", _pn_addr_canon(street)).strip()
+    # WHOLE number tokens only, for the reason `_pn_addr_name_of` states: a
+    # character class also ate the digits of "5th", collapsing every ordinal
+    # street onto one identity ("th street") and so onto one fake.
+    core = re.sub(r"^(?:\d+ +)+", "", _pn_addr_canon(street)).strip()
     return core, nums
 
 
@@ -9522,7 +9541,11 @@ _PN_DETECTORS = {
     # match. The run-together "123456789" form is deliberately NOT here (it is
     # indistinguishable from a Bates/account/reservation number) — it is caught
     # only behind an SSN label, in _PN_ID_RES below.
-    "ssn": (re.compile(r"(?<!\d)\d{3}[-. ]\d{2}[-. ]\d{4}(?!\d)"), _pn_fake_ssn),
+    # The dash class carries the en/em dash too: Word autoformats "552-81-9081"
+    # into "552–81–9081", and a dash-only class shipped that spelling verbatim
+    # with nothing else reporting it.
+    "ssn": (re.compile(r"(?<!\d)\d{3}[-–—. ]\d{2}[-–—. ]\d{4}(?!\d)"),
+            _pn_fake_ssn),
     # The TLD tail tolerates ONE step of OCR whitespace after the final dot
     # ("BARRYLAW7@GMAIL. COM" shipped in clear text because of it) — but only
     # for a KNOWN TLD, or the first word of the next sentence would be read as
@@ -9539,9 +9562,15 @@ _PN_DETECTORS = {
     # the bracketed one — three digits inside brackets followed by seven more
     # is a phone number whatever precedes it. So the guard moves onto the
     # alternative that needs it.
+    # Between the groups, up to THREE separator characters rather than one:
+    # this tool's own `preserve_interword_spaces=1` extraction hands a tabular
+    # letterhead back with a double space ("(818)  953-0150"), and a scan pads
+    # the hyphen ("953 - 0150") — both shipped in clear text under a
+    # single-character class. The digit groups stay strict (3-3-4), so the
+    # widening admits no new digit shapes, only more air between them.
     "phone": (re.compile(
         r"(?:\+?1[\s.\-]?)?(?:[(\[{]\d{3}[)\]}]|(?<!\d)\d{3})"
-        r"[\s.\-]?\d{3}[\s.\-]?\d{4}(?!\d)"),
+        r"[\s.\-]{0,3}\d{3}[\s.\-]{0,3}\d{4}(?!\d)"),
         _pn_fake_phone),
     # Street address — anchored on a leading street number on the same row, then
     # 1-4 name words (capitalised, or an ordinal/directional), then a street-type
@@ -9556,11 +9585,16 @@ _PN_DETECTORS = {
     # ending “…onelegal.com/.” swallowed the closing `.”` into the match, so
     # the same URL was tracked twice (with and without the tail) and the
     # duplicate row survived every dedup keyed on the exact value.
+    # Compiled IGNORECASE: a letterhead or caption block prints its firm site
+    # ALL-CAPS ("WWW.SMITHLAWFIRM.COM"), and a case-sensitive scheme/TLD left
+    # that spelling in clear text — unflagged too, since the review scan reads
+    # this same regex. Every host consumer already case-folds (`_pn_url_host`,
+    # `_pn_fake_domain`), so the caps spelling seeds the same fake.
     "url": (re.compile(
         r"(?:https?://|www\.)[^\s<>()\"'‘’“”]*[^\s<>()\"'‘’“”.,;:!?]"
         r"|(?<!@)(?<![\w.])[A-Za-z0-9][\w-]*(?:\.[\w-]+)*"
         r"\.(?:com|net|org|law|gov|edu|us|biz|info)\b"
-        r"(?:/[^\s<>()\"'‘’“”.,;:!?]*)?"),
+        r"(?:/[^\s<>()\"'‘’“”.,;:!?]*)?", re.IGNORECASE),
         _pn_fake_url),
 }
 _PN_DEFAULT_DETECTORS = ["ssn", "email", "phone", "address", "url"]
@@ -11189,7 +11223,14 @@ def _pn_load_key(path, registry, log, remint_recycled=False):
         if cat in ("email", "url"):
             rh = real.split("@", 1)[-1] if cat == "email" else _pn_url_host(real)
             fh = fake.split("@", 1)[-1] if cat == "email" else _pn_url_host(fake)
-            rh, fh = rh.lower().lstrip("www."), fh.lower()
+            # `str.lstrip` strips a CHARACTER SET, not a prefix — it ate the
+            # real host's own leading w's ("wwlaw.com" -> "law.com"), so the
+            # memo was seeded under a mangled key, a re-run drew a SECOND fake
+            # for the firm's own domain, and the memo bound the unrelated real
+            # host "law.com" to this firm's fake besides. Prefix removal only,
+            # mirroring `_pn_fake_domain`.
+            rh, fh = rh.lower(), fh.lower()
+            rh = rh[4:] if rh.startswith("www.") else rh
             if rh and fh and "." in rh:
                 registry._memo.setdefault(("domain", rh), fh)
                 registry._domain_reals.setdefault(rh, fh)
