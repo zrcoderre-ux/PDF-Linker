@@ -18296,6 +18296,40 @@ def _pn_context(parsed, needle, width=_PN_CONTEXT_MAX):
             + ("…" if lo + width < len(sent) else ""))
 
 
+def _pn_leak_context(orig_parsed, scrub_parsed, pz, value):
+    """The Context quote for a LEAKS row, from the ORIGINAL body — the same
+    text the key's Context column reads, at the operator's direction.
+
+    The quote used to come from the scrubbed export, on the reasoning that the
+    export is where the leak stands. But the row's question is "what IS this
+    value?", it is decided ONCE per value however many files carry it (the
+    worksheet aggregates), and a `never` typed against it applies in every
+    future folder — so the evidence should be the document's own sentence, not
+    one with pseudonyms substituted around the value. Every flagged value is
+    text the scrub did NOT replace, so it stands verbatim in the original by
+    construction; the exceptions are handled in order:
+
+    * a phrase CARRYING one of our stand-ins ("Ashely Langley") is absent from
+      the source, but its real remainder — the value `confirm_findings` will
+      reduce the row to — is there, so the remainder is quoted;
+    * with no original in hand at all (a `--fix-leaks` run whose folder keeps
+      no copy and whose TEMP cache is gone), the scrubbed export is quoted
+      rather than leaving the row unanswerable.
+
+    The order also keeps `_pn_context_prep`'s one-entry memo warm: every
+    primary lookup hits `orig_parsed`, and the fallbacks are rare."""
+    if orig_parsed:
+        quote = _pn_context(orig_parsed, value)
+        if quote:
+            return quote
+        rest = pz._real_remainder(value)
+        if rest and rest != str(value):
+            quote = _pn_context(orig_parsed, rest)
+            if quote:
+                return quote
+    return _pn_context(scrub_parsed, value)
+
+
 def _pn_locate_export(text, needle, limit=12):
     """`_pn_locate` over a WRITTEN export, aware that it may be a COMBINED one.
 
@@ -20055,7 +20089,11 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
 
         # Collect every finding into the run-wide triage worksheet, each located
         # to its printed page and gutter line so it can be found and judged.
+        # The LOCATION points into the export (that is where the leak stands);
+        # the CONTEXT quotes the ORIGINAL, the same body the key's Context
+        # column reads (`_pn_leak_context`).
         parsed = _pn_body_lines(body)
+        orig_parsed = _pn_body_lines(original)
         for real in sorted(survivors):
             # A pure pleading phrase ("Opposition", "Plaintiff's Opposition to
             # Mot.") is a document type, never a party — never worth a worksheet
@@ -20065,14 +20103,16 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
             pseudonymizer.leak_report.append(
                 {"file": pdf_path.name, "type": "LEAK", "value": real,
                  "where": _pn_locate(parsed, real),
-                 "context": _pn_context(parsed, real)})
+                 "context": _pn_leak_context(orig_parsed, parsed,
+                                             pseudonymizer, real)})
         for cls, sample in review:
             if _pn_is_procedural_phrase(sample) or _pn_is_email_value(sample):
                 continue
             pseudonymizer.leak_report.append(
                 {"file": pdf_path.name, "type": cls, "value": sample,
                  "where": _pn_locate(parsed, sample),
-                 "context": _pn_context(parsed, sample)})
+                 "context": _pn_leak_context(orig_parsed, parsed,
+                                             pseudonymizer, sample)})
 
         # Pseudonymize the output filename too — the .txt is the artifact that
         # gets shared, so a party/attorney name must not survive in its name.
@@ -21120,6 +21160,12 @@ def _write_word_text_version(src_path, text, log, pseudonymizer=None,
         # Per-file backstop to the folder pre-scan (mirrors _write_text_version):
         # learn any declarant / dba / firm / locality / identifier stated here.
         _pn_learn_from_text(pseudonymizer, text, src_path.stem)
+        # The unscrubbed EVIDENCE is registered before the scrub, exactly as
+        # the PDF path does: `_pn_leak_context` quotes the original below, and
+        # its remainder fallback needs `_real_remainder` armed with this file's
+        # words, not last file's.
+        pseudonymizer.note_original(text)
+        _cache_original(src_path.parent, src_path.stem, text)
         body = pseudonymizer.apply(text)
 
         survivors = set(pseudonymizer.surviving_reals(body))
@@ -21141,20 +21187,26 @@ def _write_word_text_version(src_path, text, log, pseudonymizer=None,
             log.warning(f"  Pseudonymization REVIEW on {src_path.name}: "
                         f"identifier(s) to check before sharing ({shown}).")
 
+        # Location points into the export; Context quotes the ORIGINAL — the
+        # rule `_pn_leak_context` states, shared with the PDF path.
+        scrub_parsed = _pn_body_lines(body)
+        orig_parsed = _pn_body_lines(text)
         for real in sorted(survivors):
             if _pn_is_procedural_phrase(real) or _pn_is_email_value(real):
                 continue
             pseudonymizer.leak_report.append(
                 {"file": src_path.name, "type": "LEAK", "value": real,
                  "where": _word_locate(body, real),
-                 "context": _pn_context(_pn_body_lines(body), real)})
+                 "context": _pn_leak_context(orig_parsed, scrub_parsed,
+                                             pseudonymizer, real)})
         for cls, sample in review:
             if _pn_is_procedural_phrase(sample) or _pn_is_email_value(sample):
                 continue
             pseudonymizer.leak_report.append(
                 {"file": src_path.name, "type": cls, "value": sample,
                  "where": _word_locate(body, sample),
-                 "context": _pn_context(_pn_body_lines(body), sample)})
+                 "context": _pn_leak_context(orig_parsed, scrub_parsed,
+                                             pseudonymizer, sample)})
 
         # Scrub the output filename too — the .txt is the shared artifact, so a
         # party/attorney name in the Word file's name must not ride along.
@@ -21184,9 +21236,9 @@ def _write_word_text_version(src_path, text, log, pseudonymizer=None,
 
     # Optional UNSCRUBBED reference copy, under the real filename — same policy
     # as the PDF path (real names by design, never gated, must not be shared).
+    # (The evidence itself — `note_original` and the TEMP cache — was recorded
+    # BEFORE the scrub, beside `_pn_learn_from_text`.)
     if pseudonymizer is not None:
-        pseudonymizer.note_original(text)
-        _cache_original(src_path.parent, src_path.stem, text)
         if original_subdir:
             orig_dir = src_path.parent / original_subdir
             orig_path = orig_dir / (src_path.stem + ".txt")
@@ -22118,15 +22170,21 @@ def _cache_original(folder, stem, text):
         pass
 
 
-def _load_cached_originals(folder, pz, log=None):
-    """Feed `pz` every cached original for `folder`. Returns how many."""
+def _load_cached_originals(folder, pz, log=None, collect=None):
+    """Feed `pz` every cached original for `folder`. Returns how many.
+    `collect`, when given, also receives each text — `--fix-leaks` quotes the
+    LEAKS Context column from these bodies (`_pn_leak_context`), and
+    `note_original` keeps only the reduced evidence, not the text."""
     d = _originals_cache_dir(folder)
     if not d.is_dir():
         return 0
     n = 0
     for f in sorted(d.glob("*.txt")):
         try:
-            pz.note_original(f.read_text(encoding="utf-8", errors="ignore"))
+            text = f.read_text(encoding="utf-8", errors="ignore")
+            pz.note_original(text)
+            if collect is not None:
+                collect.append(text)
             n += 1
         except OSError:
             pass
@@ -22810,6 +22868,39 @@ def _fix_leaks_mode(folder, args, cfg, log):
                   f"appears ONLY inside case citations in these exports, so "
                   f"faking it would rename a cited decision. It is an "
                   f"authority, not a party: mark the row 'no'.")
+    # `--fix-leaks` never reopens the PDFs, so the ORIGINAL TEXT folder is the
+    # only evidence of what the documents actually said. Read it when the
+    # operator keeps one: a flagged value absent from there is this run's own
+    # output, so it must not hold the export hostage. Read BEFORE the per-file
+    # loop, and the TEXTS kept as well as noted: the loop's fresh findings
+    # quote their Context from this body (`_pn_leak_context`), the same rule
+    # the full run follows.
+    orig_dir = folder / (cfg.get("original_text_subfolder", "").strip()
+                         or "Original Text (real names - do not share)")
+    orig_texts, n_orig, orig_where = [], 0, ""
+    if orig_dir.is_dir():
+        for o in sorted(orig_dir.glob("*.txt")):
+            try:
+                orig_texts.append(o.read_text(encoding="utf-8",
+                                              errors="ignore"))
+                pz.note_original(orig_texts[-1])
+                n_orig += 1
+            except OSError:
+                pass
+        orig_where = orig_dir.name
+    if not n_orig:
+        # No in-folder copy — the operator has that option off. The full run
+        # cached the same text in TEMP for exactly this pass.
+        n_orig = _load_cached_originals(folder, pz, log, collect=orig_texts)
+        orig_where = "the run's cached originals"
+    if n_orig:
+        log.info(f"  --fix-leaks: confirming findings against {n_orig} "
+                 f"original text file(s) from {orig_where}")
+    # One parsed body for the folder's originals: findings are located by
+    # value, not by file, so the concatenation answers every quote with one
+    # `_pn_context_prep` — per-file parses would thrash its one-entry memo.
+    orig_parsed = _pn_body_lines("\n".join(orig_texts)) if orig_texts else []
+
     # Files held because a REJECTED decision's value is still in them (see
     # `rejected`): the worksheet's other rows may have applied cleanly, and
     # those files are released as usual — but a file whose own fix was dropped
@@ -22860,31 +22951,11 @@ def _fix_leaks_mode(folder, args, cfg, log):
                 pz.leak_report.append(
                     {"file": f.name, "type": "LEAK", "value": real,
                      "where": _pn_locate_export(scrubbed, real),
-                     "context": _pn_context(_pn_body_lines(scrubbed), real)})
+                     "context": _pn_leak_context(
+                         orig_parsed, _pn_body_lines(scrubbed), pz, real)})
 
-    # `--fix-leaks` never reopens the PDFs, so the ORIGINAL TEXT folder is the
-    # only evidence of what the documents actually said. Read it when the
-    # operator keeps one: a flagged value absent from there is this run's own
-    # output, so it must not hold the export hostage.
-    orig_dir = folder / (cfg.get("original_text_subfolder", "").strip()
-                         or "Original Text (real names - do not share)")
-    n, where = 0, ""
-    if orig_dir.is_dir():
-        for o in sorted(orig_dir.glob("*.txt")):
-            try:
-                pz.note_original(o.read_text(encoding="utf-8", errors="ignore"))
-                n += 1
-            except OSError:
-                pass
-        where = orig_dir.name
-    if not n:
-        # No in-folder copy — the operator has that option off. The full run
-        # cached the same text in TEMP for exactly this pass.
-        n = _load_cached_originals(folder, pz, log)
-        where = "the run's cached originals"
-    if n:
-        log.info(f"  --fix-leaks: confirming findings against {n} original "
-                 f"text file(s) from {where}")
+    # (The originals were read and noted BEFORE the loop above — the fresh
+    # findings' Context quotes needed them.)
     pz.confirm_findings(log)
 
     # Un-quarantine every *.LEAK that no longer carries a party-name leak.
