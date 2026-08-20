@@ -16899,6 +16899,119 @@ def _pn_reconstruct_caption(pseudonymizer, rows):
     return out_rows
 
 
+# ── Visual layout of the .txt export ────────────────────────────────────────
+# The export is read SIDE BY SIDE with the PDF, and a rendering that joins a
+# row's pieces with one space destroys exactly what the eye uses to line the
+# two up: a two-column caption collapses to one run, a centered heading lands
+# flush left, and the case-number column floats to wherever the party name
+# ends. So a row is laid out on a character grid derived from each segment's
+# own x position — the same rule `_form_layout` already applies to a court
+# form, at a char width sized for 12 pt body text rather than a form's small
+# print. A segment at the page's body-left edge computes column 0 and renders
+# byte-identically to the old join, so ordinary body prose does not move; only
+# a row whose print carries real geometry (an indent, a second column, a
+# right-aligned cell) picks up padding. Scrubbing happens BEFORE layout, so a
+# fake of a different length shifts what follows it on that line — the honest
+# cost of the text really having changed.
+_VIS_CHAR_W = 6.0
+
+
+def _rows_body_left(rows):
+    """The x of a pleading page's body-left edge — column 0 of the layout.
+
+    Taken from the NUMBERED rows only: the out-of-band rows Step 7 restores (a
+    rotated margin label, an e-filing stamp) can sit far left of the body, and
+    letting one of them own column 0 would indent every body line by the width
+    of the margin. Such a row computes a negative column and is clamped to 0
+    instead — it loses its own indent, not the page's alignment."""
+    xs = [segs[0][0] for num, segs in rows if segs and num is not None]
+    if not xs:
+        xs = [segs[0][0] for _num, segs in rows if segs]
+    return min(xs) if xs else 0.0
+
+
+def _visual_row_text(segs, left):
+    """One display line: each segment at the column its x dictates, never on
+    top of (or run together with) the segment before it — `_form_layout`'s own
+    rule, shared because the two must read alike beside their pages."""
+    line = ""
+    for x, t in segs:
+        col = max(0, min(int(round((x - left) / _VIS_CHAR_W)), _FORM_MAX_COL))
+        if line:
+            col = max(col, len(line) + 1)
+        line += " " * (col - len(line)) + t
+    return line.rstrip()
+
+
+# A physical gap this wide between two spans is LAYOUT (a label/value gap, a
+# second column, a right-aligned cell) and earns column placement; anything
+# narrower is word spacing — a style change mid-sentence splits a line into
+# spans a point or two apart, and padding those would scatter running prose
+# (and put space runs inside a citation for no reason).
+_VIS_GAP_PT = 9.0
+# Vertical gaps become blank lines, capped: a mostly-empty cover page should
+# read as mostly empty, but OCR noise must not be able to demand a page of
+# scroll between two lines.
+_VIS_MAX_BLANKS = 8
+
+
+def _page_visual_text(page):
+    """Positional rendering of a page that is NOT pleading paper, a court form
+    or a table — an exhibit, a cover letter, an order. Same character grid as
+    `_visual_row_text`, from the page's own spans, so the export can be read
+    beside the PDF: indents and columns land where they sit on the page, and a
+    real vertical gap is a blank line rather than nothing.
+
+    Within a line the glue rule is `_join_spans_spaced`'s own — a span is
+    padded to its column only across a REAL gap (`_VIS_GAP_PT`), so running
+    prose renders exactly as the flowing text always has and the citation
+    parser never meets a space run this pass invented. Returns None when the
+    page yields no spans (the caller keeps `_page_flowing_text`)."""
+    try:
+        spans = [sp for blk in page.get_text("dict").get("blocks", [])
+                 for ln in blk.get("lines", [])
+                 for sp in ln.get("spans", [])
+                 if str(sp.get("text", "")).strip()]
+        rows = _cluster_rows(_drop_overdrawn_spans(spans))
+    except Exception:
+        return None
+    if not rows:
+        return None
+    rows = sorted(rows, key=lambda r: r["y"])
+    left = min(s["bbox"][0] for r in rows for s in r["spans"])
+    deltas = [b["y"] - a["y"] for a, b in zip(rows, rows[1:]) if b["y"] - a["y"] > 1.0]
+    lead = statistics.median(deltas) if deltas else 0.0
+    out, prev_y = [], None
+    for r in rows:
+        if prev_y is not None and lead:
+            blanks = int(round((r["y"] - prev_y) / lead)) - 1
+            out.extend([""] * max(0, min(blanks, _VIS_MAX_BLANKS)))
+        prev_y = r["y"]
+        line, prev_x1 = "", None
+        for s in sorted(r["spans"], key=lambda s: s["bbox"][0]):
+            t = s.get("text", "")
+            if not t:
+                continue
+            x0, y0, x1, y1 = s["bbox"]
+            col = max(0, min(int(round((x0 - left) / _VIS_CHAR_W)),
+                             _FORM_MAX_COL))
+            if not line:
+                line = " " * col + t
+            elif (col > len(line) + 1 and prev_x1 is not None
+                    and (x0 - prev_x1) >= _VIS_GAP_PT):
+                line += " " * (col - len(line)) + t
+            else:
+                if (not line[-1].isspace() and not t[:1].isspace()
+                        and prev_x1 is not None
+                        and (x0 - prev_x1) > 0.2 * (y1 - y0)):
+                    line += " "
+                line += t
+            prev_x1 = x1
+        out.append(line.rstrip())
+    text = "\n".join(out).rstrip()
+    return text or None
+
+
 def _pn_apply_page_rows(pseudonymizer, rows):
     """Pseudonymize a pleading page column by column and return one display
     string per row.
@@ -16921,7 +17034,12 @@ def _pn_apply_page_rows(pseudonymizer, rows):
         bodies = [rows[i][1][j][1] for i, j in items]
         for (i, j), text in zip(items, pseudonymizer.apply_lines(bodies)):
             faked[(i, j)] = text
-    return [" ".join(faked[(i, j)] for j in range(len(segs))).strip()
+    # Re-assembled at each segment's own printed column (see the visual-layout
+    # note above), with the ORIGINAL x deciding the column and the SCRUBBED
+    # text filling it.
+    left = _rows_body_left(rows)
+    return [_visual_row_text([(segs[j][0], faked[(i, j)])
+                              for j in range(len(segs))], left)
             for i, (_num, segs) in enumerate(rows)]
 
 
@@ -17951,7 +18069,11 @@ def _pseudonymized_txt_path(out_dir: Path, pdf_path: Path, pseudonymizer, log):
 # reviewer to triage. Written next to pdf_linker.log; removed on a clean run.
 _PN_PAGE_HEADER_RE = re.compile(
     r"^====== Page (\d+)(?: \(printed p\. (.+?)\))? ======$")
-_PN_GUTTER_RE = re.compile(r"^\s*(\d+)\s{2}\S")
+# Two-or-more spaces after the number, not exactly two: the visual layout
+# indents a body line to its own printed column, so a centered heading on a
+# numbered line reads " 1        NOTICE OF MOTION" and a fixed-width gap would
+# hand that line the PREVIOUS line's number.
+_PN_GUTTER_RE = re.compile(r"^\s*(\d+)\s{2,}\S")
 
 
 def _pn_body_lines(body):
@@ -18043,6 +18165,11 @@ def _pn_context_prep(parsed):
         # slice stops one short of the match end or it eats that character
         # ("DISCRIMINATION" came out "ISCRIMINATION").
         body = (text[m.end() - 1:] if m else text).strip()
+        # The visual layout pads a row's segments apart to mirror the page's
+        # columns; a QUOTE is prose, so the padding comes back out — a Context
+        # cell reading "ROXANE ESTRADA,        Case No.:" would spend half its
+        # width on furniture.
+        body = re.sub(r"\s{2,}", " ", body)
         if not body:
             continue
         off = run + (1 if joined else 0)
@@ -19621,12 +19748,13 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         form = _form_page_text(page)
         if form is not None and rows is not None and not _form_has_state_boxes(form):
             form = None
+        display = clean
         if form is not None:
             forms_seen.append(i + 1)
             if "READ FROM INK" in form.split("\n", 1)[0]:
                 ink_seen.append(i + 1)
             rows = None
-            clean = form
+            clean = display = form
         elif not rows:
             # An exhibit that is a SPREADSHEET — a billing export, a damages
             # schedule — reads one cell at a time otherwise, and a rate no
@@ -19636,7 +19764,16 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
             table = _page_table_text(page, clean)
             if table is not None:
                 tables_seen.append(i + 1)
-                clean = table
+                clean = display = table
+            else:
+                # A plain page — an exhibit, a letter, an order off pleading
+                # paper — is DISPLAYED positionally so the export reads beside
+                # the PDF (see _page_visual_text). Display only: `clean` still
+                # drives citation detection, whose regexes were tuned on the
+                # flowing rendering.
+                vis = _page_visual_text(page)
+                if vis is not None:
+                    display = _MARKER_DETECT_RE.sub("", vis).rstrip()
         orig_pages.append(clean)
         # Pass the DECIDED form text (None when this page's form rendering was
         # suppressed above), so detection reads exactly what the export writes.
@@ -19675,7 +19812,7 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
                   + (f" — REVIEW: recognised at only {low_dpi} dpi, "
                      f"text is LOW CONFIDENCE" if low_dpi else "")
                   + " ======")
-        page_blocks.append((header, rows if rows is not None else clean))
+        page_blocks.append((header, rows if rows is not None else display))
 
     def _pages(nums):
         return (", ".join(str(p) for p in nums[:12])
@@ -19742,7 +19879,8 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
                     # stays contiguous; rows re-assembled left to right after.
                     bodies = _pn_apply_page_rows(pz, content)
                 else:
-                    bodies = [" ".join(t for _x, t in segs)
+                    left = _rows_body_left(content)
+                    bodies = [_visual_row_text(segs, left)
                               for _num, segs in content]
                 # A gutter number owns its first row; continuation rows (a
                 # stacked letterhead/caption line) carry line_num=None and print
