@@ -1120,8 +1120,9 @@ def test_key_carries_first_and_last_name_rows(tmp_path):
     z = _pzR(names=["Gregory Yu"])
     z.apply("Gregory Yu signed the declaration.")   # full name only
     rows = _write_and_read_key(z, tmp_path)
-    full = {r[1]: r[2] for r in rows if r[0] == "person"}
-    tok = {r[1]: r[2] for r in rows if r[0] == "person-token"}
+    _rp = P._PN_KEY_HEADERS.index("Replacement")
+    full = {r[1]: r[_rp] for r in rows if r[0] == "person"}
+    tok = {r[1]: r[_rp] for r in rows if r[0] == "person-token"}
     assert "Gregory Yu" in full
     assert "Gregory" in tok and "Yu" in tok
     assert full["Gregory Yu"] == f"{tok['Gregory']} {tok['Yu']}"

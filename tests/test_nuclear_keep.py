@@ -133,7 +133,8 @@ def test_no_key_row_promises_a_fake_that_was_never_applied(tmp_path):
     reals = {str(r[1]).lower() for r in rows}
     assert "medical" not in reals and "center" not in reals
     full = next(r for r in rows if str(r[0]) in ("person", "entity"))
-    assert str(full[2]).endswith("Medical Center")   # reversible as delivered
+    _rp = P._PN_KEY_HEADERS.index("Replacement")
+    assert str(full[_rp]).endswith("Medical Center")  # reversible as delivered
 
 
 def test_a_brace_corrects_a_binding_an_older_key_baked_in(tmp_path):

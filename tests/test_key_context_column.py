@@ -71,11 +71,12 @@ def test_the_key_carries_a_context_column_beside_the_replacement(tmp_path):
     z.write_key(key, log)
 
     hdr, _r = _rows(key)[0]
-    assert hdr[:3] == list(P._PN_KEY_FINGERPRINT), hdr
-    assert hdr[3] == "Context", hdr
-    # ...between Replacement and Status, and nothing else reordered.
-    assert hdr == ["Category", "Real Value", "Replacement", "Context",
-                   "Status", "Source", "Occurrences"], hdr
+    assert hdr[:2] == list(P._PN_KEY_FINGERPRINT), hdr
+    # The two Context columns sit at C and D (original first), at the owner's
+    # direction, and the Replacement follows the evidence that justifies it.
+    assert hdr[2] == "Context" and hdr[3] == "Scrubbed Context", hdr
+    assert hdr == ["Category", "Real Value", "Context", "Scrubbed Context",
+                   "Replacement", "Status", "Source", "Occurrences"], hdr
 
 
 def test_every_quote_contains_its_own_real_value(tmp_path):
@@ -87,7 +88,7 @@ def test_every_quote_contains_its_own_real_value(tmp_path):
 
     quoted = 0
     for hdr, r in _rows(key):
-        real, ctx = str(r[1]), str(r[3] or "")
+        real, ctx = str(r[1]), str(r[hdr.index("Context")] or "")
         if ctx:
             quoted += 1
             assert real.lower() in ctx.lower(), (real, ctx)
@@ -108,10 +109,10 @@ def test_the_quote_is_the_sentence_not_the_line(tmp_path):
 
 
 def test_a_key_written_before_the_column_existed_still_loads(tmp_path):
-    # The fingerprint is the three headers both layouts share, so a key written
-    # before the column existed is still recognised as ours and still
-    # round-trips — which is what stops a moved column stranding every key
-    # already in circulation.
+    # The fingerprint is the two headers every layout has led with plus a
+    # by-name check for Replacement, so a key written before the Context
+    # columns existed is still recognised as ours and still round-trips —
+    # which is what stops a moved column stranding every key in circulation.
     key = tmp_path / "pseudonym_key.xlsx"
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -123,7 +124,7 @@ def test_a_key_written_before_the_column_existed_still_loads(tmp_path):
     wb.save(key)
 
     assert P._pn_key_looks_like_ours(key)
-    assert P._pn_key_context_on_disk(key) == {}     # nothing to carry, no crash
+    assert P._pn_key_context_on_disk(key) == ({}, {})  # nothing to carry, no crash
     terms, _dec = P._pn_load_key(key, P._PnFakeRegistry(), log)
     assert any(str(t.real) == "Helen Rasho" for t in terms)
 
@@ -136,7 +137,8 @@ def test_a_quote_is_carried_forward_when_it_cannot_be_re_derived(tmp_path):
     z.apply(SOURCE)
     z.note_key_context(SOURCE)
     z.write_key(key, log)
-    first = {str(r[1]): str(r[3] or "") for _h, r in _rows(key)}
+    first = {str(r[1]): str(r[h.index("Context")] or "")
+             for h, r in _rows(key)}
     assert first["Marcus Delacroix"]
 
     # A later run that never sees that document: same bindings, no source to
@@ -146,7 +148,8 @@ def test_a_quote_is_carried_forward_when_it_cannot_be_re_derived(tmp_path):
     z2.note_key_context("Nothing relevant here.")
     assert not z2._key_context
     z2.write_key(key, log)
-    second = {str(r[1]): str(r[3] or "") for _h, r in _rows(key)}
+    second = {str(r[1]): str(r[h.index("Context")] or "")
+              for h, r in _rows(key)}
     assert second["Marcus Delacroix"] == first["Marcus Delacroix"]
 
 
@@ -164,7 +167,8 @@ def test_this_runs_quote_beats_the_one_on_disk(tmp_path):
     z2.apply(other)
     z2.note_key_context(other)
     z2.write_key(key, log)
-    got = {str(r[1]): str(r[3] or "") for _h, r in _rows(key)}
+    got = {str(r[1]): str(r[h.index("Context")] or "")
+           for h, r in _rows(key)}
     assert "testified for two hours" in got["Marcus Delacroix"], got
 
 

@@ -119,33 +119,41 @@ pin still does its job. "Carried" is REACHABILITY, not the row's own count: the
 macro reverses a composed fake word by word, so the token rows of a party whose
 full name is the only form the export used are load-bearing even though they
 matched nothing themselves.
-**Every key row QUOTES the sentence its value stood in** (`Context`,
-`note_key_context`). A row says `Rasho -> Strangeways`, and whether that binding
-is right depends on how the document used the word — the question the LEAKS
-Context column already answers for a decision not yet made, asked here of one
-already made. Read from the UNSCRUBBED body, of necessity: by the time the export
-exists the real value has been replaced, so only that copy still contains it.
-The consequence is deliberate and worth stating — `pseudonym_key.xlsx` now
-carries sentences of the real document, not merely its real values. It was never
-a shareable file (it is the reversal map), so this changes how revealing it is,
-not which file is safe to send. It sits at column **D**, beside the Replacement
-it explains, because that is where it is read: the row asks "is this binding
-right?" and the sentence is the answer. Inserting rather than appending is safe,
-and worth stating because the reverse is the obvious fear — `DeAnonymize.bas`
-does NOT read this sheet positionally, it scans the header row for
+**Every key row QUOTES the sentence its value stood in — TWICE** (`Context` /
+`Scrubbed Context`, `note_key_context`). A row says `Rasho -> Strangeways`, and
+whether that binding is right depends on how the document used the word — the
+question the LEAKS Context column already answers for a decision not yet made,
+asked here of one already made. The FIRST quote is read from the UNSCRUBBED
+body, of necessity: by the time the export exists the real value has been
+replaced, so only that copy still contains it. The consequence is deliberate
+and worth stating — `pseudonym_key.xlsx` now carries sentences of the real
+document, not merely its real values. It was never a shareable file (it is the
+reversal map), so this changes how revealing it is, not which file is safe to
+send. The SECOND quote is the same question asked of the EXPORT — searched by
+the FAKE, since the real value is no longer in that text, and bolding it, so
+the operator reads what the document said beside what the deliverable now says;
+scoped to records that APPLIED (count > 0), because a fake never applied stands
+in no export and a miss still costs a scan. They sit at columns **C and D**,
+original first, at the owner's direction — the row reads left to right as
+evidence (value, source sentence, export sentence) and only then the
+Replacement the evidence justifies. Reordering is safe, and worth stating
+because the reverse is the obvious fear — `DeAnonymize.bas` does NOT read this
+sheet positionally, it scans the header row for
 `real value` / `replacement` / `status` and uses whatever columns they land in
 (`LoadKeyWorkbook`, where Status is already optional for keys predating it), and
 `_pn_load_key` / `_pn_key_context_on_disk` resolve by header name too. The only
 thing a moved column can break is a POSITIONAL fingerprint, so
-`_PN_KEY_FINGERPRINT` is cut to the three headers both layouts share and a
-six-column key from an older version still reads as ours. (A test that indexes a
-key row by number is making the same mistake — two did, and now take the index
-from `_PN_KEY_HEADERS`.) FIRST document to use a value owns
-its quote, so a re-run of the same folder reproduces the column; a quote this run
-cannot re-derive is carried forward from the key on disk
-(`_pn_key_context_on_disk`), because the key outlives the folder's contents.
-Costs ~0.24 s per file on a 130-page filing with ~470 records — and would have
-cost ~39 s before `_pn_context` was split (see the performance notes).
+`_PN_KEY_FINGERPRINT` is cut to the two headers every layout has led with plus
+a by-NAME check that a Replacement column exists, and a key from any older
+version still reads as ours. (A test that indexes a
+key row by number is making the same mistake — a batch did, and now take the
+index from `_PN_KEY_HEADERS`.) FIRST document to use a value owns
+its quotes, so a re-run of the same folder reproduces both columns; a quote this
+run cannot re-derive is carried forward from the key on disk
+(`_pn_key_context_on_disk`, both columns), because the key outlives the folder's
+contents. Costs ~0.24 s per file on a 130-page filing with ~470 records — and
+would have cost ~39 s before `_pn_context` was split (see the performance
+notes).
 
 `_pn_supplement_key_terms` is the fallback for what the key still cannot carry:
 a key written by an older version, or a template AMENDED between runs (a Doe
@@ -1222,8 +1230,11 @@ the party), so its row stays reversible.
   source, so its REAL REMAINDER (the value `confirm_findings` reduces the row
   to anyway) is quoted; and with no original in hand at all (a `--fix-leaks`
   folder keeping no copy, its TEMP cache gone) the scrubbed export is quoted
-  rather than leaving the row unanswerable. The Where column still points into
-  the EXPORT — that is where the leak stands. Consequence, deliberate and the
+  rather than leaving the row unanswerable. A SECOND column, `Scrubbed
+  Context` at **D**, quotes the EXPORT's own sentence for the same value —
+  original first at C, then the deliverable, at the owner's direction, the
+  same pair the key's C/D columns carry — and the Where column still points
+  into the EXPORT: that is where the leak stands. Consequence, deliberate and the
   same trade the key already made: `LEAKS.xlsx` carries sentences of the real
   document. It always carried the flagged real values themselves and lives in
   the case folder for triage, so this changes how revealing the worksheet is,
@@ -2181,8 +2192,11 @@ source PDF), the moment every document in it has a fresh export of its own.
   shape as `_in_name_run` — and then re-derived the line table, the prose flags
   and the sentence-terminator list for EVERY value asked about the same body.
   A 290 KB export cost **82 ms per value**, of which the search itself was
-  0.04 ms. Split into a one-entry memo keyed on the parsed body's identity, with
-  a running offset and bisected terminator windows: **446x faster**, byte-
+  0.04 ms. Split into a TWO-entry memo keyed on the parsed body's identity
+  (two for the reason `_keep_spans` memoizes two: the quoting loops now
+  alternate between a file's original body and its scrubbed twin — the two
+  Context columns — so a single slot would be evicted before it was read),
+  with a running offset and bisected terminator windows: **446x faster**, byte-
   identical on a 148-value differential test (headings vs prose, absent values,
   multi-word phrases, the empty string). That is what makes a Context column on
   the KEY affordable at all — 335 rows went from 28 s to 0.06 s per file, 1,042
@@ -2297,6 +2311,23 @@ from per-page OCR weights and Word has no OCR to project from), but a Word run
 still stamps `DONE` so a finished folder is distinguishable from an untouched
 one. `_pdfs_in_folder` is **non-recursive** — case subfolders are not walked, so
 pointing the launcher at a parent folder does nothing at all.
+
+**ETA accuracy is LEDGERED, because the marker dance destroys each prediction
+at the moment its outcome becomes known** (`_note_eta_accuracy`,
+`pdf_linker_eta_history.csv` beside the config — machine-wide, like the rate
+files it audits, and gitignored like them). The rate files remember only the
+LAST run's throughput; the ETA marker's name is the prediction and the DONE
+stamp's name is the outcome, and writing the second deletes the first — so
+nothing ever said whether the estimates were any good, or whether the 40:1 OCR
+page weight is calibrated. One CSV row per run (full runs with 2+ PDFs, and
+every `--fix-leaks` pass), appended: kind, folder, file count, work units
+(OCR-weighted units for a full run, input bytes for fix-leaks), the seed rate,
+the FIRST seeded ETA (grades the cross-run seed), the LAST mid-run ETA (grades
+convergence), the actual finish, elapsed, the final rate, and the two error
+columns in seconds — positive means the run finished LATER than predicted.
+Append-only and best-effort: a ledger that cannot be written never costs a run.
+Empty cells mean the run had nothing to predict with (first run, no stored
+rate; single-file batch, no mid-run update) — they are not failures.
 
 **An all-Word folder never borrows another case's party list.** Key resolution
 normally falls back to the newest `Order*.xlsx` in Downloads (where the E-Court
@@ -2419,7 +2450,8 @@ reads as "fully scrubbed".
   in their own constant and are unioned in
   (`_PN_HOUSING_WORDS`); `test_review_noise_and_bad_chars.py` asserts every
   list holds nothing but lower-case words.
-- Runtime artifacts (`pdf_linker_eta_rate.txt`, logs, leaks/key xlsx, ETA/DONE
+- Runtime artifacts (`pdf_linker_eta_rate.txt`, `pdf_linker_eta_history.csv`,
+  logs, leaks/key xlsx, ETA/DONE
   markers, launchers) are gitignored — never commit them (a stray one broke a
   user's `git pull`).
 - Run tests: `cd PDF-Linker && python3 -m pytest tests/ -q`. `fitz` (PyMuPDF),

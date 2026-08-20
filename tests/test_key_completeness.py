@@ -54,7 +54,8 @@ def _key_rows(z):
 
 
 def _reverses(rows, fake):
-    return any(str(r[2]) == fake for r in rows)
+    return any(str(r[P._PN_KEY_HEADERS.index("Replacement")]) == fake
+               for r in rows)
 
 
 # ───────────────────────────── the defect ───────────────────────────────────
@@ -73,9 +74,10 @@ def test_a_released_keep_keeps_its_key_row():
     assert fake in out, "fixture no longer exercises the keep release"
 
     rows = _key_rows(z)
+    _rp = P._PN_KEY_HEADERS.index("Replacement")
     assert _reverses(rows, fake), (
         f"{fake!r} is in the export and no key row reverses it; "
-        f"rows written: {[(r[1], r[2]) for r in rows]}")
+        f"rows written: {[(r[1], r[_rp]) for r in rows]}")
     assert z.unreversible == [], z.unreversible
 
 

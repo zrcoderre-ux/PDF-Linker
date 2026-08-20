@@ -111,10 +111,12 @@ def test_two_spellings_of_one_address_each_reverse(tmp_path):
     _p, macro, _pinned = _write(z, tmp_path)
     addr = [r for r in macro if r[0] == "address"]
     assert len(addr) == 2, addr
-    assert all(r[3] != P._PN_KEY_ALT_STATUS for r in addr), (
+    _rp = P._PN_KEY_HEADERS.index("Replacement")
+    _st = P._PN_KEY_HEADERS.index("Status")
+    assert all(r[_st] != P._PN_KEY_ALT_STATUS for r in addr), (
         f"a spelling was retired from the reverse pass: {addr}")
-    assert len({str(r[2]) for r in addr}) == 2, f"two reals, one fake: {addr}"
-    assert len({P._pn_addr_name_of(P._pn_addr_parts(str(r[2]))[0])
+    assert len({str(r[_rp]) for r in addr}) == 2, f"two reals, one fake: {addr}"
+    assert len({P._pn_addr_name_of(P._pn_addr_parts(str(r[_rp]))[0])
                 for r in addr}) == 1, f"one parcel, two street names: {addr}"
 
 

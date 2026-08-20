@@ -83,7 +83,8 @@ def test_typed_replacement_persists_in_key(tmp_path):
     _setup(tmp_path, "FOXGLEN & FOXGLEN")
     P._fix_leaks_mode(tmp_path, _args(tmp_path), {}, log)
     rows = _key_rows(tmp_path)
-    assert rows and rows[0][2] == "FOXGLEN & FOXGLEN"   # not the self-map
+    _rp = P._PN_KEY_HEADERS.index("Replacement")
+    assert rows and rows[0][_rp] == "FOXGLEN & FOXGLEN"  # not the self-map
 
 
 def test_typed_replacement_is_idempotent(tmp_path):
@@ -94,10 +95,11 @@ def test_typed_replacement_is_idempotent(tmp_path):
     # second run still converges and the binding is unchanged.
     assert not (tmp_path / "LEAKS.xlsx").exists()
     rows = _key_rows(tmp_path)
-    assert rows and rows[0][2] == "FOXGLEN & FOXGLEN"
+    _rp = P._PN_KEY_HEADERS.index("Replacement")
+    assert rows and rows[0][_rp] == "FOXGLEN & FOXGLEN"
     assert P._fix_leaks_mode(tmp_path, _args(tmp_path), {}, log) == 0
     rows = _key_rows(tmp_path)
-    assert rows and rows[0][2] == "FOXGLEN & FOXGLEN"   # binding still present
+    assert rows and rows[0][_rp] == "FOXGLEN & FOXGLEN"  # binding still present
 
 
 def test_self_identical_typed_value_is_rejected(tmp_path, caplog):

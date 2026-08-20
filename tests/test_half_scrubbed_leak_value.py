@@ -105,13 +105,15 @@ def test_fix_leaks_never_puts_a_fake_in_the_real_value_column(tmp_path):
     assert P._fix_leaks_mode(tmp_path, _args(tmp_path), {}, log) == 0
 
     rows = _key_rows(tmp_path)
+    _rp = P._PN_KEY_HEADERS.index("Replacement")
     reals = {str(r[1]) for r in rows}
-    fakes = {str(r[2]) for r in rows}
+    fakes = {str(r[_rp]) for r in rows}
     assert "Melissa Sable" not in reals      # the half-scrubbed phrase is gone
     assert "Sable" not in reals              # our own fake is never a Real Value
     assert not (reals & fakes)               # no row reverses into another row
     assert ("person-token", "Penuela", "Sable") == tuple(
-        str(x) for x in next(r for r in rows if str(r[1]) == "Penuela")[:3])
+        str(next(r for r in rows if str(r[1]) == "Penuela")[i])
+        for i in (0, 1, _rp))
 
     body = (tdir / "Motion.txt").read_text()
     assert "Melissa" not in body             # the real given name is scrubbed
@@ -126,8 +128,9 @@ def test_fix_leaks_round_trips_the_pair_back_to_the_real_name(tmp_path):
 
     # Reverse the export token by token the way the DeAnonymize macro does.
     body = (tdir / "Motion.txt").read_text()
-    for r in sorted(_key_rows(tmp_path), key=lambda r: -len(str(r[2]))):
-        body = body.replace(str(r[2]), str(r[1]))
+    _rp = P._PN_KEY_HEADERS.index("Replacement")
+    for r in sorted(_key_rows(tmp_path), key=lambda r: -len(str(r[_rp]))):
+        body = body.replace(str(r[_rp]), str(r[1]))
     assert "Melissa Penuela" in body
 
 
@@ -189,7 +192,7 @@ def test_full_run_keys_the_real_name_not_the_flagged_phrase(tmp_path, monkeypatc
     reals = {str(r[1]) for r in rows}
     assert "Melissa Penuela" in reals
     assert "Melissa Sable" not in reals and "Sable" not in reals
-    assert not (reals & {str(r[2]) for r in rows})
+    assert not (reals & {str(r[P._PN_KEY_HEADERS.index("Replacement")]) for r in rows})
 
 
 # ── ...and the half-scrub must be REPORTED, not only handled once flagged ───
