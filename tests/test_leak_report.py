@@ -58,7 +58,8 @@ def test_worksheet_has_fix_column_and_severity_order(tmp_path):
     wb = openpyxl.load_workbook(xp)
     assert wb.active.title == "LEAKS"
     rows = list(wb.active.iter_rows(values_only=True))
-    assert rows[0] == ("Value", "Fix? (yes/no)", "Context", "File", "Type",
+    assert rows[0] == ("Value", "Fix? (yes/no)", "Context",
+                       "Scrubbed Context", "File", "Type",
                        "Where (page:line)", "Notes")
     body = _sheet(xp)
     # real leaks first, then map-inverting REID, then ordinary review
@@ -307,7 +308,8 @@ def test_the_note_reaches_the_worksheet(tmp_path):
         {"file": "Complaint.pdf", "type": "LEAK",
          "value": "Bartholomew Quillfeather", "where": "p.1:4"},
     ], log, note_for=z.authority_note)
-    rows = {r[0]: r[6] for r in openpyxl.load_workbook(
+    _nt = P._PN_LEAK_HEADERS.index("Notes")
+    rows = {r[0]: r[_nt] for r in openpyxl.load_workbook(
         tmp_path / "LEAKS.xlsx").active.iter_rows(min_row=2, values_only=True)}
     assert "Kremerman v. White" in str(rows["Angela White"])
     assert not str(rows["Bartholomew Quillfeather"] or "")
@@ -335,7 +337,8 @@ def test_an_operators_own_note_survives(tmp_path):
     ], log, decisions={"angela white": {"value": "Angela White", "fix": "",
                                         "notes": "checked with counsel"}},
         note_for=z.authority_note)
-    note = [r[6] for r in openpyxl.load_workbook(
+    _nt = P._PN_LEAK_HEADERS.index("Notes")
+    note = [r[_nt] for r in openpyxl.load_workbook(
         tmp_path / "LEAKS.xlsx").active.iter_rows(min_row=2, values_only=True)][0]
     assert "checked with counsel" in note and "Kremerman v. White" in note
 
@@ -410,7 +413,8 @@ def test_the_column_sits_between_the_decision_and_the_file(tmp_path):
     ], log)
     rows = list(openpyxl.load_workbook(tmp_path / "LEAKS.xlsx")
                 .active.iter_rows(values_only=True))
-    assert rows[0][:4] == ("Value", "Fix? (yes/no)", "Context", "File")
+    assert rows[0][:5] == ("Value", "Fix? (yes/no)", "Context",
+                           "Scrubbed Context", "File")
     assert rows[1][2] == "served on Charge at his residence"
 
 

@@ -10944,11 +10944,12 @@ def _pn_terms_from_xlsx(path, extra_name_headers, log):
 # anything genuinely new in this file gets a fresh fake that can't collide with
 # one already in the key. The written-back key carries every loaded row forward
 # plus the new ones, so it never shrinks.
-_PN_KEY_HEADERS = ("Category", "Real Value", "Replacement", "Context", "Status",
-                   "Source", "Occurrences")
-# "Context" sits beside the Replacement it explains, which is where it is read:
-# the row's question is "is this binding right?", and the sentence is the
-# answer, so putting it three columns away from the fake was the wrong place.
+_PN_KEY_HEADERS = ("Category", "Real Value", "Context", "Scrubbed Context",
+                   "Replacement", "Status", "Source", "Occurrences")
+# The two Context columns sit at C and D, at the owner's direction: the row is
+# read left to right as evidence — the value, the sentence it stood in
+# (ORIGINAL, column C), the sentence its fake now stands in (the export,
+# column D) — and only then the Replacement the evidence justifies.
 #
 # Safe to insert rather than append, which is worth stating because the reverse
 # is the obvious fear. `DeAnonymize.bas` does NOT read this sheet positionally —
@@ -10957,15 +10958,17 @@ _PN_KEY_HEADERS = ("Category", "Real Value", "Replacement", "Context", "Status",
 # optional there for keys written before it existed). `_pn_load_key` and
 # `_pn_key_context_on_disk` resolve by header name too. So the only thing a
 # moved column can break is a POSITIONAL fingerprint — hence the one below is
-# cut to the three headers both layouts share, and a six-column key from an
-# older version still reads as ours and still round-trips.
-_PN_KEY_FINGERPRINT = ("Category", "Real Value", "Replacement")
+# cut to the two headers every layout has led with, plus a by-NAME check that
+# a Replacement column exists somewhere, so a key from any prior version still
+# reads as ours and still round-trips.
+_PN_KEY_FINGERPRINT = ("Category", "Real Value")
 # Column widths, in Excel's unit: how many "0" glyphs of the default font fit.
 # Real Value and Replacement are the two the operator reads across, so they get
 # room for an ordinary party name without being widened by hand on every
-# workbook; Context is a whole SENTENCE and gets the width a sentence needs.
+# workbook; Context is a whole SENTENCE and gets the width a sentence needs
+# (the scrubbed twin a little less — it corroborates, it is not the evidence).
 # Positional, so it must stay in step with _PN_KEY_HEADERS.
-_PN_KEY_WIDTHS = (14, 30, 30, 120, 14, 16, 12)
+_PN_KEY_WIDTHS = (14, 30, 120, 80, 30, 14, 16, 12)
 # The regex-detector categories: in the batch these were computed live at
 # priority 3, so a loaded literal must sit ABOVE that to reproduce the exact
 # stored fake instead of letting the detector recompute a different one.
@@ -11210,29 +11213,32 @@ def _pn_key_looks_like_ours(path):
         wb.close()
     except Exception:
         return False
-    return tuple((h or "").strip() if isinstance(h, str) else h
-                 for h in (header or ())[:3]) == _PN_KEY_FINGERPRINT
+    cells = tuple((h or "").strip() if isinstance(h, str) else h
+                  for h in (header or ()))
+    return (cells[:2] == _PN_KEY_FINGERPRINT
+            and "Replacement" in cells)
 
 
 def _pn_key_context_on_disk(path):
-    """{real_lower: Context} from the key already at `path`, both sheets.
+    """({real_lower: Context}, {real_lower: Scrubbed Context}) from the key
+    already at `path`, both sheets.
 
     A quote can only be re-derived from a document still in the folder, and the
     key outlives the folder's contents — a party named only in a filing that was
-    delivered two runs ago keeps its binding, so it should keep its sentence
-    too. Read by header NAME, so a key written before the column existed simply
-    yields nothing.
+    delivered two runs ago keeps its binding, so it should keep its sentences
+    too. Read by header NAME, so a key written before either column existed
+    simply yields nothing for it.
 
     Best-effort in every direction: no openpyxl, no file, an unreadable file or
-    a foreign spreadsheet all return {} rather than fail a run over a column
-    nothing reverses."""
+    a foreign spreadsheet all return empty maps rather than fail a run over
+    columns nothing reverses."""
     try:
         import openpyxl
     except ImportError:
-        return {}
+        return {}, {}
     if not path.exists() or not _pn_key_looks_like_ours(path):
-        return {}
-    out = {}
+        return {}, {}
+    out, out_scrubbed = {}, {}
     try:
         wb = openpyxl.load_workbook(path, read_only=True)
         for ws in wb.worksheets:
@@ -11241,15 +11247,19 @@ def _pn_key_context_on_disk(path):
             if "real value" not in header or "context" not in header:
                 continue
             rv, cx = header.index("real value"), header.index("context")
+            sx = (header.index("scrubbed context")
+                  if "scrubbed context" in header else None)
             for row in rows:
                 if len(row) <= max(rv, cx) or not row[rv]:
                     continue
                 if row[cx]:
                     out.setdefault(str(row[rv]).lower(), str(row[cx]))
+                if sx is not None and len(row) > sx and row[sx]:
+                    out_scrubbed.setdefault(str(row[rv]).lower(), str(row[sx]))
         wb.close()
     except Exception:
-        return out
-    return out
+        return out, out_scrubbed
+    return out, out_scrubbed
 
 
 def _pn_load_key(path, registry, log, remint_recycled=False):
@@ -12723,6 +12733,7 @@ class Pseudonymizer:
         # so `write_key`'s own DERIVED token rows can look one up too, and so a
         # value can be quoted once for the folder rather than once per record.
         self._key_context = {}
+        self._key_context_scrubbed = {}
         self.records = {}
         for t in terms:
             # Never install a self-identical mapping (fake == real): it is a
@@ -15895,7 +15906,7 @@ class Pseudonymizer:
             log.info(f"      (+{len(folds) - 8} more; every one is a row in "
                      f"the key)")
 
-    def note_key_context(self, original):
+    def note_key_context(self, original, scrubbed=None):
         """Quote, for every tracked value, the sentence it stands in — read from
         the UNSCRUBBED source, which is the only text that still contains it.
 
@@ -15918,6 +15929,14 @@ class Pseudonymizer:
         across a re-run of the same folder; adding a document can move a quote,
         which is acceptable for a column nothing reverses.
 
+        `scrubbed`, when given, fills the SECOND context column the same way:
+        the sentence the row's FAKE now stands in, quoted from the export — the
+        operator reads the pair side by side (what the document said, what the
+        deliverable now says). Searched by the fake, since the real value is no
+        longer in that text; scoped to records that have APPLIED (count > 0),
+        because a fake never applied cannot stand in any export and a miss
+        still costs a full scan per record.
+
         Cost is one `_pn_context` per value still lacking a quote, and
         `_pn_context_prep` makes that a search rather than a scan — a few
         tenths of a second for a folder-sized key, against the ~85 s the same
@@ -15931,6 +15950,17 @@ class Pseudonymizer:
             quote = _pn_context(parsed, real)
             if quote:
                 self._key_context[rl] = quote
+        if scrubbed is None:
+            return
+        scrub_parsed = _pn_body_lines(scrubbed)
+        for rec in self.records.values():
+            rl = str(rec["real"]).lower()
+            if (not rl or self._key_context_scrubbed.get(rl)
+                    or not rec.get("count")):
+                continue
+            quote = _pn_context(scrub_parsed, str(rec["fake"]))
+            if quote:
+                self._key_context_scrubbed[rl] = quote
 
     def write_key(self, path, log):
         """Write the REVERSAL key the Word macro consumes. A row is written when
@@ -16135,11 +16165,16 @@ class Pseudonymizer:
         # on disk: a folder whose documents have moved on still keeps what the
         # last run learned, exactly as the bindings themselves are carried
         # forward. This run's own quote wins where it has one.
-        carried = _pn_key_context_on_disk(path)
+        carried, carried_scrubbed = _pn_key_context_on_disk(path)
 
         def row_context(r):
             rl = str(r["real"]).lower()
             return self._key_context.get(rl) or carried.get(rl, "")
+
+        def row_context_scrubbed(r):
+            rl = str(r["real"]).lower()
+            return (self._key_context_scrubbed.get(rl)
+                    or carried_scrubbed.get(rl, ""))
 
         def row_status(r):
             key = (r["category"], str(r["real"]).lower())
@@ -16173,7 +16208,8 @@ class Pseudonymizer:
                                "status": row_status(r),
                                "source": r["source"],
                                "occurrences": r["count"],
-                               "context": row_context(r)}
+                               "context": row_context(r),
+                               "scrubbed_context": row_context_scrubbed(r)}
                               for r in keyrows]}, indent=2), encoding="utf-8")
             log.info(f"  openpyxl not installed; reversal key written as JSON: "
                      f"{kp.name} ({len(keyrows)} mapping(s))")
@@ -16205,18 +16241,23 @@ class Pseudonymizer:
         ws = wb.active
         ws.title = "Pseudonym Key"
         ws.append(headers)
+        def _sheet_row(r):
+            # Column order follows _PN_KEY_HEADERS: the ORIGINAL sentence is
+            # bolded on the real value, the export's sentence on the fake —
+            # each quote highlights the word it was searched by.
+            return _pn_xl_row(
+                [r["category"], r["real"],
+                 _pn_rich_context(row_context(r), r["real"]),
+                 _pn_rich_context(row_context_scrubbed(r), r["fake"]),
+                 r["fake"], row_status(r), r["source"], r["count"]])
+
         for r in applied:
-            ws.append(_pn_xl_row([r["category"], r["real"], r["fake"],
-                       _pn_rich_context(row_context(r), r["real"]),
-                       row_status(r), r["source"], r["count"]]))
+            ws.append(_sheet_row(r))
         if pinned:
             ps = wb.create_sheet(_PN_KEY_PINNED_SHEET)
             ps.append(headers)
             for r in pinned:
-                ps.append(_pn_xl_row(
-                    [r["category"], r["real"], r["fake"],
-                     _pn_rich_context(row_context(r), r["real"]),
-                     row_status(r), r["source"], r["count"]]))
+                ps.append(_sheet_row(r))
             log.info(f"  Pseudonymize: {len(pinned)} binding(s) no export "
                      f"carries moved to the '{_PN_KEY_PINNED_SHEET}' sheet — "
                      f"still pinned for a later run, never applied in reverse")
@@ -18128,8 +18169,14 @@ _PN_CONTEXT_MIN = 60
 # Only a real terminator. A semicolon and a colon end a CLAUSE, and a label
 # ("PROCESS SERVER: Michael Rodgers") is exactly the context worth keeping.
 _PN_SENT_END_RE = re.compile(r"[.!?](?=\s|$)")
-# One-entry memo for `_pn_context_prep`, keyed on the parsed body's identity.
-_PN_CONTEXT_PREP = {}
+# Two-entry memo for `_pn_context_prep`, keyed on the parsed body's identity.
+# TWO, not one, for the reason `_keep_spans` memoizes two: the callers now
+# alternate between a file's ORIGINAL body and its SCRUBBED twin (a LEAKS row
+# quotes its Context from the first and its Scrubbed Context from the second,
+# and the key's two columns do the same), so a single slot would be evicted
+# before it was ever read and every quote would re-pay the whole prep.
+_PN_CONTEXT_PREP = []
+_PN_CONTEXT_PREP_SLOTS = 2
 
 
 def _pn_context_prep(parsed):
@@ -18151,12 +18198,12 @@ def _pn_context_prep(parsed):
     join inserts one space between bodies, so each line starts one past the end
     of the last.
 
-    One entry, keyed on the parsed body's identity: the callers ask about one
-    file's body at a time and then move on, so a second slot would never be
-    read. Cheap to rebuild if that stops being true."""
-    got = _PN_CONTEXT_PREP.get("k")
-    if got is not None and got[0] is parsed:
-        return got[1]
+    Two entries, keyed on the parsed body's identity — the original body and
+    its scrubbed twin alternate within one file's quoting loop (see the note on
+    `_PN_CONTEXT_PREP`)."""
+    for k, prep in _PN_CONTEXT_PREP:
+        if k is parsed:
+            return prep
     joined, lines, run = [], [], 0
     for _page, _gutter, text in parsed:
         m = _PN_GUTTER_RE.match(text)
@@ -18179,8 +18226,8 @@ def _pn_context_prep(parsed):
     text = " ".join(joined)
     prep = (lines, [b.lower() for b in joined], text,
             [m.end() for m in _PN_SENT_END_RE.finditer(text)])
-    _PN_CONTEXT_PREP.clear()
-    _PN_CONTEXT_PREP["k"] = (parsed, prep)
+    _PN_CONTEXT_PREP.insert(0, (parsed, prep))
+    del _PN_CONTEXT_PREP[_PN_CONTEXT_PREP_SLOTS:]
     return prep
 
 
@@ -18367,7 +18414,11 @@ _PN_LEAK_COLUMNS = (
     # the decision is made ON: "Charge" is boilerplate in "CHARGE OF
     # DISCRIMINATION" and a surname in "served on Charge at his residence", and
     # without it the operator had to open the export and find the page to tell.
+    # ORIGINAL text at C, the export's own sentence at D — the operator reads
+    # the pair side by side (what the document said, what the deliverable now
+    # says), at the owner's direction; the key's C/D columns mirror it.
     ("Context", "context", 120),
+    ("Scrubbed Context", "scrubbed_context", 80),
     ("File", "file", 20),
     ("Type", "type", 22),
     ("Where (page:line)", "where", 30),
@@ -19520,7 +19571,8 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
         if g is None:
             grouped[vl] = {"value": e["value"], "type": e["type"],
                            "files": [e["file"]], "wheres": [e["where"]],
-                           "context": e.get("context", "")}
+                           "context": e.get("context", ""),
+                           "scrubbed_context": e.get("scrubbed_context", "")}
             continue
         if _leak_sev(e["type"]) < _leak_sev(g["type"]):
             g["type"] = e["type"]
@@ -19532,6 +19584,8 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
         # nobody reads. The first non-empty one stands for the value.
         if not g.get("context"):
             g["context"] = e.get("context", "")
+        if not g.get("scrubbed_context"):
+            g["scrubbed_context"] = e.get("scrubbed_context", "")
 
     # Accumulate this run's flagged values into the cross-case master log, so a
     # value that keeps leaking across matters is easy to spot over time. The
@@ -19576,6 +19630,7 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
         rows.append({"file": file_cell, "type": g["type"], "value": g["value"],
                      "where": _pn_merge_where(g["wheres"]),
                      "context": g.get("context", ""),
+                     "scrubbed_context": g.get("scrubbed_context", ""),
                      "fix": d.get("fix", ""),
                      "fixcell": (d.get("fixcell") or d.get("replacement")
                                  or d.get("fix", "")),
@@ -19597,7 +19652,7 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
                 and not _pn_decision_is_keep(d):
             rows.append({"file": "—", "type": d.get("type") or "(decided)",
                          "value": d["value"], "where": _PN_LEAK_ABSENT,
-                         "context": "",
+                         "context": "", "scrubbed_context": "",
                          "fix": d["fix"],
                          "fixcell": (d.get("fixcell") or d.get("replacement")
                                      or d["fix"]),
@@ -19658,11 +19713,12 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
     ws.title = _PN_LEAK_SHEET
     ws.append(list(_PN_LEAK_HEADERS))
     for r in rows:
-        # The flagged value is bolded inside its own quote, so the row is
-        # answerable at a glance; the Value column keeps the ordinary font.
+        # The flagged value is bolded inside its own quotes — both of them, it
+        # stands verbatim in each — so the row is answerable at a glance; the
+        # Value column keeps the ordinary font.
         ws.append(_pn_xl_row(
             [_pn_rich_context(r.get(key, ""), r.get("value", ""))
-             if key == "context" else r.get(key, "")
+             if key in ("context", "scrubbed_context") else r.get(key, "")
              for _hdr, key, _w in _PN_LEAK_COLUMNS]))
     for i, (_hdr, _key, width) in enumerate(_PN_LEAK_COLUMNS, start=1):
         ws.column_dimensions[get_column_letter(i)].width = width
@@ -20104,7 +20160,8 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
                 {"file": pdf_path.name, "type": "LEAK", "value": real,
                  "where": _pn_locate(parsed, real),
                  "context": _pn_leak_context(orig_parsed, parsed,
-                                             pseudonymizer, real)})
+                                             pseudonymizer, real),
+                 "scrubbed_context": _pn_context(parsed, real)})
         for cls, sample in review:
             if _pn_is_procedural_phrase(sample) or _pn_is_email_value(sample):
                 continue
@@ -20112,7 +20169,8 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
                 {"file": pdf_path.name, "type": cls, "value": sample,
                  "where": _pn_locate(parsed, sample),
                  "context": _pn_leak_context(orig_parsed, parsed,
-                                             pseudonymizer, sample)})
+                                             pseudonymizer, sample),
+                 "scrubbed_context": _pn_context(parsed, sample)})
 
         # Pseudonymize the output filename too — the .txt is the artifact that
         # gets shared, so a party/attorney name must not survive in its name.
@@ -20172,7 +20230,7 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
     # display name, a detector hit) is included; they do not exist yet when the
     # copy is written.
     if pseudonymizer is not None:
-        pseudonymizer.note_key_context(original)
+        pseudonymizer.note_key_context(original, body)
         del original
     return True
 
@@ -21198,7 +21256,8 @@ def _write_word_text_version(src_path, text, log, pseudonymizer=None,
                 {"file": src_path.name, "type": "LEAK", "value": real,
                  "where": _word_locate(body, real),
                  "context": _pn_leak_context(orig_parsed, scrub_parsed,
-                                             pseudonymizer, real)})
+                                             pseudonymizer, real),
+                 "scrubbed_context": _pn_context(scrub_parsed, real)})
         for cls, sample in review:
             if _pn_is_procedural_phrase(sample) or _pn_is_email_value(sample):
                 continue
@@ -21206,7 +21265,8 @@ def _write_word_text_version(src_path, text, log, pseudonymizer=None,
                 {"file": src_path.name, "type": cls, "value": sample,
                  "where": _word_locate(body, sample),
                  "context": _pn_leak_context(orig_parsed, scrub_parsed,
-                                             pseudonymizer, sample)})
+                                             pseudonymizer, sample),
+                 "scrubbed_context": _pn_context(scrub_parsed, sample)})
 
         # Scrub the output filename too — the .txt is the shared artifact, so a
         # party/attorney name in the Word file's name must not ride along.
@@ -21239,6 +21299,10 @@ def _write_word_text_version(src_path, text, log, pseudonymizer=None,
     # (The evidence itself — `note_original` and the TEMP cache — was recorded
     # BEFORE the scrub, beside `_pn_learn_from_text`.)
     if pseudonymizer is not None:
+        # The key's two Context columns, from this document — the PDF path has
+        # always done this; a Word-only folder used to deliver a key with the
+        # columns empty except what a prior key carried forward.
+        pseudonymizer.note_key_context(text, body)
         if original_subdir:
             orig_dir = src_path.parent / original_subdir
             orig_path = orig_dir / (src_path.stem + ".txt")
@@ -22400,6 +22464,65 @@ def _save_fix_rate(rate):
         pass
 
 
+# ── ETA accuracy ledger ──────────────────────────────────────────────────────
+# The two rate files above remember only the LAST run's throughput, so nothing
+# ever said how good the predictions were: the ETA marker's name is the
+# prediction and the DONE stamp's name is the outcome, and writing the second
+# deletes the first — the prediction is destroyed at exactly the moment the
+# outcome becomes known. This ledger keeps both, one CSV row per run, appended
+# beside the config (machine-wide, like the rates it audits): the FIRST seeded
+# ETA answers "how good is the cross-run seed?", the LAST mid-run ETA answers
+# "does the estimate converge?", and the error columns make both readable
+# without arithmetic. Append-only and best-effort — a ledger that cannot be
+# written must never cost a run — and a runtime artifact, so gitignored like
+# the rate files.
+_ETA_HISTORY_FILE = "pdf_linker_eta_history.csv"
+_ETA_HISTORY_COLUMNS = (
+    "Run Started", "Kind", "Folder", "Files", "Work Units", "Seed Rate",
+    "Seeded ETA", "Last ETA", "Finished", "Elapsed (sec)", "Final Rate",
+    "Seeded ETA Error (sec)", "Last ETA Error (sec)")
+
+
+def _eta_history_path():
+    return _config_path().with_name(_ETA_HISTORY_FILE)
+
+
+def _note_eta_accuracy(kind, folder, files, work, seed_rate, seeded_eta,
+                       last_eta, started, finished, elapsed, final_rate):
+    """Append one run's ETA predictions beside the outcome they predicted.
+
+    `work` is in the kind's own unit (OCR-weighted work units for a full run,
+    input bytes for --fix-leaks) and the rates are per-second in that unit —
+    the same numbers the rate files carry, so the ledger audits exactly what
+    seeds the next run. A positive error is a run that finished LATER than
+    predicted. Empty cells mean the run had nothing to predict with (no stored
+    rate on a first run, no mid-run update on a single-file batch)."""
+    def _clock(dt):
+        return dt.strftime("%Y-%m-%d %H:%M:%S") if dt else ""
+
+    def _err(eta):
+        return (f"{(finished - eta).total_seconds():.0f}"
+                if eta and finished else "")
+
+    try:
+        import csv
+        path = _eta_history_path()
+        fresh = not path.exists() or path.stat().st_size == 0
+        with path.open("a", encoding="utf-8", newline="") as fh:
+            w = csv.writer(fh)
+            if fresh:
+                w.writerow(_ETA_HISTORY_COLUMNS)
+            w.writerow([
+                _clock(started), kind, str(folder), files, f"{work:.0f}",
+                f"{seed_rate:.6f}" if seed_rate else "",
+                _clock(seeded_eta), _clock(last_eta), _clock(finished),
+                f"{elapsed:.0f}",
+                f"{final_rate:.6f}" if final_rate else "",
+                _err(seeded_eta), _err(last_eta)])
+    except Exception:
+        pass
+
+
 # ── One-click re-run launcher ────────────────────────────────────────────────
 # After a run, drop a double-clickable file in the folder that re-runs the tool
 # on THIS same folder — the fast path for applying the Fix? decisions saved in
@@ -22816,9 +22939,10 @@ def _fix_leaks_mode(folder, args, cfg, log):
         except OSError:
             pass
     rate = _load_fix_rate() or _FIX_ETA_DEFAULT_RATE
-    finish = datetime.datetime.now() + datetime.timedelta(
+    _fix_eta = datetime.datetime.now() + datetime.timedelta(
         seconds=total_bytes / rate if rate else 0)
-    _write_eta_marker(folder, f"~{_fmt_clock(finish)} (applying leak fixes)")
+    _write_eta_marker(folder, f"~{_fmt_clock(_fix_eta)} (applying leak fixes)")
+    _fix_started = datetime.datetime.now()
     _fix_start = time.monotonic()
 
     changed = 0
@@ -22945,14 +23069,16 @@ def _fix_leaks_mode(folder, args, cfg, log):
         if survivors:
             pz.leaked_by_file[f] = {s.lower() for s in survivors}
             pz.note_leaks(survivors)
+            scrub_parsed = _pn_body_lines(scrubbed)
             for real in sorted(survivors):
                 if _pn_is_email_value(real):
                     continue          # always faked — never a triage decision
                 pz.leak_report.append(
                     {"file": f.name, "type": "LEAK", "value": real,
                      "where": _pn_locate_export(scrubbed, real),
-                     "context": _pn_leak_context(
-                         orig_parsed, _pn_body_lines(scrubbed), pz, real)})
+                     "context": _pn_leak_context(orig_parsed, scrub_parsed,
+                                                 pz, real),
+                     "scrubbed_context": _pn_context(scrub_parsed, real)})
 
     # (The originals were read and noted BEFORE the loop above — the fresh
     # findings' Context quotes needed them.)
@@ -23001,11 +23127,17 @@ def _fix_leaks_mode(folder, args, cfg, log):
         log.warning("  " + _PN_KEY_LOST_MSG.format(e=e))
 
     # Record this pass's throughput so the next run's ETA is sharper, then
-    # replace the ETA marker with a DONE stamp (the actual finish time).
+    # replace the ETA marker with a DONE stamp (the actual finish time) — and
+    # the prediction lands in the accuracy ledger beside the outcome. No
+    # mid-run ETA on this pass: the marker is written once, up front.
     _elapsed = time.monotonic() - _fix_start
     if _elapsed > 0 and total_bytes > 0:
         _save_fix_rate(total_bytes / _elapsed)
     _write_done_marker(folder)
+    _note_eta_accuracy(
+        "fix-leaks", folder, len(files), total_bytes, rate, _fix_eta, None,
+        _fix_started, datetime.datetime.now(), _elapsed,
+        total_bytes / _elapsed if _elapsed > 0 else 0)
 
     still = len(offenders)
     if still:
@@ -23541,6 +23673,10 @@ def main():
     # file has no throughput to project from until it is already done).
     show_eta = len(pdfs) >= 2
     total_work = sum(weights.values()) or 1.0
+    # The accuracy ledger's inputs: what was predicted, and when, so the
+    # prediction survives the DONE stamp that replaces the marker carrying it.
+    _run_started = datetime.datetime.now()
+    _seed_rate, _eta_seeded, _eta_last = None, None, None
     if show_eta:
         _write_eta_marker(folder, "(estimating...)")
         # Seed an immediate projected finish from the last run's throughput, so a
@@ -23548,9 +23684,9 @@ def main():
         # the first file lands. Refined live below.
         _seed_rate = _load_eta_rate()
         if _seed_rate:
-            finish = datetime.datetime.now() + datetime.timedelta(
+            _eta_seeded = datetime.datetime.now() + datetime.timedelta(
                 seconds=total_work / _seed_rate)
-            _write_eta_marker(folder, f"~{_fmt_clock(finish)} (estimating)")
+            _write_eta_marker(folder, f"~{_fmt_clock(_eta_seeded)} (estimating)")
 
     # Write the one-click re-run launcher UP FRONT, so an interrupted or hung run
     # still leaves a clickable re-run instead of nothing (it is refreshed at the
@@ -23617,9 +23753,9 @@ def main():
             elapsed = time.monotonic() - proc_start
             rate = done_work / elapsed if elapsed > 0 else 0
             if i < len(pdfs) and rate > 0:
-                finish = datetime.datetime.now() + datetime.timedelta(
+                _eta_last = datetime.datetime.now() + datetime.timedelta(
                     seconds=(total_work - done_work) / rate)
-                clock = _fmt_clock(finish)
+                clock = _fmt_clock(_eta_last)
                 _write_eta_marker(folder, f"~{clock} ({i} of {len(pdfs)})")
                 log.info(f"Progress: {i}/{len(pdfs)} files "
                          f"({done_work * 100 / total_work:.0f}% of work); "
@@ -23631,6 +23767,12 @@ def main():
         if _elapsed > 0 and done_work > 0:
             _save_eta_rate(done_work / _elapsed)
         _write_done_marker(folder)   # clean finish stamps 'DONE <finish time>'
+        # ...and the prediction lands in the accuracy ledger BESIDE the
+        # outcome, which the marker dance above just destroyed.
+        _note_eta_accuracy(
+            "full run", folder, len(pdfs), total_work, _seed_rate,
+            _eta_seeded, _eta_last, _run_started, datetime.datetime.now(),
+            _elapsed, done_work / _elapsed if _elapsed > 0 else 0)
 
     # Bulk Word→text conversion (gated above). Done after the PDFs so every leak
     # finding lands in the same worksheet and the same quarantine gate below.

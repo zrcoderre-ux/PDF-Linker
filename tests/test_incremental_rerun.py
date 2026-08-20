@@ -89,7 +89,8 @@ def test_already_sent_documents_are_byte_identical(folder):
 
 def test_every_keyed_fake_is_reused_exactly(folder):
     z1, _ = _first_run(folder)
-    rows = {str(r[1]): str(r[2]) for ws in
+    _rp = P._PN_KEY_HEADERS.index("Replacement")
+    rows = {str(r[1]): str(r[_rp]) for ws in
             openpyxl.load_workbook(folder / "pseudonym_key.xlsx").worksheets
             for r in ws.iter_rows(min_row=2, values_only=True) if r[1]}
     z2 = _rerun(folder)
@@ -118,7 +119,8 @@ def test_a_withheld_token_is_reversible_but_matches_nothing(folder):
     Lassiter" word by word off it. Only the forward term goes.
     """
     _first_run(folder)
-    rows = {(str(r[0]), str(r[1])): str(r[2]) for ws in
+    _rp = P._PN_KEY_HEADERS.index("Replacement")
+    rows = {(str(r[0]), str(r[1])): str(r[_rp]) for ws in
             openpyxl.load_workbook(folder / "pseudonym_key.xlsx").worksheets
             for r in ws.iter_rows(min_row=2, values_only=True) if r[1]}
     assert not P._pn_is_name_token("Roe")            # the builder's own verdict
@@ -171,7 +173,8 @@ def test_party_named_only_in_the_added_document_is_scrubbed(folder):
     # She matched nothing, but the party template names her, so the key pins
     # her binding ("no match") instead of discarding it.
     _st = list(P._PN_KEY_HEADERS).index("Status")        # not a fixed column
-    rows = {str(r[1]): (str(r[2]), r[_st]) for ws in
+    _rp = P._PN_KEY_HEADERS.index("Replacement")
+    rows = {str(r[1]): (str(r[_rp]), r[_st]) for ws in
             openpyxl.load_workbook(folder / "pseudonym_key.xlsx").worksheets
             for r in ws.iter_rows(min_row=2, values_only=True) if r[1]}
     assert rows["Jane Roe"][1] == "no match"

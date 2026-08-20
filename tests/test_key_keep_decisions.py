@@ -308,7 +308,8 @@ def _key_rows(folder):
     """{(category, real): replacement} from the key the run just wrote."""
     wb = openpyxl.load_workbook(folder / "pseudonym_key.xlsx")
     rows = list(wb.active.iter_rows(values_only=True))
-    return {(str(r[0]), str(r[1])): str(r[2]) for r in rows[1:] if r[1]}
+    _rp = pl._PN_KEY_HEADERS.index("Replacement")
+    return {(str(r[0]), str(r[1])): str(r[_rp]) for r in rows[1:] if r[1]}
 
 
 BODY = ["John Doe's Opposition was filed by Vertex Corp counsel of record in",

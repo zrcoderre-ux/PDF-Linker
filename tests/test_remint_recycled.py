@@ -148,4 +148,5 @@ def test_fix_leaks_never_re_assigns(tmp_path, monkeypatch):
     assert RECYCLED in written
     rows = list(openpyxl.load_workbook(
         tmp_path / "pseudonym_key.xlsx").active.iter_rows(values_only=True))[1:]
-    assert any(str(r[2]).endswith(RECYCLED) for r in rows)
+    assert any(str(r[P._PN_KEY_HEADERS.index("Replacement")]).endswith(RECYCLED)
+               for r in rows)
