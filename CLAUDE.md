@@ -1207,7 +1207,33 @@ the party), so its row stays reversible.
   boilerplate in "CHARGE OF DISCRIMINATION" and a surname in "served on Charge
   at his residence", and the operator had to open the export and find the page
   to tell — for a decision that, as `never`, then applies in every future
-  folder. Three things make the quote worth reading. It is rebuilt as PROSE
+  folder. **The quote is read from the ORIGINAL body, not the export**
+  (`_pn_leak_context`, the one rule the PDF path, the Word path and
+  `--fix-leaks` share) — at the owner's direction, and for the same reasons the
+  key's Context column reads it: the row's question is "what IS this value?",
+  it is decided ONCE per value however many files carry it (the worksheet
+  aggregates), and a `never` typed against it applies in every future folder —
+  so the evidence is the document's own sentence, with no pseudonyms
+  substituted around the value ("Ashely Langley served..." used to quote a
+  sentence half made of our own stand-ins, which reads as the tool flagging its
+  own output). Every flagged value is text the scrub did NOT replace, so it
+  stands verbatim in the original by construction; the two exceptions fall
+  through in order — a phrase CARRYING one of our stand-ins is absent from the
+  source, so its REAL REMAINDER (the value `confirm_findings` reduces the row
+  to anyway) is quoted; and with no original in hand at all (a `--fix-leaks`
+  folder keeping no copy, its TEMP cache gone) the scrubbed export is quoted
+  rather than leaving the row unanswerable. The Where column still points into
+  the EXPORT — that is where the leak stands. Consequence, deliberate and the
+  same trade the key already made: `LEAKS.xlsx` carries sentences of the real
+  document. It always carried the flagged real values themselves and lives in
+  the case folder for triage, so this changes how revealing the worksheet is,
+  not which file is safe to send; nothing of it propagates to the master
+  workbook (the KEEP sheet keeps instructions and notes, never Context).
+  `--fix-leaks` reads the originals BEFORE its per-file loop now — the fresh
+  findings' quotes need them — and keeps the TEXTS beside `note_original`'s
+  reduced evidence, concatenated into ONE parsed body so every quote is
+  answered by a single `_pn_context_prep` instead of thrashing its one-entry
+  memo. Three things make the quote worth reading. It is rebuilt as PROSE
   from the same parsed body the Where column uses (the gutter number dropped,
   wrapped lines joined), because a sentence on pleading paper is spread over
   several numbered lines. It looks for the value as a WHOLE WORD first and
