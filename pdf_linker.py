@@ -4789,8 +4789,50 @@ def _row_visual_signals(page, bbox, line_text):
     return max_size, is_bold, is_centered
 
 
+def _page_underline_strokes(page):
+    """The horizontal strokes on a page that could be TEXT UNDERLINES:
+    thin (a rule, not a box), wide enough to underline a word, returned
+    as [(x0, x1, y), ...]. Word and court-template PDFs draw an underline
+    as a vector line or a hair-thin filled rectangle — it is not a span
+    flag, which is why the heading detector historically could not see
+    the single most common heading style in filings: centered or
+    outline-labelled, body-size, not bold, UNDERLINED."""
+    out = []
+    try:
+        for d in page.get_drawings():
+            for item in d.get("items", []):
+                if item[0] == "l":
+                    p1, p2 = item[1], item[2]
+                    if (abs(p1.y - p2.y) <= 1.5
+                            and abs(p2.x - p1.x) >= 10.0):
+                        out.append((min(p1.x, p2.x), max(p1.x, p2.x),
+                                    (p1.y + p2.y) / 2))
+                elif item[0] == "re":
+                    r = item[1]
+                    if r.height <= 2.5 and r.width >= 10.0:
+                        out.append((r.x0, r.x1, (r.y0 + r.y1) / 2))
+    except Exception:
+        pass
+    return out
+
+
+def _row_is_underlined(bbox, strokes) -> bool:
+    """True when a thin horizontal stroke sits just under the row and
+    spans at least half its width — an underline, not a table border
+    grazing one cell (which fails the overlap) or a rule elsewhere on
+    the page (which fails the y-window)."""
+    x0, _y0, x1, y1 = bbox
+    width = max(x1 - x0, 1.0)
+    for ux0, ux1, uy in strokes:
+        if y1 - 2.0 <= uy <= y1 + 3.5:
+            if min(x1, ux1) - max(x0, ux0) >= 0.5 * width:
+                return True
+    return False
+
+
 def _is_heading_row(line_text: str, font_size: float, is_bold: bool,
-                    is_centered: bool, body_size: float) -> bool:
+                    is_centered: bool, body_size: float,
+                    is_underlined: bool = False) -> bool:
     """Decide whether a row is a section heading.
 
     Combines visual signals (font size > body, bold, centered) with
@@ -4833,21 +4875,30 @@ def _is_heading_row(line_text: str, font_size: float, is_bold: bool,
             return False
 
     # Outline-label path: structural cue is strong, single visual cue
-    # is enough.
-    if _HEADING_LABEL_RE.match(text):
-        if larger or is_bold:
+    # is enough. Underline counts as that cue — the commonest court
+    # heading style is an outline label at body size, not bold,
+    # underlined ("I. INTRODUCTION"), which no other signal reaches.
+    m = _HEADING_LABEL_RE.match(text)
+    if m:
+        if larger or is_bold or is_underlined:
+            return True
+        # Centered is enough only when the label carries its own heading
+        # text — a bare centered label ("V." between a caption's parties,
+        # a stray "1." row) proves nothing about being a heading.
+        if is_centered and m.group("text"):
             return True
         return False
 
     # ALL-CAPS path: structural cue is weaker (body text can be ALL-CAPS
-    # for proper nouns or stylistic emphasis), so require 2 of 3 visual
+    # for proper nouns or stylistic emphasis), so require 2 of the visual
     # cues. This is the user spec — "bold, large, underlined, and
-    # centered" relaxed to a 2-of-3 majority (with underline omitted
-    # because PyMuPDF doesn't natively expose underline as a span flag
-    # and the styling rarely appears alone).
+    # centered" relaxed to a 2-of-N majority (underline was originally
+    # omitted because PyMuPDF doesn't expose it as a span flag; it is now
+    # read from the page's own line art — _page_underline_strokes).
     if _HEADING_ALLCAPS_RE.match(text) and len(text) >= 6:
         visual_score = (1 if is_bold else 0) + (1 if larger else 0) \
-                       + (1 if is_centered else 0)
+                       + (1 if is_centered else 0) \
+                       + (1 if is_underlined else 0)
         if visual_score >= 2:
             return True
         return False
@@ -4927,12 +4978,21 @@ def _detect_section_headings(doc, log: logging.Logger,
         if page_idx in toc_skip_pages:
             continue
         page = doc[page_idx]
-        rows = _collect_rows(page)
+        # Drop pleading-paper gutter line-numbers before matching: a
+        # centered heading shares its baseline with a line number, so the
+        # merged row read "5  I. INTRODUCTION" — the label regex fails on
+        # the leading digit AND the merged bbox stretches to the left
+        # margin, so the centering test fails with it. Same fix the
+        # exhibit-cover scan carries, for the same reason.
+        rows = _collect_rows(page, drop_gutter_numbers=True)
+        strokes = _page_underline_strokes(page)
         for line_text, bbox in rows:
             max_size, is_bold, is_centered = _row_visual_signals(
                 page, bbox, line_text)
             if not _is_heading_row(line_text, max_size, is_bold,
-                                    is_centered, body_size):
+                                    is_centered, body_size,
+                                    is_underlined=_row_is_underlined(
+                                        bbox, strokes)):
                 continue
             label = line_text.strip()
             # Dedup: only the first sighting of a given label string
@@ -5345,6 +5405,7 @@ def _find_exhibit_cover_pages(doc):
     """
     found: dict = {}
     label_pages: set = set()
+    strict_idents: set = set()
     for i, page in enumerate(doc):
         # Drop pleading-paper gutter line-numbers: on a pleading-paper
         # exhibit cover the centered "EXHIBIT C" can share a baseline with a
@@ -5361,8 +5422,30 @@ def _find_exhibit_cover_pages(doc):
             if not ident:
                 continue
             found.setdefault(ident, []).append(i)
+            # A STRICT cover is the label alone, or with a separator before
+            # its descriptor — the letter branch requires that by regex,
+            # while the numeric branch tolerates any short trailing text
+            # ("Exhibit 3 hereto is a true and correct copy" matches). The
+            # distinction only matters when it is the document's ONLY
+            # exhibit; see the single-cover gate below.
+            if m.group("letter") is not None:
+                strict_idents.add(ident)
+            else:
+                rest = m.string[m.end("num"):].strip()
+                rest = re.sub(r"^" + _EXHIBIT_QUOTE_CLOSE, "", rest).strip()
+                if not rest or rest[0] in "—–-:":
+                    strict_idents.add(ident)
             label_pages.add(i)
             break  # one label-row per page is enough to register the page
+    # A SINGLE detected exhibit now feeds the bookmark tree (the 2+ gate
+    # lives in _link_exhibit_references and gates only the body-reference
+    # linking) — a petition with one clean 'EXHIBIT "A"' slip sheet earns
+    # its Exhibit A bookmark. Alone, though, the cover must be STRICT: with
+    # 2+ covers the set corroborates itself, while a lone loose numeric
+    # match is more likely a wrapped body sentence that happened to start
+    # the line ("Exhibit 3 hereto is...") than a document with one exhibit.
+    if len(found) == 1 and not strict_idents:
+        return {}, set()
     # Collapse contiguous runs to their first page: if Exhibit 5 has a
     # cover sheet at page 42 and content pages 43-50 each carry a banner
     # "Exhibit 5 — page N of 9", we want page 42 as the single link
@@ -5443,9 +5526,13 @@ def _link_exhibit_references(doc, log: logging.Logger):
 
     Returns (linked_count, cover_map) where cover_map is the
     {ident: [page_indices]} dict from _find_exhibit_cover_pages. The
-    cover_map is empty (and linked_count is 0) when the document is
-    too short, has fewer than 2 exhibits, or PyMuPDF isn't available;
-    in those cases no linking happens and no bookmarks should be made.
+    cover_map is returned for the BOOKMARK builder even when only one
+    cover exists (a petition with a single Exhibit A still deserves its
+    Exhibit A bookmark — _find_exhibit_cover_pages keeps a lone cover
+    only when it is strict); body-reference LINKING still requires 2+
+    covers, because a single "Exhibit 1" mention is far more often prose
+    than a labelled attachment worth a link pass. cover_map is empty when
+    the detection found nothing or PyMuPDF isn't available.
     """
     try:
         import fitz
@@ -5454,15 +5541,14 @@ def _link_exhibit_references(doc, log: logging.Logger):
 
     cover_map, label_pages = _find_exhibit_cover_pages(doc)
     if len(cover_map) < 2:
-        # Requires multiple detected exhibit covers — a single Exhibit 1
-        # alone isn't worth a pass (and an empty map definitely isn't).
-        # This gate is sufficient on its own: short documents without
-        # real exhibits won't have 2+ covers detected. The previous
-        # belt-and-suspenders page-count gate (EXHIBIT_LINK_MIN_PAGES)
-        # was dropped because it excluded short declarations with
-        # multiple legitimate exhibits (an 18-page declaration with
-        # Exhibits A, B, C would never reach this code).
-        return 0, {}
+        # Body-reference linking requires multiple detected exhibit
+        # covers. This gate is sufficient on its own: short documents
+        # without real exhibits won't have 2+ covers detected. The
+        # previous belt-and-suspenders page-count gate
+        # (EXHIBIT_LINK_MIN_PAGES) was dropped because it excluded short
+        # declarations with multiple legitimate exhibits (an 18-page
+        # declaration with Exhibits A, B, C would never reach this code).
+        return 0, cover_map
 
     linked = 0
     for page_idx, page in enumerate(doc):
@@ -5669,6 +5755,7 @@ def _normalize_footer_for_key(s: str) -> str:
     # Fold quote variants to ASCII apostrophe, dash variants to ASCII
     # hyphen-minus. This only affects the key, not the displayed label.
     cleaned = s.translate(_FOOTER_KEY_FOLD_MAP)
+    cleaned = _strip_footer_furniture(cleaned)
     # Strip "N of M" forms first ("5 of 12", "Page 1 of 2").
     cleaned = re.sub(
         r"(?:Page|PAGE|p\.)?\s*\d{1,4}\s+of\s+\d{1,4}",
@@ -5719,13 +5806,69 @@ _FOOTER_KEY_FOLD_MAP = str.maketrans({
 })
 
 
+# Footer FURNITURE that is never part of a document's title, stripped from
+# the comparison key and the bookmark label alike (they must move together,
+# or a page whose title is identical modulo furniture keys as a different
+# document than its label claims):
+#   * A run of underscores — the title block's horizontal rule sits inside
+#     the footer band and extracts as literal '____', so a delivered
+#     bookmark read '________ PETITION TO COMPEL ARBITRATION...'.
+#   * A URL — the browser PRINT footer of a webpage exhibit ("https://...").
+#     A URL is never a filing's title, and it dragged the address into the
+#     bookmark of every printed-webpage sub-document.
+#   * A bare page FRACTION ("3/17"), the other half of the browser print
+#     footer, which varies per page and so forked one printout into a
+#     "document" per page. The lookarounds keep a DATE intact — "8/20/2026"
+#     carries a second slash on one side of every candidate match.
+_FOOTER_RULE_RE = re.compile(r"_{2,}")
+_FOOTER_URL_RE = re.compile(r"\S+://\S+|\bwww\.\S+", re.IGNORECASE)
+_FOOTER_PAGE_FRACTION_RE = re.compile(
+    r"(?<![\d/])\d{1,4}\s*/\s*\d{1,4}(?![\d/])")
+
+
+def _strip_footer_furniture(s: str) -> str:
+    s = _FOOTER_RULE_RE.sub(" ", s)
+    s = _FOOTER_URL_RE.sub(" ", s)
+    return _FOOTER_PAGE_FRACTION_RE.sub(" ", s)
+
+
+# Connector words a TITLE leaves lower-case ("Declaration of John Smith in
+# Support of..."), ignored when counting prose evidence below.
+_FOOTER_TITLE_LOWER_WORDS = frozenset(
+    "a an and at by for in of on or re the to v vs".split())
+
+
+def _footer_reads_as_prose(text: str) -> bool:
+    """True when a footer band's text reads as running BODY PROSE rather
+    than a document title — the last lines of a printed WEBPAGE flowing
+    into the bottom band, which is what a Terms-of-Service exhibit is.
+
+    A filing's running footer is its title, set in caps or title case;
+    body prose is lower-case. So the band is prose when it carries at
+    least four lower-case words that are not title connectors AND they
+    outnumber the capitalized words. 'grant us a worldwide, non-exclusive,
+    perpetual, royalty-free ... license' is all prose evidence; 'PETITION
+    TO COMPEL ARBITRATION' and 'Declaration of John Smith in Support of
+    Petitioner's Motion' carry none. A prose band is treated as NO footer,
+    so the page inherits the previous document's identity instead of
+    minting a new 'document' out of whatever sentence the page happened
+    to end on. Residual, and accepted: a genuine footer set entirely in
+    lower-case prose style is suppressed too, and its sub-document folds
+    into the one before it."""
+    words = re.findall(r"[A-Za-z][A-Za-z'\-]*", text)
+    lower = sum(1 for w in words
+                if w[0].islower() and w.lower() not in _FOOTER_TITLE_LOWER_WORDS)
+    titled = sum(1 for w in words if w[0].isupper())
+    return lower >= 4 and lower > titled
+
+
 def _clean_footer_label(s: str) -> str:
     """Produce the bookmark label: same digit-stripping as the key,
     but preserve the original case and apply minimal cleanup.
     """
     if not s:
         return ""
-    cleaned = s
+    cleaned = _strip_footer_furniture(s)
     cleaned = re.sub(
         r"(?:Page|PAGE|p\.)?\s*\d{1,4}\s+of\s+\d{1,4}",
         " ", cleaned, flags=re.IGNORECASE,
@@ -5962,12 +6105,20 @@ def _canonicalize_key(key: str, canon_index: list) -> str:
     return key
 
 
-def _detect_document_footers(doc, log: logging.Logger):
+def _detect_document_footers(doc, log: logging.Logger, have_exhibits=False):
     """Walk the document; for each transition to a new unique footer,
     record the page where the new footer first appears. Returns a list
     of (label, page_idx) tuples, or [] if fewer than 2 distinct footers
     are detected (single-document file — no value in a sub-document
     bookmark branch).
+
+    `have_exhibits`: the document carries at least one detected exhibit
+    cover, so it demonstrably holds 2+ sub-documents even when only ONE
+    unique footer exists — a petition whose lone exhibit is a printed
+    webpage has a footer on the petition and none anywhere else, and the
+    2-footer gate left the petition itself unbookmarked. With exhibits
+    present a single footer entry is kept; the Exhibits branch supplies
+    the rest of the structure.
 
     Implementation notes:
       * Pages with no detectable footer inherit the previous page's
@@ -5998,6 +6149,13 @@ def _detect_document_footers(doc, log: logging.Logger):
     per_page = []
     for page in doc:
         raw = _extract_footer_text(page)
+        # A band that reads as body prose is not a footer at all — a
+        # printed webpage flows its last lines into the bottom band, and
+        # every page's sentence fragment is distinct, so each page minted
+        # its own "document" labelled with the fragment. Treated as no
+        # footer, the pages inherit the previous document's identity.
+        if raw and _footer_reads_as_prose(raw):
+            raw = ""
         if raw:
             strict_key = _normalize_footer_for_key(raw)
             key = _canonicalize_key(strict_key, canon_index) if strict_key else ""
@@ -6067,8 +6225,11 @@ def _detect_document_footers(doc, log: logging.Logger):
         seen_keys.add(key)
         last_committed_key = key
 
-    # Gate: need at least 2 distinct footers for the branch to be useful.
-    if len(entries) < 2:
+    # Gate: need at least 2 distinct footers for the branch to be useful —
+    # unless exhibit covers already prove the file holds 2+ sub-documents,
+    # where the one footered document (the filing in front of its
+    # exhibits) still deserves its bookmark.
+    if len(entries) < (1 if have_exhibits else 2):
         return []
 
     log.info(f"  Detected {len(entries)} sub-document(s) by unique footer")
@@ -22027,7 +22188,8 @@ def process_pdf(pdf_path: Path, log: logging.Logger,
     # and no Documents branch appears. Failure is non-fatal.
     document_entries: list = []
     try:
-        document_entries = _detect_document_footers(doc, log)
+        document_entries = _detect_document_footers(
+            doc, log, have_exhibits=bool(exhibit_cover_map))
     except Exception as e:
         log.warning(f"  Footer-based document detection failed (non-fatal): {e}")
 
