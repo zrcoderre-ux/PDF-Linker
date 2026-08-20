@@ -1371,6 +1371,41 @@ the party), so its row stays reversible.
   evidence — a page with no re-draw is returned byte-for-byte as `get_text`
   gave it, so a document that repeats a line on purpose (a table row) is
   untouched and the ordinary export does not move.
+  **…and the two strikes can interleave INSIDE one extracted run**
+  (`_undouble_strike`), the third shape and the one no span comparison can
+  see. A faux-bold double strike draws every glyph twice, and when extraction
+  merges the copies into ONE run the line copies out with every character
+  doubled: an exhibit slip sheet reading `Exhibit A` on the page copies as
+  `EEXXHHIIBBIITT ""AA""` — native to the PDF, not the OCR. A whole-word term
+  cannot match the doubled spelling (a struck party name ships in the clear),
+  the citation parser is blinded, and the exhibit yielded no cover page, no
+  bookmark and no body links; a delivered batch carried its whole exhibit set
+  A-E this way. Collapsed at extraction, in both renderings of a page so they
+  cannot disagree: per SPAN in `_drop_overdrawn_spans` (before the dedup, so a
+  struck span and a plain re-draw of it agree on their text and collapse) and
+  per LINE on the flowing text (`_undouble_strike_lines`), which covers the
+  export, the scrubber, every leak scan, the citation parser and the
+  unscrubbed evidence copy from the one seam. The gate needs the text to read
+  as double-struck AS A WHOLE — nearly every non-whitespace character in an
+  adjacent identical pair, PLUS one alphabetic run of ≥6 characters that is
+  pure pairs, because the ratio alone admits text with no letters at all (a
+  damages-table row "2222 | 3333" is four digit pairs against one single, and
+  halving it corrupts the figures) and short coincidences ("AA BB CC"); no
+  English word is six letters of pure pairs, so the anchor costs no real text,
+  and "BOOKKEEPER"/"balloon"/"coffee" never qualify on the ratio. Halving is
+  length-honest, so exhibit AA struck twice ("AAAA") comes back "AA", and a
+  single-struck "EXHIBIT AA" is protected by "EXHIBIT" itself, which pairs
+  nowhere. Bookmarking gets a belt of its own (`_exhibit_cover_match`):
+  `_collect_rows` reads the raw text layer, so the exhibit-cover scan retries
+  a failed match on the undoubled line and on a token-wise repeated one
+  (`EXHIBIT "A" EXHIBIT "A"`, the two copies extracted as separate runs merged
+  on one baseline) — every fallback still has to satisfy the same cover
+  regex, so nothing refused for cause can start matching. Costs ~0.05 ms a
+  page (a hint regex early-outs the scan on ordinary spans). Accepted cost,
+  same as the visual layout's: a delivered folder whose exports carried the
+  struck spelling comes back normalized on the first FULL re-run — values and
+  fakes unchanged, the key still pins every binding; only the struck line's
+  characters halve.
 - **Column-spliced captions**: a two-column caption interleaves in extraction,
   welding party names to neighbours. Extraction is column-aware up front: a
   page-level column band needs multi-row support (`_COLUMN_BAND_MIN_ROWS`,
