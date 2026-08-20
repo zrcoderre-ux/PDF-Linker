@@ -18525,6 +18525,93 @@ def _pn_bracket_keep(value, cell):
     return [f for f in frags if re.search(r"[A-Za-z0-9]", f)]
 
 
+def _pn_bracket_welds(value, cell):
+    """{fragment_lower: kept_text} for each faked fragment of a keep-spec that
+    the VALUE welds straight onto the kept text on its right — the shape a
+    lost space leaves. "John Doeis" answered with `[is]` splits into the
+    remainder "John Doe" ending hard against the kept "is", no separator
+    between them.
+
+    Without this the bracket parsed fine and then cured nothing: the remainder
+    becomes an ordinary WHOLE-WORD term, and a whole-word pattern cannot land
+    where the printed boundary is missing, so the export shipped half-scrubbed
+    ("Wemyss Doeis") while the worksheet said the bracket was honoured. The
+    mapping is applied by `_pn_apply_weld_follows` through
+    `_pn_build_pattern(follow=…)` — the same one-run-only relaxation the
+    declarant-reference harvester uses for "SmithDecl." — so the term may butt
+    against exactly that kept text and nothing else.
+
+    RIGHT side only, deliberately: `_pn_build_pattern` has no left relaxation,
+    because the LEFT boundary is the one that stops a short name firing inside
+    a longer word, so a kept part welded to the FRONT of a fragment is not
+    repaired. Empty when the cell is not a keep-spec or names text outside the
+    value — the cases `_pn_bracket_keep` returns None for."""
+    brackets, braces = _pn_keep_spec_parts(str(cell or ""))
+    keeps = (brackets + braces)[:0xFF]
+    if not keeps:
+        return {}
+    # The same cut `_pn_bracket_keep` makes, with a marker that remembers WHICH
+    # kept text it stands for (insertion order is not string order once a value
+    # carries two keeps). Private-use characters, so a kept text can never
+    # collide with a marker already placed.
+    work = str(value)
+    for n, k in enumerate(keeps):
+        i = work.lower().find(k.lower())
+        if i < 0:
+            return {}
+        work = work[:i] + chr(0xE000 + n) + work[i + len(k):]
+    out, pos = {}, 0
+    for m in re.finditer("[\ue000-\ue0ff]", work):
+        frag, pos = work[pos:m.start()], m.end()
+        kept = keeps[ord(m.group(0)) - 0xE000]
+        # A weld is the fragment's own last character hard against the kept
+        # text's first, both word characters — any separator between them means
+        # the boundary is printed and the ordinary whole-word term will match.
+        if frag[-1:].isalnum() and kept[:1].isalnum():
+            clean = frag.strip(" \t,.;:'’\"-–—")
+            if re.search(r"[A-Za-z0-9]", clean):
+                out[clean.lower()] = kept
+    return out
+
+
+# The categories `_pn_apply_weld_follows` may widen: the FULL-name term only,
+# never its bare tokens. The full value is anchored on its own leading word, so
+# the relaxation cannot fire inside an unrelated longer word; a bare token with
+# a follow would match the middle of one ("Doe" against every "...doeis...").
+_PN_WELD_FOLLOW_CATS = frozenset({"person", "entity", "short-name"})
+
+
+def _pn_apply_weld_follows(terms, follows, log=None):
+    """Rebuild the pattern of every term whose real value a keep-spec welds to
+    a kept text (`_pn_bracket_welds`), so the term may butt straight up against
+    exactly that text: `[is]` on "John Doeis" lets the "John Doe" term match
+    inside "John Doeis", replace the name alone, and leave the "is" standing.
+
+    The export then reads the fake glued the way the source was ("Wemyss
+    Shelmerdineis"), which is honest — the document lost that space, not this
+    tool — and reverses byte-faithfully, since the macro's substring search
+    finds the fake inside the welded token.
+
+    Assigned IN PLACE on the term, which is what keeps replacement and
+    detection mirrored for free: `_surviving_records` scans with the same
+    `pattern` attribute, so a weld this can cure is never left gating an
+    export it refuses to touch. Applied to loaded key terms as well — on a
+    re-run the retired bracket row has become an ordinary binding, but the
+    worksheet decision persists and the PDF still carries the weld."""
+    if not follows:
+        return
+    for t in terms:
+        kept = follows.get(str(t.real).lower())
+        if not kept or t.category not in _PN_WELD_FOLLOW_CATS:
+            continue
+        t.pattern = _pn_build_pattern(
+            t.real, whole_word=t.whole_word, follow=re.escape(kept),
+            breakable=_pn_term_is_breakable(t.category, t.source))
+        if log:
+            log.info(f"  KEEP-PART: {str(t.real)!r} may butt straight against "
+                     f"the kept {kept!r} — the bracketed value welds them.")
+
+
 def _pn_decision_keep_parts(d):
     """The substrings a KEEP/KEEP-PART decision protects verbatim: the whole
     value for a `no`, or the kept part(s) of a keep-spec. Shared by the
@@ -22816,7 +22903,7 @@ def _fix_leaks_mode(folder, args, cfg, log):
     # must not release their quarantine or delete the worksheet, or a typo in
     # one cell is silently converted into a delivered leak.
     rejected = []
-    auto_terms, explicit = [], {}
+    auto_terms, explicit, weld_follows = [], {}, {}
     for vl, d in decisions.items():
         # An INHERITED decision contributes its KEEP and nothing else — the
         # bracket generalises, the remainder is the authoring case's party.
@@ -22824,8 +22911,13 @@ def _fix_leaks_mode(folder, args, cfg, log):
             continue
         # Bracketed keep-spec: auto-fake only the non-bracketed fragment(s); the
         # bracketed part is left verbatim (never registered, so never touched).
+        # A fragment the value WELDS to its kept text ("John Doeis" answered
+        # `[is]`) also earns the follow relaxation, or the whole-word term
+        # could never land there (see _pn_bracket_welds).
         if d.get("fake_values") is not None:
             auto_terms.extend(d["fake_values"])
+            weld_follows.update(
+                _pn_bracket_welds(d["value"], d.get("fixcell") or ""))
             continue
         repl = (d.get("replacement") or "").strip()
         if repl and repl.lower() != d["value"].strip().lower():
@@ -22881,6 +22973,7 @@ def _fix_leaks_mode(folder, args, cfg, log):
                  "row yes or type the exact replacement, then click again.)")
 
     terms += _pn_build_terms([], [], list(args.term or []) + auto_terms, registry)
+    _pn_apply_weld_follows(terms, weld_follows, log)
     # Operator-typed replacements: authoritative, reversible, never re-derived.
     # Appended LAST so they win Pseudonymizer.__init__'s last-write-wins records
     # map over any binding loaded from the key or rebuilt here.
@@ -23456,12 +23549,18 @@ def main():
         # so a decision made here lives on only in the master sheet).
         ours = {vl for vl, d in leak_decisions.items()
                 if vl in folder_decisions or _pn_decision_is_ours(d, folder.name)}
-        fix_terms = []
+        fix_terms, weld_follows = [], {}
         for vl, d in leak_decisions.items():
             if d["fix"] != "yes" or vl not in ours:
                 continue
             fv = d.get("fake_values")
             fix_terms.extend(fv if fv is not None else [d["value"]])
+            if fv is not None:
+                # A fragment the value WELDS to its kept text ("John Doeis"
+                # answered `[is]`) earns the follow relaxation, applied over
+                # the final term list below — see _pn_bracket_welds.
+                weld_follows.update(
+                    _pn_bracket_welds(d["value"], d.get("fixcell") or ""))
         suppressed = {vl for vl, d in leak_decisions.items() if d["fix"] == "no"}
         extra_terms = list(args.term or []) + fix_terms
         if fix_terms:
@@ -23567,6 +23666,8 @@ def main():
             for d in key_decisions.values():
                 if d.get("fake_values"):
                     key_frags.extend(d["fake_values"])
+                    weld_follows.update(
+                        _pn_bracket_welds(d["value"], d.get("fixcell") or ""))
             if key_frags:
                 terms += _pn_build_terms([], [], key_frags, registry)
                 log.info(f"  Pseudonym key: auto-faking {len(key_frags)} "
@@ -23574,6 +23675,11 @@ def main():
             for vl, d in key_decisions.items():
                 leak_decisions[vl] = d
                 suppressed.add(vl)
+
+        # Over the FINAL term list, so a loaded key term is widened too: on a
+        # re-run the retired bracket row has become an ordinary binding, but
+        # the worksheet decision persists and the PDF still carries the weld.
+        _pn_apply_weld_follows(terms, weld_follows, log)
 
         pseudonymizer = Pseudonymizer(terms, detectors, registry)
         pseudonymizer.suppressed = suppressed

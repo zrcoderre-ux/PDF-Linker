@@ -1269,7 +1269,35 @@ the party), so its row stays reversible.
   **any other text = an explicit operator-typed replacement**, and
   **`[bracketed]` text naming part of the value = keep that part verbatim and
   auto-fake the rest** (`_pn_bracket_keep`; "Raytheon's [Human Resources]" fakes
-  the name, keeps the department words). **Website vs e-mail**: a government
+  the name, keeps the department words).
+  **…and a bracket works on a WELDED value.** "John Doeis" — a lost space
+  gluing the party to the next word — answered with `[is]` always parsed
+  correctly (fake "John Doe", keep "is") and then cured nothing: the remainder
+  becomes an ordinary whole-word term, and a whole-word pattern cannot land
+  where the printed boundary is missing, so the export shipped half-scrubbed
+  ("Wemyss Doeis") while the log said the bracket was honoured.
+  `_pn_bracket_welds` reads the weld out of the (value, cell) pair — the
+  fragment's last character hard against the kept text's first, both word
+  characters, so a printed separator ("Raytheon's [Human Resources]") never
+  qualifies — and `_pn_apply_weld_follows` rebuilds the fragment's term with
+  `_pn_build_pattern(follow=…)`, the declarant harvester's own "SmithDecl."
+  relaxation: the term may butt against exactly that kept text and nothing
+  else. FULL-name categories only (`_PN_WELD_FOLLOW_CATS`), never a bare
+  token — the full value is anchored by its own leading word, while a token
+  with a follow would fire inside unrelated longer words. Assigned in place
+  on the term, so replacement and the leak scans stay mirrored by
+  construction, and applied over the FINAL term list, loaded key rows
+  included — on a re-run the retired bracket row is an ordinary binding, but
+  the worksheet decision persists and the PDF still carries the weld. The
+  export then reads the fake glued as the source was ("Kelsallis"), which is
+  honest — the document lost that space, not this tool — and reverses
+  byte-faithfully, the macro's substring search finding the fake inside the
+  welded token. RIGHT-side welds only: `_pn_build_pattern` has no left
+  relaxation, because the left boundary is the one that stops a short name
+  firing inside a longer word. A keep can never rip its word out of OTHER
+  text either way — keeps and terms match on word boundaries, never
+  substrings, so `[is]` on one row touches no "This", "basis" or "analysis"
+  anywhere. **Website vs e-mail**: a government
   WEBSITE (`*.gov`/`*.mil`) is public infrastructure — never faked, never flagged
   — but the `@` settles it, so `clerk@courts.ca.gov` names a person and is faked
   like any other address (`_pn_url_whitelisted` gates urls only). An **e-mail is
