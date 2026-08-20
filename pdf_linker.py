@@ -5177,6 +5177,95 @@ _EXHIBIT_COVER_RE = re.compile(
     re.VERBOSE,
 )
 
+# A double-struck line must be nearly ALL pairs before it is halved:
+# at least this many adjacent identical pairs, and at least four pairs
+# for every unpaired character. 'BOOKKEEPER RECORDS' (3 pairs, 12
+# singles) is nowhere near; a stray odd glyph in a genuinely doubled
+# line ('EEXXHHIIBBIITT ""BB"' — one quote lost its twin) still passes.
+_UNDOUBLE_MIN_PAIRS = 3
+_UNDOUBLE_PAIRS_PER_SINGLE = 4
+
+
+def _undouble_strike(text: str):
+    """Collapse a double-struck text run: 'EEXXHHIIBBIITT ""AA""' ->
+    'EXHIBIT "A"'.
+
+    An exhibit slip sheet whose big label is set as a faux-bold double
+    strike LOOKS like 'EXHIBIT "A"' on the page, but the text layer
+    carries every glyph twice and extraction returns the two copies of
+    each character adjacent — so the label copies out with every
+    character doubled. That blinds _EXHIBIT_COVER_RE, and the exhibit
+    then gets no cover page, no 'Exhibit A' bookmark, and no body links.
+    _drop_overdrawn_spans cannot reach it: the doubling is inside one
+    extracted run, not a second span over the first.
+
+    Returns the halved string only when the line as a whole reads as
+    double-struck — nearly every non-whitespace character sits in an
+    adjacent identical pair (thresholds above). Halving is greedy and
+    length-honest, so a genuinely doubled letter inside a doubled line
+    still comes out right ('AAAA', exhibit AA struck twice, halves to
+    'AA'). A single-struck 'EXHIBIT AA' is protected by 'EXHIBIT'
+    itself, which pairs nowhere. Returns None when the line is not
+    double-struck, so a caller can tell 'nothing to do' from an empty
+    line.
+    """
+    if not text:
+        return None
+    out = []
+    pairs = singles = 0
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if ch.isspace():
+            out.append(ch)
+            i += 1
+            continue
+        if i + 1 < n and text[i + 1] == ch:
+            pairs += 1
+            i += 2
+        else:
+            singles += 1
+            i += 1
+        out.append(ch)
+    if pairs < _UNDOUBLE_MIN_PAIRS:
+        return None
+    if pairs < singles * _UNDOUBLE_PAIRS_PER_SINGLE:
+        return None
+    return "".join(out)
+
+
+def _exhibit_cover_match(line_text: str):
+    """Match a row against _EXHIBIT_COVER_RE, tolerating a text layer
+    that was drawn twice. Returns the match object or None.
+
+    Two artifacts of the same cause (the label struck twice), tried in
+    order after the plain match fails:
+
+      * character-interleaved — the two copies alternate glyph by glyph
+        ('EEXXHHIIBBIITT ""AA""'), collapsed by _undouble_strike;
+      * run-repeated — the two copies extract as whole runs that
+        _collect_rows merges on one baseline ('EXHIBIT "A" EXHIBIT
+        "A"'), collapsed by comparing the line's two halves token-wise.
+
+    Both fallbacks only ever ADD a cover the plain regex refused, and
+    the collapsed text still has to satisfy the same regex, so a line
+    that is not an exhibit label cannot start matching by accident.
+    """
+    m = _EXHIBIT_COVER_RE.match(line_text)
+    if m:
+        return m
+    halved = _undouble_strike(line_text)
+    if halved:
+        m = _EXHIBIT_COVER_RE.match(halved)
+        if m:
+            return m
+    toks = line_text.split()
+    if len(toks) >= 2 and len(toks) % 2 == 0:
+        half = len(toks) // 2
+        if toks[:half] == toks[half:]:
+            return _EXHIBIT_COVER_RE.match(" ".join(toks[:half]))
+    return None
+
 
 def _find_exhibit_cover_pages(doc):
     """Scan the document for pages bearing an exhibit label as a standalone
@@ -5207,7 +5296,7 @@ def _find_exhibit_cover_pages(doc):
         # into "14 EXHIBIT C" — breaking _EXHIBIT_COVER_RE's ^EXHIBIT anchor
         # and leaving that exhibit (and every body reference to it) unlinked.
         for line_text, _bbox in _collect_rows(page, drop_gutter_numbers=True):
-            m = _EXHIBIT_COVER_RE.match(line_text)
+            m = _exhibit_cover_match(line_text)
             if not m:
                 continue
             # Exactly one of `num` or `letter` matches; normalize both to
