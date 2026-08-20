@@ -1640,6 +1640,40 @@ page whose 10-29 outnumber its 1-9 puts `dominant_x` on the wider run
 ("1 SERVICE LIST"). `_FOOTER_MASK_PT` still masks the running footer, which
 repeats the document title on every page and carries nothing else.
 
+**The export mirrors the page's GEOMETRY, so it reads SIDE BY SIDE with the
+PDF** (`_visual_row_text` / `_page_visual_text`). Joining a row's pieces with
+one space destroyed exactly what the eye lines the two up by: a two-column
+caption collapsed into one run, a centered heading landed flush left, and the
+case-number column floated to wherever the party name ended. Every row is laid
+out on a character grid derived from each segment's own x instead — the rule
+`_form_layout` already applied to a court form, at `_VIS_CHAR_W` for body text
+— and a page that is neither pleading paper, a form nor a table (an exhibit, a
+letter, an order) is rendered positionally from its clustered spans, with a
+real vertical gap kept as a blank line (capped at `_VIS_MAX_BLANKS`, so OCR
+noise cannot demand a page of scroll). Three things make it safe. A segment at
+the page's body-left edge computes column 0 and renders byte-identically to
+the old join, so ordinary body prose does not move — and `_rows_body_left`
+takes that edge from NUMBERED rows only, or a rotated margin label would own
+column 0 and indent every line of the page. Within a flowing line a span is
+padded to its column only across a REAL gap (`_VIS_GAP_PT`); anything narrower
+keeps `_join_spans_spaced`'s own glue rule, so prose split into spans at a
+style change renders as it always has and the citation parser never meets a
+space run this pass invented (term patterns are immune either way — their
+words are joined on `\s+`). And the layout is DISPLAY only: `_page_detect_text`
+keeps its column-ordered rendering, citation detection keeps the flowing text,
+and the scrub runs per column BEFORE the join, with the ORIGINAL x deciding
+the column and the scrubbed text filling it — a fake of a different length
+shifts what follows it on that line, the honest cost of the text really having
+changed. Downstream, `_PN_GUTTER_RE` takes two-or-MORE spaces after the number
+(a centered heading on a numbered line reads " 1        NOTICE OF MOTION", and
+the exact-two match handed it the previous line's number), and
+`_pn_context_prep` collapses space runs so a Context quote does not spend half
+its width on the padding. Cost, accepted: exports of an already-delivered folder come back with the new
+spacing on the first FULL re-run (values and fakes unchanged — the key still
+pins every binding, only whitespace moves). `--fix-leaks` is indifferent: it
+works on the `.txt` as it stands and never reopens the PDFs, so it neither
+converts an old-format export nor is confused by either format.
+
 **A SPREADSHEET printed into an exhibit exports as a TABLE** (`_page_table_text`).
 A billing export, a damages schedule, a payment history: the page is a grid, and
 plain extraction reads it a cell at a time, top to bottom. Every value survives
