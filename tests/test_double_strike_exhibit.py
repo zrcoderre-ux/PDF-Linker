@@ -64,9 +64,20 @@ def test_a_genuinely_doubled_exhibit_letter_survives_the_halving():
     "EXHIBIT A",              # nothing doubled at all
     "",                       # empty line
     "see Aanenson v. Baker",  # ordinary prose
+    "2222 | 3333",            # a damages-table row is digit pairs, not a strike
+    "1111 2222 3333 4444",
+    "AA BB CC",               # a ratings row: no six-letter struck word anchors it
+    "balloon coffee committee",  # adjacent doubled letters in real words
+    "AAAA",                   # a bare doubled pair with no struck word beside it
 ])
 def test_single_struck_text_is_never_halved(text):
     assert P._undouble_strike(text) is None
+
+
+def test_a_struck_party_name_halves_to_its_visual_reading():
+    # The privacy half of the fix: a whole-word term cannot match the
+    # doubled spelling, so a struck party name shipped in the clear.
+    assert P._undouble_strike("JJOOHHNN DDOOEE") == "JOHN DOE"
 
 
 # ── _exhibit_cover_match: the fallback chain ────────────────────────────────
@@ -127,3 +138,59 @@ def test_the_bookmarks_read_exhibit_a_not_the_struck_text():
     for letter in "ABCDE":
         assert f"Exhibit {letter}" in titles
     assert not any("EEXX" in t or '""' in t for t in titles)
+
+
+# ── the EXPORT text is normalized too ───────────────────────────────────────
+# The scrubber, the leak scans and the drafting model all read the export,
+# so the struck line must be collapsed at extraction — in every rendering,
+# identically, or detection and replacement drift apart.
+
+def _struck_page():
+    doc = fitz.open()
+    pg = doc.new_page(width=612, height=792)
+    pg.insert_text((220, 300), _double('EXHIBIT "A"'), fontsize=20)
+    pg.insert_text((90, 400),
+                   "A true and correct copy of the contract is attached.")
+    return pg
+
+
+def test_the_flowing_text_reads_the_struck_line_as_printed():
+    text = P._page_flowing_text(_struck_page())
+    assert 'EXHIBIT "A"' in text
+    assert "EEXX" not in text
+    assert "A true and correct copy of the contract is attached." in text
+
+
+def test_the_visual_rendering_agrees_with_the_flowing_one():
+    vis = P._page_visual_text(_struck_page())
+    assert vis is not None
+    assert 'EXHIBIT "A"' in vis
+    assert "EEXX" not in vis
+
+
+def test_detection_reads_what_the_export_writes():
+    detect = P._page_detect_text(_struck_page())
+    assert 'EXHIBIT "A"' in detect
+    assert "EEXX" not in detect
+
+
+def test_a_struck_party_name_reaches_the_export_matchable():
+    doc = fitz.open()
+    pg = doc.new_page(width=612, height=792)
+    pg.insert_text((90, 300), _double("JOHN DOE"), fontsize=12)
+    pg.insert_text((90, 330), "was served at his residence.")
+    text = P._page_flowing_text(pg)
+    assert "JOHN DOE" in text
+    assert "JJOO" not in text
+    # …and a whole-word term can now land on it.
+    import re
+    assert re.search(r"\bJOHN\s+DOE\b", text)
+
+
+def test_a_clean_page_is_returned_byte_for_byte():
+    doc = fitz.open()
+    pg = doc.new_page(width=612, height=792)
+    pg.insert_text((90, 200), "The court finds good cause appearing.")
+    pg.insert_text((90, 230), "Damages of 2222 and 3333 are itemized below.")
+    pg.insert_text((90, 260), "The balloon and coffee committee attended.")
+    assert P._page_flowing_text(pg) == pg.get_text("text")

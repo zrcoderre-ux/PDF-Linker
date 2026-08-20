@@ -2944,6 +2944,103 @@ def _page_is_overdrawn(page):
     return len(_drop_overdrawn_spans(spans)) < len(spans)
 
 
+# A double-struck line must be nearly ALL pairs before it is halved: at
+# least this many adjacent identical pairs, and at least four pairs for
+# every unpaired character. 'BOOKKEEPER RECORDS' (3 pairs, 12 singles) is
+# nowhere near; a stray odd glyph in a genuinely doubled line
+# ('EEXXHHIIBBIITT ""BB"' — one quote lost its twin) still passes.
+_UNDOUBLE_MIN_PAIRS = 3
+_UNDOUBLE_PAIRS_PER_SINGLE = 4
+# …and it must carry POSITIVE evidence of a struck WORD: one alphabetic
+# run of at least this many characters that is entirely adjacent pairs
+# ("EEXXHHIIBBIITT"). The ratio alone admits text with no letters at all —
+# a damages-table row "2222 | 3333" is four digit pairs against one
+# single, and halving it corrupts the figures — and short coincidences
+# like a ratings row "AA BB CC". No English word is six letters of pure
+# pairs, so the anchor costs no real text.
+_UNDOUBLE_ANCHOR_LEN = 6
+_UNDOUBLE_ANCHOR_RE = re.compile(r"[^\W\d_]{%d,}" % _UNDOUBLE_ANCHOR_LEN)
+# Cheap early-out: any doubled run long enough to matter contains two
+# adjacent identical pairs. Almost no ordinary span does ("balloon" and
+# "coffee" do, and the ratio test dismisses them), so the scan below is
+# paid only where doubling is plausible.
+_UNDOUBLE_HINT_RE = re.compile(r"(\S)\1(\S)\2")
+
+
+def _undouble_strike(text: str):
+    """Collapse a double-struck text run: 'EEXXHHIIBBIITT ""AA""' ->
+    'EXHIBIT "A"'.
+
+    A line set as a faux-bold DOUBLE STRIKE — an exhibit slip sheet's big
+    label is where it shows up — looks perfectly normal on the page, but
+    the text layer carries every glyph twice and extraction returns the
+    two copies of each character adjacent, so the label copies out with
+    every character doubled. It is the third shape of a text layer drawn
+    twice: `_drop_overdrawn_spans` collapses two copies of one SPAN and
+    `_span_is_redraw_fragment` a piece drawn over a longer run, but here
+    the two strikes interleave INSIDE one extracted run, where no span
+    comparison can see them. Left alone, a whole-word term cannot match
+    the doubled spelling (a struck party name ships in the clear), the
+    citation parser is blinded, and an exhibit label yields no cover
+    page, no bookmark, and no body links.
+
+    Returns the halved string only when the text reads as double-struck
+    as a whole — nearly every non-whitespace character sits in an
+    adjacent identical pair, and at least one alphabetic run of
+    `_UNDOUBLE_ANCHOR_LEN`+ characters is pure pairs (thresholds above).
+    Halving is greedy and length-honest, so a genuinely doubled letter
+    inside a doubled line still comes out right ('AAAA', exhibit AA
+    struck twice, halves to 'AA'). A single-struck 'EXHIBIT AA' is
+    protected by 'EXHIBIT' itself, which pairs nowhere. Returns None
+    when the text is not double-struck, so a caller can tell 'nothing
+    to do' from an empty line.
+    """
+    if not text or not _UNDOUBLE_HINT_RE.search(text):
+        return None
+    for m in _UNDOUBLE_ANCHOR_RE.finditer(text):
+        run = m.group()
+        if (len(run) % 2 == 0
+                and all(run[j] == run[j + 1] for j in range(0, len(run), 2))):
+            break
+    else:
+        return None
+    out = []
+    pairs = singles = 0
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if ch.isspace():
+            out.append(ch)
+            i += 1
+            continue
+        if i + 1 < n and text[i + 1] == ch:
+            pairs += 1
+            i += 2
+        else:
+            singles += 1
+            i += 1
+        out.append(ch)
+    if pairs < _UNDOUBLE_MIN_PAIRS:
+        return None
+    if pairs < singles * _UNDOUBLE_PAIRS_PER_SINGLE:
+        return None
+    return "".join(out)
+
+
+def _undouble_strike_lines(text: str) -> str:
+    """`text` with every double-struck LINE collapsed and every other line
+    byte-identical — the flowing-text mirror of the per-span collapse in
+    `_drop_overdrawn_spans`, so the two renderings of one page cannot
+    disagree about what a struck line says. Line by line, because the
+    strike is a per-line styling choice: judging the page whole would let
+    a page of ordinary prose dilute the one struck heading below the
+    ratio, and the surgical form leaves an ordinary page untouched to the
+    byte."""
+    if not text or not _UNDOUBLE_HINT_RE.search(text):
+        return text
+    return "\n".join(_undouble_strike(ln) or ln for ln in text.split("\n"))
+
+
 def _page_flowing_text(page):
     """`page.get_text("text")` with a DOUBLED text layer collapsed.
 
@@ -2965,8 +3062,14 @@ def _page_flowing_text(page):
     REBUILT from the deduped spans rather than post-processed as a string: the
     two copies are separate content blocks, so `get_text` returns all of copy
     one and then all of copy two, and the duplicate lines are nowhere near each
-    other. Only a broken page pays the different rendering."""
-    text = page.get_text("text")
+    other. Only a broken page pays the different rendering.
+
+    The third shape — the two strikes interleaved INSIDE one run, so a line
+    copies out with every character doubled ('EEXXHHIIBBIITT ""AA""') — has no
+    duplicate span to drop, so it is collapsed as a STRING, per line
+    (`_undouble_strike_lines`); the span rebuild below gets the same collapse
+    per span from `_drop_overdrawn_spans`, so the two renderings agree."""
+    text = _undouble_strike_lines(page.get_text("text"))
     try:
         spans = [sp for blk in page.get_text("dict").get("blocks", [])
                  for ln in blk.get("lines", [])
@@ -3008,9 +3111,19 @@ def _drop_overdrawn_spans(spans):
     Dropped rather than repaired, because there is nothing to repair: the second
     copy carries no information the first does not. Compared on TEXT equality, so
     an OCR layer that misread a word is left alone — this can only ever remove a
-    piece the page also has somewhere else."""
+    piece the page also has somewhere else.
+
+    A strike interleaved INSIDE one span ('EEXXHHIIBBIITT ""AA""' — the two
+    copies of each glyph adjacent in a single extracted run) has no second span
+    to compare against, so it is collapsed first, per span, by
+    `_undouble_strike`. Before the dedup, deliberately: a struck span and a
+    plain re-draw of the same line then agree on their text and the equality
+    comparison can collapse them."""
     kept, out = {}, []
     for sp in spans:
+        halved = _undouble_strike(sp["text"])
+        if halved is not None:
+            sp = {**sp, "text": halved}
         same = kept.setdefault(sp["text"], [])
         if any(_spans_overdrawn(sp, k) for k in same):
             continue
@@ -5176,63 +5289,6 @@ _EXHIBIT_COVER_RE = re.compile(
     """,
     re.VERBOSE,
 )
-
-# A double-struck line must be nearly ALL pairs before it is halved:
-# at least this many adjacent identical pairs, and at least four pairs
-# for every unpaired character. 'BOOKKEEPER RECORDS' (3 pairs, 12
-# singles) is nowhere near; a stray odd glyph in a genuinely doubled
-# line ('EEXXHHIIBBIITT ""BB"' — one quote lost its twin) still passes.
-_UNDOUBLE_MIN_PAIRS = 3
-_UNDOUBLE_PAIRS_PER_SINGLE = 4
-
-
-def _undouble_strike(text: str):
-    """Collapse a double-struck text run: 'EEXXHHIIBBIITT ""AA""' ->
-    'EXHIBIT "A"'.
-
-    An exhibit slip sheet whose big label is set as a faux-bold double
-    strike LOOKS like 'EXHIBIT "A"' on the page, but the text layer
-    carries every glyph twice and extraction returns the two copies of
-    each character adjacent — so the label copies out with every
-    character doubled. That blinds _EXHIBIT_COVER_RE, and the exhibit
-    then gets no cover page, no 'Exhibit A' bookmark, and no body links.
-    _drop_overdrawn_spans cannot reach it: the doubling is inside one
-    extracted run, not a second span over the first.
-
-    Returns the halved string only when the line as a whole reads as
-    double-struck — nearly every non-whitespace character sits in an
-    adjacent identical pair (thresholds above). Halving is greedy and
-    length-honest, so a genuinely doubled letter inside a doubled line
-    still comes out right ('AAAA', exhibit AA struck twice, halves to
-    'AA'). A single-struck 'EXHIBIT AA' is protected by 'EXHIBIT'
-    itself, which pairs nowhere. Returns None when the line is not
-    double-struck, so a caller can tell 'nothing to do' from an empty
-    line.
-    """
-    if not text:
-        return None
-    out = []
-    pairs = singles = 0
-    i, n = 0, len(text)
-    while i < n:
-        ch = text[i]
-        if ch.isspace():
-            out.append(ch)
-            i += 1
-            continue
-        if i + 1 < n and text[i + 1] == ch:
-            pairs += 1
-            i += 2
-        else:
-            singles += 1
-            i += 1
-        out.append(ch)
-    if pairs < _UNDOUBLE_MIN_PAIRS:
-        return None
-    if pairs < singles * _UNDOUBLE_PAIRS_PER_SINGLE:
-        return None
-    return "".join(out)
-
 
 def _exhibit_cover_match(line_text: str):
     """Match a row against _EXHIBIT_COVER_RE, tolerating a text layer
