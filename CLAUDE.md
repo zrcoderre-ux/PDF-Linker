@@ -1815,6 +1815,48 @@ across all N — that was O(cites×pages)). `_repair_link_uris` fixes a PyMuPDF
 annotation-naming splice. Declarations/complaints skip linking
 (`should_skip_linking`).
 
+**Bookmarks are DETECTED structure, and a detector that reads the wrong text
+mints junk the reader has to scroll past.** A petition with one
+printed-webpage exhibit shipped four Document bookmarks — the petition's
+title behind an 80-character underscore rule, and three sentence fragments of
+the exhibit's Terms of Service, each with the browser's URL footer — while
+the clean `EXHIBIT "A"` slip sheet and the I./II./III. headings earned
+nothing. Four rules, one per failure. **A body-prose band is not a footer**
+(`_footer_reads_as_prose`): the footer detector reads the bottom band of
+every page, and a printed webpage flows its last lines into it, each page's
+fragment distinct, so every page minted its own "document"; a band whose
+lower-case non-connector words number ≥4 and outnumber the capitalized ones
+is prose, treated as NO footer, and the page inherits the previous document's
+identity (a filing's running footer is its title, in caps or title case —
+accepted residual: a real footer set as lower-case prose folds into the
+document before it). **Footer FURNITURE is stripped from key and label
+together** (`_strip_footer_furniture` — underscore rules, URLs, and the
+browser's bare page fraction "3/17", with lookarounds so a date's "8/20"
+survives), or a page with the rule and a page without it read as two
+documents. **A SINGLE exhibit cover feeds the tree**:
+`_link_exhibit_references`' 2+ gate now gates only body-reference linking
+(one "Exhibit 1" mention is usually prose, not a linkable attachment), and
+the cover map flows to the bookmark builder whatever its size — but a LONE
+cover must be STRICT (the label alone, or a letter form, whose separator the
+regex already demands; a lone loose numeric match is more likely a wrapped
+body sentence "Exhibit 3 hereto is..." that happened to start its line),
+while 2+ covers corroborate each other as before. And with exhibits present,
+`_detect_document_footers` keeps a SINGLE footer entry (`have_exhibits`) —
+the file demonstrably holds 2+ sub-documents, so the one footered filing in
+front of its exhibits deserves its bookmark even though the old 2-footer
+gate said a lone footer proves nothing. **The section scan reads the row the
+way the page prints it**: rows drop gutter line-numbers before matching (the
+merged "5  I. INTRODUCTION" fails the label regex on the leading digit AND
+stretches the bbox to the left margin so the centering test fails with it —
+the same fix the exhibit-cover scan already carried), and the commonest
+court heading style — body-size, not bold, centered or UNDERLINED — now has
+cues that can see it: an underline is read from the page's own line art
+(`_page_underline_strokes`, a thin horizontal stroke just under the row
+spanning ≥half its width; PyMuPDF exposes no underline span flag) and counts
+like bold on both heading paths, and centering alone carries an
+outline-label heading only when the label has its own text ("I.
+INTRODUCTION" yes; the caption's bare centered "V." no).
+
 **A pleading GUTTER NUMBER blinds the parser, and the authority gets renamed.**
 The text export keeps the printed line number (`f"{num:>2}  "` + body), so a
 citation that WRAPS carries one between its volume and its reporter — and the
