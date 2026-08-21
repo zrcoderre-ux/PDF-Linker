@@ -119,8 +119,9 @@ pin still does its job. "Carried" is REACHABILITY, not the row's own count: the
 macro reverses a composed fake word by word, so the token rows of a party whose
 full name is the only form the export used are load-bearing even though they
 matched nothing themselves.
-**Every key row QUOTES the sentence its value stood in — TWICE** (`Context` /
-`Scrubbed Context`, `note_key_context`). A row says `Rasho -> Strangeways`, and
+**Every key row QUOTES the sentence its value stood in — TWICE, in ONE cell**
+(`Context`, `note_key_context`, `_pn_context_cell`). A row says
+`Rasho -> Strangeways`, and
 whether that binding is right depends on how the document used the word — the
 question the LEAKS Context column already answers for a decision not yet made,
 asked here of one already made. The FIRST quote is read from the UNSCRUBBED
@@ -133,12 +134,26 @@ send. The SECOND quote is the same question asked of the EXPORT — searched by
 the FAKE, since the real value is no longer in that text, and bolding it, so
 the operator reads what the document said beside what the deliverable now says;
 scoped to records that APPLIED (count > 0), because a fake never applied stands
-in no export and a miss still costs a scan. They sit at columns **C and D**,
-original first, at the owner's direction — the row reads left to right as
-evidence (value, source sentence, export sentence) and only then the
-Replacement the evidence justifies. Reordering is safe, and worth stating
-because the reverse is the obvious fear — `DeAnonymize.bas` does NOT read this
-sheet positionally, it scans the header row for
+in no export and a miss still costs a scan. Both sit in ONE cell at column
+**C**, the original on top, then a rule (`_PN_CONTEXT_RULE`), then the export's
+sentence — the row still reading left to right as evidence, value then
+sentences then the Replacement they justify. **One cell and not one column
+each**, at the owner's direction: the pair is read as a single thing, and side
+by side it costs two wide columns and a lot of sideways travel. One cell and
+not two ROWS for a harder reason — this sheet is read by other programs a row
+at a time, and a second row per binding would make every one of them read a
+phantom party. **Identical quotes collapse to the original alone**, which is
+most rows: the value usually stands in a sentence nothing else in it was faked,
+and printing that twice is a cell of noise hiding the rows where the pair
+really does differ. Compared on the text, not on whether anything WAS replaced,
+because that is the question the reader is asking of the cell. The rule is also
+the seam the cell is SPLIT on when a later run reads its own key back
+(`_pn_context_split`), so it has to be a line nothing else produces — no filing
+contains a line of em-dashes around a bare word — and a key written when the
+two had a column each still reads, its second column taken as it stands.
+Dropping a column is safe for the same reason inserting them was, and worth
+stating because the reverse is the obvious fear — `DeAnonymize.bas` does NOT
+read this sheet positionally, it scans the header row for
 `real value` / `replacement` / `status` and uses whatever columns they land in
 (`LoadKeyWorkbook`, where Status is already optional for keys predating it), and
 `_pn_load_key` / `_pn_key_context_on_disk` resolve by header name too. The only
@@ -148,10 +163,10 @@ a by-NAME check that a Replacement column exists, and a key from any older
 version still reads as ours. (A test that indexes a
 key row by number is making the same mistake — a batch did, and now take the
 index from `_PN_KEY_HEADERS`.) FIRST document to use a value owns
-its quotes, so a re-run of the same folder reproduces both columns; a quote this
+its quotes, so a re-run of the same folder reproduces both halves; a quote this
 run cannot re-derive is carried forward from the key on disk
-(`_pn_key_context_on_disk`, both columns), because the key outlives the folder's
-contents. Costs ~0.24 s per file on a 130-page filing with ~470 records — and
+(`_pn_key_context_on_disk`, both halves — it splits a merged cell back at its
+rule), because the key outlives the folder's contents. Costs ~0.24 s per file on a 130-page filing with ~470 records — and
 would have cost ~39 s before `_pn_context` was split (see the performance
 notes).
 
@@ -1230,11 +1245,14 @@ the party), so its row stays reversible.
   source, so its REAL REMAINDER (the value `confirm_findings` reduces the row
   to anyway) is quoted; and with no original in hand at all (a `--fix-leaks`
   folder keeping no copy, its TEMP cache gone) the scrubbed export is quoted
-  rather than leaving the row unanswerable. A SECOND column, `Scrubbed
-  Context` at **D**, quotes the EXPORT's own sentence for the same value —
-  original first at C, then the deliverable, at the owner's direction, the
-  same pair the key's C/D columns carry — and the Where column still points
-  into the EXPORT: that is where the leak stands. Consequence, deliberate and the
+  rather than leaving the row unanswerable. The SAME cell then quotes the
+  EXPORT's own sentence for that value underneath, below a rule — original on
+  top, then the deliverable, at the owner's direction, the same stacked pair
+  the key's Context column carries, collapsing to the original alone where
+  the two say the same thing — and the Where column still points into the
+  EXPORT: that is where the leak stands. (The flagged value is bolded in both
+  halves: it stands verbatim in each, being precisely what the scrub did not
+  replace.) Consequence, deliberate and the
   same trade the key already made: `LEAKS.xlsx` carries sentences of the real
   document. It always carried the flagged real values themselves and lives in
   the case folder for triage, so this changes how revealing the worksheet is,
