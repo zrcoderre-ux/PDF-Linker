@@ -12040,18 +12040,22 @@ def _pn_find_folder_key(folder, log):
       2. the E-Court `Order*.xlsx` input template (e.g. "Order_Template_Input") —
          mint FRESH fakes from it, which is how a run STARTS OVER after the
          pseudonym key was deleted.
-    Returns a Path or None. Excel lock files (~$...) are ignored."""
+    Returns a Path or None. Excel lock files (~$...) are ignored. `log` may be
+    None, for a caller asking only WHETHER the folder carries its own inputs
+    (the deferred copy does) rather than resolving them for a run."""
     own = folder / "pseudonym_key.xlsx"
     if own.is_file():
-        log.info("  Pseudonymize: reusing this folder's pseudonym_key.xlsx")
+        if log:
+            log.info("  Pseudonymize: reusing this folder's pseudonym_key.xlsx")
         return own
     orders = [p for p in folder.glob("*.xlsx")
               if not p.name.startswith("~$")
               and p.name.lower().startswith("order")]
     if orders:
         newest = max(orders, key=lambda p: p.stat().st_mtime)
-        log.info(f"  Pseudonymize: starting over from this folder's E-Court "
-                 f"template: {newest.name}")
+        if log:
+            log.info(f"  Pseudonymize: starting over from this folder's E-Court "
+                     f"template: {newest.name}")
         return newest
     return None
 
@@ -22282,6 +22286,32 @@ _CONFIG_TEMPLATE = (
     "# leak fixes (--fix-leaks) is never deferred either.\n"
     "defer_run = off\n"
     "\n"
+    "# Copy the whole case folder somewhere? Empty (the default) means never.\n"
+    "# Give a DESTINATION FOLDER below and the case folder itself -- and every\n"
+    "# file in it -- is copied in as <destination>\\<this folder's name>.\n"
+    "# Files are overwritten in place and nothing already in the destination is\n"
+    "# deleted, so a re-run REPLACES the copy with the current state (a file\n"
+    "# you deleted from the case folder does stay behind in the copy).\n"
+    "#\n"
+    "# WHEN it is copied follows defer_run above, and either way the case is\n"
+    "# processed ONCE -- never twice on the same machine:\n"
+    "#   defer_run = off  the copy is made at the END of the run. If the leak\n"
+    "#                    gate quarantined an export the copy WAITS, so the\n"
+    "#                    destination never receives a *.LEAK; Apply Leak Fixes\n"
+    "#                    makes it once the last leak is resolved.\n"
+    "#   defer_run = on   the copy is made at the START, and the one-click\n"
+    "#                    \"Run PDF-Linker\" launcher is written into the COPY\n"
+    "#                    rather than here -- so the folder is processed at its\n"
+    "#                    destination and this folder is left untouched. The\n"
+    "#                    case's Order*.xlsx party spreadsheet is copied in\n"
+    "#                    too (from Downloads if that is where it is), so the\n"
+    "#                    copy can do the full run on its own instead of\n"
+    "#                    falling back to whatever is newest in Downloads by\n"
+    "#                    the time it is clicked -- which may be another case.\n"
+    "# A folder that already IS the destination is never copied onto itself, so\n"
+    "# a re-run started inside the copy simply re-runs it.\n"
+    "# copy_to = C:\\Users\\you\\Documents\\Cases\n"
+    "\n"
     "# Subfolder (inside each case folder) that the .txt exports are written to.\n"
     "# Default: Text Files.\n"
     "text_subfolder = Text Files\n"
@@ -23129,6 +23159,183 @@ def _write_deferred_launcher(folder, provider, want_key, log):
     return True
 
 
+# ── Copying the case folder to a destination (config `copy_to`) ──────────────
+# A case usually does not stay where it is started: the folder is dropped
+# somewhere convenient (Downloads, a scan drop-box) and belongs somewhere else.
+# `copy_to` names that somewhere — a PARENT folder — and the case folder itself,
+# with everything in it, is copied in as `<copy_to>/<folder name>`.
+#
+# WHEN it is copied is the whole design, and it follows `defer_run`:
+#   deferred  the copy is made FIRST and the one-click launcher is written into
+#             the COPY, so the case is processed once, at its destination.
+#   otherwise the copy is made LAST, when the exports are finished — and held
+#             back while a leak is quarantined, so the destination never
+#             receives a *.LEAK. `--fix-leaks` makes it once the last one is
+#             released.
+# Either way exactly ONE folder is ever processed, which is the point: the same
+# case run twice on one machine writes two keys and two sets of fakes.
+def _copy_dest_root(cfg, args, log=None):
+    """The configured destination PARENT folder, or None when copying is off.
+
+    `--copy-to` overrides the config file for one run and `--no-copy` turns it
+    off, the same precedence every other setting follows. Environment variables
+    and `~` are expanded, so a config can be written the way an operator would
+    type a path (`%USERPROFILE%\\Documents\\Cases`)."""
+    if getattr(args, "no_copy", False):
+        return None
+    raw = getattr(args, "copy_to", None) or (cfg.get("copy_to", "") or "")
+    raw = str(raw).strip().strip('"').strip()
+    if not raw:
+        return None
+    try:
+        return Path(os.path.expandvars(os.path.expanduser(raw)))
+    except (OSError, ValueError) as e:
+        if log:
+            log.warning(f"  Ignoring copy_to={raw!r}: {e}")
+        return None
+
+
+def _copy_folder_out(folder, dest_root, log):
+    """Copy `folder` — the folder itself and everything in it — into
+    `dest_root`, so `dest_root/<folder name>` mirrors it. Returns the
+    destination path, or None if the copy could not be made.
+
+    Files are OVERWRITTEN in place and nothing already in the destination is
+    ever deleted. The destination is a place the operator works, so a draft or
+    a document dropped in there is not this tool's to remove; the cost is that a
+    file deleted from the source stays behind in the copy. Per-file errors are
+    survived and counted rather than aborting the copy: the usual one is a
+    workbook open in Excel, and losing the other 40 files to it would be absurd.
+
+    A folder that IS its own destination is returned unchanged and NOT copied
+    onto itself — that is a re-run started inside the copy, and it is how a
+    launcher that travelled with the folder keeps working."""
+    import shutil
+    src = Path(folder).resolve()
+    dest = (Path(dest_root) / src.name).resolve()
+    if dest == src:
+        log.info(f"  This folder already IS the copy destination "
+                 f"({dest}) — nothing to copy.")
+        return src
+    # Copying a folder into itself never terminates: the walk keeps finding
+    # what it has just written. Refused rather than guarded around, because a
+    # destination under the case folder is a typo, not a workflow.
+    if src in dest.parents:
+        log.error(f"  Refusing to copy this folder into itself: the copy_to "
+                  f"destination {dest} is inside {src}. Point copy_to at a "
+                  f"folder outside the case folder.")
+        return None
+    try:
+        dest.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        log.error(f"  Could not create the copy destination {dest}: {e}. "
+                  f"Nothing was copied.")
+        return None
+    copied = failed = 0
+    first = None
+    for path in sorted(src.rglob("*")):
+        target = dest / path.relative_to(src)
+        try:
+            if path.is_dir():
+                target.mkdir(parents=True, exist_ok=True)
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(path, target)
+                copied += 1
+        except OSError as e:
+            failed += 1
+            if first is None:
+                first = f"{path.name}: {e}"
+    if failed:
+        log.warning(f"  {failed} file(s) could not be copied to {dest} "
+                    f"(first: {first}) — that copy is INCOMPLETE. A file open "
+                    f"in Excel or Word is the usual cause; close it and re-run.")
+        if not copied:
+            return None
+    log.info(f"  Copied this folder to {dest} ({copied} file(s)).")
+    return dest
+
+
+def _copy_party_template(folder, dest, args, log):
+    """Put this case's party spreadsheet INTO a deferred copy, so the copy can
+    do a FULL run on its own. Returns the file written, or None.
+
+    The launcher in the copy names no spreadsheet, so the run there resolves
+    its own: the folder first, then "the newest Order*.xlsx in Downloads". That
+    fallback is right only until the NEXT case is downloaded — which is exactly
+    the window a deferred folder sits in, because the whole point of deferring
+    is that the work happens later. Left to the guess, the copy would be
+    scrubbed against a stranger's party list: this case's parties in the clear,
+    another matter's names hunted for, and its key written full of values that
+    were never here. A template INSIDE the folder is unambiguous and beats the
+    guess, so copying it in is what makes the copy self-sufficient.
+
+    Nothing is copied when the folder already carries its own inputs (they
+    travelled with it), and the Downloads guess is withheld for an ALL-WORD
+    folder exactly as the run withholds it — there it would not merely be a
+    guess but an authoritative one, since a folder-local template wins."""
+    import shutil
+    if not args.pseudonymize:
+        return None                      # no party list is needed at all
+    if _pn_find_folder_key(dest, None) is not None:
+        return None                      # it came with the folder
+    sheet = Path(args.key) if args.key else None
+    if sheet is None:
+        if _is_word_only_folder(folder):
+            # Saying "it will fall back to Downloads" would be false here: the
+            # run withholds that guess for an all-Word folder, so what the copy
+            # actually faces is having NO party list at all.
+            log.warning("  This all-Word folder carries no party list, and the "
+                        "Downloads guess is deliberately not used for one — it "
+                        "belongs to whichever case was downloaded last. Put "
+                        "this case's Order*.xlsx in the folder (or pass --key) "
+                        "before deferring, or the run at the destination will "
+                        "have only the detectors and the document pre-scan to "
+                        "work with.")
+            return None
+        sheet = _pn_find_downloads_key(log)
+    if sheet is None or not Path(sheet).is_file():
+        log.warning("  No party spreadsheet could be found to travel with the "
+                    "copy, so the run there will resolve its own — whatever is "
+                    "newest in Downloads by the time it is clicked, which may "
+                    "be another case. Put this case's Order*.xlsx in the folder "
+                    "(or pass --key) and start the run again.")
+        return None
+    target = dest / Path(sheet).name
+    if target.exists():
+        return target
+    try:
+        shutil.copy2(sheet, target)
+    except OSError as e:
+        log.warning(f"  Could not copy the party spreadsheet {Path(sheet).name} "
+                    f"into {dest}: {e}. The run there will fall back to the "
+                    f"newest Order*.xlsx in Downloads, which may be another "
+                    f"case.")
+        return None
+    log.info(f"  Copied the party spreadsheet {target.name} into the copy, so "
+             f"the run there scrubs against THIS case's parties rather than "
+             f"whatever is newest in Downloads by then.")
+    return target
+
+
+def _copy_folder_after_run(folder, dest_root, log, hold=None):
+    """The end-of-run copy. `hold` is what is holding the folder back — a
+    quarantined export, an unreversible fake — and naming one DEFERS the copy
+    instead of making it.
+
+    Holding is the point rather than a nicety: a run that quarantines an export
+    has decided the folder is not deliverable, and copying it anyway would put
+    the real names in a second place and invite the operator to work from a
+    folder the gate is holding. `--fix-leaks` makes the copy once the last leak
+    is released, which is the moment the folder finally is what it promised."""
+    if not dest_root:
+        return None
+    if hold:
+        log.info(f"  Not copying this folder to {dest_root} yet: {hold}")
+        return None
+    return _copy_folder_out(folder, dest_root, log)
+
+
 # ── Protected-vocabulary inventory ───────────────────────────────────────────
 # The pseudonymizer PROTECTS a fixed vocabulary: words it never fakes and never
 # flags as a name, plus citation SHAPES it never rewrites a party name inside.
@@ -23372,6 +23579,12 @@ def _fix_leaks_mode(folder, args, cfg, log):
         log.warning("--fix-leaks: nothing applied — correct the Fix? cell(s) "
                     "for " + ", ".join(rejected[:6]) + " and click again. The "
                     "export(s) stay quarantined until a fix actually applies.")
+        # Nothing moved, so the folder is exactly as held as it was: the copy
+        # waits here for the same reason it waits below, and says so rather
+        # than being silently skipped by an early return.
+        _copy_folder_after_run(
+            folder, _copy_dest_root(cfg, args, log), log,
+            hold="the export(s) are still quarantined — nothing was applied.")
         return 0
     if not fix_terms:
         # Nothing to APPLY is not nothing to DO, so this no longer returns.
@@ -23674,6 +23887,15 @@ def _fix_leaks_mode(folder, args, cfg, log):
              f"file(s); {unq} export(s) un-quarantined (*.LEAK -> .txt)"
              + (f"; {still} file(s) still carry a party-name leak — review "
                 f"LEAKS.xlsx." if still else "."))
+
+    # The copy the full run held back for triage. This pass is the moment the
+    # folder finally becomes what the run promised, so it is the moment the
+    # destination should hold it — and while anything is STILL held, the copy
+    # keeps waiting for the same reason it waited the first time.
+    _copy_folder_after_run(
+        folder, _copy_dest_root(cfg, args, log), log,
+        hold=(f"{still} export(s) still carry a party-name leak — triage them "
+              f"in LEAKS.xlsx and run this again." if still else None))
     return 2 if still else 0
 
 
@@ -23758,6 +23980,20 @@ def main():
         "--no-defer", dest="defer", action="store_false", default=None,
         help="Process the folder now even if defer_run is on in the config "
              "file. Both double-click launchers pass this.",
+    )
+    # Where the finished (or, when deferred, the untouched) case folder is
+    # copied. Config `copy_to`; see _copy_folder_out.
+    _cp = parser.add_mutually_exclusive_group()
+    _cp.add_argument(
+        "--copy-to", dest="copy_to", default=None, metavar="FOLDER",
+        help="Copy this case folder — the folder and everything in it — into "
+             "FOLDER when the run finishes (or, with --defer, before it "
+             "starts). Overrides copy_to in the config file.",
+    )
+    _cp.add_argument(
+        "--no-copy", dest="no_copy", action="store_true",
+        help="Do not copy the case folder anywhere, whatever copy_to in the "
+             "config file says.",
     )
     _pnp = parser.add_mutually_exclusive_group()
     _pnp.add_argument(
@@ -23906,31 +24142,66 @@ def main():
         defer_src = _config_path().name
     else:
         defer_src = "command line"
+    # Resolved HERE, before any work: a destination that cannot be used is
+    # worth knowing about now, not after an hour of OCR — and the deferred
+    # branch below needs it to decide where the launcher goes.
+    copy_root = _copy_dest_root(cfg, args, log)
+    if copy_root:
+        log.info(f"Folder copy destination: {copy_root}")
     if args.defer:
         log.info(f"Deferred run (from {defer_src}): writing the one-click run "
                  f"launcher instead of processing this folder.")
+        # With a destination configured the copy is made FIRST and the launcher
+        # goes into the COPY — not here. That is the whole point of pairing the
+        # two settings: the folder ends up where it belongs and exactly one
+        # copy of the case is runnable, so it cannot be processed twice on this
+        # machine under two different keys. The copy is made before the
+        # launcher is written, so the launcher is the one thing the copy does
+        # not inherit from the source.
+        target = folder
+        if copy_root:
+            dest = _copy_folder_out(folder, copy_root, log)
+            if dest is None:
+                # The copy was where the work was going to happen. Leaving the
+                # launcher here instead would process the source — the double
+                # run this pairing exists to prevent — so the run fails
+                # outright and says why.
+                log.error("  Deferred run ABANDONED: nothing was copied and no "
+                          "launcher was written. Fix the copy_to destination "
+                          "(or pass --no-copy) and start the run again.")
+                sys.exit(1)
+            target = dest
+            # A copy that cannot resolve this case's parties is not a copy that
+            # can do the full run it is being handed, so the party spreadsheet
+            # goes with it.
+            _copy_party_template(folder, target, args, log)
         # Same rule the re-run launcher uses: pin --key only if the folder
         # already has one, so a first run re-discovers it.
         want_key = (args.pseudonymize
-                    and (folder / "pseudonym_key.xlsx").is_file())
+                    and (target / "pseudonym_key.xlsx").is_file())
         # A folder that has ALREADY been processed carries its launcher under
         # the accurate name, so refresh that one rather than adding a second
         # file claiming nothing here has been done — the two say opposite
         # things about the same folder, and only one of them can be true.
         # Refreshing also re-arms it: a launcher written before --no-defer
         # existed would defer again on every double-click.
-        if any(q.exists() for q in _rerun_launcher_paths(folder)):
+        if any(q.exists() for q in _rerun_launcher_paths(target)):
             log.info("  This folder has been processed before, so its existing "
                      "re-run launcher is refreshed instead — same command, "
                      "accurate name.")
-            ok = _write_rerun_launcher(folder, args.provider, want_key, log)
+            ok = _write_rerun_launcher(target, args.provider, want_key, log)
         else:
-            ok = _write_deferred_launcher(folder, args.provider, want_key, log)
+            ok = _write_deferred_launcher(target, args.provider, want_key, log)
         if not ok:
             sys.exit(1)
         n_pdf = len(_pdfs_in_folder(folder))
         n_doc = len(_word_docs_in_folder(folder))
-        if n_pdf or n_doc:
+        if target != folder:
+            log.info(f"  {n_pdf} PDF(s) and {n_doc} Word doc(s) were copied to "
+                     f"{target}, and the launcher is there. This folder was "
+                     f"only read — double-click the launcher in the COPY to "
+                     f"process the case.")
+        elif n_pdf or n_doc:
             log.info(f"  {n_pdf} PDF(s) and {n_doc} Word doc(s) are waiting; "
                      f"nothing was read or modified. Move the folder, then "
                      f"double-click the launcher to process it.")
@@ -24529,6 +24800,11 @@ def main():
               f"cannot be restored to the real values. Re-run after adding the "
               f"value(s) with --term, or clear the KEEP decision that dropped "
               f"the row.")
+        _copy_folder_after_run(
+            folder, copy_root, log,
+            hold=(f"{len(pseudonymizer.unreversible)} replacement(s) in these "
+                  f"exports cannot be reversed. Fix the key and re-run; the "
+                  f"copy is made when the run comes out clean."))
         sys.exit(2)
 
     # Leak gate, TIERED (config `leak_gate`): the pseudonymization is a
@@ -24591,12 +24867,24 @@ def main():
                   f"*.LEAK and NOT delivered ({delivered} clean export(s) "
                   f"delivered).{extra} Add the survivor(s) with --term and "
                   f"re-run.")
+            _copy_folder_after_run(
+                folder, copy_root, log,
+                hold=(f"{len(quarantined)} export(s) are quarantined for "
+                      f"triage. The destination must never receive a *.LEAK, "
+                      f"so the copy is made when Apply Leak Fixes releases "
+                      f"the last one."))
             sys.exit(2)
         shown = ", ".join(sorted(pseudonymizer.leaked)[:8])
         _warn(f"Pseudonymize: {len(pseudonymizer.leaked)} lesser value(s) "
               f"survived ({shown}) — no party name is recognizable, so the "
               f"exports are delivered. Add any that matter with --term and "
               f"re-run.")
+
+    # LAST, deliberately: the copy is of a finished folder, so it carries the
+    # exports, the key, the worksheet, the launchers and the DONE stamp — the
+    # folder as the operator would find it. A re-run copies again and replaces
+    # what is there, which is how a correction reaches the destination.
+    _copy_folder_after_run(folder, copy_root, log)
 
 
 if __name__ == "__main__":

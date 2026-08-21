@@ -2442,6 +2442,56 @@ Both writers go through `_write_launcher_file`, and unlike the re-run
 launcher's best-effort furniture a failure here is the failure of the run
 (exit 1): it was the only thing the run was going to produce.
 
+**A finished folder can be COPIED to where the case lives** (`copy_to` in the
+config, `--copy-to`/`--no-copy`, `_copy_folder_out`). The destination is a
+PARENT: the case folder itself and everything in it is copied in as
+`<copy_to>/<folder name>`. Files are OVERWRITTEN and nothing already in the
+destination is deleted — that folder is where the operator works, so a draft
+beside the copy is not this tool's to remove; the accepted cost is that a file
+deleted from the case folder stays behind in the copy. Per-file errors are
+counted and survived rather than aborting the copy (a workbook open in Excel is
+the usual one, and losing the other 40 files to it would be absurd).
+
+**WHEN it is copied is the whole design, and it follows `defer_run`.** With
+deferral OFF the copy is made LAST, so it carries the exports, the key, the
+worksheet, the launchers and the DONE stamp — the folder as the operator would
+find it — and a re-run copies again, which is how a correction reaches the
+destination. With deferral ON the copy is made FIRST and the launcher is
+written into the COPY, not the source, so the source is left exactly as found:
+one runnable folder, at the destination. That pairing is the point — the same
+case processed twice on one machine writes two keys and two sets of fakes for
+one filing. If the copy fails there, the run is ABANDONED (exit 1) rather than
+falling back to a launcher in the source, which would process the very folder
+the pairing exists to leave alone.
+
+**A held folder is not copied.** A run that quarantines an export has decided
+the folder is not deliverable, so `_copy_folder_after_run(hold=…)` names what is
+holding it and defers: the destination must never receive a `*.LEAK`, and
+copying one would invite the operator to work from a folder the gate is holding.
+`--fix-leaks` makes the copy at the end of the pass that releases the last leak
+— including at its early "nothing applied" return, where the hold is reported
+rather than silently skipped. The unreversible-fakes gate holds it the same way.
+A folder that IS its own destination is returned unchanged and never copied onto
+itself (that is a re-run started inside the copy, which is how a launcher that
+travelled with the folder keeps working), and a destination INSIDE the case
+folder is refused outright — that walk never terminates.
+
+**The party spreadsheet travels with a DEFERRED copy** (`_copy_party_template`).
+The launcher names no spreadsheet, so the run at the destination resolves its
+own: the folder first, then "the newest `Order*.xlsx` in Downloads". That
+fallback is right only until the NEXT case is downloaded — which is exactly the
+window a deferred folder sits in, since the point of deferring is that the work
+happens later — so the copy would be scrubbed against a stranger's party list:
+this case's parties in the clear, another matter's names hunted for, and its key
+written full of values that were never here. A template INSIDE the folder is
+unambiguous and beats the guess, so copying it in is what makes the copy able to
+do the full run. Nothing is copied when the folder already carries its own
+inputs (`_pn_find_folder_key`, which now takes `log=None` for a caller asking
+only WHETHER it does — one definition of that question, not two), and the
+Downloads guess is withheld for an ALL-WORD folder exactly as the run withholds
+it: there it would not merely be a guess but an AUTHORITATIVE one, since a
+folder-local template wins.
+
 **ETA accuracy is LEDGERED, because the marker dance destroys each prediction
 at the moment its outcome becomes known** (`_note_eta_accuracy`,
 `pdf_linker_eta_history.csv` beside the config — machine-wide, like the rate
