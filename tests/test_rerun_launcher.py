@@ -27,13 +27,18 @@ def test_windows_bat_targets_own_folder_with_key():
     assert "--provider lexis" in content
     assert '--key "%~dp0pseudonym_key.xlsx"' in content
     assert "\r\n" in content                       # CRLF for cmd
-    # Nothing is echoed and nothing is waited on: the launcher hands the work
-    # over and exits, so a window that closes in milliseconds is never in the
-    # operator's way. The durable signals are named in the REM header instead.
-    assert "echo " not in content.replace("@echo off", "")
+    # Nothing is echoed TO THE SCREEN and nothing is waited on: the launcher
+    # hands the work over and exits, so a window that closes in milliseconds is
+    # never in the operator's way. The durable signals are named in the REM
+    # header instead. The one echo the file carries is redirected into
+    # pdf_linker.log and only fires when the tool is not on this PC at all.
+    onscreen = content.replace("@echo off", "")
+    for line in onscreen.splitlines():
+        assert "echo " not in line or line.startswith('>>"%~dp0pdf_linker.log"')
     assert "timeout" not in content and "pause" not in content
-    # Non-frozen: the interpreter needs the script path.
-    assert r'"C:\Tools\pdf_linker.py"' in content
+    # Non-frozen: the interpreter needs the script path, recorded for the
+    # click-time resolve.
+    assert 'set "PDFLINKER_APP=C:\\Tools\\pdf_linker.py"' in content
 
 
 def test_windows_bat_runs_detached_in_the_background():
@@ -42,14 +47,27 @@ def test_windows_bat_runs_detached_in_the_background():
         want_key=True, windows=True)
     # Detached AND minimized: `start` returns at once, and /min keeps the run
     # off the foreground instead of in front of whatever the operator is doing.
-    assert 'start "PDF-Linker re-run" /min "C:\\Py\\pythonw.exe"' in content
+    # The interpreter is started through the variable the preamble resolved —
+    # the recorded path first, then the PATH — because this folder travels to a
+    # machine that may keep Python somewhere else.
+    assert 'start "PDF-Linker re-run" /min "%PDFLINKER_PY%"' in content
+    assert 'set "PDFLINKER_PY=C:\\Py\\pythonw.exe"' in content
+    assert 'if not exist "%PDFLINKER_PY%" set "PDFLINKER_PY=pythonw.exe"' in content
     # /b would attach the child to this launcher's console, which is about to
     # close — a run without pythonw.exe could take a close event with it.
-    assert "/b " not in content
+    # (Asked of the start LINE: `exit /b` elsewhere is the launcher returning,
+    # which is the opposite thing and is wanted.)
+    start_line = next(ln for ln in content.splitlines() if ln.startswith("start"))
+    assert "/b" not in start_line
     # … and never blocks.
     assert "pause" not in content and "timeout" not in content
     # The command (interpreter + script + folder + flags) is the started target.
-    assert '"C:\\Tools\\pdf_linker.py" "%~dp0." --provider lexis' in content
+    assert '"%PDFLINKER_APP%" "%~dp0." --provider lexis' in content
+    assert 'set "PDFLINKER_APP=C:\\Tools\\pdf_linker.py"' in content
+    # ...and a machine without the tool says so in the folder's log rather than
+    # flashing a window nobody can read, which reads as "nothing happened".
+    assert 'if not exist "%PDFLINKER_APP%" (' in content
+    assert '>>"%~dp0pdf_linker.log" echo PDF-Linker is not installed' in content
     # The REM header names the durable progress/finish signals, since nothing
     # is on screen long enough to read.
     assert "pdf_linker.log" in content and "DONE" in content
@@ -65,7 +83,9 @@ def test_windows_bat_frozen_omits_script_path():
     _n, content, _e = P._rerun_launcher_spec(
         r"C:\App\pdf_linker.exe", r"C:\App\_MEI\pdf_linker.py", "lexis",
         want_key=True, windows=True, frozen=True)
-    assert r'"C:\App\pdf_linker.exe" "%~dp0."' in content
+    assert 'set "PDFLINKER_APP=C:\\App\\pdf_linker.exe"' in content
+    assert '"%PDFLINKER_APP%" "%~dp0."' in content
+    assert "PDFLINKER_PY" not in content          # the exe IS the interpreter
     assert "pdf_linker.py" not in content          # no script arg when frozen
     assert "--provider lexis" in content
 

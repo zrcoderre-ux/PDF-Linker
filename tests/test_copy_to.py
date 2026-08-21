@@ -253,9 +253,10 @@ def _launchers(folder):
             if p.suffix in (".bat", ".command")}
 
 
-def test_deferred_run_copies_first_and_leaves_the_source_alone(tmp_path,
-                                                               monkeypatch):
-    # The pairing's whole purpose: ONE runnable folder, at the destination.
+def test_deferred_run_copies_first_and_arms_both_folders(tmp_path, monkeypatch):
+    # The destination is a local folder that syncs to the operator's other
+    # machine, so the case has to be startable from either one: BOTH folders
+    # get a launcher, and each runs the folder it sits in.
     _config(tmp_path, monkeypatch,
             f"defer_run = on\ncopy_to = {tmp_path / 'dest'}\n")
     folder = tmp_path / "Smith v Jones"
@@ -265,10 +266,29 @@ def test_deferred_run_copies_first_and_leaves_the_source_alone(tmp_path,
     copy = tmp_path / "dest" / folder.name
     assert (copy / "Filing.docx").exists()
     assert any(n.startswith("Run PDF-Linker") for n in _launchers(copy))
-    # The source is left as it was found — nothing to double-click, nothing
-    # processed, so the case cannot be run twice on this machine.
-    assert not _launchers(folder)
+    assert any(n.startswith("Run PDF-Linker") for n in _launchers(folder))
+    # Neither folder has been PROCESSED, which is what deferring means.
     assert not (folder / "Text Files").exists()
+    assert not (copy / "Text Files").exists()
+
+
+def test_each_deferred_launcher_runs_its_own_folder(tmp_path, monkeypatch):
+    # Two launchers are only safe because neither names an absolute case
+    # folder: whichever is clicked processes the folder it is in.
+    _config(tmp_path, monkeypatch,
+            f"defer_run = on\ncopy_to = {tmp_path / 'dest'}\n")
+    folder = tmp_path / "Smith v Jones"
+    folder.mkdir()
+    _docx(folder / "Filing.docx", "Body")
+    _run_main(folder, monkeypatch, "--no-pseudonymize")
+    copy = tmp_path / "dest" / folder.name
+    bodies = []
+    for f in (folder, copy):
+        launcher = next(p for p in f.iterdir()
+                        if p.name.startswith("Run PDF-Linker"))
+        bodies.append(launcher.read_text())
+    assert str(folder) not in bodies[1] and str(copy) not in bodies[0]
+    assert bodies[0] == bodies[1]          # identical, because self-locating
 
 
 def test_the_order_spreadsheet_travels_with_a_deferred_copy(tmp_path,
@@ -290,21 +310,21 @@ def test_the_order_spreadsheet_travels_with_a_deferred_copy(tmp_path,
     assert (downloads / "Order_Template_Input.xlsx").exists()
 
 
-def test_a_failed_deferred_copy_writes_no_launcher_anywhere(tmp_path,
-                                                            monkeypatch):
-    # Falling back to a launcher in the SOURCE would process the source — the
-    # double run the pairing exists to prevent.
+def test_a_failed_copy_falls_back_to_a_plain_deferred_run(tmp_path,
+                                                          monkeypatch):
+    # A copy that could not be made is simply a run with no destination: the
+    # deferral itself still has to work, and this folder still has to be
+    # runnable. (A destination inside the case folder is refused — that walk
+    # never terminates — which is a copy failure like any other.)
     _config(tmp_path, monkeypatch, "defer_run = on\n")
     folder = tmp_path / "Smith v Jones"
     folder.mkdir()
     _docx(folder / "Filing.docx", "Body")
-    monkeypatch.setattr(sys, "argv",
-                        ["pdf_linker.py", str(folder), "--no-pseudonymize",
-                         "--copy-to", str(folder / "inside")])
-    with pytest.raises(SystemExit) as e:
-        pl.main()
-    assert e.value.code == 1
-    assert not _launchers(folder)
+    code = _run_main(folder, monkeypatch, "--no-pseudonymize",
+                     "--copy-to", str(folder / "inside"))
+    assert code == 0
+    assert any(n.startswith("Run PDF-Linker") for n in _launchers(folder))
+    assert not (folder / "inside").exists()
 
 
 def test_a_full_run_copies_at_the_end(tmp_path, monkeypatch):
@@ -317,8 +337,11 @@ def test_a_full_run_copies_at_the_end(tmp_path, monkeypatch):
     # The finished folder, as the operator would find it: exports, launcher,
     # finish stamp.
     assert list((copy / "Text Files").glob("*.txt"))
-    assert any(n.startswith("Re-run PDF-Linker") for n in _launchers(copy))
     assert list(copy.glob("DONE *.txt"))
+    # BOTH folders end up with a re-run launcher, so the case can be re-run
+    # from either machine.
+    assert any(n.startswith("Re-run PDF-Linker") for n in _launchers(copy))
+    assert any(n.startswith("Re-run PDF-Linker") for n in _launchers(folder))
 
 
 def test_a_rerun_replaces_the_destination_copy(tmp_path, monkeypatch):
@@ -387,3 +410,21 @@ def test_fix_leaks_keeps_holding_the_copy_while_a_leak_stands(tmp_path):
     pl._fix_leaks_mode(tmp_path, args, {"copy_to": str(dest)}, log)
     assert (tmp_path / "Text Files" / "Brief.txt.LEAK").exists()   # still held
     assert not (dest / tmp_path.name).exists()
+
+
+def test_a_stale_run_launcher_in_the_copy_is_superseded(tmp_path, monkeypatch):
+    # The destination may have been a DEFERRED target before: its old
+    # "Run PDF-Linker" says nothing here has been processed, which the copy of
+    # a finished folder makes false.
+    _config(tmp_path, monkeypatch, f"copy_to = {tmp_path / 'dest'}\n")
+    folder = tmp_path / "Smith v Jones"
+    folder.mkdir()
+    _docx(folder / "Filing.docx", "Body")
+    copy = tmp_path / "dest" / folder.name
+    copy.mkdir(parents=True)
+    (copy / "Run PDF-Linker.command").write_text("#!/bin/sh\n")
+    (copy / "Run PDF-Linker.bat").write_text("@echo off\r\n")
+    _run_main(folder, monkeypatch, "--no-pseudonymize")
+    names = _launchers(copy)
+    assert any(n.startswith("Re-run PDF-Linker") for n in names)
+    assert not any(n.startswith("Run PDF-Linker") for n in names)

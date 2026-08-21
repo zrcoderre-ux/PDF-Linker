@@ -130,7 +130,8 @@ def test_deferred_frozen_build_omits_the_script_path():
     _n, content, _e = pl._rerun_launcher_spec(
         r"C:\App\pdf_linker.exe", r"C:\App\_MEI\pdf_linker.py", "lexis",
         want_key=False, windows=True, frozen=True, deferred=True)
-    assert r'"C:\App\pdf_linker.exe" "%~dp0."' in content
+    assert 'set "PDFLINKER_APP=C:\\App\\pdf_linker.exe"' in content
+    assert '"%PDFLINKER_APP%" "%~dp0."' in content
     assert "pdf_linker.py" not in content
 
 
