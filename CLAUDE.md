@@ -134,7 +134,25 @@ send. The SECOND quote is the same question asked of the EXPORT — searched by
 the FAKE, since the real value is no longer in that text, and bolding it, so
 the operator reads what the document said beside what the deliverable now says;
 scoped to records that APPLIED (count > 0), because a fake never applied stands
-in no export and a miss still costs a scan. Both sit in ONE cell at column
+in no export and a miss still costs a scan. **Both halves describe ONE
+passage of ONE document** (`_pn_context_hit`'s `within`, a site carrying the
+quote's line range and how many sentences it grew by). They were independent
+searches of two different bodies and came apart three ways: a different
+OCCURRENCE — a party whose first prose occurrence sits inside a protected
+citation is never replaced there, so the export half went hunting and quoted an
+unrelated sentence further down; a different amount of GROWTH — the span grows
+by whole sentences while under `_PN_CONTEXT_MIN`, so a fake shorter than the
+real value drops its sentence under the floor and the export half swallows the
+sentence after it, which is the "whole extra sentence" an operator sees on one
+side only; and a different DOCUMENT — the first file to name a value won the
+original quote in one loop while the export quote was taken in another, from
+whichever file's export the fake turned up in. The site fixes all three: the
+export half is read in the same loop, from the same passage, replaying the
+growth rather than re-measuring it. A hard restriction, deliberately — where
+the fake does not stand in that passage there is no second half, and the cell
+shows the original alone, which is honest where an unrelated sentence is not
+(and in the citation case it is also exactly right: nothing in that passage was
+replaced). Both sit in ONE cell at column
 **C**, the original on top, then a rule (`_PN_CONTEXT_RULE`), then the export's
 sentence — the row still reading left to right as evidence, value then
 sentences then the Replacement they justify. **One cell and not one column
@@ -1250,7 +1268,13 @@ the party), so its row stays reversible.
   top, then the deliverable, at the owner's direction, the same stacked pair
   the key's Context column carries, collapsing to the original alone where
   the two say the same thing — and the Where column still points into the
-  EXPORT: that is where the leak stands. (The flagged value is bolded in both
+  EXPORT: that is where the leak stands. Both halves come from ONE call
+  (`_pn_leak_quotes`), for the reason the key's do: they are one piece of
+  evidence, and computed at two call sites they drifted into two. The export
+  half is held to the original's passage; `--fix-leaks` passes
+  `_pn_quote_shape` instead, since it parses every original into one body while
+  each export is its own, so there the growth is replayed and the line range
+  cannot be. (The flagged value is bolded in both
   halves: it stands verbatim in each, being precisely what the scrub did not
   replace.) Consequence, deliberate and the
   same trade the key already made: `LEAKS.xlsx` carries sentences of the real
@@ -2487,7 +2511,11 @@ deleted from the case folder stays behind in the copy. Per-file errors are
 counted and survived rather than aborting the copy (a workbook open in Excel is
 the usual one, and losing the other 40 files to it would be absurd).
 
-**WHEN it is copied is the whole design, and it follows `defer_run`.** With
+**WHEN it is copied is the whole design, and it follows `defer_run`.** The
+destination is read from the config at the START of each run, so adding or
+editing `copy_to` after a folder has been processed places the copy at the end
+of the next run — which is how the setting is normally adopted, since the
+folder is usually already done by the time the operator thinks of it. With
 deferral OFF the copy is made LAST, so it carries the exports, the key, the
 worksheet and the DONE stamp — the folder as the operator would find it — and a
 re-run copies again, which is how a correction reaches the destination. With

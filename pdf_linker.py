@@ -16254,38 +16254,47 @@ class Pseudonymizer:
         across a re-run of the same folder; adding a document can move a quote,
         which is acceptable for a column nothing reverses.
 
-        `scrubbed`, when given, fills the SECOND context column the same way:
-        the sentence the row's FAKE now stands in, quoted from the export — the
-        operator reads the pair side by side (what the document said, what the
-        deliverable now says). Searched by the fake, since the real value is no
-        longer in that text; scoped to records that have APPLIED (count > 0),
-        because a fake never applied cannot stand in any export and a miss
-        still costs a full scan per record.
+        `scrubbed`, when given, fills the SECOND half of the same cell: the
+        sentence the row's FAKE now stands in, quoted from the export — the
+        operator reads the document's sentence above what the deliverable now
+        says. Searched by the fake, since the real value is no longer in that
+        text; scoped to records that have APPLIED (count > 0), because a fake
+        never applied cannot stand in any export and a miss still costs a full
+        scan per record; and taken from the SAME passage of the SAME document
+        as the half above it (`_pn_context_hit`'s `within`), which is why the
+        two are read in one loop rather than two.
 
         Cost is one `_pn_context` per value still lacking a quote, and
         `_pn_context_prep` makes that a search rather than a scan — a few
         tenths of a second for a folder-sized key, against the ~85 s the same
         loop cost before that split."""
         parsed = _pn_body_lines(original)
+        scrub_parsed = _pn_body_lines(scrubbed) if scrubbed is not None else None
         for rec in self.records.values():
             real = str(rec["real"])
             rl = real.lower()
             if not rl or self._key_context.get(rl):
                 continue
-            quote = _pn_context(parsed, real)
-            if quote:
-                self._key_context[rl] = quote
-        if scrubbed is None:
-            return
-        scrub_parsed = _pn_body_lines(scrubbed)
-        for rec in self.records.values():
-            rl = str(rec["real"]).lower()
-            if (not rl or self._key_context_scrubbed.get(rl)
-                    or not rec.get("count")):
+            quote, site = _pn_context_hit(parsed, real)
+            if not quote:
                 continue
-            quote = _pn_context(scrub_parsed, str(rec["fake"]))
-            if quote:
-                self._key_context_scrubbed[rl] = quote
+            self._key_context[rl] = quote
+            # The export half is taken HERE, from this document's own export
+            # and from the passage the quote above came off. Both halves of one
+            # cell must describe one passage of one document, and the two used
+            # to be separate loops: the first document to name a value won the
+            # original quote while the export quote came from whichever
+            # document's export the fake happened to turn up in, so the cell
+            # could stack two sentences from two different filings. Bound to
+            # the site, that cannot happen — and where the fake does not stand
+            # in this passage (its occurrence here sat inside a protected
+            # citation and was never replaced) there is simply no second half.
+            if scrub_parsed is None or not rec.get("count"):
+                continue
+            export, _ = _pn_context_hit(scrub_parsed, str(rec["fake"]),
+                                        within=site)
+            if export:
+                self._key_context_scrubbed[rl] = export
 
     def write_key(self, path, log):
         """Write the REVERSAL key the Word macro consumes. A row is written when
@@ -18559,7 +18568,25 @@ def _pn_context_prep(parsed):
 
 
 def _pn_context(parsed, needle, width=_PN_CONTEXT_MAX):
-    """The sentence `needle` stands in, for the worksheet's Context column.
+    """The sentence `needle` stands in — see `_pn_context_hit`, of which this
+    is the quote-only form."""
+    return _pn_context_hit(parsed, needle, width)[0]
+
+
+def _pn_quote_shape(site):
+    """`site` with its LINE RANGE dropped: replay the growth, do not require
+    the same lines.
+
+    For a caller whose two bodies do not share line numbering — `--fix-leaks`
+    parses every original into ONE body while each export is its own — where
+    "the same lines" is meaningless but "the same number of sentences" still
+    holds."""
+    return None if site is None else (None, None, site[2], site[3])
+
+
+def _pn_context_hit(parsed, needle, width=_PN_CONTEXT_MAX, within=None):
+    """(quote, site) — the sentence `needle` stands in, plus WHERE and HOW FAR
+    it was quoted, so the same passage can be quoted from a second body.
 
     A triage row asks "is this real?", and the value alone often cannot answer
     it: "Charge" is boilerplate in "CHARGE OF DISCRIMINATION" and a surname in
@@ -18571,12 +18598,36 @@ def _pn_context(parsed, needle, width=_PN_CONTEXT_MAX):
     where the value is, and rebuilt as PROSE: the gutter line number is dropped
     and the wrapped lines are joined, because a sentence on pleading paper is
     spread over several numbered lines and one of them alone says almost
-    nothing. Returns "" when the value cannot be found — a welded or reduced
-    finding has no clean line to quote, exactly as it has no location."""
+    nothing. Returns ("", None) when the value cannot be found — a welded or
+    reduced finding has no clean line to quote, exactly as it has no location.
+
+    **`within` is another quote's site, and it is what keeps the two halves of
+    one Context cell describing ONE passage.** The cell stacks the document's
+    sentence over the export's, and the two used to be independent searches of
+    two different bodies, which came apart two ways. They could land on
+    different OCCURRENCES — a party name whose first prose occurrence sits
+    inside a protected citation is never replaced there, so the export half
+    went hunting and quoted an unrelated sentence three lines down. And they
+    grew differently: the span grows by whole sentences while it is under
+    `_PN_CONTEXT_MIN`, so a fake shorter than the real value drops its sentence
+    under the floor and the export half swallows the sentence after it — the
+    "whole extra sentence" an operator sees on one side and not the other.
+
+    So a site carries both: the LINE RANGE the quote covered, and how many
+    sentences it grew by in each direction. Passing it back restricts the
+    second search to those lines and REPLAYS the growth instead of measuring
+    length — the export half can then quote the corresponding sentence and
+    nothing more. It is a hard restriction, deliberately: if the value does not
+    stand in that passage there is no export half to show, and the cell
+    collapses to the original alone, which is honest where an unrelated
+    sentence is not. The line range is meaningful only between bodies that
+    share line numbering (a document's original and its own export) — see
+    `_pn_quote_shape` for the caller that cannot promise that."""
     nl = str(needle).lower()
     if not nl:
-        return ""
+        return "", None
     lines, lowers, text, ends = _pn_context_prep(parsed)
+    lo_want, hi_want = (within[0], within[1]) if within else (None, None)
     # WHOLE-WORD first, bare substring only as a fallback.
     #
     # A bare `find` quotes the sentence a value happens to sit INSIDE another
@@ -18589,9 +18640,11 @@ def _pn_context(parsed, needle, width=_PN_CONTEXT_MAX):
     # occurrence by construction ("HELENRASHO" for "Rasho"), and the nearest
     # readable sentence beats an empty cell.
     def _scan(bounded):
-        first = prose_hit = None
+        first = None
         rx = re.compile(r"(?<!\w)" + re.escape(nl) + r"(?!\w)") if bounded else None
         for k, low in enumerate(lowers):
+            if lo_want is not None and not (lo_want <= k <= hi_want):
+                continue        # a hit outside the passage is not this pair's
             if rx is not None:
                 m = rx.search(low)
                 j = m.start() if m else -1
@@ -18617,7 +18670,7 @@ def _pn_context(parsed, needle, width=_PN_CONTEXT_MAX):
     if hit is None:
         hit = _scan(False)
     if hit is None:
-        return ""
+        return "", None
     # A caption block is not part of the sentence beside it. Bound the quote by
     # the run of lines that read the same way as the one the hit is on, so a
     # sentence never swallows the heading above it (there is no full stop in a
@@ -18652,22 +18705,44 @@ def _pn_context(parsed, needle, width=_PN_CONTEXT_MAX):
     cand_end = after[1:] + [ceiling]
     cand_start = list(reversed(before[:-1])) + [floor]
     ei = si = 0
-    while end - start < _PN_CONTEXT_MIN:
-        if ei < len(cand_end) and cand_end[ei] - start <= width:
+    if within is not None:
+        # Replay, do not re-measure: the same sentence plus the same number of
+        # neighbours the first half took. A length floor applied here is what
+        # made the export half longer than the original in the first place.
+        while ei < within[2] and ei < len(cand_end) \
+                and cand_end[ei] - start <= width:
             end, ei = max(end, cand_end[ei]), ei + 1
-        elif si < len(cand_start) and end - cand_start[si] <= width:
+        while si < within[3] and si < len(cand_start) \
+                and end - cand_start[si] <= width:
             start, si = min(start, cand_start[si]), si + 1
-        else:
+    else:
+        while end - start < _PN_CONTEXT_MIN:
+            if ei < len(cand_end) and cand_end[ei] - start <= width:
+                end, ei = max(end, cand_end[ei]), ei + 1
+            elif si < len(cand_start) and end - cand_start[si] <= width:
+                start, si = min(start, cand_start[si]), si + 1
+            else:
+                break
+    # The lines the quote came off, for a second body to be held to.
+    lo_line = hi_line = i
+    for k in range(i - 1, -1, -1):
+        if lines[k][1] <= start:
             break
+        lo_line = k
+    for k in range(i + 1, len(lines)):
+        if lines[k][0] >= end:
+            break
+        hi_line = k
+    site = (lo_line, hi_line, ei, si)
     sent = re.sub(r"\s+", " ", text[start:end]).strip()
     if len(sent) <= width:
-        return sent
+        return sent, site
     # Too long to read: a window centred on the value, rather than a truncation
     # that may not even contain it.
     at = max(sent.lower().find(nl), 0)
     lo = max(0, at - (width - len(nl)) // 2)
-    return (("…" if lo else "") + sent[lo:lo + width].strip()
-            + ("…" if lo + width < len(sent) else ""))
+    return ((("…" if lo else "") + sent[lo:lo + width].strip()
+             + ("…" if lo + width < len(sent) else "")), site)
 
 
 def _pn_leak_context(orig_parsed, scrub_parsed, pz, value):
@@ -18692,16 +18767,47 @@ def _pn_leak_context(orig_parsed, scrub_parsed, pz, value):
 
     The order also keeps `_pn_context_prep`'s one-entry memo warm: every
     primary lookup hits `orig_parsed`, and the fallbacks are rare."""
+    return _pn_leak_quotes(orig_parsed, scrub_parsed, pz, value)[0]
+
+
+def _pn_leak_quotes(orig_parsed, scrub_parsed, pz, value, aligned=True):
+    """(original quote, export quote) for one LEAKS row — BOTH halves of its
+    Context cell, decided together.
+
+    Together, because they are one piece of evidence: the export half is the
+    SAME passage as the original half (`_pn_context_hit`'s `within`), so the
+    cell cannot show one sentence above an unrelated one, and the pair cannot
+    drift by being computed at two call sites.
+
+    `aligned` False is for a caller whose two bodies do not share line
+    numbering — `--fix-leaks` parses every original into one body while each
+    export is its own — where the growth is still replayed but the line range
+    cannot be. Set it False rather than passing a site that means nothing.
+
+    The flagged value is text the scrub did NOT replace, so the same needle
+    finds it in both bodies; the export half is therefore usually the same
+    sentence with other values faked around it, and where nothing else in it
+    was faked the two are identical and the cell shows one block."""
+    site = None
+    quote = ""
+    needle = value
     if orig_parsed:
-        quote = _pn_context(orig_parsed, value)
-        if quote:
-            return quote
-        rest = pz._real_remainder(value)
-        if rest and rest != str(value):
-            quote = _pn_context(orig_parsed, rest)
-            if quote:
-                return quote
-    return _pn_context(scrub_parsed, value)
+        quote, site = _pn_context_hit(orig_parsed, value)
+        if not quote:
+            # A phrase carrying one of our stand-ins is absent from the source;
+            # its real remainder is there, and is what the row reduces to.
+            rest = pz._real_remainder(value)
+            if rest and rest != str(value):
+                quote, site = _pn_context_hit(orig_parsed, rest)
+                if quote:
+                    needle = rest
+    if not quote:
+        # No original in hand at all: the export is quoted as the row's
+        # evidence, and there is no second half to put under it.
+        return _pn_context(scrub_parsed, value), ""
+    export, _ = _pn_context_hit(scrub_parsed, needle,
+                                within=site if aligned else _pn_quote_shape(site))
+    return quote, export
 
 
 def _pn_locate_export(text, needle, limit=12):
@@ -20654,20 +20760,20 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
             if _pn_is_procedural_phrase(real) or _pn_is_email_value(real):
                 continue
             pseudonymizer.leak_report.append(
-                {"file": pdf_path.name, "type": "LEAK", "value": real,
-                 "where": _pn_locate(parsed, real),
-                 "context": _pn_leak_context(orig_parsed, parsed,
-                                             pseudonymizer, real),
-                 "scrubbed_context": _pn_context(parsed, real)})
+                dict(zip(("context", "scrubbed_context"),
+                          _pn_leak_quotes(orig_parsed, parsed,
+                                          pseudonymizer, real)),
+                     **{"file": pdf_path.name, "type": "LEAK", "value": real,
+                        "where": _pn_locate(parsed, real)}))
         for cls, sample in review:
             if _pn_is_procedural_phrase(sample) or _pn_is_email_value(sample):
                 continue
             pseudonymizer.leak_report.append(
-                {"file": pdf_path.name, "type": cls, "value": sample,
-                 "where": _pn_locate(parsed, sample),
-                 "context": _pn_leak_context(orig_parsed, parsed,
-                                             pseudonymizer, sample),
-                 "scrubbed_context": _pn_context(parsed, sample)})
+                dict(zip(("context", "scrubbed_context"),
+                          _pn_leak_quotes(orig_parsed, parsed,
+                                          pseudonymizer, sample)),
+                     **{"file": pdf_path.name, "type": cls, "value": sample,
+                        "where": _pn_locate(parsed, sample)}))
 
         # Pseudonymize the output filename too — the .txt is the artifact that
         # gets shared, so a party/attorney name must not survive in its name.
@@ -21750,20 +21856,20 @@ def _write_word_text_version(src_path, text, log, pseudonymizer=None,
             if _pn_is_procedural_phrase(real) or _pn_is_email_value(real):
                 continue
             pseudonymizer.leak_report.append(
-                {"file": src_path.name, "type": "LEAK", "value": real,
-                 "where": _word_locate(body, real),
-                 "context": _pn_leak_context(orig_parsed, scrub_parsed,
-                                             pseudonymizer, real),
-                 "scrubbed_context": _pn_context(scrub_parsed, real)})
+                dict(zip(("context", "scrubbed_context"),
+                          _pn_leak_quotes(orig_parsed, scrub_parsed,
+                                          pseudonymizer, real)),
+                     **{"file": src_path.name, "type": "LEAK", "value": real,
+                        "where": _word_locate(body, real)}))
         for cls, sample in review:
             if _pn_is_procedural_phrase(sample) or _pn_is_email_value(sample):
                 continue
             pseudonymizer.leak_report.append(
-                {"file": src_path.name, "type": cls, "value": sample,
-                 "where": _word_locate(body, sample),
-                 "context": _pn_leak_context(orig_parsed, scrub_parsed,
-                                             pseudonymizer, sample),
-                 "scrubbed_context": _pn_context(scrub_parsed, sample)})
+                dict(zip(("context", "scrubbed_context"),
+                          _pn_leak_quotes(orig_parsed, scrub_parsed,
+                                          pseudonymizer, sample)),
+                     **{"file": src_path.name, "type": cls, "value": sample,
+                        "where": _word_locate(body, sample)}))
 
         # Scrub the output filename too — the .txt is the shared artifact, so a
         # party/attorney name in the Word file's name must not ride along.
@@ -24158,11 +24264,11 @@ def _fix_leaks_mode(folder, args, cfg, log):
                 if _pn_is_email_value(real):
                     continue          # always faked — never a triage decision
                 pz.leak_report.append(
-                    {"file": f.name, "type": "LEAK", "value": real,
-                     "where": _pn_locate_export(scrubbed, real),
-                     "context": _pn_leak_context(orig_parsed, scrub_parsed,
-                                                 pz, real),
-                     "scrubbed_context": _pn_context(scrub_parsed, real)})
+                    dict(zip(("context", "scrubbed_context"),
+                              _pn_leak_quotes(orig_parsed, scrub_parsed, pz,
+                                              real, aligned=False)),
+                         **{"file": f.name, "type": "LEAK", "value": real,
+                            "where": _pn_locate_export(scrubbed, real)}))
 
     # (The originals were read and noted BEFORE the loop above — the fresh
     # findings' Context quotes needed them.)

@@ -428,3 +428,56 @@ def test_a_stale_run_launcher_in_the_copy_is_superseded(tmp_path, monkeypatch):
     names = _launchers(copy)
     assert any(n.startswith("Re-run PDF-Linker") for n in names)
     assert not any(n.startswith("Run PDF-Linker") for n in names)
+
+
+# ── the destination can be configured AFTER the folder has been run ──────────
+# The copy is decided per run, from the config as it stands when the run
+# starts, so adding or editing copy_to and clicking Re-run places the copy at
+# the end of that run. Pinned because it is the natural way an operator adopts
+# the setting: the folder is already processed by the time they think of it.
+
+def test_adding_copy_to_later_copies_on_the_next_run(tmp_path, monkeypatch):
+    cfg = _config(tmp_path, monkeypatch, "# no destination yet\n")
+    folder = tmp_path / "Smith v Jones"
+    folder.mkdir()
+    _docx(folder / "Filing.docx", "Body")
+    _run_main(folder, monkeypatch, "--no-pseudonymize")
+    assert not (tmp_path / "dest").exists()
+
+    cfg.write_text(f"copy_to = {tmp_path / 'dest'}\n", encoding="utf-8")
+    _run_main(folder, monkeypatch, "--no-pseudonymize")
+    copy = tmp_path / "dest" / folder.name
+    assert list((copy / "Text Files").glob("*.txt"))
+    assert list(copy.glob("DONE *.txt"))
+
+
+def test_editing_the_destination_copies_to_the_new_one(tmp_path, monkeypatch):
+    cfg = _config(tmp_path, monkeypatch, f"copy_to = {tmp_path / 'first'}\n")
+    folder = tmp_path / "Smith v Jones"
+    folder.mkdir()
+    _docx(folder / "Filing.docx", "Body")
+    _run_main(folder, monkeypatch, "--no-pseudonymize")
+    assert (tmp_path / "first" / folder.name).is_dir()
+
+    cfg.write_text(f"copy_to = {tmp_path / 'second'}\n", encoding="utf-8")
+    _run_main(folder, monkeypatch, "--no-pseudonymize")
+    assert list((tmp_path / "second" / folder.name / "Text Files").glob("*.txt"))
+
+
+def test_adding_copy_to_later_also_works_on_a_deferred_start(tmp_path,
+                                                             monkeypatch):
+    # There the copy is made at the START, and the folder it copies is the
+    # finished one — the run that produced it happened before the setting did.
+    cfg = _config(tmp_path, monkeypatch, "# no destination yet\n")
+    folder = tmp_path / "Smith v Jones"
+    folder.mkdir()
+    _docx(folder / "Filing.docx", "Body")
+    _run_main(folder, monkeypatch, "--no-pseudonymize")
+
+    cfg.write_text(f"defer_run = on\ncopy_to = {tmp_path / 'dest'}\n",
+                   encoding="utf-8")
+    _run_main(folder, monkeypatch, "--no-pseudonymize")
+    copy = tmp_path / "dest" / folder.name
+    assert list((copy / "Text Files").glob("*.txt"))
+    # The folder has been processed, so both launchers say so.
+    assert any(n.startswith("Re-run PDF-Linker") for n in _launchers(copy))
