@@ -2510,6 +2510,35 @@ itself (that is a re-run started inside the copy, which is how a launcher that
 travelled with the folder keeps working), and a destination INSIDE the case
 folder is refused outright — that walk never terminates.
 
+**...and the COPY can be the folder that is AHEAD** (`_sync_back_from_copy`).
+The destination syncs, so the case may have been RUN over there: deferred on
+this machine, copied out, processed at the other one. Coming back to the source
+folder afterwards, re-running it is the expensive way to obtain files that
+already exist a folder away — so the start of every run asks whether the copy
+finished a run this folder has not, and takes it back if it did. What happens
+next is unchanged: a deferred start still just writes its launchers (and skips
+the push, since it took those files a moment ago and has processed nothing
+since), and a full run still runs, now reusing the key that came back with the
+files — so the fakes are the ones already delivered — and picking up any
+document this folder has and the copy does not.
+The evidence is the markers the runs themselves leave (`_marker_mtime`, scoped
+to zero-byte files exactly as `_clear_eta_markers` is): a `DONE <clock>.txt`
+stamp means a run finished there, and an `ETA …` marker written AFTER it means
+one started and has not — running now, or dead part-way — which is not a state
+to take. `_COPY_AHEAD_MARGIN` is for the clocks: `shutil.copy2` preserves
+mtimes, so a copy this folder pushed carries this machine's own stamp and reads
+as exactly equal, and only a run that finished meaningfully later counts as
+ahead. Skew is the residual and fails safe one way (a slow clock over there
+means no pull-back at all).
+**Nothing is overwritten that this folder holds a newer version of**
+(`_pull_back_from_copy`), which is the whole safety of reaching into a case
+folder from outside a run: the operator may have typed Fix? decisions into this
+folder's `LEAKS.xlsx` since, and those are irreplaceable — the copy's version
+has none of them. Nothing is deleted either, so a document that exists only
+here survives the sync and is processed by the run that follows. The stale
+local run stamp IS cleared first, because the copy's is coming with it and two
+stamps in one folder say two different things about one run.
+
 **The party spreadsheet travels with a DEFERRED copy** (`_copy_party_template`).
 The launcher names no spreadsheet, so the run at the destination resolves its
 own: the folder first, then "the newest `Order*.xlsx` in Downloads". That
