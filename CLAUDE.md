@@ -2634,6 +2634,27 @@ reads as "fully scrubbed".
 
 ## Conventions
 
+- **A new SETTING must reach the config file people already have**
+  (`_CONFIG_BLOCKS`, `_config_add_missing`). The template was written once —
+  when no `pdf_linker.config` existed — so every setting added afterwards was
+  invisible to anyone who already had one, which after the first run is
+  everyone: a real operator's file carried four settings while the tool had
+  twelve, and the only way to discover `copy_to` or `defer_run` was to read the
+  source. `_read_config` now tops the file up on every run, appending the
+  blocks it does not MENTION (live or commented out — commenting one out is a
+  decision, and re-adding it would undo that decision every run). APPENDED and
+  never rewritten: their values, their ordering, their own notes and any key
+  this version has never heard of all stay as they are. The template is
+  therefore kept as one block per setting, with **exactly one setting line
+  each** — that is what makes it safe, since a block can never re-set a key the
+  file already carries, and the reader takes the LAST line for a key, so a
+  default appended below would otherwise silently flip a value typed above (the
+  `keep_original_text` / `original_text_subfolder` pair shared a block and would
+  have done exactly that). `_CONFIG_TEMPLATE` is derived from the blocks rather
+  than kept beside them. Safe to do MID-RUN because every default in the
+  template equals the code's own fallback — the appended line describes what
+  the run was already doing — and `test_config_topup.py` pins that invariant,
+  so a new setting whose default disagrees with its code default fails there.
 - **No real judge name in the repo** — court-personnel scrubbing is name-agnostic
   (discovered from the document); the fictional "Dana Whitaker" is used in tests/
   comments.

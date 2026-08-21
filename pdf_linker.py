@@ -22457,142 +22457,180 @@ def process_pdf(pdf_path: Path, log: logging.Logger,
 # wins over the config file.
 _CONFIG_TRUE = {"1", "true", "yes", "on", "y", "t"}
 _CONFIG_FALSE = {"0", "false", "no", "off", "n", "f"}
-_CONFIG_TEMPLATE = (
+_CONFIG_HEADER = (
     "# pdf_linker settings. Edit the values below to change behaviour without\n"
     "# touching the code. Lines starting with # are comments. A command-line\n"
     "# flag (e.g. --no-pseudonymize) overrides the matching setting here.\n"
     "\n"
-    "# Pseudonymize the .txt exports? on/off (default: on). When on, party /\n"
-    "# attorney names, case numbers, and detected PII in the .txt exports are\n"
-    "# swapped for stable fakes using the newest Order*.xlsx in Downloads; the\n"
-    "# PDFs themselves are never modified.\n"
-    "#\n"
-    "# Forgot a PDF from the batch? Drop it and the run's pseudonym_key.xlsx in a\n"
-    "# folder and run again (or point --key at the key): the tool recognizes its\n"
-    "# own key and reproduces the same fakes as the batch, so the new .txt stays\n"
-    "# consistent. New values in that file get fresh fakes and are added to the\n"
-    "# key.\n"
-    "pseudonymize = on\n"
-    "\n"
-    "# Match a TRUNCATED party name (the front of it) when a two-column page\n"
-    "# splices the caption? on/off (default: off). A prefix term is only\n"
-    "# registered when it never appears in ordinary prose in this case, but a\n"
-    "# false replacement is silent, so review the key before trusting it.\n"
-    "partial_names = off\n"
-    "\n"
-    "# Defer the run? on/off (default: off). ON means starting the tool on a\n"
-    "# folder does NOT process it: a double-clickable \"Run PDF-Linker\"\n"
-    "# launcher is written into the folder and the run stops there, so you can\n"
-    "# move the folder where it belongs first and start the work at its\n"
-    "# destination with one click. The launcher processes the folder it sits\n"
-    "# in, so it keeps working after the move (and with copy_to below, the\n"
-    "# copy gets one too -- either folder can be the one you run). It is\n"
-    "# replaced by the usual \"Re-run PDF-Linker\" launcher as soon as the run\n"
-    "# it promises starts, so a folder never carries both. A double-click\n"
-    "# always means RUN NOW: every launcher overrides this setting, or nothing\n"
-    "# would ever run. Applying leak fixes (--fix-leaks) is never deferred.\n"
-    "defer_run = off\n"
-    "\n"
-    "# Copy the whole case folder somewhere? Empty (the default) means never.\n"
-    "# Give a DESTINATION FOLDER below and the case folder itself -- and every\n"
-    "# file in it -- is copied in as <destination>\\<this folder's name>.\n"
-    "# Files are overwritten in place and nothing already in the destination is\n"
-    "# deleted, so a re-run REPLACES the copy with the current state (a file\n"
-    "# you deleted from the case folder does stay behind in the copy).\n"
-    "#\n"
-    "# WHEN it is copied follows defer_run above, and BOTH folders end up with\n"
-    "# a launcher either way -- point copy_to at a synced folder (a local\n"
-    "# OneDrive one) and the case can be run or re-run from either computer:\n"
-    "#   defer_run = off  the copy is made at the END of the run, so it holds\n"
-    "#                    the exports, the key and a \"Re-run PDF-Linker\"\n"
-    "#                    launcher of its own. If the leak gate quarantined an\n"
-    "#                    export the copy WAITS, so the destination never\n"
-    "#                    receives a *.LEAK; Apply Leak Fixes makes it once the\n"
-    "#                    last leak is resolved.\n"
-    "#   defer_run = on   the copy is made at the START, and a \"Run\n"
-    "#                    PDF-Linker\" launcher goes into BOTH folders -- run\n"
-    "#                    whichever one you are at. The case's Order*.xlsx\n"
-    "#                    party spreadsheet is copied in too (from Downloads if\n"
-    "#                    that is where it is), so the copy can do the full run\n"
-    "#                    on its own instead of falling back to whatever is\n"
-    "#                    newest in Downloads by the time it is clicked --\n"
-    "#                    which may be another case.\n"
-    "# Every launcher runs the folder it SITS IN, so the two never work on the\n"
-    "# same files, and a folder that already IS the destination is never copied\n"
-    "# onto itself -- a re-run started inside the copy simply re-runs it.\n"
-    "#\n"
-    "# And the copy can be the folder that is AHEAD: if you deferred here, ran\n"
-    "# the case on the other computer, and come back to this folder, starting\n"
-    "# the tool here BRINGS THAT RUN BACK -- exports, key, worksheet -- instead\n"
-    "# of doing the case a second time. It takes a file only when this folder\n"
-    "# has an older version or none, so decisions you typed here are never\n"
-    "# overwritten, and it never deletes anything, so a document only this\n"
-    "# folder has survives and is processed by the run that follows. A copy\n"
-    "# showing a run in progress (or one that stopped part-way) is left alone.\n"
-    "# If the copy cannot be made, the run carries on exactly as it would with\n"
-    "# no copy_to set at all (deferred: this folder keeps its launcher).\n"
-    "# copy_to = C:\\Users\\you\\Documents\\Cases\n"
-    "\n"
-    "# Subfolder (inside each case folder) that the .txt exports are written to.\n"
-    "# Default: Text Files.\n"
-    "text_subfolder = Text Files\n"
-    "\n"
-    "# Most .txt exports one folder may deliver — the upload limit of the tool\n"
-    "# they are sent to (default: 20). A folder with more documents than that\n"
-    "# has some of its exports COMBINED into single files, which say so in\n"
-    "# their own first line and list the documents they hold. Parts of one\n"
-    "# document go together first (Brief (1) / Brief part 2 / Brief 2 of 3);\n"
-    "# if that is not enough, the smallest exports are bundled until the count\n"
-    "# fits. A grouping is reproduced on every later run, so a folder you have\n"
-    "# already sent comes back the same. The do-not-share original-text copies\n"
-    "# (keep_original_text) are combined the same way, so both folders hold the\n"
-    "# same documents split the same number of ways. 0 turns combining off (a\n"
-    "# grouping already delivered is still honoured — it is never re-split).\n"
-    "max_text_files = 20\n"
-    "\n"
-    "# Word documents (.docx/.docm) in a folder that has NO PDFs are bulk-\n"
-    "# converted to scrubbed .txt exports too (never hyperlinked). A Word doc\n"
-    "# beside PDFs is left alone, so the usual PDF workflow is untouched. Legacy\n"
-    "# binary .doc files can't be read (re-save them as .docx).\n"
-    "\n"
-    "# Also write the UNSCRUBBED text to a second folder, for QA / your own\n"
-    "# reference? on/off (default: off). The pseudonymized folder above stays\n"
-    "# the shareable one; this second folder holds the ORIGINAL text under the\n"
-    "# real filename and, by design, contains real names — it is never checked\n"
-    "# by the leak gate and must NOT be shared. Diff the two folders to confirm\n"
-    "# the scrub is clean and nothing load-bearing (a citation, a date) changed.\n"
-    "keep_original_text = off\n"
-    "# Name of that second folder. The default flags it so it isn't mistaken\n"
-    "# for the shareable one.\n"
-    "original_text_subfolder = Original Text (real names - do not share)\n"
-    "\n"
-    "# How close (in points) two caption-column left edges may be and still be\n"
-    "# treated as ONE page column. Default: 30. Raise it if a two-column caption\n"
-    "# splices its columns together in the .txt (a REVIEW warning names the page).\n"
-    "column_band_tol = 30\n"
-    "\n"
-    "# What a surviving real value does to the run. The pseudonymization is a\n"
-    "# PRECAUTION against casual recognition of a public filing, so the gate is\n"
-    "# tiered:  primary (default) quarantines the exports only when a FULL\n"
-    "# party/entity/attorney name or defined short name survives (that defeats\n"
-    "# the whole purpose); lesser survivors (a bare token, an identifier) are\n"
-    "# warned about and marked in the key but the exports are delivered.\n"
-    "# strict quarantines on ANY surviving value; off never quarantines.\n"
-    "leak_gate = primary\n"
-    "\n"
-    "# Accumulate every flagged leak into ONE master spreadsheet across all runs\n"
-    "# and case folders, so you can spot a value that keeps leaking over time.\n"
-    "# on/off (default: off). This toggle controls the 'Master Leaks' TALLY sheet\n"
-    "# only. The 'KEEP' sheet in the SAME workbook — the durable no/[bracket]\n"
-    "# decisions, applied across every folder and run — is always maintained (it\n"
-    "# is the preservation vehicle for those decisions), so the workbook may be\n"
-    "# created for KEEP even with the tally off.\n"
-    "master_leaks = off\n"
-    "# Where that master workbook lives (both the KEEP and Master Leaks sheets).\n"
-    "# Default: master_leaks.xlsx next to this config file (or the PDF_LINKER_MASTER\n"
-    "# env var). Point it anywhere stable (e.g. a OneDrive path) so it persists.\n"
-    "# master_leaks_path = C:\\Users\\you\\Documents\\Master Leaks.xlsx\n"
 )
+# One block per setting: its explanation and the line that sets it. Kept
+# apart so a config file that PREDATES a setting can be topped up with just
+# that block — see `_config_add_missing`. Exactly one setting line per block,
+# which is what makes topping up safe: a block can never re-set a key the
+# file already carries, so nothing the operator typed is ever overridden by
+# a default appended below it.
+#
+# Every default here MATCHES the code's own fallback, so a value appended
+# mid-run changes nothing about the run that appended it.
+_CONFIG_BLOCKS = (
+    ("pseudonymize",
+     "# Pseudonymize the .txt exports? on/off (default: on). When on, party /\n"
+     "# attorney names, case numbers, and detected PII in the .txt exports are\n"
+     "# swapped for stable fakes using the newest Order*.xlsx in Downloads; the\n"
+     "# PDFs themselves are never modified.\n"
+     "#\n"
+     "# Forgot a PDF from the batch? Drop it and the run's pseudonym_key.xlsx in a\n"
+     "# folder and run again (or point --key at the key): the tool recognizes its\n"
+     "# own key and reproduces the same fakes as the batch, so the new .txt stays\n"
+     "# consistent. New values in that file get fresh fakes and are added to the\n"
+     "# key.\n"
+     "pseudonymize = on\n"
+     "\n"
+     ),
+    ("partial_names",
+     "# Match a TRUNCATED party name (the front of it) when a two-column page\n"
+     "# splices the caption? on/off (default: off). A prefix term is only\n"
+     "# registered when it never appears in ordinary prose in this case, but a\n"
+     "# false replacement is silent, so review the key before trusting it.\n"
+     "partial_names = off\n"
+     "\n"
+     ),
+    ("defer_run",
+     "# Defer the run? on/off (default: off). ON means starting the tool on a\n"
+     "# folder does NOT process it: a double-clickable \"Run PDF-Linker\"\n"
+     "# launcher is written into the folder and the run stops there, so you can\n"
+     "# move the folder where it belongs first and start the work at its\n"
+     "# destination with one click. The launcher processes the folder it sits\n"
+     "# in, so it keeps working after the move (and with copy_to below, the\n"
+     "# copy gets one too -- either folder can be the one you run). It is\n"
+     "# replaced by the usual \"Re-run PDF-Linker\" launcher as soon as the run\n"
+     "# it promises starts, so a folder never carries both. A double-click\n"
+     "# always means RUN NOW: every launcher overrides this setting, or nothing\n"
+     "# would ever run. Applying leak fixes (--fix-leaks) is never deferred.\n"
+     "defer_run = off\n"
+     "\n"
+     ),
+    ("copy_to",
+     "# Copy the whole case folder somewhere? Empty (the default) means never.\n"
+     "# Give a DESTINATION FOLDER below and the case folder itself -- and every\n"
+     "# file in it -- is copied in as <destination>\\<this folder's name>.\n"
+     "# Files are overwritten in place and nothing already in the destination is\n"
+     "# deleted, so a re-run REPLACES the copy with the current state (a file\n"
+     "# you deleted from the case folder does stay behind in the copy).\n"
+     "#\n"
+     "# WHEN it is copied follows defer_run above, and BOTH folders end up with\n"
+     "# a launcher either way -- point copy_to at a synced folder (a local\n"
+     "# OneDrive one) and the case can be run or re-run from either computer:\n"
+     "#   defer_run = off  the copy is made at the END of the run, so it holds\n"
+     "#                    the exports, the key and a \"Re-run PDF-Linker\"\n"
+     "#                    launcher of its own. If the leak gate quarantined an\n"
+     "#                    export the copy WAITS, so the destination never\n"
+     "#                    receives a *.LEAK; Apply Leak Fixes makes it once the\n"
+     "#                    last leak is resolved.\n"
+     "#   defer_run = on   the copy is made at the START, and a \"Run\n"
+     "#                    PDF-Linker\" launcher goes into BOTH folders -- run\n"
+     "#                    whichever one you are at. The case's Order*.xlsx\n"
+     "#                    party spreadsheet is copied in too (from Downloads if\n"
+     "#                    that is where it is), so the copy can do the full run\n"
+     "#                    on its own instead of falling back to whatever is\n"
+     "#                    newest in Downloads by the time it is clicked --\n"
+     "#                    which may be another case.\n"
+     "# Every launcher runs the folder it SITS IN, so the two never work on the\n"
+     "# same files, and a folder that already IS the destination is never copied\n"
+     "# onto itself -- a re-run started inside the copy simply re-runs it.\n"
+     "#\n"
+     "# And the copy can be the folder that is AHEAD: if you deferred here, ran\n"
+     "# the case on the other computer, and come back to this folder, starting\n"
+     "# the tool here BRINGS THAT RUN BACK -- exports, key, worksheet -- instead\n"
+     "# of doing the case a second time. It takes a file only when this folder\n"
+     "# has an older version or none, so decisions you typed here are never\n"
+     "# overwritten, and it never deletes anything, so a document only this\n"
+     "# folder has survives and is processed by the run that follows. A copy\n"
+     "# showing a run in progress (or one that stopped part-way) is left alone.\n"
+     "# If the copy cannot be made, the run carries on exactly as it would with\n"
+     "# no copy_to set at all (deferred: this folder keeps its launcher).\n"
+     "# copy_to = C:\\Users\\you\\Documents\\Cases\n"
+     "\n"
+     ),
+    ("text_subfolder",
+     "# Subfolder (inside each case folder) that the .txt exports are written to.\n"
+     "# Default: Text Files.\n"
+     "text_subfolder = Text Files\n"
+     "\n"
+     ),
+    ("max_text_files",
+     "# Most .txt exports one folder may deliver — the upload limit of the tool\n"
+     "# they are sent to (default: 20). A folder with more documents than that\n"
+     "# has some of its exports COMBINED into single files, which say so in\n"
+     "# their own first line and list the documents they hold. Parts of one\n"
+     "# document go together first (Brief (1) / Brief part 2 / Brief 2 of 3);\n"
+     "# if that is not enough, the smallest exports are bundled until the count\n"
+     "# fits. A grouping is reproduced on every later run, so a folder you have\n"
+     "# already sent comes back the same. The do-not-share original-text copies\n"
+     "# (keep_original_text) are combined the same way, so both folders hold the\n"
+     "# same documents split the same number of ways. 0 turns combining off (a\n"
+     "# grouping already delivered is still honoured — it is never re-split).\n"
+     "max_text_files = 20\n"
+     "\n"
+     ),
+    ("keep_original_text",
+     "# Word documents (.docx/.docm) in a folder that has NO PDFs are bulk-\n"
+     "# converted to scrubbed .txt exports too (never hyperlinked). A Word doc\n"
+     "# beside PDFs is left alone, so the usual PDF workflow is untouched. Legacy\n"
+     "# binary .doc files can't be read (re-save them as .docx).\n"
+     "\n"
+     "# Also write the UNSCRUBBED text to a second folder, for QA / your own\n"
+     "# reference? on/off (default: off). The pseudonymized folder above stays\n"
+     "# the shareable one; this second folder holds the ORIGINAL text under the\n"
+     "# real filename and, by design, contains real names — it is never checked\n"
+     "# by the leak gate and must NOT be shared. Diff the two folders to confirm\n"
+     "# the scrub is clean and nothing load-bearing (a citation, a date) changed.\n"
+     "keep_original_text = off\n"
+     ),
+    ("original_text_subfolder",
+     "# Name of that second folder. The default flags it so it isn't mistaken\n"
+     "# for the shareable one.\n"
+     "original_text_subfolder = Original Text (real names - do not share)\n"
+     "\n"
+     ),
+    ("column_band_tol",
+     "# How close (in points) two caption-column left edges may be and still be\n"
+     "# treated as ONE page column. Default: 30. Raise it if a two-column caption\n"
+     "# splices its columns together in the .txt (a REVIEW warning names the page).\n"
+     "column_band_tol = 30\n"
+     "\n"
+     ),
+    ("leak_gate",
+     "# What a surviving real value does to the run. The pseudonymization is a\n"
+     "# PRECAUTION against casual recognition of a public filing, so the gate is\n"
+     "# tiered:  primary (default) quarantines the exports only when a FULL\n"
+     "# party/entity/attorney name or defined short name survives (that defeats\n"
+     "# the whole purpose); lesser survivors (a bare token, an identifier) are\n"
+     "# warned about and marked in the key but the exports are delivered.\n"
+     "# strict quarantines on ANY surviving value; off never quarantines.\n"
+     "leak_gate = primary\n"
+     "\n"
+     ),
+    ("master_leaks",
+     "# Accumulate every flagged leak into ONE master spreadsheet across all runs\n"
+     "# and case folders, so you can spot a value that keeps leaking over time.\n"
+     "# on/off (default: off). This toggle controls the 'Master Leaks' TALLY sheet\n"
+     "# only. The 'KEEP' sheet in the SAME workbook — the durable no/[bracket]\n"
+     "# decisions, applied across every folder and run — is always maintained (it\n"
+     "# is the preservation vehicle for those decisions), so the workbook may be\n"
+     "# created for KEEP even with the tally off.\n"
+     "master_leaks = off\n"
+     ),
+    ("master_leaks_path",
+     "# Where that master workbook lives (both the KEEP and Master Leaks sheets).\n"
+     "# Default: master_leaks.xlsx next to this config file (or the PDF_LINKER_MASTER\n"
+     "# env var). Point it anywhere stable (e.g. a OneDrive path) so it persists.\n"
+     "# master_leaks_path = C:\\Users\\you\\Documents\\Master Leaks.xlsx\n"
+     ),
+)
+# The whole file, for a folder that has none: header plus every block, in
+# order. Derived rather than kept beside them, so the two cannot drift.
+_CONFIG_TEMPLATE = _CONFIG_HEADER + "".join(b for _k, b in _CONFIG_BLOCKS)
 
 
 def _config_path():
@@ -22602,10 +22640,79 @@ def _config_path():
         return Path("pdf_linker.config")
 
 
+# A setting line, live or commented out: the key at the start of the line, with
+# at most a "# " in front of it. Deliberately NOT "#" plus any indent — the
+# copy_to block explains itself with indented prose lines that mention other
+# settings ("#   defer_run = off  the copy is made at the END..."), and reading
+# one of those as the setting itself would both mis-split the template and
+# report a setting as documented when it is only being talked about.
+def _config_key_re(key):
+    return re.compile(r"^[ \t]*(#[ ]?)?" + re.escape(key) + r"[ \t]*=",
+                      re.MULTILINE)
+
+
+_CONFIG_ADDED_NOTE = (
+    "\n"
+    "# ── Settings this file did not mention ──────────────────────────────────\n"
+    "# Added by a newer PDF-Linker, at their defaults. Nothing above was\n"
+    "# changed: your own settings, values and notes are exactly as you left\n"
+    "# them, and a default appended here does the same thing the tool was\n"
+    "# already doing. Edit or delete these freely.\n"
+    "\n")
+
+
+def _config_add_missing(path, log=None):
+    """Append the settings `path` does not mention yet. Returns their names.
+
+    The template used to be written ONCE, when no config file existed — so a
+    setting added later was invisible to everyone who already had one, which
+    after the first run is everyone. An operator's file sat with four settings
+    in it while the tool had grown twelve, and the only way to discover
+    `copy_to` or `defer_run` was to read the source.
+
+    APPENDED, never rewritten. The file is the operator's: their values, their
+    ordering, their own comments and any key this version has never heard of
+    all stay exactly as they are, and the new blocks go at the end under a
+    header saying where they came from. A setting is "mentioned" whether it is
+    live or commented out, so commenting one out is not undone on the next run.
+
+    Safe to do mid-run because every default in `_CONFIG_BLOCKS` matches the
+    code's own fallback: the appended lines describe what the run was already
+    going to do. Best-effort throughout — a config that cannot be read or
+    written must never fail a run over documentation."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    missing = [(k, b) for k, b in _CONFIG_BLOCKS
+               if not _config_key_re(k).search(text)]
+    if not missing:
+        return []
+    tail = text if text.endswith("\n") else text + "\n"
+    try:
+        path.write_text(tail + _CONFIG_ADDED_NOTE
+                        + "".join(b for _k, b in missing).rstrip("\n") + "\n",
+                        encoding="utf-8")
+    except OSError as e:
+        if log:
+            log.warning(f"Could not add the new setting(s) to {path}: {e}")
+        return []
+    names = [k for k, _b in missing]
+    if log:
+        log.info(f"Config: added {len(names)} setting(s) this file did not "
+                 f"mention yet ({', '.join(names)}) — they are documented at "
+                 f"the end of {path.name}, at their defaults. Nothing you had "
+                 f"set was changed.")
+    return names
+
+
 def _read_config(log=None):
-    """Return {key: value} from pdf_linker.config next to the script. If the
-    file doesn't exist, best-effort write a commented template so it's easy to
-    find and edit, and return {}."""
+    """Return {key: value} from pdf_linker.config next to the script.
+
+    A file that does not exist is created from the template. One that does is
+    read as it stands and then TOPPED UP with any setting it does not mention
+    (`_config_add_missing`), so a config written by an older version does not
+    hide everything added since."""
     path = _config_path()
     if not path.is_file():
         try:
@@ -22626,6 +22733,9 @@ def _read_config(log=None):
     except OSError as e:
         if log:
             log.warning(f"Could not read config file {path}: {e}")
+    # After the read, so this run uses the file as the operator left it. The
+    # values appended are the defaults it would have used anyway.
+    _config_add_missing(path, log)
     return cfg
 
 
