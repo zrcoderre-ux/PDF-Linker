@@ -17,6 +17,7 @@ pseudonym_key.xlsx
 ETA *.txt
 DONE *.txt
 Re-run PDF-Linker.*
+Run PDF-Linker.*
 Apply Leak Fixes.bat
 master_leaks.xlsx
 master_leaks.xlsx.tmp

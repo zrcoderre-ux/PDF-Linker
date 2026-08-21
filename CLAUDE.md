@@ -2417,6 +2417,31 @@ still stamps `DONE` so a finished folder is distinguishable from an untouched
 one. `_pdfs_in_folder` is **non-recursive** — case subfolders are not walked, so
 pointing the launcher at a parent folder does nothing at all.
 
+**A run can be DEFERRED to a launcher, for the folder that is about to MOVE**
+(`defer_run` in the config, `--defer`/`--no-defer`). ON means starting the tool
+on a folder does not process it: it writes `Run PDF-Linker.bat`
+(`_write_deferred_launcher`) and stops, so the operator can put the folder
+where it belongs and start the work at its destination with one click — the
+launcher targets its own directory (`%~dp0`), which is what makes it survive
+the move. Its own name is the state of the folder: `Run` while nothing has been
+processed, `Re-run` afterwards, and `_write_rerun_launcher` drops the deferred
+one the moment the run it promised begins (`_remove_deferred_launcher`, AFTER
+the replacement is on disk, so a folder is never left with neither). Deferring
+a folder that has already been run refreshes the `Re-run` launcher instead of
+adding a second file, since the two say opposite things about one folder.
+**Both** launchers pass `--no-defer`, and that is the rule the feature stands
+on: a double-click IS the operator asking to run this folder NOW, so under
+`defer_run = on` a launcher without it would only rewrite itself and exit — the
+deferral could never end, and nothing in the folder would process it. (It also
+re-arms a launcher written before the flag existed.) `--fix-leaks` is never
+deferred either: an operator who typed it is asking for that pass now. The
+check sits after the PyMuPDF one, so a machine that cannot do the work says so
+BEFORE the folder is moved, and the launcher is written even for a folder
+holding no documents yet — deferring is *for* the folder that is not ready.
+Both writers go through `_write_launcher_file`, and unlike the re-run
+launcher's best-effort furniture a failure here is the failure of the run
+(exit 1): it was the only thing the run was going to produce.
+
 **ETA accuracy is LEDGERED, because the marker dance destroys each prediction
 at the moment its outcome becomes known** (`_note_eta_accuracy`,
 `pdf_linker_eta_history.csv` beside the config — machine-wide, like the rate

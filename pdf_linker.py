@@ -22270,6 +22270,18 @@ _CONFIG_TEMPLATE = (
     "# false replacement is silent, so review the key before trusting it.\n"
     "partial_names = off\n"
     "\n"
+    "# Defer the run? on/off (default: off). ON means starting the tool on a\n"
+    "# folder does NOT process it: a double-clickable \"Run PDF-Linker\"\n"
+    "# launcher is written into the folder and the run stops there, so you can\n"
+    "# move the folder where it belongs first and start the work at its\n"
+    "# destination with one click. The launcher processes the folder it sits\n"
+    "# in, so it keeps working after the move, and it is replaced by the usual\n"
+    "# \"Re-run PDF-Linker\" launcher as soon as the run it promises starts --\n"
+    "# a folder never carries both. A double-click always means RUN NOW: both\n"
+    "# launchers override this setting, or nothing would ever run. Applying\n"
+    "# leak fixes (--fix-leaks) is never deferred either.\n"
+    "defer_run = off\n"
+    "\n"
     "# Subfolder (inside each case folder) that the .txt exports are written to.\n"
     "# Default: Text Files.\n"
     "text_subfolder = Text Files\n"
@@ -22971,31 +22983,107 @@ def _bg_launcher_sh(comment_lines, command):
             + "exit 0\n")
 
 
-def _rerun_launcher_spec(exe, script, provider, want_key, windows, frozen=False):
-    """(filename, content, make_executable) for the re-run launcher.
+# The two launcher names. A folder that has been PROCESSED carries "Re-run
+# PDF-Linker"; a folder whose run was DEFERRED (config `defer_run`, so the
+# folder can be moved before the work starts) carries "Run PDF-Linker" instead,
+# because nothing in it has been processed yet and "re-run" would say the
+# opposite. One replaces the other the moment the run it promises begins.
+_RERUN_LAUNCHER_STEM = "Re-run PDF-Linker"
+_DEFERRED_LAUNCHER_STEM = "Run PDF-Linker"
+
+
+def _rerun_launcher_spec(exe, script, provider, want_key, windows,
+                         frozen=False, deferred=False):
+    """(filename, content, make_executable) for the double-click run launcher.
 
     `frozen` True means the tool runs as a packaged executable (PyInstaller /
     py2exe): the exe IS the entry point, so the script path must NOT be passed
     (a frozen exe treats a stray .py argument as an unknown target and can open
     an empty console). Otherwise the exe is a Python interpreter and needs the
     script. A running banner and a trailing status line are always printed, so
-    the window is never blank even if the interpreter writes nothing itself."""
+    the window is never blank even if the interpreter writes nothing itself.
+
+    `deferred` True is the first-run launcher a DEFERRED start leaves behind:
+    the same command under the other name, and built here rather than in a spec
+    of its own so the two cannot drift on the flags that matter."""
     prog = f'"{exe}"' if frozen else f'"{exe}" "{script}"'
-    notes = ["PDF-Linker re-run - double-click to process this folder in the",
-             "background. Picks up any Fix? decisions saved in LEAKS.xlsx.",
-             "Nothing appears on screen: the run is detached and minimized.",
-             'Progress -> pdf_linker.log; a "DONE <time>.txt" file appears',
-             "in this folder when the run finishes."]
+    if deferred:
+        title = "PDF-Linker run"
+        notes = ["PDF-Linker - double-click to process this folder in the",
+                 "background. Nothing has been processed yet: the run was",
+                 "deferred (defer_run in pdf_linker.config) so the folder",
+                 "could be moved first. Once the run starts this file is",
+                 'replaced by the "Re-run PDF-Linker" launcher.',
+                 "Nothing appears on screen: the run is detached and minimized.",
+                 'Progress -> pdf_linker.log; a "DONE <time>.txt" file appears',
+                 "in this folder when the run finishes."]
+        stem = _DEFERRED_LAUNCHER_STEM
+    else:
+        title = "PDF-Linker re-run"
+        notes = ["PDF-Linker re-run - double-click to process this folder in the",
+                 "background. Picks up any Fix? decisions saved in LEAKS.xlsx.",
+                 "Nothing appears on screen: the run is detached and minimized.",
+                 'Progress -> pdf_linker.log; a "DONE <time>.txt" file appears',
+                 "in this folder when the run finishes."]
+        stem = _RERUN_LAUNCHER_STEM
+    # `--no-defer` on BOTH launchers, not only the deferred one: a double-click
+    # IS the operator saying "run this folder now", so it must override
+    # `defer_run = on` in the config. Without it, that setting would make every
+    # double-click rewrite the launcher and exit — the deferral could never end,
+    # and the folder would never be processed by any route the operator has.
     if windows:
         key = ' --key "%~dp0pseudonym_key.xlsx"' if want_key else ""
         content = _bg_launcher_bat(
-            "PDF-Linker re-run", notes,
-            f'{prog} "%~dp0." --provider {provider}{key}')
-        return "Re-run PDF-Linker.bat", content, False
+            title, notes,
+            f'{prog} "%~dp0." --provider {provider}{key} --no-defer')
+        return f"{stem}.bat", content, False
     key = ' --key "$(dirname "$0")/pseudonym_key.xlsx"' if want_key else ""
     content = _bg_launcher_sh(
-        notes, f'{prog} "$(dirname "$0")" --provider {provider}{key}')
-    return "Re-run PDF-Linker.command", content, True
+        notes, f'{prog} "$(dirname "$0")" --provider {provider}{key} --no-defer')
+    return f"{stem}.command", content, True
+
+
+def _rerun_launcher_paths(folder):
+    """Both possible re-run launcher paths (see _deferred_launcher_paths)."""
+    return [folder / f"{_RERUN_LAUNCHER_STEM}.command",
+            folder / f"{_RERUN_LAUNCHER_STEM}.bat"]
+
+
+def _deferred_launcher_paths(folder):
+    """Both possible deferred-run launcher paths — a folder synced across OSes
+    may carry either the .command or the .bat."""
+    return [folder / f"{_DEFERRED_LAUNCHER_STEM}.command",
+            folder / f"{_DEFERRED_LAUNCHER_STEM}.bat"]
+
+
+def _remove_deferred_launcher(folder, log):
+    """Drop the deferred-run launcher, called once the re-run launcher that
+    supersedes it is safely on disk. The deferred one says "nothing here has
+    been processed yet", which stops being true the moment a run starts, and
+    two launchers side by side is one more thing to choose between. Removed
+    only AFTER the replacement is written, so a folder is never left with
+    neither. Best-effort; returns the names removed."""
+    removed = []
+    for path in _deferred_launcher_paths(folder):
+        try:
+            if path.exists():
+                path.unlink()
+                removed.append(path.name)
+        except OSError:
+            pass
+    if removed and log:
+        log.info(f"  Removed the deferred-run launcher (superseded): "
+                 f"{', '.join(removed)}")
+    return removed
+
+
+def _write_launcher_file(folder, name, content, make_exec):
+    """Write one launcher into `folder`, chmod'ing it where POSIX needs it."""
+    path = folder / name
+    path.write_text(content, encoding="utf-8", newline="")
+    if make_exec:
+        os.chmod(path, 0o755)
+    return path
 
 
 def _write_rerun_launcher(folder, provider, want_key, log):
@@ -23007,13 +23095,38 @@ def _write_rerun_launcher(folder, provider, want_key, log):
     name, content, make_exec = _rerun_launcher_spec(
         str(exe), str(script), provider, want_key, os.name == "nt", frozen=frozen)
     try:
-        path = folder / name
-        path.write_text(content, encoding="utf-8", newline="")
-        if make_exec:
-            os.chmod(path, 0o755)
+        _write_launcher_file(folder, name, content, make_exec)
         log.info(f"  Wrote one-click re-run launcher: {name}")
     except OSError as e:
         log.warning(f"  Could not write re-run launcher: {e}")
+        return False
+    # This run IS the deferred run happening, so the file that promised it has
+    # done its job.
+    _remove_deferred_launcher(folder, log)
+    return True
+
+
+def _write_deferred_launcher(folder, provider, want_key, log):
+    """Write the deferred-run launcher — the whole output of a deferred start.
+
+    Unlike the re-run launcher this is not best-effort furniture beside a
+    completed run: it is the only thing the run produced, so a failure to write
+    it is the failure of the run and is reported as one (False)."""
+    exe = _launcher_exe()
+    frozen = bool(getattr(sys, "frozen", False))
+    script = Path(__file__).resolve()
+    name, content, make_exec = _rerun_launcher_spec(
+        str(exe), str(script), provider, want_key, os.name == "nt",
+        frozen=frozen, deferred=True)
+    try:
+        _write_launcher_file(folder, name, content, make_exec)
+    except OSError as e:
+        log.error(f"  Could not write the run launcher: {e}. Nothing was "
+                  "processed and nothing was left to process it with — re-run "
+                  "with --no-defer, or fix this folder's permissions.")
+        return False
+    log.info(f"  Wrote the run launcher: {name}")
+    return True
 
 
 # ── Protected-vocabulary inventory ───────────────────────────────────────────
@@ -23631,6 +23744,21 @@ def main():
              "party/case/attorney names (from the E-Court key spreadsheet) and "
              "detected PII for stable fakes; the PDFs are never modified.",
     )
+    # Deferred start: write the one-click launcher and stop, so the folder can
+    # be moved before the work begins. Config `defer_run`; both launchers pass
+    # --no-defer, since a double-click is the operator asking to run NOW.
+    _dfr = parser.add_mutually_exclusive_group()
+    _dfr.add_argument(
+        "--defer", dest="defer", action="store_true", default=None,
+        help="Do not process the folder: write the one-click "
+             "'Run PDF-Linker' launcher into it and exit, so the folder can be "
+             "moved before the run starts (overrides the config file).",
+    )
+    _dfr.add_argument(
+        "--no-defer", dest="defer", action="store_false", default=None,
+        help="Process the folder now even if defer_run is on in the config "
+             "file. Both double-click launchers pass this.",
+    )
     _pnp = parser.add_mutually_exclusive_group()
     _pnp.add_argument(
         "--partial-names", dest="partial_names", action="store_true", default=None,
@@ -23762,6 +23890,58 @@ def main():
     else:
         log.info(f"Pseudonymization {'ON' if args.pseudonymize else 'OFF'} "
                  f"(from command line)")
+
+    # Deferred start: the folder is NOT processed. A one-click launcher is
+    # written into it and the run stops there, so the folder can be moved to
+    # where it belongs and the work started at its destination — the launcher
+    # targets its own directory, so it survives the move.
+    #
+    # Placed after the --fix-leaks branch (an operator who typed --fix-leaks is
+    # asking for that pass now, not for a launcher) and after the PyMuPDF check,
+    # so a machine that cannot do the work says so HERE rather than after the
+    # folder has been moved and the launcher double-clicked. Nothing is read,
+    # written or modified besides the launcher and this log.
+    if args.defer is None:
+        args.defer = _config_bool(cfg, "defer_run", False)
+        defer_src = _config_path().name
+    else:
+        defer_src = "command line"
+    if args.defer:
+        log.info(f"Deferred run (from {defer_src}): writing the one-click run "
+                 f"launcher instead of processing this folder.")
+        # Same rule the re-run launcher uses: pin --key only if the folder
+        # already has one, so a first run re-discovers it.
+        want_key = (args.pseudonymize
+                    and (folder / "pseudonym_key.xlsx").is_file())
+        # A folder that has ALREADY been processed carries its launcher under
+        # the accurate name, so refresh that one rather than adding a second
+        # file claiming nothing here has been done — the two say opposite
+        # things about the same folder, and only one of them can be true.
+        # Refreshing also re-arms it: a launcher written before --no-defer
+        # existed would defer again on every double-click.
+        if any(q.exists() for q in _rerun_launcher_paths(folder)):
+            log.info("  This folder has been processed before, so its existing "
+                     "re-run launcher is refreshed instead — same command, "
+                     "accurate name.")
+            ok = _write_rerun_launcher(folder, args.provider, want_key, log)
+        else:
+            ok = _write_deferred_launcher(folder, args.provider, want_key, log)
+        if not ok:
+            sys.exit(1)
+        n_pdf = len(_pdfs_in_folder(folder))
+        n_doc = len(_word_docs_in_folder(folder))
+        if n_pdf or n_doc:
+            log.info(f"  {n_pdf} PDF(s) and {n_doc} Word doc(s) are waiting; "
+                     f"nothing was read or modified. Move the folder, then "
+                     f"double-click the launcher to process it.")
+        else:
+            # Not an error: deferring is FOR the folder that is not ready yet,
+            # so a folder still being filled is the expected case. Say what the
+            # launcher will do rather than refusing to write one.
+            log.warning("  This folder holds no PDFs and no Word docs yet. The "
+                        "launcher is still written — it processes whatever the "
+                        "folder holds when it is double-clicked.")
+        sys.exit(0)
 
     # Subfolder (within each case folder) that the .txt exports are written to.
     text_subdir = cfg.get("text_subfolder", "").strip() or "Text Files"
