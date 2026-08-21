@@ -227,3 +227,101 @@ class TestLeaksColumn:
         # The flagged value is what the scrub did NOT replace, so it stands in
         # both halves — that is what makes the pair worth reading.
         assert "Ashely" in top and "Ashely" in bottom
+
+
+# ── the two halves describe ONE passage ──────────────────────────────────────
+# They were independent searches of two different bodies, and came apart two
+# ways: a different OCCURRENCE (the first prose occurrence of a value can sit
+# inside a protected citation, where it is never replaced, so the export half
+# went hunting) and a different amount of GROWTH (the span grows by whole
+# sentences under _PN_CONTEXT_MIN, so a fake shorter than the real value drops
+# its sentence under the floor and swallows the next one).
+
+def _key_quotes(names, body):
+    reg = P._PnFakeRegistry()
+    terms = P._pn_build_terms(list(names), [], [], registry=reg)
+    z = P.Pseudonymizer(terms, {}, registry=reg)
+    z.note_key_context(body, z.apply(body))
+    return z
+
+
+class TestOnePassage:
+    def test_a_shorter_fake_does_not_pull_in_the_next_sentence(self):
+        # The sentence clears the growth floor with the real value in it and
+        # falls under it with the shorter fake — so the export half used to
+        # grow and the original half did not.
+        z = _key_quotes(["Konstantinopoulos"],
+                        "====== Page 1 ======\n"
+                        " 1  Konstantinopoulos signed the lease in March 2024"
+                        " and moved in.\n"
+                        " 2  The rent was never paid. A notice was served.\n")
+        top = z._key_context["konstantinopoulos"]
+        bottom = z._key_context_scrubbed["konstantinopoulos"]
+        assert "The rent was never paid" not in bottom
+        assert bottom.count(".") == top.count(".")     # the same sentence
+
+    def test_an_occurrence_the_scrub_never_touched_has_no_second_half(self):
+        # "Stockton" is a party AND the first word of a cited decision. The
+        # citation is byte-preserved, so nothing in that passage was replaced:
+        # the honest export half is none at all, and the cell shows the
+        # document's sentence alone rather than an unrelated one from later.
+        z = _key_quotes(["Stockton"],
+                        "====== Page 1 ======\n"
+                        " 1  The court relied on Stockton Theatres, Inc. v."
+                        " Palermo (1956) 47\n"
+                        " 2  Cal.2d 469, 476. That case is not on point.\n"
+                        " 3  Defendant Stockton signed the lease in March.\n")
+        top = z._key_context["stockton"]
+        assert "Stockton Theatres" in top
+        assert not z._key_context_scrubbed.get("stockton")
+        cell = str(P._pn_context_cell(top, "Stockton",
+                                      z._key_context_scrubbed.get("stockton", ""),
+                                      "x"))
+        assert cell == top and P._PN_CONTEXT_RULE not in cell
+
+    def test_the_halves_come_from_one_document(self):
+        # Two documents, and only the SECOND has the party in prose the scrub
+        # replaced. The original half is claimed by the first document that
+        # quotes the value; the export half must not then be taken from
+        # another document's export, which is how one cell came to stack two
+        # sentences from two filings.
+        reg = P._PnFakeRegistry()
+        terms = P._pn_build_terms(["Roxane Estrada"], [], [], registry=reg)
+        z = P.Pseudonymizer(terms, {}, registry=reg)
+        doc_a = ("====== Page 1 ======\n"
+                 " 1  Estrada v. Roxane Estrada Holdings (2019) 40 Cal.App.5th"
+                 " 1, 9.\n")
+        doc_b = ("====== Page 1 ======\n"
+                 " 1  Roxane Estrada served the summons on the fourth of"
+                 " July at noon.\n")
+        z.note_key_context(doc_a, z.apply(doc_a))
+        z.note_key_context(doc_b, z.apply(doc_b))
+        top = z._key_context["roxane estrada"]
+        bottom = z._key_context_scrubbed.get("roxane estrada", "")
+        # Whatever each half is, they cannot be sentences of different files.
+        if bottom:
+            assert ("served the summons" in top) == ("served the summons"
+                                                     in bottom)
+
+    def test_a_site_restricts_the_search_to_its_own_lines(self):
+        parsed = P._pn_body_lines(
+            "====== Page 1 ======\n"
+            " 1  Alpha stood here. Beta stood there.\n"
+            " 2  Alpha also stood on the second line of the page.\n")
+        first, site = P._pn_context_hit(parsed, "Beta")
+        assert "Beta stood there" in first
+        # "Alpha" is on that line too, and on the next one: the site's lines
+        # are the only ones this search may use.
+        again, _ = P._pn_context_hit(parsed, "Alpha", within=site)
+        assert "second line" not in again
+        # ...and a value that is not in the passage at all yields nothing,
+        # rather than the nearest sentence somewhere else.
+        assert P._pn_context_hit(parsed, "Gamma", within=site)[0] == ""
+
+    def test_the_shape_form_keeps_the_growth_and_drops_the_lines(self):
+        # What --fix-leaks passes: its originals are ONE body while each export
+        # is its own, so "the same lines" means nothing there — but "the same
+        # number of sentences" still does.
+        site = (4, 6, 2, 1)
+        assert P._pn_quote_shape(site) == (None, None, 2, 1)
+        assert P._pn_quote_shape(None) is None
