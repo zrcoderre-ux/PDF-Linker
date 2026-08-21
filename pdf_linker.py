@@ -22279,11 +22279,12 @@ _CONFIG_TEMPLATE = (
     "# launcher is written into the folder and the run stops there, so you can\n"
     "# move the folder where it belongs first and start the work at its\n"
     "# destination with one click. The launcher processes the folder it sits\n"
-    "# in, so it keeps working after the move, and it is replaced by the usual\n"
-    "# \"Re-run PDF-Linker\" launcher as soon as the run it promises starts --\n"
-    "# a folder never carries both. A double-click always means RUN NOW: both\n"
-    "# launchers override this setting, or nothing would ever run. Applying\n"
-    "# leak fixes (--fix-leaks) is never deferred either.\n"
+    "# in, so it keeps working after the move (and with copy_to below, the\n"
+    "# copy gets one too -- either folder can be the one you run). It is\n"
+    "# replaced by the usual \"Re-run PDF-Linker\" launcher as soon as the run\n"
+    "# it promises starts, so a folder never carries both. A double-click\n"
+    "# always means RUN NOW: every launcher overrides this setting, or nothing\n"
+    "# would ever run. Applying leak fixes (--fix-leaks) is never deferred.\n"
     "defer_run = off\n"
     "\n"
     "# Copy the whole case folder somewhere? Empty (the default) means never.\n"
@@ -22293,23 +22294,28 @@ _CONFIG_TEMPLATE = (
     "# deleted, so a re-run REPLACES the copy with the current state (a file\n"
     "# you deleted from the case folder does stay behind in the copy).\n"
     "#\n"
-    "# WHEN it is copied follows defer_run above, and either way the case is\n"
-    "# processed ONCE -- never twice on the same machine:\n"
-    "#   defer_run = off  the copy is made at the END of the run. If the leak\n"
-    "#                    gate quarantined an export the copy WAITS, so the\n"
-    "#                    destination never receives a *.LEAK; Apply Leak Fixes\n"
-    "#                    makes it once the last leak is resolved.\n"
-    "#   defer_run = on   the copy is made at the START, and the one-click\n"
-    "#                    \"Run PDF-Linker\" launcher is written into the COPY\n"
-    "#                    rather than here -- so the folder is processed at its\n"
-    "#                    destination and this folder is left untouched. The\n"
-    "#                    case's Order*.xlsx party spreadsheet is copied in\n"
-    "#                    too (from Downloads if that is where it is), so the\n"
-    "#                    copy can do the full run on its own instead of\n"
-    "#                    falling back to whatever is newest in Downloads by\n"
-    "#                    the time it is clicked -- which may be another case.\n"
-    "# A folder that already IS the destination is never copied onto itself, so\n"
-    "# a re-run started inside the copy simply re-runs it.\n"
+    "# WHEN it is copied follows defer_run above, and BOTH folders end up with\n"
+    "# a launcher either way -- point copy_to at a synced folder (a local\n"
+    "# OneDrive one) and the case can be run or re-run from either computer:\n"
+    "#   defer_run = off  the copy is made at the END of the run, so it holds\n"
+    "#                    the exports, the key and a \"Re-run PDF-Linker\"\n"
+    "#                    launcher of its own. If the leak gate quarantined an\n"
+    "#                    export the copy WAITS, so the destination never\n"
+    "#                    receives a *.LEAK; Apply Leak Fixes makes it once the\n"
+    "#                    last leak is resolved.\n"
+    "#   defer_run = on   the copy is made at the START, and a \"Run\n"
+    "#                    PDF-Linker\" launcher goes into BOTH folders -- run\n"
+    "#                    whichever one you are at. The case's Order*.xlsx\n"
+    "#                    party spreadsheet is copied in too (from Downloads if\n"
+    "#                    that is where it is), so the copy can do the full run\n"
+    "#                    on its own instead of falling back to whatever is\n"
+    "#                    newest in Downloads by the time it is clicked --\n"
+    "#                    which may be another case.\n"
+    "# Every launcher runs the folder it SITS IN, so the two never work on the\n"
+    "# same files, and a folder that already IS the destination is never copied\n"
+    "# onto itself -- a re-run started inside the copy simply re-runs it.\n"
+    "# If the copy cannot be made, the run carries on exactly as it would with\n"
+    "# no copy_to set at all (deferred: this folder keeps its launcher).\n"
     "# copy_to = C:\\Users\\you\\Documents\\Cases\n"
     "\n"
     "# Subfolder (inside each case folder) that the .txt exports are written to.\n"
@@ -22984,7 +22990,7 @@ def _launcher_exe():
     return exe
 
 
-def _bg_launcher_bat(title, comment_lines, command):
+def _bg_launcher_bat(title, comment_lines, command, preamble=()):
     """A .bat that hands `command` to a DETACHED, MINIMIZED process and returns
     at once — the shape both launchers use, so the two cannot drift.
 
@@ -22994,23 +23000,92 @@ def _bg_launcher_bat(title, comment_lines, command):
     no window at all, and without it a console sits minimized for the run
     instead of in front of whatever the operator is doing.
 
-    Nothing is echoed and nothing is waited on: a window that closes in
-    milliseconds cannot be read anyway, and the feedback channel is the one the
-    folder already has — pdf_linker.log throughout, then a "DONE <time>.txt"
-    stamp when the run finishes."""
+    Nothing is echoed TO THE SCREEN and nothing is waited on: a window that
+    closes in milliseconds cannot be read anyway, and the feedback channel is
+    the one the folder already has — pdf_linker.log throughout, then a
+    "DONE <time>.txt" stamp when the run finishes. `preamble` is the resolve
+    step (see _launcher_resolve_bat), whose one echo goes to that same log and
+    never to the screen."""
     return ("@echo off\r\n"
             + "".join(f"REM {ln}\r\n" for ln in comment_lines)
+            + "".join(ln + "\r\n" for ln in preamble)
             + f'start "{title}" /min {command}\r\n'
             + "exit /b\r\n")
 
 
-def _bg_launcher_sh(comment_lines, command):
+def _bg_launcher_sh(comment_lines, command, preamble=()):
     """The POSIX mirror: run detached with nohup so the work survives the
     shell/Terminal window closing, and return immediately."""
     return ("#!/bin/sh\n"
             + "".join(f"# {ln}\n" for ln in comment_lines)
+            + "".join(ln + "\n" for ln in preamble)
             + f"nohup {command} >/dev/null 2>&1 &\n"
             + "exit 0\n")
+
+
+# A launcher records ABSOLUTE paths — the interpreter and this script — and the
+# folder it sits in now TRAVELS: `copy_to` puts a copy in OneDrive precisely so
+# the case can be worked from either machine, where Python and the tool may sit
+# somewhere else entirely (a different user profile is enough). So each launcher
+# resolves both at click time: the recorded path first, since it is right on the
+# machine that wrote it, then whatever is on PATH.
+#
+# And when the TOOL is not on this PC at all the launcher says so in the
+# folder's own log. `start` on a missing target flashes a window nobody can
+# read, which is indistinguishable from a double-click that did nothing — the
+# failure this project treats as the worst kind, because it sends the operator
+# back to click again.
+_LAUNCHER_PY_VAR = "PDFLINKER_PY"
+_LAUNCHER_APP_VAR = "PDFLINKER_APP"
+_LAUNCHER_MISSING_NOTE = (
+    "PDF-Linker is not installed on this computer at the recorded path - open "
+    "this folder on the computer where PDF-Linker is installed, or install it "
+    "there and click again.")
+
+
+def _launcher_resolve_bat(exe, app):
+    """(preamble lines, program) for a .bat — `app` None means a frozen build,
+    where the exe IS the entry point and there is no script to run."""
+    py, ap = f"%{_LAUNCHER_PY_VAR}%", f"%{_LAUNCHER_APP_VAR}%"
+    pre = []
+    if app is None:
+        pre.append(f'set "{_LAUNCHER_APP_VAR}={exe}"')
+        prog = f'"{ap}"'
+    else:
+        pre.append(f'set "{_LAUNCHER_PY_VAR}={exe}"')
+        # A windowless pythonw keeps the run off the screen; falling back to it
+        # by NAME lets the PATH answer on a machine that installed Python
+        # somewhere else.
+        pre.append(f'if not exist "{py}" set "{_LAUNCHER_PY_VAR}=pythonw.exe"')
+        pre.append(f'set "{_LAUNCHER_APP_VAR}={app}"')
+        prog = f'"{py}" "{ap}"'
+    pre.append(f'if not exist "{ap}" (')
+    # The redirect leads the line so a trailing space cannot join the filename,
+    # and the message carries no parenthesis — one would close this block.
+    pre.append(f'>>"%~dp0pdf_linker.log" echo {_LAUNCHER_MISSING_NOTE}')
+    pre.append("exit /b 1")
+    pre.append(")")
+    return pre, prog
+
+
+def _launcher_resolve_sh(exe, app):
+    """The POSIX mirror of _launcher_resolve_bat."""
+    py, ap = f'"${_LAUNCHER_PY_VAR}"', f'"${_LAUNCHER_APP_VAR}"'
+    pre = []
+    if app is None:
+        pre.append(f'{_LAUNCHER_APP_VAR}="{exe}"')
+        prog = ap
+    else:
+        pre.append(f'{_LAUNCHER_PY_VAR}="{exe}"')
+        pre.append(f'[ -x {py} ] || {_LAUNCHER_PY_VAR}=python3')
+        pre.append(f'{_LAUNCHER_APP_VAR}="{app}"')
+        prog = f"{py} {ap}"
+    pre.append(f'if [ ! -e {ap} ]; then')
+    pre.append(f'echo "{_LAUNCHER_MISSING_NOTE}" '
+               f'>>"$(dirname "$0")/pdf_linker.log"')
+    pre.append("exit 1")
+    pre.append("fi")
+    return pre, prog
 
 
 # The two launcher names. A folder that has been PROCESSED carries "Re-run
@@ -23036,7 +23111,6 @@ def _rerun_launcher_spec(exe, script, provider, want_key, windows,
     `deferred` True is the first-run launcher a DEFERRED start leaves behind:
     the same command under the other name, and built here rather than in a spec
     of its own so the two cannot drift on the flags that matter."""
-    prog = f'"{exe}"' if frozen else f'"{exe}" "{script}"'
     if deferred:
         title = "PDF-Linker run"
         notes = ["PDF-Linker - double-click to process this folder in the",
@@ -23061,15 +23135,20 @@ def _rerun_launcher_spec(exe, script, provider, want_key, windows,
     # `defer_run = on` in the config. Without it, that setting would make every
     # double-click rewrite the launcher and exit — the deferral could never end,
     # and the folder would never be processed by any route the operator has.
+    app = None if frozen else script
     if windows:
+        pre, prog = _launcher_resolve_bat(exe, app)
         key = ' --key "%~dp0pseudonym_key.xlsx"' if want_key else ""
         content = _bg_launcher_bat(
             title, notes,
-            f'{prog} "%~dp0." --provider {provider}{key} --no-defer')
+            f'{prog} "%~dp0." --provider {provider}{key} --no-defer',
+            preamble=pre)
         return f"{stem}.bat", content, False
+    pre, prog = _launcher_resolve_sh(exe, app)
     key = ' --key "$(dirname "$0")/pseudonym_key.xlsx"' if want_key else ""
     content = _bg_launcher_sh(
-        notes, f'{prog} "$(dirname "$0")" --provider {provider}{key} --no-defer')
+        notes, f'{prog} "$(dirname "$0")" --provider {provider}{key} --no-defer',
+        preamble=pre)
     return f"{stem}.command", content, True
 
 
@@ -23134,6 +23213,27 @@ def _write_rerun_launcher(folder, provider, want_key, log):
     # done its job.
     _remove_deferred_launcher(folder, log)
     return True
+
+
+def _start_launcher_want_key(folder, pseudonymize=True):
+    """Whether a launcher for `folder` should pin --key: only once that folder
+    has a key of its own (on a first run it does not, and the re-run
+    re-discovers it). Asked of the folder the launcher will SIT IN, since that
+    is the folder `%~dp0` resolves to."""
+    return bool(pseudonymize and (folder / "pseudonym_key.xlsx").is_file())
+
+
+def _write_start_launcher(folder, provider, want_key, log):
+    """Give `folder` the one launcher it should have.
+
+    A folder that has been PROCESSED carries "Re-run PDF-Linker"; one that has
+    not carries "Run PDF-Linker". Refreshing the re-run launcher where it
+    already exists also re-arms it (a launcher written before --no-defer would
+    defer again on every double-click), and writing either one drops the other,
+    so a folder never carries two files saying opposite things about it."""
+    if any(q.exists() for q in _rerun_launcher_paths(folder)):
+        return _write_rerun_launcher(folder, provider, want_key, log)
+    return _write_deferred_launcher(folder, provider, want_key, log)
 
 
 def _write_deferred_launcher(folder, provider, want_key, log):
@@ -23318,7 +23418,20 @@ def _copy_party_template(folder, dest, args, log):
     return target
 
 
-def _copy_folder_after_run(folder, dest_root, log, hold=None):
+def _arm_copy_launcher(dest, provider, log):
+    """Give a freshly-made copy its own working launcher.
+
+    The copy inherits the source's, which already targets its own directory —
+    but the destination is a place a case may have been run before, and a
+    launcher it kept from THEN says the opposite of the one just copied in.
+    Writing it here settles which name is true of the copy and drops the other,
+    so both folders end up with exactly one launcher and either machine can run
+    the case. Best-effort: the copy is already made either way."""
+    return _write_start_launcher(dest, provider,
+                                 _start_launcher_want_key(dest), log)
+
+
+def _copy_folder_after_run(folder, dest_root, log, hold=None, provider=None):
     """The end-of-run copy. `hold` is what is holding the folder back — a
     quarantined export, an unreversible fake — and naming one DEFERS the copy
     instead of making it.
@@ -23333,7 +23446,10 @@ def _copy_folder_after_run(folder, dest_root, log, hold=None):
     if hold:
         log.info(f"  Not copying this folder to {dest_root} yet: {hold}")
         return None
-    return _copy_folder_out(folder, dest_root, log)
+    dest = _copy_folder_out(folder, dest_root, log)
+    if dest is not None and dest != Path(folder).resolve():
+        _arm_copy_launcher(dest, provider or "lexis", log)
+    return dest
 
 
 # ── Protected-vocabulary inventory ───────────────────────────────────────────
@@ -23584,6 +23700,7 @@ def _fix_leaks_mode(folder, args, cfg, log):
         # than being silently skipped by an early return.
         _copy_folder_after_run(
             folder, _copy_dest_root(cfg, args, log), log,
+            provider=getattr(args, "provider", "lexis"),
             hold="the export(s) are still quarantined — nothing was applied.")
         return 0
     if not fix_terms:
@@ -23894,6 +24011,7 @@ def _fix_leaks_mode(folder, args, cfg, log):
     # keeps waiting for the same reason it waited the first time.
     _copy_folder_after_run(
         folder, _copy_dest_root(cfg, args, log), log,
+        provider=getattr(args, "provider", "lexis"),
         hold=(f"{still} export(s) still carry a party-name leak — triage them "
               f"in LEAKS.xlsx and run this again." if still else None))
     return 2 if still else 0
@@ -24151,56 +24269,51 @@ def main():
     if args.defer:
         log.info(f"Deferred run (from {defer_src}): writing the one-click run "
                  f"launcher instead of processing this folder.")
-        # With a destination configured the copy is made FIRST and the launcher
-        # goes into the COPY — not here. That is the whole point of pairing the
-        # two settings: the folder ends up where it belongs and exactly one
-        # copy of the case is runnable, so it cannot be processed twice on this
-        # machine under two different keys. The copy is made before the
-        # launcher is written, so the launcher is the one thing the copy does
-        # not inherit from the source.
-        target = folder
-        if copy_root:
-            dest = _copy_folder_out(folder, copy_root, log)
-            if dest is None:
-                # The copy was where the work was going to happen. Leaving the
-                # launcher here instead would process the source — the double
-                # run this pairing exists to prevent — so the run fails
-                # outright and says why.
-                log.error("  Deferred run ABANDONED: nothing was copied and no "
-                          "launcher was written. Fix the copy_to destination "
-                          "(or pass --no-copy) and start the run again.")
-                sys.exit(1)
-            target = dest
-            # A copy that cannot resolve this case's parties is not a copy that
-            # can do the full run it is being handed, so the party spreadsheet
-            # goes with it.
-            _copy_party_template(folder, target, args, log)
-        # Same rule the re-run launcher uses: pin --key only if the folder
-        # already has one, so a first run re-discovers it.
-        want_key = (args.pseudonymize
-                    and (target / "pseudonym_key.xlsx").is_file())
-        # A folder that has ALREADY been processed carries its launcher under
-        # the accurate name, so refresh that one rather than adding a second
-        # file claiming nothing here has been done — the two say opposite
-        # things about the same folder, and only one of them can be true.
-        # Refreshing also re-arms it: a launcher written before --no-defer
-        # existed would defer again on every double-click.
-        if any(q.exists() for q in _rerun_launcher_paths(target)):
-            log.info("  This folder has been processed before, so its existing "
-                     "re-run launcher is refreshed instead — same command, "
-                     "accurate name.")
-            ok = _write_rerun_launcher(target, args.provider, want_key, log)
-        else:
-            ok = _write_deferred_launcher(target, args.provider, want_key, log)
+        # The launcher goes in THIS folder first, and — with a destination
+        # configured — in the copy as well. BOTH, because the destination is a
+        # local folder that syncs to the operator's other machine: the case
+        # should be startable from whichever one they are sitting at. Every
+        # launcher runs the folder it sits in (`%~dp0`), so the two never
+        # compete for the same files, and the fakes do not diverge if both are
+        # eventually run — they are seeded on the real values, so the same
+        # documents and the same party list mint the same key either way.
+        ok = _write_start_launcher(
+            folder, args.provider,
+            _start_launcher_want_key(folder, args.pseudonymize), log)
         if not ok:
             sys.exit(1)
+        target = None
+        if copy_root:
+            # The copy is made AFTER the launcher, so it inherits one already;
+            # it is then written again below, because the destination may carry
+            # a launcher of its own from an earlier run and only one of the two
+            # names can be true of it.
+            dest = _copy_folder_out(folder, copy_root, log)
+            if dest is None:
+                # A copy that could not be made is simply a run with no
+                # destination: this folder already has its launcher, so the
+                # deferral still works — it is the copy that did not happen,
+                # and the log above says why.
+                log.warning("  Continuing as a deferred run with no copy: the "
+                            "launcher in this folder still processes it. Fix "
+                            "the copy_to destination and start the run again "
+                            "to place a copy.")
+            elif dest != folder:
+                # A copy that cannot resolve this case's parties is not a copy
+                # that can do the full run it is being handed, so the party
+                # spreadsheet goes with it.
+                _copy_party_template(folder, dest, args, log)
+                _write_start_launcher(
+                    dest, args.provider,
+                    _start_launcher_want_key(dest, args.pseudonymize), log)
+                target = dest
         n_pdf = len(_pdfs_in_folder(folder))
         n_doc = len(_word_docs_in_folder(folder))
-        if target != folder:
+        if target is not None:
             log.info(f"  {n_pdf} PDF(s) and {n_doc} Word doc(s) were copied to "
-                     f"{target}, and the launcher is there. This folder was "
-                     f"only read — double-click the launcher in the COPY to "
-                     f"process the case.")
+                     f"{target}. Both folders now have a launcher: process the "
+                     f"case from whichever machine you are at — nothing has "
+                     f"been processed yet in either.")
         elif n_pdf or n_doc:
             log.info(f"  {n_pdf} PDF(s) and {n_doc} Word doc(s) are waiting; "
                      f"nothing was read or modified. Move the folder, then "
@@ -24801,7 +24914,7 @@ def main():
               f"value(s) with --term, or clear the KEEP decision that dropped "
               f"the row.")
         _copy_folder_after_run(
-            folder, copy_root, log,
+            folder, copy_root, log, provider=args.provider,
             hold=(f"{len(pseudonymizer.unreversible)} replacement(s) in these "
                   f"exports cannot be reversed. Fix the key and re-run; the "
                   f"copy is made when the run comes out clean."))
@@ -24868,7 +24981,7 @@ def main():
                   f"delivered).{extra} Add the survivor(s) with --term and "
                   f"re-run.")
             _copy_folder_after_run(
-                folder, copy_root, log,
+                folder, copy_root, log, provider=args.provider,
                 hold=(f"{len(quarantined)} export(s) are quarantined for "
                       f"triage. The destination must never receive a *.LEAK, "
                       f"so the copy is made when Apply Leak Fixes releases "
@@ -24884,7 +24997,7 @@ def main():
     # exports, the key, the worksheet, the launchers and the DONE stamp — the
     # folder as the operator would find it. A re-run copies again and replaces
     # what is there, which is how a correction reaches the destination.
-    _copy_folder_after_run(folder, copy_root, log)
+    _copy_folder_after_run(folder, copy_root, log, provider=args.provider)
 
 
 if __name__ == "__main__":

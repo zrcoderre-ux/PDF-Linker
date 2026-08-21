@@ -2387,6 +2387,21 @@ Rewritten whole every run and REMOVED when a folder cites nothing, so it never
 describes a batch that has moved on, and it carries nothing volatile so an
 unchanged folder reproduces it.
 
+**A launcher RESOLVES its paths when it is clicked, and says so when it
+can't** (`_launcher_resolve_bat` / `_launcher_resolve_sh`). A launcher records
+the absolute interpreter and script paths of the machine that wrote it, and
+`copy_to` now sends the folder to a synced destination precisely so the case
+can be worked from the other machine — where Python and the tool may sit
+somewhere else entirely (a different user profile is enough). So each launcher
+tries the recorded path first, since it is right on the machine that wrote it,
+then falls back to the PATH (`pythonw.exe` / `python3`). And when the TOOL
+itself is not on that PC, the launcher writes one line into the folder's own
+`pdf_linker.log` and exits: `start` on a missing target flashes a window nobody
+can read, which is indistinguishable from a double-click that did nothing — the
+failure `_install_crash_logging` exists for, arriving one level further out. It
+is the only `echo` in either launcher and it is redirected to that log, never to
+the screen.
+
 **Both launchers run the work DETACHED AND MINIMIZED** and return at once
 (`_bg_launcher_bat` / `_bg_launcher_sh`, shared so the pair cannot drift). The
 re-run was already detached but echoed a five-line banner and sat on a
@@ -2426,9 +2441,11 @@ launcher targets its own directory (`%~dp0`), which is what makes it survive
 the move. Its own name is the state of the folder: `Run` while nothing has been
 processed, `Re-run` afterwards, and `_write_rerun_launcher` drops the deferred
 one the moment the run it promised begins (`_remove_deferred_launcher`, AFTER
-the replacement is on disk, so a folder is never left with neither). Deferring
-a folder that has already been run refreshes the `Re-run` launcher instead of
-adding a second file, since the two say opposite things about one folder.
+the replacement is on disk, so a folder is never left with neither).
+`_write_start_launcher` is the one place that decides WHICH of the two a folder
+should carry — refresh the `Re-run` one where it exists, else write the `Run`
+one — so deferring a folder that has already been run never adds a second file
+saying the opposite about it.
 **Both** launchers pass `--no-defer`, and that is the rule the feature stands
 on: a double-click IS the operator asking to run this folder NOW, so under
 `defer_run = on` a launcher without it would only rewrite itself and exit — the
@@ -2454,15 +2471,32 @@ the usual one, and losing the other 40 files to it would be absurd).
 
 **WHEN it is copied is the whole design, and it follows `defer_run`.** With
 deferral OFF the copy is made LAST, so it carries the exports, the key, the
-worksheet, the launchers and the DONE stamp — the folder as the operator would
-find it — and a re-run copies again, which is how a correction reaches the
-destination. With deferral ON the copy is made FIRST and the launcher is
-written into the COPY, not the source, so the source is left exactly as found:
-one runnable folder, at the destination. That pairing is the point — the same
-case processed twice on one machine writes two keys and two sets of fakes for
-one filing. If the copy fails there, the run is ABANDONED (exit 1) rather than
-falling back to a launcher in the source, which would process the very folder
-the pairing exists to leave alone.
+worksheet and the DONE stamp — the folder as the operator would find it — and a
+re-run copies again, which is how a correction reaches the destination. With
+deferral ON the copy is made FIRST, before anything has been processed.
+
+**BOTH folders end up with a launcher, and that is deliberate.** The
+destination is a local folder that SYNCS (a OneDrive one), so the copy is how
+the case reaches the operator's other machine: whichever one they are sitting
+at has to be able to start the run. A deferred start therefore writes the `Run`
+launcher here AND in the copy, and every completed run leaves a `Re-run`
+launcher in both — the copy inherits the source's (it is written before the
+copy is made) and `_arm_copy_launcher` writes it again at the destination,
+because a folder that was a deferred target earlier still carries the `Run`
+launcher from THEN, and only one of the two names can be true of it. Two
+launchers cost nothing because each runs the folder it SITS IN (`%~dp0`), so
+they never touch the same files; and if both are eventually run the fakes do
+not diverge — they are seeded on the real values, so the same documents and the
+same party list mint the same key on either machine. An earlier version wrote
+the deferred launcher only into the copy, to keep exactly one folder runnable;
+that is the opposite of what a synced destination is for.
+
+**A copy that cannot be made is just a run with no destination.** It falls back
+to precisely what `defer_run` alone would have done — the source keeps its
+launcher, the deferral still works, the log says what failed — rather than
+failing the run. (It once exited 1 on the ground that the launcher had gone
+into the copy and nothing was left here; with a launcher in both folders there
+is nothing to abandon.)
 
 **A held folder is not copied.** A run that quarantines an export has decided
 the folder is not deliverable, so `_copy_folder_after_run(hold=…)` names what is
