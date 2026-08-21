@@ -72,10 +72,10 @@ def test_the_key_carries_a_context_column_beside_the_replacement(tmp_path):
 
     hdr, _r = _rows(key)[0]
     assert hdr[:2] == list(P._PN_KEY_FINGERPRINT), hdr
-    # The two Context columns sit at C and D (original first), at the owner's
-    # direction, and the Replacement follows the evidence that justifies it.
-    assert hdr[2] == "Context" and hdr[3] == "Scrubbed Context", hdr
-    assert hdr == ["Category", "Real Value", "Context", "Scrubbed Context",
+    # ONE Context column at C, holding both sentences stacked (original on
+    # top), and the Replacement follows the evidence that justifies it.
+    assert hdr[2] == "Context", hdr
+    assert hdr == ["Category", "Real Value", "Context",
                    "Replacement", "Status", "Source", "Occurrences"], hdr
 
 

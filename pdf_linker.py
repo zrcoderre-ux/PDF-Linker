@@ -11250,12 +11250,19 @@ def _pn_terms_from_xlsx(path, extra_name_headers, log):
 # anything genuinely new in this file gets a fresh fake that can't collide with
 # one already in the key. The written-back key carries every loaded row forward
 # plus the new ones, so it never shrinks.
-_PN_KEY_HEADERS = ("Category", "Real Value", "Context", "Scrubbed Context",
+_PN_KEY_HEADERS = ("Category", "Real Value", "Context",
                    "Replacement", "Status", "Source", "Occurrences")
-# The two Context columns sit at C and D, at the owner's direction: the row is
-# read left to right as evidence — the value, the sentence it stood in
-# (ORIGINAL, column C), the sentence its fake now stands in (the export,
-# column D) — and only then the Replacement the evidence justifies.
+# ONE Context column, at C, holding BOTH sentences stacked — the original on
+# top, then a rule, then the sentence the export now carries (`_pn_context_cell`
+# has the layout and the reasoning). The row still reads left to right as
+# evidence: the value, the sentence(s) it stands in, and only then the
+# Replacement the evidence justifies.
+#
+# One CELL and not one column each, at the owner's direction: the pair is read
+# as a single thing, and side by side it costs two wide columns and a lot of
+# sideways travel. One cell and not two ROWS for a harder reason — this sheet is
+# read by other programs a row at a time, and a second row per binding would
+# make every one of them read a phantom party.
 #
 # Safe to insert rather than append, which is worth stating because the reverse
 # is the obvious fear. `DeAnonymize.bas` does NOT read this sheet positionally —
@@ -11271,10 +11278,10 @@ _PN_KEY_FINGERPRINT = ("Category", "Real Value")
 # Column widths, in Excel's unit: how many "0" glyphs of the default font fit.
 # Real Value and Replacement are the two the operator reads across, so they get
 # room for an ordinary party name without being widened by hand on every
-# workbook; Context is a whole SENTENCE and gets the width a sentence needs
-# (the scrubbed twin a little less — it corroborates, it is not the evidence).
-# Positional, so it must stay in step with _PN_KEY_HEADERS.
-_PN_KEY_WIDTHS = (14, 30, 120, 80, 30, 14, 16, 12)
+# workbook; Context is a whole SENTENCE — two of them, stacked — and gets the
+# width a sentence needs. Positional, so it must stay in step with
+# _PN_KEY_HEADERS.
+_PN_KEY_WIDTHS = (14, 30, 120, 30, 14, 16, 12)
 # The regex-detector categories: in the batch these were computed live at
 # priority 3, so a loaded literal must sit ABOVE that to reproduce the exact
 # stored fake instead of letting the detector recompute a different one.
@@ -11553,15 +11560,23 @@ def _pn_key_context_on_disk(path):
             if "real value" not in header or "context" not in header:
                 continue
             rv, cx = header.index("real value"), header.index("context")
+            # A key written while the two quotes had a column each still reads:
+            # its second column is taken as-is, and a merged cell is SPLIT back
+            # at its rule, so either layout round-trips into the same pair.
             sx = (header.index("scrubbed context")
                   if "scrubbed context" in header else None)
             for row in rows:
                 if len(row) <= max(rv, cx) or not row[rv]:
                     continue
+                rl = str(row[rv]).lower()
                 if row[cx]:
-                    out.setdefault(str(row[rv]).lower(), str(row[cx]))
+                    original, export = _pn_context_split(row[cx])
+                    if original:
+                        out.setdefault(rl, original)
+                    if export:
+                        out_scrubbed.setdefault(rl, export)
                 if sx is not None and len(row) > sx and row[sx]:
-                    out_scrubbed.setdefault(str(row[rv]).lower(), str(row[sx]))
+                    out_scrubbed.setdefault(rl, str(row[sx]))
         wb.close()
     except Exception:
         return out, out_scrubbed
@@ -16552,13 +16567,15 @@ class Pseudonymizer:
         ws.title = "Pseudonym Key"
         ws.append(headers)
         def _sheet_row(r):
-            # Column order follows _PN_KEY_HEADERS: the ORIGINAL sentence is
-            # bolded on the real value, the export's sentence on the fake —
-            # each quote highlights the word it was searched by.
+            # Column order follows _PN_KEY_HEADERS. The one Context cell stacks
+            # both sentences, each bolded on the word it was searched by — the
+            # real value in the document's own sentence, the fake in the
+            # export's — and collapses to the original alone when the two say
+            # the same thing.
             return _pn_xl_row(
                 [r["category"], r["real"],
-                 _pn_rich_context(row_context(r), r["real"]),
-                 _pn_rich_context(row_context_scrubbed(r), r["fake"]),
+                 _pn_context_cell(row_context(r), r["real"],
+                                  row_context_scrubbed(r), r["fake"]),
                  r["fake"], row_status(r), r["source"], r["count"]])
 
         for r in applied:
@@ -18724,11 +18741,12 @@ _PN_LEAK_COLUMNS = (
     # the decision is made ON: "Charge" is boilerplate in "CHARGE OF
     # DISCRIMINATION" and a surname in "served on Charge at his residence", and
     # without it the operator had to open the export and find the page to tell.
-    # ORIGINAL text at C, the export's own sentence at D — the operator reads
-    # the pair side by side (what the document said, what the deliverable now
-    # says), at the owner's direction; the key's C/D columns mirror it.
+    # ONE cell holding both: the ORIGINAL sentence on top, then a rule, then
+    # the sentence the export now carries — what the document said above what
+    # the deliverable says, read as the single thing it is rather than across
+    # two wide columns (`_pn_context_cell`). The key's Context column mirrors
+    # it. Where the two are the same, the original stands alone.
     ("Context", "context", 120),
-    ("Scrubbed Context", "scrubbed_context", 80),
     ("File", "file", 20),
     ("Type", "type", 22),
     ("Where (page:line)", "where", 30),
@@ -19668,12 +19686,29 @@ def _pn_rich_context(quote, value):
     finding, where the quote is the nearest readable sentence rather than one
     containing the value verbatim). A Context cell that is merely unbolded is a
     cosmetic loss; one that raises would cost the operator the worksheet."""
+    runs = _pn_context_runs(quote, value)
+    if isinstance(runs, str):
+        return runs
+    try:
+        from openpyxl.cell.rich_text import CellRichText
+        return CellRichText(runs)
+    except Exception:
+        return "".join(str(r) for r in runs)
+
+
+def _pn_context_runs(quote, value):
+    """The rich-text RUNS for one quote with `value` bolded — or the plain
+    string when it cannot be styled.
+
+    Split out from `_pn_rich_context` because one Context cell now holds TWO
+    quotes (see `_pn_context_cell`) and the bolding rule must be the same for
+    both. All the reasoning above lives here."""
     text = _pn_xl_text(str(quote or ""))
     needle = _pn_xl_text(str(value or ""))
     if not text or not needle:
         return text
     try:
-        from openpyxl.cell.rich_text import CellRichText, TextBlock
+        from openpyxl.cell.rich_text import TextBlock
         from openpyxl.cell.text import InlineFont
     except ImportError:
         return text
@@ -19697,10 +19732,73 @@ def _pn_rich_context(quote, value):
         parts.append(tail)
     elif tail:
         parts[-1] = TextBlock(bold, str(parts[-1]) + tail)
+    return parts
+
+
+# The rule between the two quotes of one Context cell. The ORIGINAL sentence is
+# always on top and needs no label — it is the document's own text, and it is
+# the only block when the two are the same. What the rule names is the block
+# BELOW it, which is the one a reader could otherwise mistake for more of the
+# document.
+#
+# It is also the seam the cell is SPLIT on when a later run reads its own key
+# back (`_pn_key_context_on_disk`), so it has to be a line nothing else
+# produces: `_pn_context` quotes prose from the documents, and no filing
+# contains a line of em-dashes around a bare word.
+_PN_CONTEXT_RULE = "———— EXPORT ————"
+
+
+def _pn_context_split(cell):
+    """(original, export) out of a stored Context cell — the inverse of
+    `_pn_context_cell`. A cell written before the two were merged, or one whose
+    quotes were identical, has no rule in it and is all original."""
+    text = str(cell or "")
+    for line in (_PN_CONTEXT_RULE,):
+        head, sep, tail = text.partition("\n" + line + "\n")
+        if sep:
+            return head, tail
+    return text, ""
+
+
+def _pn_context_cell(original, orig_value, export, export_value):
+    """ONE Context cell holding both sentences: the ORIGINAL on top, then a
+    rule, then the sentence the EXPORT now carries.
+
+    Stacked in one cell rather than spread over two columns, at the owner's
+    direction: the pair is read as one thing — what the document said, what the
+    deliverable says — and side by side that means two wide columns and a lot of
+    sideways travel. It could not be two ROWS either, whatever the layout gains:
+    `pseudonym_key.xlsx` is read by other programs a row at a time, and a second
+    row per binding would make every one of them read a phantom party.
+
+    **Identical quotes collapse to one block.** Most rows are: the value stands
+    in a sentence nothing else in it was faked, so the two quotes are the same
+    string, and printing it twice would be a cell of noise that hides the rows
+    where the pair really does differ. Compared on the text itself, not on
+    whether anything WAS replaced, because that is the question the reader is
+    actually asking of the cell.
+
+    Each block is bolded on the word it was searched by — the real value above,
+    the fake below — which is what makes the pair legible at a glance: the eye
+    lands on the two words and reads outward from them."""
+    top = _pn_context_runs(original, orig_value)
+    if not original:
+        # Nothing to sit above: the export's sentence stands alone rather than
+        # under an empty block with a rule over it.
+        return _pn_rich_context(export, export_value)
+    if not export or str(export).strip() == str(original).strip():
+        return _pn_rich_context(original, orig_value)
+    bottom = _pn_context_runs(export, export_value)
+    rule = "\n" + _PN_CONTEXT_RULE + "\n"
+    if isinstance(top, str) or isinstance(bottom, str):
+        # One of them could not be styled (no rich text, or a value absent from
+        # its own quote); the cell is still worth having, plain.
+        return (_pn_xl_text(str(original)) + rule + _pn_xl_text(str(export)))
     try:
-        return CellRichText(parts)
+        from openpyxl.cell.rich_text import CellRichText
+        return CellRichText(list(top) + [rule] + list(bottom))
     except Exception:
-        return text
+        return _pn_xl_text(str(original)) + rule + _pn_xl_text(str(export))
 
 
 def _pn_wrap_sheet(ws):
@@ -20110,12 +20208,14 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
     ws.title = _PN_LEAK_SHEET
     ws.append(list(_PN_LEAK_HEADERS))
     for r in rows:
-        # The flagged value is bolded inside its own quotes — both of them, it
-        # stands verbatim in each — so the row is answerable at a glance; the
-        # Value column keeps the ordinary font.
+        # The flagged value is bolded in both halves of the Context cell — it
+        # stands verbatim in each, being precisely the thing the scrub did NOT
+        # replace — so the row is answerable at a glance; the Value column keeps
+        # the ordinary font.
         ws.append(_pn_xl_row(
-            [_pn_rich_context(r.get(key, ""), r.get("value", ""))
-             if key in ("context", "scrubbed_context") else r.get(key, "")
+            [_pn_context_cell(r.get("context", ""), r.get("value", ""),
+                              r.get("scrubbed_context", ""), r.get("value", ""))
+             if key == "context" else r.get(key, "")
              for _hdr, key, _w in _PN_LEAK_COLUMNS]))
     for i, (_hdr, _key, width) in enumerate(_PN_LEAK_COLUMNS, start=1):
         ws.column_dimensions[get_column_letter(i)].width = width

@@ -58,8 +58,7 @@ def test_worksheet_has_fix_column_and_severity_order(tmp_path):
     wb = openpyxl.load_workbook(xp)
     assert wb.active.title == "LEAKS"
     rows = list(wb.active.iter_rows(values_only=True))
-    assert rows[0] == ("Value", "Fix? (yes/no)", "Context",
-                       "Scrubbed Context", "File", "Type",
+    assert rows[0] == ("Value", "Fix? (yes/no)", "Context", "File", "Type",
                        "Where (page:line)", "Notes")
     body = _sheet(xp)
     # real leaks first, then map-inverting REID, then ordinary review
@@ -413,8 +412,7 @@ def test_the_column_sits_between_the_decision_and_the_file(tmp_path):
     ], log)
     rows = list(openpyxl.load_workbook(tmp_path / "LEAKS.xlsx")
                 .active.iter_rows(values_only=True))
-    assert rows[0][:5] == ("Value", "Fix? (yes/no)", "Context",
-                           "Scrubbed Context", "File")
+    assert rows[0][:4] == ("Value", "Fix? (yes/no)", "Context", "File")
     assert rows[1][2] == "served on Charge at his residence"
 
 
