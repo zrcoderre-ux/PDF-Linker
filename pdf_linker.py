@@ -22314,6 +22314,15 @@ _CONFIG_TEMPLATE = (
     "# Every launcher runs the folder it SITS IN, so the two never work on the\n"
     "# same files, and a folder that already IS the destination is never copied\n"
     "# onto itself -- a re-run started inside the copy simply re-runs it.\n"
+    "#\n"
+    "# And the copy can be the folder that is AHEAD: if you deferred here, ran\n"
+    "# the case on the other computer, and come back to this folder, starting\n"
+    "# the tool here BRINGS THAT RUN BACK -- exports, key, worksheet -- instead\n"
+    "# of doing the case a second time. It takes a file only when this folder\n"
+    "# has an older version or none, so decisions you typed here are never\n"
+    "# overwritten, and it never deletes anything, so a document only this\n"
+    "# folder has survives and is processed by the run that follows. A copy\n"
+    "# showing a run in progress (or one that stopped part-way) is left alone.\n"
     "# If the copy cannot be made, the run carries on exactly as it would with\n"
     "# no copy_to set at all (deferred: this folder keeps its launcher).\n"
     "# copy_to = C:\\Users\\you\\Documents\\Cases\n"
@@ -23356,6 +23365,138 @@ def _copy_folder_out(folder, dest_root, log):
     return dest
 
 
+# ── ...and the copy can be the one that is AHEAD ─────────────────────────────
+# The destination syncs, so the case may have been RUN over there: deferred on
+# this machine, copied out, and processed at the other one. Coming back to the
+# source folder afterwards, re-running it is the expensive way to obtain files
+# that already exist a folder away — and the folder's own run markers say so.
+# So the start of every run asks whether the copy finished a run this folder
+# has not, and brings it back if it did.
+#
+# The MARGIN is for the clocks: the two folders are stamped by two machines, and
+# `shutil.copy2` preserves mtimes, so a copy this folder pushed carries this
+# machine's own stamp and reads as exactly equal. Only a copy that finished
+# meaningfully later counts as ahead. A skewed clock is the residual, and it
+# fails the safe way in one direction (a slow clock at the other machine simply
+# means no pull-back) and is caught per-file in the other, since nothing here
+# ever replaces a file this folder holds a newer version of.
+_COPY_AHEAD_MARGIN = 120.0
+
+
+def _marker_mtime(folder, prefix):
+    """When the newest run marker of that kind was written, or None.
+
+    Zero-byte only, exactly as `_clear_eta_markers` scopes itself, so a real
+    file the operator happened to name "DONE something.txt" is never read as a
+    run stamp."""
+    newest = None
+    try:
+        for m in Path(folder).glob(f"{prefix} *.txt"):
+            try:
+                st = m.stat()
+            except OSError:
+                continue
+            if m.is_file() and st.st_size == 0:
+                newest = st.st_mtime if newest is None else max(newest,
+                                                                st.st_mtime)
+    except OSError:
+        pass
+    return newest
+
+
+def _copy_is_ahead(folder, dest):
+    """(True, why) when `dest` carries a finished run that `folder` does not.
+
+    The evidence is the markers the runs themselves leave: a `DONE <clock>.txt`
+    stamp means a run finished there, and an `ETA …` marker written after it
+    means one started and has not (it is either running now or it died
+    part-way). Either way an unfinished folder is not a state to take."""
+    done = _marker_mtime(dest, _DONE_MARKER_PREFIX)
+    if done is None:
+        return False, "it has never finished a run"
+    started = _marker_mtime(dest, _ETA_MARKER_PREFIX)
+    if started is not None and started > done:
+        return False, ("it shows a run in progress, or one that stopped "
+                       "part-way — an unfinished folder is not a state to take")
+    mine = _marker_mtime(folder, _DONE_MARKER_PREFIX)
+    if mine is not None and done <= mine + _COPY_AHEAD_MARGIN:
+        return False, "this folder's own run is the newer one"
+    when = datetime.datetime.fromtimestamp(done).strftime("%Y-%m-%d %H:%M")
+    return True, (f"it finished a run at {when} and this folder "
+                  + ("has never finished one" if mine is None
+                     else "last finished before that"))
+
+
+def _pull_back_from_copy(folder, dest, log):
+    """Bring the copy's files back into `folder`. Returns how many were taken.
+
+    A file is taken only when this folder has no version of it or an OLDER one.
+    That guard is the whole safety of reaching into a case folder from outside
+    a run: the operator may have typed Fix? decisions into this folder's
+    LEAKS.xlsx since, and those are irreplaceable — the copy's version has none
+    of them. Nothing is ever deleted here either, so a document that exists
+    only on this machine survives the sync and is processed by the run that
+    follows."""
+    import shutil
+    took = kept = failed = 0
+    first = None
+    # The copy's DONE stamp is coming with it, and two stamps in one folder say
+    # two different things about one run.
+    _clear_eta_markers(folder)
+    for path in sorted(Path(dest).rglob("*")):
+        target = Path(folder) / path.relative_to(dest)
+        try:
+            if path.is_dir():
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+            if target.exists() and target.stat().st_mtime >= path.stat().st_mtime:
+                kept += 1
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, target)
+            took += 1
+        except OSError as e:
+            failed += 1
+            if first is None:
+                first = f"{path.name}: {e}"
+    if failed:
+        log.warning(f"  {failed} file(s) could not be brought back from the "
+                    f"copy (first: {first}) — this folder is part-way updated. "
+                    f"A file open in Excel or Word is the usual cause.")
+    log.info(f"  Brought {took} file(s) back from the copy"
+             + (f" ({kept} left alone — this folder's version is the newer "
+                f"one)." if kept else "."))
+    return took
+
+
+def _sync_back_from_copy(folder, dest_root, log):
+    """Take the copy's finished run before doing any work of our own, when the
+    copy is the one that is ahead. Returns the destination when it was, else
+    None.
+
+    Called at the START of a run, and it is why the pairing survives being used
+    from two machines: the case that was deferred here and processed there comes
+    home in seconds instead of being processed a second time. What happens next
+    is unchanged — a deferred start still just writes its launchers, and a full
+    run still runs, now reusing the key that came back with the files (so the
+    fakes are the ones already delivered) and picking up any document this
+    folder has and the copy does not."""
+    if not dest_root:
+        return None
+    src = Path(folder).resolve()
+    dest = (Path(dest_root) / src.name).resolve()
+    if dest == src or not dest.is_dir():
+        return None
+    ahead, why = _copy_is_ahead(src, dest)
+    if not ahead:
+        log.info(f"  The copy at {dest} is not ahead of this folder: {why}.")
+        return None
+    log.info(f"  The copy at {dest} is AHEAD of this folder — {why}. Taking it "
+             f"back rather than re-running the case here.")
+    _pull_back_from_copy(src, dest, log)
+    return dest
+
+
 def _copy_party_template(folder, dest, args, log):
     """Put this case's party spreadsheet INTO a deferred copy, so the copy can
     do a FULL run on its own. Returns the file written, or None.
@@ -24264,8 +24405,14 @@ def main():
     # worth knowing about now, not after an hour of OCR — and the deferred
     # branch below needs it to decide where the launcher goes.
     copy_root = _copy_dest_root(cfg, args, log)
+    synced_back = None
     if copy_root:
         log.info(f"Folder copy destination: {copy_root}")
+        # The destination syncs between machines, so the copy may hold a run
+        # this folder never had — deferred here, processed over there. Asked
+        # BEFORE anything else: taking those files back is seconds, and doing
+        # the case again is not.
+        synced_back = _sync_back_from_copy(folder, copy_root, log)
     if args.defer:
         log.info(f"Deferred run (from {defer_src}): writing the one-click run "
                  f"launcher instead of processing this folder.")
@@ -24283,7 +24430,13 @@ def main():
         if not ok:
             sys.exit(1)
         target = None
-        if copy_root:
+        if synced_back is not None:
+            # We took that folder's files a moment ago and have processed
+            # nothing since, so pushing them straight back would copy a whole
+            # case over itself for no change. The two are in step already.
+            log.info(f"  This folder now matches the copy at {synced_back}; "
+                     f"nothing was pushed back.")
+        elif copy_root:
             # The copy is made AFTER the launcher, so it inherits one already;
             # it is then written again below, because the destination may carry
             # a launcher of its own from an earlier run and only one of the two
@@ -24309,7 +24462,13 @@ def main():
                 target = dest
         n_pdf = len(_pdfs_in_folder(folder))
         n_doc = len(_word_docs_in_folder(folder))
-        if target is not None:
+        if synced_back is not None:
+            log.info(f"  This folder now carries that finished run — "
+                     f"{n_pdf} PDF(s) and {n_doc} Word doc(s), with the "
+                     f"exports and the key it produced. Nothing was processed "
+                     f"here; its launcher runs the case again if you want it "
+                     f"redone.")
+        elif target is not None:
             log.info(f"  {n_pdf} PDF(s) and {n_doc} Word doc(s) were copied to "
                      f"{target}. Both folders now have a launcher: process the "
                      f"case from whichever machine you are at — nothing has "
