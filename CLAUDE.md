@@ -153,10 +153,13 @@ the fake does not stand in that passage there is no second half, and the cell
 shows the original alone, which is honest where an unrelated sentence is not
 (and in the citation case it is also exactly right: nothing in that passage was
 replaced). Both sit in ONE cell at column
-**C**, the original on top, then a rule (`_PN_CONTEXT_RULE`), then the export's
-sentence — the row still reading left to right as evidence, value then
-sentences then the Replacement they justify. **One cell and not one column
-each**, at the owner's direction: the pair is read as a single thing, and side
+**D**, the original on top, then a rule (`_PN_CONTEXT_RULE`), then the export's
+sentence. The BINDING leads — Real Value at **B**, Replacement at **C**,
+adjacent — and the evidence follows it, at the owner's direction: the pair the
+sheet exists to state is what every reader is here for, and quoting 120
+characters of sentence BETWEEN a value and its replacement made the row's own
+mapping the thing you travelled across the cell to reach. **One cell and not
+one column each**, at the owner's direction: the pair is read as a single thing, and side
 by side it costs two wide columns and a lot of sideways travel. One cell and
 not two ROWS for a harder reason — this sheet is read by other programs a row
 at a time, and a second row per binding would make every one of them read a
