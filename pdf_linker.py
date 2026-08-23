@@ -11478,13 +11478,17 @@ def _pn_terms_from_xlsx(path, extra_name_headers, log):
 # anything genuinely new in this file gets a fresh fake that can't collide with
 # one already in the key. The written-back key carries every loaded row forward
 # plus the new ones, so it never shrinks.
-_PN_KEY_HEADERS = ("Category", "Real Value", "Context",
-                   "Replacement", "Status", "Source", "Occurrences")
-# ONE Context column, at C, holding BOTH sentences stacked — the original on
-# top, then a rule, then the sentence the export now carries (`_pn_context_cell`
-# has the layout and the reasoning). The row still reads left to right as
-# evidence: the value, the sentence(s) it stands in, and only then the
-# Replacement the evidence justifies.
+_PN_KEY_HEADERS = ("Category", "Real Value", "Replacement",
+                   "Context", "Status", "Source", "Occurrences")
+# The BINDING leads: Real Value then Replacement, side by side at B and C, which
+# is the pair the sheet exists to state and the one every reader — the operator,
+# `DeAnonymize.bas`, this tool's own loader — is here for. ONE Context column
+# follows at D, holding BOTH sentences stacked: the original on top, then a
+# rule, then the sentence the export now carries (`_pn_context_cell` has the
+# layout and the reasoning). So the row reads as the mapping first and its
+# evidence after, at the owner's direction — the earlier layout put the two
+# sentences BETWEEN the value and its replacement, which is 120 characters of
+# quote to travel across before the row says what it maps to.
 #
 # One CELL and not one column each, at the owner's direction: the pair is read
 # as a single thing, and side by side it costs two wide columns and a lot of
@@ -11504,12 +11508,12 @@ _PN_KEY_HEADERS = ("Category", "Real Value", "Context",
 # reads as ours and still round-trips.
 _PN_KEY_FINGERPRINT = ("Category", "Real Value")
 # Column widths, in Excel's unit: how many "0" glyphs of the default font fit.
-# Real Value and Replacement are the two the operator reads across, so they get
-# room for an ordinary party name without being widened by hand on every
-# workbook; Context is a whole SENTENCE — two of them, stacked — and gets the
-# width a sentence needs. Positional, so it must stay in step with
+# Real Value and Replacement are the two the operator reads across — adjacent
+# now — so they get room for an ordinary party name without being widened by
+# hand on every workbook; Context is a whole SENTENCE — two of them, stacked —
+# and gets the width a sentence needs. Positional, so it must stay in step with
 # _PN_KEY_HEADERS.
-_PN_KEY_WIDTHS = (14, 30, 120, 30, 14, 16, 12)
+_PN_KEY_WIDTHS = (14, 30, 30, 120, 14, 16, 12)
 # The regex-detector categories: in the batch these were computed live at
 # priority 3, so a loaded literal must sit ABOVE that to reproduce the exact
 # stored fake instead of letting the detector recompute a different one.
@@ -17213,11 +17217,11 @@ class Pseudonymizer:
             kp.write_text(json.dumps(
                 {"mappings": [{"category": r["category"], "real": r["real"],
                                "replacement": r["fake"],
+                               "context": row_context(r),
+                               "scrubbed_context": row_context_scrubbed(r),
                                "status": row_status(r),
                                "source": r["source"],
-                               "occurrences": r["count"],
-                               "context": row_context(r),
-                               "scrubbed_context": row_context_scrubbed(r)}
+                               "occurrences": r["count"]}
                               for r in keyrows]}, indent=2), encoding="utf-8")
             log.info(f"  openpyxl not installed; reversal key written as JSON: "
                      f"{kp.name} ({len(keyrows)} mapping(s))")
@@ -17250,16 +17254,17 @@ class Pseudonymizer:
         ws.title = "Pseudonym Key"
         ws.append(headers)
         def _sheet_row(r):
-            # Column order follows _PN_KEY_HEADERS. The one Context cell stacks
-            # both sentences, each bolded on the word it was searched by — the
-            # real value in the document's own sentence, the fake in the
-            # export's — and collapses to the original alone when the two say
-            # the same thing.
+            # Column order follows _PN_KEY_HEADERS: the binding first (Real
+            # Value, Replacement), then the one Context cell, which stacks both
+            # sentences, each bolded on the word it was searched by — the real
+            # value in the document's own sentence, the fake in the export's —
+            # and collapses to the original alone when the two say the same
+            # thing.
             return _pn_xl_row(
-                [r["category"], r["real"],
+                [r["category"], r["real"], r["fake"],
                  _pn_context_cell(row_context(r), r["real"],
                                   row_context_scrubbed(r), r["fake"]),
-                 r["fake"], row_status(r), r["source"], r["count"]])
+                 row_status(r), r["source"], r["count"]])
 
         for r in applied:
             ws.append(_sheet_row(r))

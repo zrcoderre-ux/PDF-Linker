@@ -10,9 +10,10 @@ deliberate trade: the key now carries sentences of the real document, not merely
 its real values. It was never a shareable file — it is the reversal map — so
 this changes how revealing it is, not which file is safe to send.
 
-The column sits beside the Replacement it explains -- column D -- because that
-is where it is read: the row asks "is this binding right?" and the sentence is
-the answer. Safe to insert rather than append, which is worth pinning because
+The column sits beside the Replacement it explains -- column D, with the
+Replacement at C -- because that is where it is read: the row states the
+binding, and the sentence that follows is the evidence for it. Safe to insert
+(and to reorder) rather than append, which is worth pinning because
 the reverse is the obvious fear: `DeAnonymize.bas` scans the header row for
 "real value" / "replacement" / "status" and uses whatever columns they land in,
 and `_pn_load_key` resolves by header name too. The only thing a moved column
@@ -72,11 +73,13 @@ def test_the_key_carries_a_context_column_beside_the_replacement(tmp_path):
 
     hdr, _r = _rows(key)[0]
     assert hdr[:2] == list(P._PN_KEY_FINGERPRINT), hdr
-    # ONE Context column at C, holding both sentences stacked (original on
-    # top), and the Replacement follows the evidence that justifies it.
-    assert hdr[2] == "Context", hdr
-    assert hdr == ["Category", "Real Value", "Context",
-                   "Replacement", "Status", "Source", "Occurrences"], hdr
+    # The binding leads — Real Value then Replacement, adjacent at B and C —
+    # and the ONE Context column follows at D, holding both sentences stacked
+    # (original on top) as the evidence for the mapping just read.
+    assert hdr[2] == "Replacement", hdr
+    assert hdr[3] == "Context", hdr
+    assert hdr == ["Category", "Real Value", "Replacement",
+                   "Context", "Status", "Source", "Occurrences"], hdr
 
 
 def test_every_quote_contains_its_own_real_value(tmp_path):
