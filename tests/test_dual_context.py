@@ -129,11 +129,14 @@ class TestKeyColumn:
         z.write_key(key, log)
         return z, scrubbed, _key_cells(key)
 
-    def test_one_context_column_then_the_replacement(self, tmp_path):
+    def test_the_replacement_then_one_context_column(self, tmp_path):
         _z, _s, (hdr, _rows) = self._written(tmp_path)
-        assert hdr[2] == "Context"
+        assert hdr[2] == "Replacement"
+        assert hdr[3] == "Context"
         assert "Scrubbed Context" not in hdr
-        assert hdr.index("Replacement") > hdr.index("Context")
+        # The binding leads and its evidence follows: one Context cell holding
+        # both sentences, not two columns wedged between value and replacement.
+        assert hdr.index("Context") > hdr.index("Replacement")
 
     def test_the_one_cell_shows_the_two_texts(self, tmp_path):
         z, scrubbed, (hdr, rows) = self._written(tmp_path)
