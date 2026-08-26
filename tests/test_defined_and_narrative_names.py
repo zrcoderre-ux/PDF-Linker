@@ -233,6 +233,85 @@ def test_law_and_rule_are_deliberately_not_statute_words(text, found):
     assert _defined(text) == found
 
 
+# ── 1c. a sentence-opening word is not part of the name ─────────────────────
+
+def _no_statutes():
+    """The statute rule would drop these outright; the trim is what is under
+    test, so it is measured with that rule off."""
+    import unittest.mock
+    return unittest.mock.patch.object(P, "_PN_STATUTE_TAIL_WORDS", frozenset())
+
+
+def test_a_sentence_opening_preposition_is_trimmed():
+    """The run is captured backwards over capitalised words, and the first word
+    of a sentence is capitalised because of where it stands. It matters beyond
+    tidiness: a `yes` mints the VALUE as a term, and "Under Knox-Keene…"
+    matches the one sentence it was read from while the name the rest of the
+    filing repeats goes on standing."""
+    text = 'Under Knox-Keene Health Care Service Plan Act ("Knox-Keene Act") it fails.'
+    with _no_statutes():
+        assert "Knox-Keene Health Care Service Plan Act" in _defined(text)
+
+
+def test_a_sentence_opener_the_gazetteer_lacks_is_trimmed_on_CORPUS_evidence():
+    """"Violations" is in none of the four word lists and no hand-kept list
+    ever will be complete — but the document writes "violations" in lower case
+    all through its own allegations, which is the evidence
+    `prune_prose_word_terms` already weighs, at the same bar."""
+    text = ('Plaintiff alleges violations of the wage statutes. These '
+            'violations continued through 2024, and the violations were '
+            'willful.\nViolations of California Labor Code ("Labor Code") '
+            'are alleged.\n')
+    assert not P._pn_review_word_is_vocabulary("Violations")   # no list holds it
+    with _no_statutes():
+        assert _defined(text) == ["California Labor Code", "Labor Code"]
+
+
+def test_only_ONE_word_is_ever_trimmed():
+    """Only the FIRST word can owe its capital to sentence position; every word
+    after it is capitalised for its own reasons."""
+    words, _at = P._pn_defined_name_run("Under Pursuant Knox-Keene Group",
+                                        before="")
+    assert words == ["Pursuant", "Knox-Keene", "Group"]
+
+
+@pytest.mark.parametrize("text,kept", [
+    # A common-word SURNAME at a sentence start, in a document that also uses
+    # the word in lower case — the trim's worst case, and the document's own
+    # short form is what refuses it.
+    ('The parties dispute the boundary. Green Valley Ranch, LLC '
+     '("Green Valley") owns the parcel. The ranch is green and dry, and the '
+     'green fields were surveyed.', "Green Valley Ranch, LLC"),
+    # An HONORIFIC is part of a registered party name, and reduces to a
+    # two-letter base that the vocabulary arm would otherwise trim.
+    ('Mr. Kool\'s Collision, LLC ("Kool\'s") demurs to the complaint.',
+     "Mr. Kool's Collision, LLC"),
+    # An ordinary distinctive name is never touched, sentence start or not.
+    ('Zachary Coderre ("Coderre") was employed for six years.',
+     "Zachary Coderre"),
+])
+def test_the_trim_never_eats_a_real_name(text, kept):
+    assert kept in _defined(text)
+
+
+def test_the_trim_runs_AFTER_the_article_test_never_before():
+    """"The Subject Property" at a sentence start must stay article-led and be
+    refused outright, not be trimmed into a name — and a trim that EXPOSES an
+    article ("Under the Agreement") is refused too."""
+    assert _defined('Plaintiff signed a lease. The Subject Property '
+                    '("Property") is here.') == []
+    assert _defined('Under the Agreement ("Agreement") the parties agreed '
+                    'to arbitrate.') == []
+
+
+def test_mid_sentence_text_is_not_trimmed_at_all():
+    """A word mid-sentence is capitalised for its own reasons, so the evidence
+    for the trim is absent and nothing is cut."""
+    words, _at = P._pn_defined_name_run("Under Knox-Keene Group",
+                                        before="the claim arises ")
+    assert words == ["Under", "Knox-Keene", "Group"]
+
+
 # ── 1b. a definition names TWO values ───────────────────────────────────────
 
 def test_both_the_full_name_and_the_short_form_are_reported():
@@ -378,7 +457,7 @@ _WORKED_EXAMPLE_WORDS = {
     "de", "group", "kool", "langley", "law", "linford", "llc", "maria",
     "marlowe", "marcus", "bane", "helen", "motors", "mortgage", "nationstar",
     "rasho", "sarkisyan", "sedgwick", "spellman", "sunlight", "sunrise",
-    "susan", "financial", "zachary",
+    "susan", "financial", "zachary", "green", "valley", "ranch",
 }
 
 

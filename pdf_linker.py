@@ -11064,6 +11064,28 @@ _PN_DEFINED_ARTICLE_RE = re.compile(r"(?:^|[^\w'’])(?:the|a|an)[ \t]+$",
 # the shape being refused — `The Agreement`, `The Note`, `The Policy`, `The
 # Subject Property` — is in every complaint this tool will ever read.
 _PN_DEFINED_ARTICLES = frozenset({"the", "a", "an"})
+# The run is captured backwards from a "(", over capitalised words — and the
+# FIRST word of a sentence is capitalised because of where it stands, not
+# because it is a name. So a sentence-opening preposition welds itself to the
+# name behind it: "Under Knox-Keene Health Care Service Plan Act", "Pursuant
+# to Song-Beverly Consumer Warranty Act". That matters beyond tidiness,
+# because a `yes` on the row mints the VALUE as an authoritative term, and a
+# term of "Under Knox-Keene…" matches the one sentence it was read from while
+# the name the rest of the filing repeats goes on standing.
+#
+# Only the FIRST word can owe its capital to sentence position — every word
+# after it is capitalised for its own reasons — so exactly one is ever
+# trimmed, and only when it is ordinary vocabulary. That test is
+# `_pn_review_word_is_vocabulary`, the neutrality rule these tiers already
+# share, and it is what keeps the trim off a real name: "Green", "Smart",
+# "Raven" and "Moore" are common-word SURNAMES deliberately kept out of the
+# gazetteer, so a party whose name opens with one is never cut down to its
+# tail. The wider `_pn_is_name_token` is deliberately NOT used here for the
+# same reason `_defined_short_corroborates` refuses it — it withholds the
+# trade vocabulary a real company names itself after, so "Sunlight Financial
+# LLC" would be reported as "Financial LLC", which is worse than the phrase
+# this exists to trim.
+_PN_SENTENCE_START_RE = re.compile(r"""(?:^|[.?!:;]['"”’)\]]?|[\n\r])[ \t]*$""")
 # A defined term whose parent ends in one of these is LEGISLATION, and
 # legislation is the single most common thing this shape defines: `Consumer
 # Legal Remedies Act ("CLRA")`, `Rosenthal Fair Debt Collection Practices Act
@@ -11097,10 +11119,59 @@ _PN_STATUTE_TAIL_WORDS = frozenset({
 })
 
 
-def _pn_defined_name_run(run):
+def _pn_word_reads_as_prose(word, text, memo):
+    """True when `text` writes `word` in lower case at least as often as it
+    capitalises it — the SAME evidence `prune_prose_word_terms` weighs, asked
+    of ONE word instead of every harvested term, and at the same bar.
+
+    A surname in a filing is capitalised wherever it stands, in prose and
+    caption alike; a sentence-opening verb or noun is not. That is what
+    separates "Violations of California Labor Code" from "Green Valley Ranch,
+    LLC" without a word list — the gazetteer has no entry for "Violations" and
+    no hand-kept list ever will be complete, while the document itself writes
+    "violations" in lower case all through its own allegations.
+
+    Memoized per source body: the scan asks only about a word that already
+    stands at a sentence start in front of a defined-term parenthetical, which
+    is a handful of words a document, so this is a rare literal scan and never
+    a per-candidate one."""
+    key = word.lower()
+    if key not in memo:
+        low = cap = 0
+        for m in re.finditer(r"(?<!\w)" + re.escape(word) + r"(?!\w)",
+                             text, re.IGNORECASE):
+            if m.group(0).islower():
+                low += 1
+            else:
+                cap += 1
+        memo[key] = low >= 2 and low >= cap
+    return memo[key]
+
+
+def _pn_defined_name_run(run, before="", prose=None, keep=()):
     """(words, offset) — the words of the name actually standing in front of a
     defined-term parenthetical, and where inside `run` that name starts. The
     words are [] when the run is not a name at all.
+
+    `before` is the text immediately preceding the run, which is the only
+    place the evidence for the sentence-start trim lives (see
+    `_PN_SENTENCE_START_RE`). Defaulting it to "" reads as "this run opens the
+    text", which is what a run at offset 0 actually does.
+
+    `prose` is an optional `word -> bool` asking whether the CORPUS writes a
+    word as ordinary prose (`_pn_word_reads_as_prose`). It is the second arm
+    of that trim, and the one that reaches a sentence-opener no gazetteer
+    holds ("Violations of California Labor Code").
+
+    `keep` is the set of word bases the definition's own SHORT FORM is built
+    from, and it VETOES the trim. Both arms above are inferences about a word;
+    the short form is the document stating outright which words are the name.
+    `Green Valley Ranch, LLC ("Green Valley")` says "Green" is part of the
+    name, so it survives however often the filing also writes "green fields" —
+    while `("Labor Code")` says nothing about "Violations", so trimming that
+    costs nothing. Without it a common-word surname at a sentence start lost
+    not just its leading word but the whole finding, since the short form then
+    stopped corroborating a parent it was no longer a subset of.
 
     The OFFSET is what lets the caller ask about the text in front of the NAME
     rather than in front of the raw run: "…must enforce the Provision.
@@ -11137,6 +11208,34 @@ def _pn_defined_name_run(run):
         toks.pop(0)
     if toks and _pn_word_base(toks[0][0]) in _PN_DEFINED_ARTICLES:
         return [], 0
+    # A SENTENCE-INITIAL word owes its capital to its position. Exactly one is
+    # trimmed, and only when it is ordinary vocabulary — see
+    # `_PN_SENTENCE_START_RE` for why both halves of that are load-bearing.
+    # AFTER the article test, never before: "The Subject Property" at a
+    # sentence start must stay article-led and be refused outright, not be
+    # trimmed into a name.
+    # ...never FURNITURE, which is part of the name and is exactly the shape
+    # that trips the vocabulary arm: "Mr." reduces to a two-letter base, so
+    # `Mr. Kool's Collision, LLC` at a sentence start came back as "Kool's
+    # Collision, LLC" — a value the document does not contain, and one
+    # `_pn_restore_furniture` relies on the tier keeping whole. The same set
+    # `_pn_fake_person` composes with covers a leading firm word too ("Law
+    # Offices of ...").
+    if (len(toks) > 1 and _PN_SENTENCE_START_RE.search(before)
+            and _pn_word_base(toks[0][0]) not in keep
+            and _pn_word_base(toks[0][0]) not in _PN_NAME_FURNITURE
+            and (_pn_review_word_is_vocabulary(toks[0][0])
+                 or (prose is not None and prose(toks[0][0])))):
+        toks.pop(0)
+        # ...and the trim can expose an article the run had hidden behind it
+        # ("Under the Agreement"). The defined-term caller's own lookbehind
+        # catches that, since it reads the text in front of the TRIMMED name —
+        # but the verb-anchored caller has no lookbehind, so the function
+        # answers for itself rather than depending on which site asked.
+        while toks and _pn_word_base(toks[0][0]) in _PN_NAME_CONNECTORS:
+            toks.pop(0)
+        if toks and _pn_word_base(toks[0][0]) in _PN_DEFINED_ARTICLES:
+            return [], 0
     while toks and _pn_word_base(toks[0][0]) in _PN_NAME_CONNECTORS:
         toks.pop(0)
     while toks and _pn_word_base(toks[-1][0]) in _PN_NAME_CONNECTORS:
@@ -16364,9 +16463,20 @@ class Pseudonymizer:
             return (_pn_word_is_own_fake(w, neutral)
                     or _pn_review_word_is_vocabulary(w))
 
+        prose_memo = {}
+
+        def _prose(w):
+            return _pn_word_reads_as_prose(w, src, prose_memo)
+
         findings, local = [], set()
         for m in _PN_DEFINED_PAREN_RE.finditer(src):
-            words, at = _pn_defined_name_run(m.group("run"))
+            # The short forms are read FIRST: they veto the sentence-start
+            # trim (see `_pn_defined_name_run`), and they are needed below
+            # anyway, so nothing is parsed twice.
+            forms = _pn_paren_short_forms(m.group("body"))
+            words, at = _pn_defined_name_run(
+                m.group("run"), src[max(0, m.start("run") - 40):m.start("run")],
+                _prose, {_pn_word_base(w) for f in forms for w in f.split()})
             # A lone capitalised word defining itself ("the Lease (\"Lease\")")
             # carries no name evidence at all, and a PARTY written as one bare
             # word is already the role anchor's case ("Defendant SPELLMAN" —
@@ -16414,7 +16524,7 @@ class Pseudonymizer:
             # initials, and the tracked-party initialism already has its own
             # backstop in `review_definition_survivors`.
             bases = {_pn_word_base(w) for w in words}
-            shorts = [s for s in _pn_paren_short_forms(m.group("body"))
+            shorts = [s for s in forms
                       if self._defined_short_corroborates(s, bases,
                                                           _neutral_word)]
             if not shorts:
@@ -16540,6 +16650,11 @@ class Pseudonymizer:
         src = self._mask_protected_citations(_NFKC(text))
         neutral = {w.lower() for w in self.known_fake_words()}
         tracked = {str(rec["real"]).lower() for rec in self.records.values()}
+        prose_memo = {}
+
+        def _prose(w):
+            return _pn_word_reads_as_prose(w, src, prose_memo)
+
         findings, local = [], set()
         for m in _PN_NARRATIVE_RE.finditer(src):
             if m.group("verb") not in _PN_NARRATIVE_VERBS:
@@ -16548,7 +16663,9 @@ class Pseudonymizer:
             # backwards can start in the sentence before it, a leading role
             # word is trimmed rather than fatal, and an article-led run ("The
             # Agreement provided") is refused outright.
-            words, _at = _pn_defined_name_run(m.group("run"))
+            words, _at = _pn_defined_name_run(
+                m.group("run"), src[max(0, m.start("run") - 40):m.start("run")],
+                _prose)
             # An HONORIFIC in front of a name in prose is a title, not
             # identity: "Ms. Rasho emailed" is a row about Rasho, and keeping
             # the title would both fail the distinctive-head test below and

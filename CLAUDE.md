@@ -1298,6 +1298,43 @@ the party), so its row stays reversible.
   this shape (`Sedgwick Law ("Sedgwick")`) and Rule is a surname, and the cost
   of a wrong entry is a name that is neither faked nor flagged — the
   "Spellman" leak this whole tier exists to catch.
+  **A SENTENCE-OPENING word is not part of the name**
+  (`_PN_SENTENCE_START_RE`). The run is captured BACKWARDS from the "(", over
+  capitalised words — and the first word of a sentence is capitalised because
+  of where it stands, so a sentence-opening preposition welds itself to the
+  name behind it: "Under Knox-Keene Health Care Service Plan Act",
+  "Violations of California Labor Code". That is worse than untidy, because a
+  `yes` on the row mints the VALUE as an authoritative term, and a term of
+  "Under Knox-Keene…" matches the one sentence it was read from while the name
+  the rest of the filing repeats goes on standing. Only the FIRST word can owe
+  its capital to position — every word after it is capitalised for its own
+  reasons — so **exactly one is ever trimmed**, on two arms and never without
+  evidence: the word is ordinary VOCABULARY (`_pn_review_word_is_vocabulary`,
+  the neutrality rule these tiers already share), or the CORPUS itself writes it
+  in lower case at least as often as capitalised (`_pn_word_reads_as_prose` — the
+  same evidence `prune_prose_word_terms` weighs, at the same bar, memoized per
+  body and asked only of a word already standing at a sentence start, so it is
+  a handful of literal scans a document and never a per-candidate one). The
+  second arm is what reaches a sentence-opener no gazetteer holds: "Violations"
+  is in none of the four word lists and no hand-kept list ever will be
+  complete, while the complaint writes "violations" in lower case all through
+  its own allegations. Three things are never trimmed. The document's own
+  SHORT FORM vetoes it (`keep`): both arms are inferences about a word, and
+  `Green Valley Ranch, LLC ("Green Valley")` is the filing stating outright
+  that "Green" is part of the name, so it survives however often the same
+  filing writes "green fields" — without the veto a common-word surname lost
+  not just its leading word but the WHOLE finding, since the short form then
+  stopped corroborating a parent it was no longer a subset of. FURNITURE is
+  never trimmed (`_PN_NAME_FURNITURE`), which is exactly the shape that trips
+  the vocabulary arm — "Mr." reduces to a two-letter base, so
+  `Mr. Kool's Collision, LLC` came back as "Kool's Collision, LLC", a value
+  the document does not contain and one `_pn_restore_furniture` relies on this
+  tier keeping whole. And the trim runs AFTER the article test, never before:
+  "The Subject Property" at a sentence start must stay article-led and be
+  refused outright rather than trimmed into a name, and a trim that EXPOSES an
+  article ("Under the Agreement") re-asks the same question rather than
+  depending on which call site asked. Costs nothing measurable (673 ms against
+  720 ms on a 217 KB body — the citation parse dominates either way).
   **A definition names TWO values, and BOTH are reported.**
   `Zachary Coderre ("Coderre")` earns a row for the full name AND for the
   short form the rest of the filing is written in; the export usually carries
