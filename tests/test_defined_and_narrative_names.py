@@ -49,30 +49,32 @@ def test_the_reported_leak_is_flagged():
     """The complaint that started this: a party defined in the body, named on
     no template, reaching no other anchor."""
     text = 'Plaintiff Susan Spellman ("Spellman") was employed by the company.'
-    assert _defined(text) == ["Susan Spellman"]
+    assert _defined(text) == ["Spellman", "Susan Spellman"]
 
 
 def test_the_finding_carries_its_class():
     pz = _pz()
     text = 'Susan Spellman ("Spellman") signed the lease.'
     assert pz.defined_name_scan(text, text) == [("defined name?",
-                                                 "Susan Spellman")]
+                                                 "Susan Spellman"),
+                                                ("defined name?", "Spellman")]
     # ...and accumulates into the folder review list the worksheet is built from
     assert ("defined name?", "Susan Spellman") in pz.review
+    assert ("defined name?", "Spellman") in pz.review
 
 
 @pytest.mark.parametrize("text,found", [
     ('Defendant ACME CORPORATION, INC. ("Acme") answered.',
-     "ACME CORPORATION, INC."),
+     ["ACME CORPORATION, INC.", "Acme"]),
     ('Sunlight Financial LLC ("Sunlight") funded the loan.',
-     "Sunlight Financial LLC"),
+     ["Sunlight", "Sunlight Financial LLC"]),
     ('Cross-Defendant Mr. Kool\'s Collision, LLC ("Kool\'s") demurs.',
-     "Mr. Kool's Collision, LLC"),
+     ["Kool's", "Mr. Kool's Collision, LLC"]),
     ('MARIA CRUZ DE AMEZCUA ("Amezcua") was served on May 5.',
-     "MARIA CRUZ DE AMEZCUA"),
+     ["Amezcua", "MARIA CRUZ DE AMEZCUA"]),
 ])
 def test_shapes_a_california_complaint_actually_uses(text, found):
-    assert _defined(text) == [found]
+    assert _defined(text) == found
 
 
 def test_a_leading_role_word_is_trimmed_not_fatal():
@@ -80,7 +82,7 @@ def test_a_leading_role_word_is_trimmed_not_fatal():
     there is; a screen that refused any run carrying a role word would yield
     nothing at all."""
     text = 'Plaintiff HELEN RASHO ("Rasho") filed suit.'
-    assert _defined(text) == ["HELEN RASHO"]
+    assert _defined(text) == ["HELEN RASHO", "Rasho"]
 
 
 @pytest.mark.parametrize("text", [
@@ -111,7 +113,7 @@ def test_the_run_stops_at_the_sentence_before_it():
     walks out of the structure that corroborated it. "Provision. Carpenter
     Smith" is not a party named Provision."""
     text = 'The court must enforce the Provision. Carpenter Smith ("Smith") so testified.'
-    assert _defined(text) == ["Carpenter Smith"]
+    assert _defined(text) == ["Carpenter Smith", "Smith"]
 
 
 def test_the_article_test_reads_the_NAME_not_the_raw_run():
@@ -140,7 +142,7 @@ def test_the_citation_guard_is_load_bearing():
     assert _defined(text) == []
     off = _pz()
     off._protected_citation_spans = lambda t: []
-    assert _defined(text, off) == ["Nationstar Mortgage, LLC"]
+    assert _defined(text, off) == ["Nationstar", "Nationstar Mortgage, LLC"]
 
 
 def test_the_citation_parse_is_paid_only_where_there_is_a_candidate():
@@ -155,7 +157,7 @@ def test_the_citation_parse_is_paid_only_where_there_is_a_candidate():
                          "The motion was filed on May 5. It is unopposed.")
     assert asked == []
     text = 'Plaintiff Susan Spellman ("Spellman") sued.'
-    assert _defined(text, pz) == ["Susan Spellman"]
+    assert _defined(text, pz) == ["Spellman", "Susan Spellman"]
     assert len(asked) == 1          # once, not once per candidate
 
 
@@ -175,6 +177,103 @@ def test_a_tracked_value_is_the_leak_tier_s_row_not_this_one():
     pz = _pz(["Susan Spellman"])
     src = 'Plaintiff Susan Spellman ("Spellman") was employed here.'
     assert pz.defined_name_scan(src, src) == []
+
+
+# ── 1a. a STATUTE is not a party ────────────────────────────────────────────
+
+@pytest.mark.parametrize("text", [
+    # The definite article screens most statutes out incidentally...
+    'Plaintiff brings a claim under the Consumer Legal Remedies Act ("CLRA").',
+    # ...and stops the moment the article is anything else. Every one of these
+    # was reported as a possible party before the rule.
+    'Plaintiff sues under California\'s Unruh Civil Rights Act ("Unruh Act").',
+    'Plaintiff pleads violations of Song-Beverly Consumer Warranty Act '
+    '("Song-Beverly Act").',
+    'This case arises under Rosenthal Fair Debt Collection Practices Act '
+    '("Rosenthal Act").',
+    'Defendant violated Tom Bane Civil Rights Act ("Bane Act") that day.',
+    'This implicates Jones Act ("Jones Act") seaman status for plaintiff.',
+    'Plaintiff cites Costa-Hawkins Rental Housing Act ("Costa-Hawkins").',
+    # ...and the siblings of "Act", which fail identically.
+    'Plaintiff cites Beverly Hills Rent Stabilization Ordinance '
+    '("Rent Ordinance").',
+    'Violations of California Labor Code ("Labor Code") are alleged.',
+])
+def test_a_defined_STATUTE_is_not_a_party(text):
+    """A California statute is named after the LEGISLATOR who carried it, so
+    Unruh, Song-Beverly, Rosenthal, Bane, Jones and Costa-Hawkins are all
+    surnames standing at the head of the run — which is exactly what the
+    name-shape test is looking for. Refused whole: neither the full name nor
+    the short form earns a row."""
+    assert _defined(text) == []
+
+
+def test_the_statute_rule_is_STRUCTURAL_not_a_word_list():
+    """`_PN_COMMON_WORDS` already carries this lesson: "Act" was once swallowed
+    into that gazetteer and took the surnames Bane and Fair with it. The rule
+    reads the LAST word of the name instead, so the words stay as reportable
+    as they ever were."""
+    assert "act" not in P._PN_COMMON_WORDS
+    text = 'Defendant Marcus Bane ("Bane") was served at his residence.'
+    assert _defined(text) == ["Bane", "Marcus Bane"]
+
+
+@pytest.mark.parametrize("text,found", [
+    ('Plaintiff retained Sedgwick Law ("Sedgwick") as counsel.',
+     ["Sedgwick", "Sedgwick Law"]),
+    ('Defendant retained Linford Law Group ("Linford") to defend.',
+     ["Linford", "Linford Law Group"]),
+])
+def test_law_and_rule_are_deliberately_not_statute_words(text, found):
+    """A law FIRM is defined in exactly this shape, and Rule is a surname. The
+    cost of a wrong entry is a name neither faked nor flagged — the "Spellman"
+    leak this tier exists to catch — so the set stays at words no person and no
+    firm is ever called."""
+    assert not {"law", "rule"} & set(P._PN_STATUTE_TAIL_WORDS)
+    assert _defined(text) == found
+
+
+# ── 1b. a definition names TWO values ───────────────────────────────────────
+
+def test_both_the_full_name_and_the_short_form_are_reported():
+    """The export usually carries the SHORT form on every page after the
+    definition, so a worksheet naming only the parent asks about the spelling
+    that appears once and says nothing about the one that appears eighty
+    times."""
+    text = 'This is about Zachary Coderre ("Coderre") and his employment.'
+    assert _defined(text) == ["Coderre", "Zachary Coderre"]
+
+
+def test_each_value_is_asked_SEPARATELY_whether_it_survived():
+    """One of the two is routinely bound while the other is not. That
+    asymmetry IS the finding: an entity's bare token is deliberately withheld
+    (`_corpus_prunable`), so the export ships the full name faked and the
+    short form standing on every page after it — reported by `surviving_reals`
+    never (it is not a tracked value) and by `half_scrubbed_scan` never (it
+    wants a person fake beside a real token)."""
+    pz = _pz(["Sunrise Motors Group, LLC"])
+    src = ('Defendant Sunrise Motors Group, LLC ("Sunrise") sold the vehicle. '
+           'Sunrise then refused a refund.')
+    out = pz.apply(src)
+    assert "Sunrise Motors Group" not in out      # the parent was bound...
+    assert "Sunrise" in out                       # ...and the short form was not
+    assert pz.surviving_reals(out) == []          # nothing else reports it
+    assert _defined(src, pz) == ["Sunrise"], "the standing short form"
+
+
+def test_a_short_form_that_is_pure_vocabulary_still_earns_no_row():
+    """`Master Services Agreement ("Agreement")` says nothing about a party,
+    and reporting the short form does not relax the screen that says so."""
+    assert _defined('The parties entered a Master Services Agreement '
+                    '("Agreement").') == []
+
+
+def test_the_short_form_row_is_not_a_duplicate_of_the_parent():
+    """A one-word parent defining itself carries no name evidence at all and
+    is refused before any of this — so the two rows are never the same value
+    written twice."""
+    text = 'The court construed the Lease ("Lease") narrowly.'
+    assert _defined(text) == []
 
 
 # ── 2. the verb anchor ──────────────────────────────────────────────────────
@@ -271,16 +370,38 @@ def test_neither_tier_reads_ordinary_pleading_prose_as_a_name():
     assert pz.narrative_name_scan(_PLEADING_PROSE) == []
 
 
+# The fictional names this repo's own notes are written in. A finding made
+# entirely of these is the document's worked example being read correctly, not
+# a misread — the distinction the bound below is actually about.
+_WORKED_EXAMPLE_WORDS = {
+    "acme", "corporation", "inc", "amezcua", "ashely", "coderre", "cruz",
+    "de", "group", "kool", "langley", "law", "linford", "llc", "maria",
+    "marlowe", "marcus", "bane", "helen", "motors", "mortgage", "nationstar",
+    "rasho", "sarkisyan", "sedgwick", "spellman", "sunlight", "sunrise",
+    "susan", "financial", "zachary",
+}
+
+
 def test_both_tiers_stay_quiet_on_dense_technical_prose():
     """This repo's own notes are 200 KB of capitalised technical vocabulary in
     running sentences — the shape both scans are most likely to misread. What
     they DO report there is the document's own worked examples ("Susan
     Spellman", "Spellman confirmed", "Ashely Langley"), which is the scans
-    working; the bound is on everything else."""
+    working; the bound is on everything else.
+
+    Measured on EVERYTHING ELSE, and not on the blended total, because the
+    total is dominated by the examples: every rule that earns a worked example
+    in the notes adds findings the scans are RIGHT about, so a blended cap
+    drifts upward for good reasons and stops saying anything about misreads.
+    Today the residue is "PDF", "MuPDF" and "EXPORT" — three pieces of this
+    project's own vocabulary, none of them a name."""
     import pathlib
     root = pathlib.Path(P.__file__).resolve().parent
     text = (root / "CLAUDE.md").read_text(encoding="utf-8")
     pz = _pz()
     found = {s for _c, s in pz.defined_name_scan(text, text)}
     found |= {s for _c, s in pz.narrative_name_scan(text)}
-    assert len(found) <= 12, sorted(found)
+    residue = sorted(v for v in found
+                     if not all(P._pn_word_base(w) in _WORKED_EXAMPLE_WORDS
+                                for w in v.split()))
+    assert len(residue) <= 4, residue

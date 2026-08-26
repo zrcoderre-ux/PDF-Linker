@@ -11064,6 +11064,37 @@ _PN_DEFINED_ARTICLE_RE = re.compile(r"(?:^|[^\w'’])(?:the|a|an)[ \t]+$",
 # the shape being refused — `The Agreement`, `The Note`, `The Policy`, `The
 # Subject Property` — is in every complaint this tool will ever read.
 _PN_DEFINED_ARTICLES = frozenset({"the", "a", "an"})
+# A defined term whose parent ends in one of these is LEGISLATION, and
+# legislation is the single most common thing this shape defines: `Consumer
+# Legal Remedies Act ("CLRA")`, `Rosenthal Fair Debt Collection Practices Act
+# ("Rosenthal Act")`, `Beverly Hills Rent Stabilization Ordinance ("Rent
+# Ordinance")`. The definite article screens most of them out incidentally —
+# a brief writes "under THE Unruh Civil Rights Act" — but only most: measured
+# on the shapes a filing actually uses, six of seven survived it the moment
+# the article was anything else ("under California's Unruh Civil Rights Act",
+# "Plaintiff pleads violations of Song-Beverly Consumer Warranty Act").
+#
+# And the reason they survive is precisely the reason they are expensive: a
+# California statute is named after the LEGISLATOR who carried it, so
+# Unruh, Song-Beverly, Rosenthal, Ralph, Bane, Ellis, Cartwright, Knox-Keene
+# and Costa-Hawkins are all surnames standing at the head of the run, which is
+# what the name-shape test is looking for. Every one of them read as a party.
+#
+# STRUCTURAL and not a word list, because that is the lesson `_PN_COMMON_WORDS`
+# already carries: "Act" was once swallowed into that gazetteer and took the
+# surnames Bane and Fair down with it, and a word list also stops the value
+# being REPORTABLE when a party really is called Bane. This refuses the
+# statute at its own shape — the last word of the name — and leaves the words
+# themselves as reportable as they ever were.
+#
+# "law" and "rule" are deliberately NOT here. A law FIRM is defined in exactly
+# this shape (`Alder Law ("Alder")`), and Rule is a surname; the cost of a
+# wrong entry is a name that is neither faked nor flagged, which is the
+# "Spellman" leak this whole tier exists to catch, so the set stays at words
+# no person and no firm is ever called.
+_PN_STATUTE_TAIL_WORDS = frozenset({
+    "act", "code", "ordinance", "statute", "constitution", "amendment",
+})
 
 
 def _pn_defined_name_run(run):
@@ -16348,14 +16379,31 @@ class Pseudonymizer:
                 continue
             name = " ".join(words)
             low = name.lower()
-            # A value this run already tracks is `surviving_reals`' finding if
-            # it survived and nobody's if it did not — either way not this
-            # scan's row to add.
-            if low in local or low in tracked:
+            # Already reported: this run's own dedup, and the early-out that
+            # keeps the citation parse below lazy.
+            #
+            # A TRACKED value is skipped per-VALUE further down, not here. It
+            # is `surviving_reals`' finding if it survived and nobody's if it
+            # did not — but that is true of the value itself, and a definition
+            # names TWO. `Sunrise Motors Group, LLC ("Sunrise")` binds the
+            # parent while the bare token is deliberately withheld (an
+            # entity's own words are ordinary vocabulary — see
+            # `_corpus_prunable`), so the export ships the full name faked and
+            # "Sunrise" standing on every page after it. Refusing the whole
+            # candidate on the parent's tracked-ness left that reported by
+            # nothing at all: not `surviving_reals`, which only knows tracked
+            # values, and not `half_scrubbed_scan`, which wants a person fake
+            # standing beside a real token.
+            if low in local:
                 continue
-            if (_pn_is_never_fake(name) or _pn_is_procedural_phrase(name)
-                    or _pn_is_party_role(name) or _pn_is_public_entity(name)
-                    or _pn_is_protected_locality(name)):
+            # A statute is not a party, and this shape defines one more often
+            # than it defines anything else. See `_PN_STATUTE_TAIL_WORDS`: the
+            # test is the LAST word of the name, because a California act is
+            # named after the legislator who carried it and so leads with a
+            # surname — which is exactly what the name-shape test below is
+            # looking for. Refused whole, parent and short form together, so
+            # `Consumer Legal Remedies Act ("CLRA")` yields no row at all.
+            if _pn_word_base(words[-1]) in _PN_STATUTE_TAIL_WORDS:
                 continue
             # The short form must be a WORD OF THE PARENT — the same
             # corroboration `register_short_names` demands, and what separates
@@ -16366,9 +16414,10 @@ class Pseudonymizer:
             # initials, and the tracked-party initialism already has its own
             # backstop in `review_definition_survivors`.
             bases = {_pn_word_base(w) for w in words}
-            if not any(self._defined_short_corroborates(short, bases,
-                                                        _neutral_word)
-                       for short in _pn_paren_short_forms(m.group("body"))):
+            shorts = [s for s in _pn_paren_short_forms(m.group("body"))
+                      if self._defined_short_corroborates(s, bases,
+                                                          _neutral_word)]
+            if not shorts:
                 continue
             flags = [not _neutral_word(w) for w in words]
             if not any(flags):
@@ -16379,20 +16428,50 @@ class Pseudonymizer:
             # distinctive one in the minority.
             if not flags[0] and sum(flags) * 2 < len(flags):
                 continue
-            try:
-                rx = self._compiled(
-                    r"(?<!\w)" + r"\s+".join(re.escape(w) for w in words)
-                    + r"(?!\w)", re.IGNORECASE)
-            except re.error:
-                continue
-            if not rx.search(out_txt):
+            # BOTH VALUES are reported — the full name AND the short form the
+            # rest of the filing is written in. `Zachary Coderre ("Coderre")`
+            # defines two values and the export usually carries the SECOND one
+            # on every page after the definition, so a worksheet naming only
+            # the parent asks about the spelling that appears once and says
+            # nothing about the one that appears eighty times.
+            #
+            # Marking the parent `yes` does eventually close both halves — the
+            # re-run's `register_short_names` binds the short form off it — but
+            # only where that pass recognises the shape, and only on the NEXT
+            # run. Where it does not, the export is left HALF-SCRUBBED, one
+            # token of a person's name faked and the other standing, which is
+            # the shape `half_scrubbed_scan` exists for and the one a reviewer
+            # skimming for leaks is likeliest to read as already clean.
+            #
+            # The short form needs no screen of its own beyond the ones it has
+            # already passed: `_defined_short_corroborates` has established
+            # that every word of it is a word of the parent and that it is not
+            # pure vocabulary, so it cannot be an arbitrary label. Each value
+            # is asked SEPARATELY whether it survived, because one of the two
+            # is routinely bound while the other is not — that asymmetry is
+            # the finding, not a reason to drop it.
+            hits = []
+            for value in [name] + shorts:
+                low_v = value.lower()
+                if (low_v in local or low_v in tracked
+                        or low_v in {h.lower() for h in hits}):
+                    continue
+                if (_pn_is_never_fake(value) or _pn_is_procedural_phrase(value)
+                        or _pn_is_party_role(value)
+                        or _pn_is_public_entity(value)
+                        or _pn_is_protected_locality(value)):
+                    continue
+                if self._defined_value_survives(value, out_txt):
+                    hits.append(value)
+            if not hits:
                 continue          # faked, or absent from the export — fine
             if cite_spans is None:
                 cite_spans = _PnSpanIndex(self._protected_citation_spans(src))
             if cite_spans.overlaps(start, m.end("run")):
                 continue          # a cited decision's own short form
-            local.add(low)
-            findings.append(("defined name?", name))
+            for value in hits:
+                local.add(value.lower())
+                findings.append(("defined name?", value))
         seen = {(c, s.lower()) for c, s in self.review}
         out = []
         for c, s in findings:
@@ -16401,6 +16480,19 @@ class Pseudonymizer:
                 self.review.append((c, s))
                 out.append((c, s))
         return out
+
+    def _defined_value_survives(self, value, out_txt):
+        """True when `value` still stands as whole words in the finished
+        export. Asked of the parent and of the short form separately: a
+        definition names two values and this run may have bound either, both
+        or neither."""
+        try:
+            rx = self._compiled(
+                r"(?<!\w)" + r"\s+".join(re.escape(w) for w in value.split())
+                + r"(?!\w)", re.IGNORECASE)
+        except re.error:
+            return False
+        return bool(rx.search(out_txt))
 
     @staticmethod
     def _defined_short_corroborates(short, parent_bases, neutral):

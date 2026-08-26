@@ -1277,6 +1277,50 @@ the party), so its row stays reversible.
   once, only after a candidate has cleared every other screen: a declaration,
   an exhibit and a proof of service offer none and pay nothing, and
   `_mask_protected_citations`' two-entry memo stays a PAIR.
+  **A STATUTE is not a party, and this shape defines one more often than it
+  defines anything else** (`_PN_STATUTE_TAIL_WORDS`). The definite article
+  screens most of them out incidentally — a brief writes "under THE Unruh
+  Civil Rights Act" — but only most: measured on the shapes a filing actually
+  uses, six of seven survived it the moment the article was anything else
+  ("under California's Unruh Civil Rights Act", "Plaintiff pleads violations
+  of Song-Beverly Consumer Warranty Act"). And what makes them survive is what
+  makes them expensive: a California statute is named after the LEGISLATOR who
+  carried it, so Unruh, Song-Beverly, Rosenthal, Ralph, Bane, Ellis,
+  Cartwright, Knox-Keene and Costa-Hawkins are all SURNAMES standing at the
+  head of the run — exactly what the name-shape test is looking for, so every
+  one read as a party. The test is STRUCTURAL — the LAST word of the name —
+  and not a word list, which is the lesson `_PN_COMMON_WORDS` already carries:
+  "Act" was once swallowed into that gazetteer and took the surnames Bane and
+  Fair with it, and a list entry also stops the word being REPORTABLE when a
+  party really is called Bane. Refused WHOLE, parent and short form together,
+  so `Consumer Legal Remedies Act ("CLRA")` yields no row at all. "law" and
+  "rule" are deliberately NOT in the set: a law FIRM is defined in exactly
+  this shape (`Sedgwick Law ("Sedgwick")`) and Rule is a surname, and the cost
+  of a wrong entry is a name that is neither faked nor flagged — the
+  "Spellman" leak this whole tier exists to catch.
+  **A definition names TWO values, and BOTH are reported.**
+  `Zachary Coderre ("Coderre")` earns a row for the full name AND for the
+  short form the rest of the filing is written in; the export usually carries
+  the SECOND on every page after the definition, so a worksheet naming only
+  the parent asks about the spelling that appears once and says nothing about
+  the one that appears eighty times. Marking the parent `yes` does eventually
+  close both halves — the re-run's `register_short_names` binds the short form
+  off it — but only where that pass recognises the shape and only on the NEXT
+  run; where it does not the export is left HALF-SCRUBBED, which is the shape
+  a reviewer skimming for leaks is likeliest to read as already clean. The
+  short form needs no screen of its own beyond the ones it has already passed
+  (`_defined_short_corroborates` has established that every word of it is a
+  word of the parent and that it is not pure vocabulary, so it cannot be an
+  arbitrary label), and each value is asked SEPARATELY whether it survived
+  (`_defined_value_survives`), because one of the two is routinely bound while
+  the other is not. That asymmetry is the finding and not a reason to drop it:
+  a TRACKED value is therefore skipped per-VALUE and no longer refuses the
+  whole candidate — `Sunrise Motors Group, LLC ("Sunrise")` binds the parent
+  while the bare token is deliberately withheld (an entity's own words are
+  ordinary vocabulary — `_corpus_prunable`), so the export shipped the full
+  name faked and "Sunrise" standing on every page after it, reported by
+  NOTHING: not `surviving_reals`, which only knows tracked values, and not
+  `half_scrubbed_scan`, which wants a person fake beside a real token.
 - **A name is the thing in a filing that DOES something** (`narrative_name_scan`).
   "Spellman confirmed the transfer", "Rasho emailed the branch manager",
   "Sarkisyan resigned in March". A capitalised run standing as the SUBJECT of
