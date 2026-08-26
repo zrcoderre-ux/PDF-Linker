@@ -1976,6 +1976,47 @@ page whose 10-29 outnumber its 1-9 puts `dominant_x` on the wider run
 ("1 SERVICE LIST"). `_FOOTER_MASK_PT` still masks the running footer, which
 repeats the document title on every page and carries nothing else.
 
+**...with ONE exception, which is furniture and not content: a firm's own
+LETTERHEAD printed SIDEWAYS down the margin** (`_margin_sidebar_ids`, read by
+`_detect_line_anchors` Step 7 and by `_page_visual_text`). Many California
+firms set their name, street address and phone number at 90 degrees along the
+edge of every page, outside the numbered gutter. Step 7 restored it as content
+and it is not: it is the sideways twin of the running footer the line above
+already masks — repeated identically on every page, saying nothing the attorney
+block above the caption on page 1 does not already say. And it does not merely
+add a line. A rotated run is its own text BLOCK whose box spans a dozen printed
+rows, so `_cluster_rows` lands the whole thing on ONE arbitrary baseline and it
+is emitted mid-page, welded across its own lines
+("...LINFORD, LLP1200 Wilshire Boulevard..."), between two sentences of an
+argument — at a different point on every page, which is what an operator sees
+as "inserted at random". Dropped from the deliverable AND from the do-not-share
+original. **At EXTRACTION**, so the export, the unscrubbed copy, the scrubber,
+the leak scan and the folder pre-scan all see the same page: detection reads
+what the export writes, the rule the form path already follows, and the gate is
+therefore never left holding an export over a value that export does not carry.
+**FOUR kinds of positive evidence, all required**, because the one thing that
+shares a sidebar's geometry is a rotated EXHIBIT LABEL, which is real content:
+the text is set SIDEWAYS (the line's own `dir`, or — for a PDF that stacks its
+glyphs under an upright matrix — a box markedly taller than wide, which needs
+two characters, since every tall letter would qualify on one); it lies wholly
+in the MARGIN outside the band (the gutter for a pleading page, the leftmost
+UPRIGHT text elsewhere — taking the edge off vertical text would let the
+sidebar define the band it has to be outside of); it is a MINORITY of the page,
+so a rotated scan or a landscape exhibit is refused whole; and it reads as
+LETTERHEAD (`_reads_as_letterhead` — a `_PN_FIRM_WORDS` or corporate-suffix
+word, a phone, a street address, or a City/ST/ZIP), which `EXHIBIT "A"` and
+`DEPOSITION OF JANE DOE` do not. Judged over the page's whole margin at once,
+so the firm's name vouches for the address line beneath it; joined on NEWLINES
+and never spaces, since the address regexes refuse to cross one and two
+unrelated margin spans must not weld into a phrase that reads as an address
+when neither is. Residual, and accepted: a firm named ONLY in a sidebar is no
+longer harvested from it — which is exactly why the evidence is letterhead,
+since CRC 2.111(1) puts that same name and address in the attorney block inside
+the numbered band. `_page_flowing_text` is deliberately NOT changed: it is the
+rendering the citation regexes were tuned on, a sidebar carries no citation,
+and for a pleading page nothing exports from it. Costs ~0.02 ms a page — a page
+with nothing sideways in its margin collects no candidate and runs no regex.
+
 **The export mirrors the page's GEOMETRY, so it reads SIDE BY SIDE with the
 PDF** (`_visual_row_text` / `_page_visual_text`). Joining a row's pieces with
 one space destroyed exactly what the eye lines the two up by: a two-column

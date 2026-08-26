@@ -3235,6 +3235,156 @@ def _split_row_columns(spans, gap_min=_COLUMN_GAP_MIN):
     return out
 
 
+# ── A law firm's MARGIN SIDEBAR ─────────────────────────────────────────────
+# California pleading paper leaves a wide margin outside the numbered gutter,
+# and a great many firms print their own name and address down it, set
+# SIDEWAYS along the edge of every page:
+#
+#     LAW OFFICES OF SMITH & JONES / 123 Main Street / Los Angeles, CA 90012
+#
+# It is the filer's own letterhead, repeated identically on every page, and it
+# says nothing the attorney block above the caption on page 1 does not already
+# say. What it DOES do is wreck the export. A sideways run is its own text
+# block whose box spans a dozen printed rows, so `_cluster_rows` lands the
+# whole thing on ONE arbitrary baseline and it is emitted as a row in the
+# middle of the page's prose — the firm's street address arriving between two
+# sentences of an argument, on every page of the filing, at a different point
+# in each. A reader cannot skip it and a drafting model reads it as text.
+#
+# So it is dropped, from the deliverable AND from the do-not-share original.
+# That is the same call `_FOOTER_MASK_PT` already makes about the running
+# footer, for the same reason: a page's furniture repeats on every page and
+# carries nothing. It does NOT undo `_detect_line_anchors` Step 7, whose whole
+# point is that out-of-band text is CONTENT — the e-filing stamp, the service
+# list and the margin exhibit label are all still restored. Only letterhead is
+# taken, and only on positive evidence of every kind below, because the one
+# thing that shares a sidebar's geometry is a rotated EXHIBIT LABEL — which
+# carries no firm word, no phone and no address, so it is kept.
+#
+# Dropped at EXTRACTION, so the export, the unscrubbed original, the scrubber,
+# the leak scan and the folder pre-scan all see the same page: detection reads
+# what the export writes, the rule the form path already follows. The cost is
+# that a firm named ONLY in a sidebar is no longer harvested from it — which
+# is why the evidence is letterhead: CRC 2.111(1) puts that same firm's name
+# and address in the attorney block above the caption, inside the numbered
+# band, where every harvest pass already reads it.
+#
+# Costs ~0.02 ms a page: a page with nothing sideways in its margin collects no
+# candidate and returns before a single regex is run.
+
+# How far right of the band edge a sidebar span may reach and still count as
+# margin furniture — a point or two, for the rounding two renderings of one
+# page disagree by.
+_SIDEBAR_BAND_PAD = 2.0
+# A sidebar is a MINORITY of its page. If most of the page's spans are set
+# sideways then the page is not pleading paper with a sidebar down it — it is
+# a rotated scan or a landscape exhibit — and none of this applies.
+_SIDEBAR_MAX_SHARE = 0.25
+# A span reads as sideways on geometry when it is this much taller than wide.
+# Two horizontal characters are about 1.2x as wide as they are tall, so the
+# ratio has a wide margin either side of anything real.
+_SIDEBAR_ASPECT = 1.5
+# The corporate suffixes a firm signs itself with. `_PN_FIRM_WORDS` carries
+# the words ("law", "offices", "attorneys", "apc"); these are the rest.
+_SIDEBAR_ENTITY_WORDS = frozenset({
+    "llp", "llc", "lllp", "pc", "plc", "pllc", "prc", "inc", "corp", "ltd",
+})
+# "Los Angeles, CA 90012" — a state abbreviation hard against a ZIP. Anchored
+# on the ZIP so a bare two-letter capital run cannot fire on its own.
+_SIDEBAR_CITY_STATE_ZIP_RE = re.compile(r"\b[A-Z]{2}\.?[ \t]{0,3}\d{5}(?:-\d{4})?\b")
+
+
+def _line_reads_upright(ln):
+    """True when a `get_text("dict")` LINE is set horizontally. PyMuPDF gives
+    each line a writing direction `dir` — (1, 0) for ordinary text, (0, ±1)
+    for the 90° rotation a margin sidebar is set in. A line dict without one
+    is treated as upright: no evidence is not evidence of rotation."""
+    d = ln.get("dir")
+    if not d:
+        return True
+    try:
+        return abs(d[0]) >= abs(d[1])
+    except (TypeError, IndexError):
+        return True
+
+
+def _span_reads_vertically(sp, ln):
+    """True when `sp` is set sideways on the page.
+
+    Its LINE's direction settles it wherever the extractor reports one. The
+    geometric fallback is for the PDF that draws its sidebar glyph by glyph
+    with an upright matrix and simply stacks the boxes down the page: a span of
+    two or more characters whose box is markedly taller than it is wide can
+    only be a column of glyphs. A single character has no aspect worth reading
+    — every tall letter would qualify."""
+    if not _line_reads_upright(ln):
+        return True
+    text = "".join(str(sp.get("text", "")).split())
+    if len(text) < 2:
+        return False
+    x0, y0, x1, y1 = sp["bbox"]
+    return (y1 - y0) > _SIDEBAR_ASPECT * max(x1 - x0, 0.001)
+
+
+def _reads_as_letterhead(text):
+    """True when `text` reads as a law firm's own name and address.
+
+    This is the screen that separates a firm's margin sidebar from the other
+    thing printed sideways in a margin — an exhibit label ('EXHIBIT A',
+    'DEPOSITION OF JANE DOE'), which is real content and must survive. A
+    letterhead names the firm ('LAW OFFICES OF', 'LLP', 'A.P.C.') or states
+    how to reach it (a phone number, a street address, a City, ST ZIP); a
+    label does none of those."""
+    words = re.findall(r"[A-Za-z]+", text.lower())
+    if any(w in _PN_FIRM_WORDS or w in _SIDEBAR_ENTITY_WORDS for w in words):
+        return True
+    if _SIDEBAR_CITY_STATE_ZIP_RE.search(text):
+        return True
+    if _PN_DETECTORS["phone"][0].search(text):
+        return True
+    return bool(_PN_ADDR_RE.search(text))
+
+
+def _margin_sidebar_ids(blocks, band_right):
+    """The id()s of the spans in `blocks` that form a law-firm margin sidebar
+    lying wholly left of `band_right`, or an empty set when the page carries
+    none.
+
+    Identity rather than a filtered list because each caller has already built
+    its own span pool out of these same dicts and only wants to know which of
+    them to leave out.
+
+    Four things must all hold, and the set is empty unless they do: the text is
+    set SIDEWAYS, it lies in the MARGIN outside `band_right`, it is a MINORITY
+    of the page, and it reads as LETTERHEAD. Judged over the page's whole
+    margin at once — a sidebar is one printed run however many spans the
+    extractor cut it into, so the firm's name vouches for the address line
+    beneath it and vice versa."""
+    total, cand = 0, []
+    for b in blocks:
+        if "lines" not in b:
+            continue
+        for ln in b["lines"]:
+            for sp in ln["spans"]:
+                if not str(sp.get("text", "")).strip():
+                    continue
+                total += 1
+                if (sp["bbox"][2] <= band_right + _SIDEBAR_BAND_PAD
+                        and _span_reads_vertically(sp, ln)):
+                    cand.append(sp)
+    if not cand or len(cand) > total * _SIDEBAR_MAX_SHARE:
+        return frozenset()
+    # Joined on NEWLINES, never spaces: the address regexes deliberately refuse
+    # to cross one, so two unrelated margin spans can never weld into a phrase
+    # that reads as an address when neither of them is.
+    text = "\n".join(str(sp["text"])
+                     for sp in sorted(cand, key=lambda s: (s["bbox"][0],
+                                                           s["bbox"][1])))
+    if not _reads_as_letterhead(text):
+        return frozenset()
+    return frozenset(id(sp) for sp in cand)
+
+
 def _detect_line_anchors(page, desplice=False):
     """Per-page: find pleading-paper line numbers and gather body text on
     each numbered row.
@@ -3453,6 +3603,11 @@ def _detect_line_anchors(page, desplice=False):
     # Emitted as UNNUMBERED rows, which is what keeps the original fix intact —
     # the text is back in the document without claiming a line number, so a
     # pinpoint "p.3:7" still never lands on furniture.
+    # ...with ONE exception, which is furniture and not content: a law firm's
+    # own name and address printed SIDEWAYS down the margin, outside the
+    # numbered band, on every page of the filing. See `_margin_sidebar_ids` —
+    # a rotated exhibit label shares its geometry and is deliberately kept.
+    sidebar = _margin_sidebar_ids(blocks, body_x_min)
     claimed = {id(sp) for rs in rows_by_num.values()
                for r in rs for sp in r["spans"]}
     margin = [sp
@@ -3461,6 +3616,7 @@ def _detect_line_anchors(page, desplice=False):
               for sp in ln["spans"]
               if sp["text"].strip()
               and sp["bbox"][0] < body_x_min
+              and id(sp) not in sidebar
               and _span_baseline(sp) <= footer_top
               # A bare small integer to the LEFT of the body column is a gutter
               # number, full stop — including one the x-clustering left out of
@@ -18042,11 +18198,27 @@ def _page_visual_text(page):
     parser never meets a space run this pass invented. Returns None when the
     page yields no spans (the caller keeps `_page_flowing_text`)."""
     try:
-        spans = [sp for blk in page.get_text("dict").get("blocks", [])
-                 for ln in blk.get("lines", [])
-                 for sp in ln.get("spans", [])
-                 if str(sp.get("text", "")).strip()]
-        rows = _cluster_rows(_drop_overdrawn_spans(spans))
+        blocks = page.get_text("dict").get("blocks", [])
+        spans, upright_left = [], []
+        for blk in blocks:
+            for ln in blk.get("lines", []):
+                for sp in ln.get("spans", []):
+                    if not str(sp.get("text", "")).strip():
+                        continue
+                    spans.append(sp)
+                    if not _span_reads_vertically(sp, ln):
+                        upright_left.append(sp["bbox"][0])
+        # A firm's sideways margin letterhead is dropped here too — the belt for
+        # a page whose gutter numbers went unrecognised, so it never reached
+        # `_detect_line_anchors` and its Step 7 exception. The band edge is the
+        # leftmost UPRIGHT text: a sidebar sits outside the body's own margin,
+        # and taking the edge off vertical text would let the sidebar define the
+        # band it has to be outside of. It is also what owns column 0 otherwise,
+        # indenting every line of the page against a rotated label.
+        drop = (_margin_sidebar_ids(blocks, min(upright_left))
+                if upright_left else frozenset())
+        rows = _cluster_rows(_drop_overdrawn_spans(
+            [sp for sp in spans if id(sp) not in drop]))
     except Exception:
         return None
     if not rows:
