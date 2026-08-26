@@ -1291,15 +1291,93 @@ the party), so its row stays reversible.
   them, one of which is the document's own worked example of a name. Cost is
   ~5 ms an export; the citation mask it reads is already warm from
   `surviving_reals`.
-  Both tiers are REVIEW, so they surface a row in `LEAKS.xlsx` and do NOT gate
-  delivery — the same standing as `unknown_name_scan` and the half-scrub sweep,
-  and the same limitation the "exhibits from another matter" note states.
-  `_pn_review_word_is_vocabulary` is the one neutrality rule they share, for the
-  reason `_weld_core` is shared: two tiers answering "is this word a name?"
-  differently is how a value one pass reports and another cannot is born.
-  Neither is in `_PN_NAME_TRIM_CLASSES` — both values are already exactly the
-  name their anchor declared, and the edge trim is a PERSON-path rule that
-  would cut into an entity's own trailing word.
+- **A TITLE is written in front of a surname and in front of nothing else**
+  (`honorific_name_scan`). "Mr. Spellman", "Ms. Delacroix", "Dr. Ardeshirpour"
+  — the shortest corroborated anchor there is, and nothing read it. The
+  role-anchored tier needs a party role, so it never sees a fact section; the
+  verb tier needs one of its own verbs, so "a meeting with Ms. Delacroix" and
+  "Mr. Spellman's employment ended" go quietly past both. Between them that is
+  most of how a filing refers to a person after introducing them once. Safe to
+  read off the OUTPUT because the composing faker KEEPS an honorific verbatim
+  (`_PN_NAME_FURNITURE`), so a party this run bound comes out "Mr. <fake>" and
+  screens as neutral; what is left standing behind a title is a name nothing
+  knew about. **`Dr` must carry its PERIOD**, alone among the titles: it is the
+  one that is also an ordinary word of a filing — the street suffix — and it
+  lands in exactly this shape, so "1200 Sunset Dr Los Angeles" read as a doctor
+  named Los. Only a TRAILING possessive is stripped from the value; an interior
+  one is the name continuing, and stripping it everywhere turned "Mr. Kool's
+  Collision" into "Kool Collision", a value the document does not contain and a
+  `yes` would key to nothing.
+- **An e-mail HEADER names people on its own lines** (`mail_header_name_scan`).
+  An exhibit e-mail printed to PDF carries `From: Susan Spellman` and `To:
+  Marcus Delacroix` as header lines; the display-name path binds a name only
+  inside a `Name <addr@domain>` PAIR, so a header that prints the name apart
+  from the address reached nothing at all — and an e-mail chain is one of the
+  commonest exhibits there is. REVIEW rather than a harvest, unlike the
+  `Attn:`-style labels it would otherwise sit beside: a header line is not only
+  ever a person ("To: All Employees", "From: Accounts Payable", "Cc:
+  Undisclosed Recipients"), and the harvest tier's cost for a wrong guess is a
+  rewritten document where a worksheet row costs one `no`. Anchored at the
+  START of a line, because "from" and "to" are two of the commonest words in
+  English and only the header form puts one at a line head with a colon after
+  it; two words minimum, since a single capitalised word after "To:" is far
+  more often a department or a wrapped subject line. `_PN_BACKOFFICE_WORDS` is
+  the remainder this pass turned up — most department vocabulary (Human
+  Resources, Customer Service, Legal, Operations, Employees, Recipients) was
+  already in the gazetteer, and the accounting/facilities words were not. None
+  of them is a California surname, which is the one screen that gazetteer must
+  pass.
+  All four tiers are REVIEW, so they surface a row in `LEAKS.xlsx` and do NOT
+  gate delivery — the same standing as `unknown_name_scan` and the half-scrub
+  sweep, and the same limitation the "exhibits from another matter" note
+  states. `_pn_review_word_is_vocabulary` is the one neutrality rule they
+  share, for the reason `_weld_core` is shared: two tiers answering "is this
+  word a name?" differently is how a value one pass reports and another cannot
+  is born. None is in `_PN_NAME_TRIM_CLASSES` — every value is already exactly
+  the name its anchor declared, and the edge trim is a PERSON-path rule that
+  would cut into an entity's own trailing word. Cost is ~12 ms an export each,
+  the citation mask being warm from `surviving_reals` by the time they run.
+- **An ALIAS stated in BODY TEXT is a name, and only the CELL parser read one**
+  (`_pn_alias_pairs`, `_PN_AKA_TEXT_RE`). `_PN_AKA_ALTS` existed to split an
+  E-Court template cell (`_pn_split_aka`), so the shape a complaint actually
+  uses — "Defendant John Smith, also known as Johnny Smythe, opened the
+  account" — reached no pass at all. Measured on the pipeline as it stood, the
+  legal name was bound and faked and the alias shipped verbatim IN THE SAME
+  SENTENCE ("Defendant Wemyss Paget, also known as Johnny Smythe"), with every
+  review scan silent: the fuzzy sweep cannot reach it (Smith -> Smythe is two
+  edits at a length where `_pn_name_fold_dist` allows one) and
+  `half_scrubbed_scan` does not fire, because the alias is a whole name of its
+  own rather than a bare token standing beside a fake. Registered at the dba's
+  tier because it carries the dba's corroboration — nothing but a name follows
+  "also known as" — with one difference: a dba is always a BUSINESS while an
+  alias is the same kind of thing as its head, which `_pn_append_name_terms`
+  already knows, so the pair is handed back joined by a bare "aka" and that
+  function does the rest. `_pn_name_pair_ok` is the screen the two harvests
+  share (both sides ≥2 words, no signature-block vocabulary, no bare role).
+  A LEADING role word is trimmed off the head — that is how the sentence is
+  written — while a role word standing INSIDE either side means the phrase ran
+  past the name and is fatal. Both sides are held to one LINE, the dba rule's
+  reasoning biting harder here: an alias marker sits mid-sentence, so a phrase
+  allowed to jump a wrap on a two-column page swallows the interleaved
+  signature block.
+- **A DEPOSITION is the sibling of a DECLARATION, and reached nothing.**
+  "Declaration of X" and the short cite "X Decl. ¶ 4" are both harvested — the
+  declarant cite being the single highest-value place a witness name leaks —
+  while `DEPOSITION OF SUSAN SPELLMAN` and `(Spellman Depo. 45:12-16)` yielded
+  nothing, though a summary-judgment or fee motion cites deposition testimony
+  constantly and the deponent is routinely a witness on no party template. The
+  anchor is the same shape carrying the same corroboration; only the noun
+  differs. It costs no new machinery: `_PN_DECL_TITLE_RE` gains the noun,
+  `_PN_DECL_REF_RE` already captures any word starting with a capital D and
+  defers to `_PN_DECL_REF_WORDS`, which gains dep/depo/depos/deposition. As
+  safe as the Decl. forms for the same reason — a longer D-word letters out to
+  something the set does not hold ("Department", "December", "Decker") and is
+  dropped by the validator. The date guard stays scoped to `dec` alone
+  (`_PN_DECL_REF_DATE_WORDS`): "Dec. 5, 2024" is a date, while "Depo. 45:12" is
+  a page:line pin and is exactly what this is looking for. The deposition's own
+  descriptor words join `_PN_DECL_DESCRIPTOR` — the `Supporting Declaration`
+  rule — or "Videotaped Deposition of Marcus Delacroix" reads as a deponent
+  named Videotaped.
 - **A HALF-SCRUBBED pair is the most dangerous thing the tool can emit, and the
   scans were structurally blind to it** (`half_scrubbed_scan`). "Xiaoxia
   Ingersoll" shipped 102 times in one batch, "Jiayin Sterling" in all seven
