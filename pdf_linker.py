@@ -11852,6 +11852,24 @@ def _pn_load_key(path, registry, log, remint_recycled=False):
     if _PN_KEY_PINNED_SHEET in wb.sheetnames:
         rows += list(wb[_PN_KEY_PINNED_SHEET].iter_rows(values_only=True))[1:]
     header = [(_pn_norm_header(h)) for h in (rows[0] if rows else ())]
+    # A key written by an older version carries its columns in an older ORDER —
+    # the Context column used to sit at C, between the Real Value and the
+    # Replacement it justifies. Nothing about reading it cares (every consumer
+    # here, `_pn_key_context_on_disk`, and `DeAnonymize.bas` all resolve by
+    # header NAME), and `write_key` re-emits `_PN_KEY_HEADERS` whole, so the
+    # rewrite at the end of THIS run is the migration: a full run and a
+    # `--fix-leaks` pass each normalise the layout in place, carrying every
+    # binding and both Context quotes across.
+    #
+    # Said out loud rather than done silently. The operator opened the file and
+    # saw one layout; the next run hands them another, and a column order that
+    # changes with no line in the log reads as the tool having damaged the key
+    # — which is the one file this project treats as unlosable.
+    if header and list(header) != [_pn_norm_header(h) for h in _PN_KEY_HEADERS]:
+        log.info(f"  Pseudonymize: {Path(path).name} is in an older column "
+                 f"order — read by header name, and rewritten at the end of "
+                 f"this run as "
+                 + ", ".join(_PN_KEY_HEADERS) + ".")
     idx = {name: header.index(name) for name in
            ("category", "real value", "replacement", "status", "source",
             "occurrences")

@@ -183,7 +183,23 @@ thing a moved column can break is a POSITIONAL fingerprint, so
 a by-NAME check that a Replacement column exists, and a key from any older
 version still reads as ours. (A test that indexes a
 key row by number is making the same mistake — a batch did, and now take the
-index from `_PN_KEY_HEADERS`.) FIRST document to use a value owns
+index from `_PN_KEY_HEADERS`.)
+**An older layout is not left standing, and the run SAYS so.** Reading by name
+is what makes the key readable; the REWRITE is what migrates it. `write_key`
+re-emits `_PN_KEY_HEADERS` whole every time, and both operator paths reach it —
+a full re-run, and `--fix-leaks`, which never reopens the PDFs but does rewrite
+the same key it loaded. So clicking either one normalises the column order in
+place, carrying every binding and both Context quotes across (verified end to
+end in `test_key_layout_migration.py`, on the pre-Replacement-move order and on
+the older order that had no Context column at all; the two-column era's
+`Scrubbed Context` folds into the one merged cell by the same rule
+`_pn_context_split` already states). `_pn_load_key` logs one line when the
+header row it read differs from `_PN_KEY_HEADERS` — silently handing back a
+different column order than the operator last saw reads as the tool having
+damaged the key, which is the one file this project treats as unlosable. The
+single path that does NOT migrate is `--fix-leaks`' early return on a REJECTED
+decision, which is right: that pass resolved nothing, so it writes nothing, and
+the next successful click migrates the folder. FIRST document to use a value owns
 its quotes, so a re-run of the same folder reproduces both halves; a quote this
 run cannot re-derive is carried forward from the key on disk
 (`_pn_key_context_on_disk`, both halves — it splits a merged cell back at its
