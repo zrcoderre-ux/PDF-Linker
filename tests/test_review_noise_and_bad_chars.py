@@ -132,7 +132,7 @@ def test_the_master_sheets_survive_one_too(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("name", [
     "_PN_COMMON_WORDS", "_PN_SERVICE_GENERIC_WORDS", "_PN_FORM_LABEL_WORDS",
-    "_PN_REVIEW_NAME_STOP", "_PN_HOUSING_WORDS",
+    "_PN_REVIEW_NAME_STOP", "_PN_HOUSING_WORDS", "_PN_NARRATIVE_VERBS",
 ])
 def test_a_word_list_contains_only_lower_case_words(name):
     """A `#` inside a triple-quoted list is data, not a comment.
