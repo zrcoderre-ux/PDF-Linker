@@ -10845,6 +10845,171 @@ def _pn_unknown_name_findings(text, neutral_words):
     return out
 
 
+# ── A DEFINED-TERM parenthetical is the document naming its own party ────────
+# A California complaint introduces the people and companies in it by
+# DECLARING them: `Susan Spellman ("Spellman")`, `ACME CORPORATION, INC.
+# ("Acme")`. The parenthetical is the filing saying, in its own words, that the
+# run standing in front of it is a NAME and that this is the short form it will
+# use for the rest of the document — corroboration of exactly the kind a
+# STRUCTURED harvest carries ("Yu Decl."), and far stronger than capitalisation
+# on its own.
+#
+# Three passes already read this shape and every one of them needs the parent
+# to be KNOWN first: `_pn_split_cell` reads it out of the E-Court template
+# cell (and only for a two-word-or-longer short form), `register_short_names`
+# iterates `self.terms`, and `review_definition_survivors` is scoped to
+# initialisms of a party already tracked. So a party the template never named
+# and no other anchor reached — a witness, a non-party employer, a co-defendant
+# added by amendment, a plaintiff in an exhibit from another matter — was
+# defined in the body of the complaint, printed under its short form on every
+# page after that, and reached NO pass at all: not faked, and not flagged
+# either. That is the "Spellman" class of leak.
+_PN_DEFINED_WORD = r"[A-Z][\w&'’.-]*"
+# The comma is a SEPARATOR inside the run, not a boundary: "ACME CORPORATION,
+# INC." is one name, and a run that stopped at the comma reached the
+# parenthetical with the corporate suffix left outside it and matched nothing.
+_PN_DEFINED_PAREN_RE = re.compile(
+    r"(?P<run>" + _PN_DEFINED_WORD
+    + r"(?:,?[ \t]+(?:of|the|and|for|de|la|&|" + _PN_DEFINED_WORD + r")){1,7})"
+    r"[ \t,;]{0,4}\(\s*(?P<body>[^()]{0,120})\)")
+# `the Subject Property ("Property")`, `the Lease Agreement ("Lease")`, `the
+# Retail Installment Contract ("Contract")` — a defined THING is introduced
+# with the definite article and a party is not: a filing writes `Susan Spellman
+# ("Spellman")`, never `the Susan Spellman`. This is the screen that carries
+# the dominant false-positive family, because the gazetteers cannot: "Property",
+# "Lease", "Policy", "Plan", "Note" and "Trust" are none of them common words
+# here, and each of them is also a real surname, so widening a word list to
+# cover them would cost the very names this exists to surface. A name whose own
+# first word is "The" ("The Boeing Company") keeps its capital wherever it
+# stands, so the lookbehind cannot see it — `_PN_DEFINED_ARTICLES` refuses an
+# article-LED run for the same reason, and at the same accepted cost.
+_PN_DEFINED_ARTICLE_RE = re.compile(r"(?:^|[^\w'’])(?:the|a|an)[ \t]+$",
+                                    re.IGNORECASE)
+# An article the run itself CAPTURED, because the sentence began with it —
+# "…lease. The Subject Property (\"Property\") is in Los Angeles." reads
+# exactly like a name to everything below. Refused whatever the article's case,
+# which is a real cost stated plainly: an entity whose registered name begins
+# with "The" ("The Boeing Company") is missed by THIS tier. It is still reached
+# by the party template, by the role anchor and by every other harvest, while
+# the shape being refused — `The Agreement`, `The Note`, `The Policy`, `The
+# Subject Property` — is in every complaint this tool will ever read.
+_PN_DEFINED_ARTICLES = frozenset({"the", "a", "an"})
+
+
+def _pn_defined_name_run(run):
+    """(words, offset) — the words of the name actually standing in front of a
+    defined-term parenthetical, and where inside `run` that name starts. The
+    words are [] when the run is not a name at all.
+
+    The OFFSET is what lets the caller ask about the text in front of the NAME
+    rather than in front of the raw run: "…must enforce the Provision.
+    Carpenter Smith (\"Smith\")" trims back to "Carpenter Smith", and the
+    definite article the raw run backs onto belongs to "the Provision", a
+    sentence away.
+
+    A capitalised run captured backwards from a `(` can start in the sentence
+    BEFORE it: "…enforce the Provision. Carpenter Smith ("Smith")" reads as a
+    party named "Provision. Carpenter Smith". That is the `_PN_DECL_NAME_WORD`
+    lesson exactly — a harvest that walks past a full stop walks out of the
+    structure that corroborated it, and the bare tokens it leaves behind then
+    rewrite ordinary nouns document-wide. So a multi-letter word ending in "."
+    ENDS the run, unless it is a corporate suffix ("Corp.") or an honorific or
+    initial ("Mr.", "J."), which are part of a name and routinely carry one."""
+    toks = [(mm.group(0), mm.start()) for mm in re.finditer(r"\S+", run)]
+    for i in range(len(toks) - 1, -1, -1):
+        w = toks[i][0]
+        if not w.endswith("."):
+            continue
+        base = _pn_word_base(w)
+        if (len(base) <= 1 or base in _PN_HONORIFICS
+                or re.sub(r"[.\s]", "", base) in _PN_ENTITY_SUFFIXES_NORM):
+            continue
+        toks = toks[i + 1:]
+        break
+    # A LEADING role word is TRIMMED, never fatal — "Defendant SUSAN SPELLMAN
+    # ("Spellman")" is the commonest form a California complaint defines a
+    # party in, and the screen that drops any run carrying a role token would
+    # yield nothing at all. The same rule `_pn_label_names` follows. Trimmed
+    # BEFORE the article test, so "Defendant The Agreement" is read the same
+    # way "The Agreement" is.
+    while toks and _pn_is_role_token(toks[0][0]):
+        toks.pop(0)
+    if toks and _pn_word_base(toks[0][0]) in _PN_DEFINED_ARTICLES:
+        return [], 0
+    while toks and _pn_word_base(toks[0][0]) in _PN_NAME_CONNECTORS:
+        toks.pop(0)
+    while toks and _pn_word_base(toks[-1][0]) in _PN_NAME_CONNECTORS:
+        toks.pop()
+    return [w for w, _o in toks], (toks[0][1] if toks else 0)
+
+
+def _pn_review_word_is_vocabulary(word):
+    """True when a word carries no identity of its own — a common or
+    procedural word, a corporate suffix or connector, a party role, or a
+    review stop word.
+
+    The SHARED neutrality rule the name-shaped REVIEW tiers screen on. One
+    definition and not one per scan, for the reason `_weld_core` is shared: two
+    tiers answering "is this word a name?" differently is how a value one pass
+    reports and another cannot is born."""
+    base = _pn_word_base(word)
+    return (len(base) < 3 or base in _PN_COMMON_WORDS
+            or _pn_is_entity_keep(base) or _pn_is_role_token(word)
+            or base in _PN_REVIEW_NAME_STOP
+            or _pn_token_is_procedural(base))
+
+
+# ── A name is the thing in a filing that DOES something ──────────────────────
+# "Doe asked", "Spellman confirmed", "Sarkisyan resigned". A capitalised word
+# standing as the SUBJECT of a reporting or acting verb is a person or an
+# organisation, and nothing else in a pleading takes that position: an
+# agreement is signed, a motion is filed, a property is located — the sentence
+# turns passive the moment its subject is not an actor. That is corroboration
+# the capitalisation alone does not carry, and it reaches a population every
+# other anchor misses, because it needs no role prefix, no label, no caption
+# column and no parenthetical: a witness who appears nowhere but the fact
+# section of a complaint is named exactly this way.
+#
+# The verb must be written in LOWER CASE, which is what makes this prose rather
+# than a heading — "Doe Failed To Mitigate Damages" is a section title, and
+# every word of it is capitalised. That one requirement removes the whole
+# false-positive family the `prune_heading_only_terms` note describes.
+#
+# The list is deliberately not "every past-tense verb": it is verbs whose
+# subject is an ANIMATE or CORPORATE agent. "provided", "failed", "contained",
+# "required" and "showed" are left off precisely because an agreement, a
+# statute and an exhibit are their commonest subjects.
+_PN_NARRATIVE_VERBS = frozenset("""
+said says stated states testified testifies declared declares
+admitted admits denied denies alleged alleges claimed claims
+asserted asserts contended contends explained explains
+confirmed confirms acknowledged acknowledges reported reports
+told tells mentioned mentions asked asks answered answers
+replied replies responded responds complained complains
+requested requests demanded demands agreed agrees
+refused refuses promised promises advised advises
+informed informs notified notifies warned warns
+wrote writes emailed emails texted called calls phoned
+spoke speaks met meets visited visits attended attends
+believed believes understood understands knew knows
+recalled recalls learned learns discovered discovers
+observed observes noticed notices realized realizes
+saw sees heard hears thought thinks
+signed signs executed received receives sent sends
+purchased purchases paid pays owed owes borrowed borrows
+worked works resigned resigns retired retires quit
+hired hires fired fires terminated
+drove drives arrived arrives returned returns
+sued sues filed files served serves
+""".split())
+# A 2-letter capitalised word in front of a verb is OCR debris, never a
+# surname worth a row — the screen `_PN_HARVEST_TOKEN_MIN` already states for
+# every loose harvest.
+_PN_NARRATIVE_RE = re.compile(
+    r"(?<![\w'’])(?P<run>[A-Z][A-Za-z'’.-]*(?:[ \t]+[A-Z][A-Za-z'’.-]*){0,2})"
+    r"[ \t]+(?P<verb>[a-z]+)(?![\w'’])")
+
+
 def _pn_review_findings(text, known_fakes=()):
     """[(class, sample), ...] — identifier shapes in `text` that a human must
     review before the export is shared. De-duplicated; whitelisted citation
@@ -14693,7 +14858,10 @@ class Pseudonymizer:
         body AND over its column-ordered twin, alternating between them, so a
         single slot was evicted before it was ever read and the parser ran on
         every call. Keyed on the text itself and capped at the alternating
-        pair, so it cannot grow with the folder."""
+        pair, so it cannot grow with the folder. Nothing masks a THIRD body:
+        `defined_name_scan` reads the unscrubbed source, and asks about
+        citations through `_protected_citation_spans` directly and lazily
+        rather than through this memo, precisely so the pair stays a pair."""
         memo = getattr(self, "_mask_memo", None)
         if memo is None:
             memo = self._mask_memo = {}
@@ -15778,6 +15946,220 @@ class Pseudonymizer:
                 seen.add((c, s.lower()))
                 self.review.append((c, s))
         return findings
+
+    def defined_name_scan(self, source, output):
+        """A name the DOCUMENT ITSELF defines — `Susan Spellman ("Spellman")`,
+        `ACME CORPORATION, INC. ("Acme")` — that this run never bound and that
+        still stands verbatim in the finished `output`.
+
+        The parenthetical is the corroboration: the filing is declaring that
+        the run in front of it is a name, and naming the short form it will use
+        from there on. Every existing reader of this shape needs the parent to
+        be KNOWN first (see `_PN_DEFINED_PAREN_RE`), so a party no template
+        named and no role anchor reached was neither faked nor flagged.
+
+        REPORTED, never repaired — and that is not timidity. `X ("Y")` is also
+        how a filing defines an AGREEMENT, a statute and a published decision,
+        so minting a term off this shape would rename a cited authority the
+        moment one carried it: the trade the whole method refuses. A `yes` on
+        the row makes the value an authoritative term, and the re-run's
+        `register_short_names` then binds the short form off the parent, so the
+        one operator decision closes both halves — the full name and the
+        `("Spellman")` the rest of the document is written in.
+
+        Read from the SOURCE, because the definition is in the document and not
+        in the export, and reported only when the value SURVIVED into `output`:
+        a party correctly faked has nothing left standing to flag.
+
+        A candidate inside a protected CITATION span is refused — a short-cite
+        parenthetical on a published decision has this shape — but the parse
+        that finds those spans is the expensive thing on the whole leak path
+        (~0.8 s on a 214 KB brief), and this is the one scan asking it about a
+        THIRD body: the other four share the export and its column-ordered
+        twin, so the source is a genuine extra parse rather than a memo hit.
+        So it is paid LAZILY, only once a candidate has cleared every other
+        screen. A declaration, an exhibit and a proof of service offer none,
+        and pay nothing."""
+        src = _NFKC(source)
+        cite_spans = None       # parsed only if a candidate survives the rest
+        out_txt = _NFKC(output)
+        neutral = {w.lower() for w in self.known_fake_words()}
+        tracked = {str(rec["real"]).lower() for rec in self.records.values()}
+
+        def _neutral_word(w):
+            return (_pn_word_is_own_fake(w, neutral)
+                    or _pn_review_word_is_vocabulary(w))
+
+        findings, local = [], set()
+        for m in _PN_DEFINED_PAREN_RE.finditer(src):
+            words, at = _pn_defined_name_run(m.group("run"))
+            # A lone capitalised word defining itself ("the Lease (\"Lease\")")
+            # carries no name evidence at all, and a PARTY written as one bare
+            # word is already the role anchor's case ("Defendant SPELLMAN" —
+            # `unknown_name_scan`). Residual, and accepted: a one-word party
+            # defined with no role word in front of it is still missed here.
+            if len(words) < 2:
+                continue
+            start = m.start("run") + at
+            if _PN_DEFINED_ARTICLE_RE.search(src[max(0, start - 40):start]):
+                continue
+            name = " ".join(words)
+            low = name.lower()
+            # A value this run already tracks is `surviving_reals`' finding if
+            # it survived and nobody's if it did not — either way not this
+            # scan's row to add.
+            if low in local or low in tracked:
+                continue
+            if (_pn_is_never_fake(name) or _pn_is_procedural_phrase(name)
+                    or _pn_is_party_role(name) or _pn_is_public_entity(name)
+                    or _pn_is_protected_locality(name)):
+                continue
+            # The short form must be a WORD OF THE PARENT — the same
+            # corroboration `register_short_names` demands, and what separates
+            # "this is the name I will use for that name" from an arbitrary
+            # label. An INITIALISM is deliberately NOT enough here: against an
+            # UNKNOWN parent, `("UCL")`, `("FEHA")`, `("RJN")` and `("ISO")`
+            # are defined legal vocabulary far more often than a party's
+            # initials, and the tracked-party initialism already has its own
+            # backstop in `review_definition_survivors`.
+            bases = {_pn_word_base(w) for w in words}
+            if not any(self._defined_short_corroborates(short, bases,
+                                                        _neutral_word)
+                       for short in _pn_paren_short_forms(m.group("body"))):
+                continue
+            flags = [not _neutral_word(w) for w in words]
+            if not any(flags):
+                continue
+            # The same name-shape rule the role-anchored tier applies: a party
+            # leads with its distinctive token ("Sunrise Motors Group"), a
+            # title-case heading leads with a function word and carries the odd
+            # distinctive one in the minority.
+            if not flags[0] and sum(flags) * 2 < len(flags):
+                continue
+            try:
+                rx = self._compiled(
+                    r"(?<!\w)" + r"\s+".join(re.escape(w) for w in words)
+                    + r"(?!\w)", re.IGNORECASE)
+            except re.error:
+                continue
+            if not rx.search(out_txt):
+                continue          # faked, or absent from the export — fine
+            if cite_spans is None:
+                cite_spans = _PnSpanIndex(self._protected_citation_spans(src))
+            if cite_spans.overlaps(start, m.end("run")):
+                continue          # a cited decision's own short form
+            local.add(low)
+            findings.append(("defined name?", name))
+        seen = {(c, s.lower()) for c, s in self.review}
+        out = []
+        for c, s in findings:
+            if (c, s.lower()) not in seen:
+                seen.add((c, s.lower()))
+                self.review.append((c, s))
+                out.append((c, s))
+        return out
+
+    @staticmethod
+    def _defined_short_corroborates(short, parent_bases, neutral):
+        """True when a parenthetical's short form is the document's own label
+        for the name in front of it: every word of it is a word of that name,
+        and it is not itself a bare role word or pure generic vocabulary
+        (`("Agreement")` off "Purchase Agreement" says nothing about a party —
+        the rule `register_short_names` already applies to a bare common
+        word)."""
+        toks = short.split() if short else []
+        if not toks or _pn_is_party_role(short):
+            return False
+        if not all(_pn_word_base(w) in parent_bases for w in toks):
+            return False
+        # A short form that is nothing but ordinary vocabulary says nothing
+        # about a party — `Master Services Agreement ("Agreement")`. The test
+        # is the one the parent's own words take (`_neutral_word`), not
+        # `_pn_is_generic_token`: that wider set withholds a word from becoming
+        # a bare TERM, which is a decision about rewriting text, and it swallows
+        # the trade vocabulary a real company names itself after ("Sunlight
+        # Financial LLC" -> `("Sunlight")`). Reporting is not rewriting, and a
+        # party is exactly what this tier must not swallow.
+        return not all(neutral(w) for w in toks)
+
+    def narrative_name_scan(self, text):
+        """A capitalised run in the FINISHED output standing as the SUBJECT of
+        a reporting or acting verb — "Doe asked", "Spellman confirmed",
+        "Sarkisyan resigned" — that is neither one of our own stand-ins nor
+        ordinary vocabulary.
+
+        Every other name anchor this tool has needs the document to LABEL the
+        name: a role prefix ("Defendant Travelers"), a caption descriptor ("X,
+        an individual"), a signature block, a docket roster row, a declaration
+        short cite, a defined-term parenthetical. A witness named only in the
+        fact section of a complaint carries none of those, and the verb is the
+        one thing that still says "this is somebody": a pleading's agreements
+        are signed and its motions are filed, so the subject position of an
+        active reporting verb belongs to a person or a company.
+
+        Run on the OUTPUT for the reason `unknown_name_scan` is: a party
+        correctly bound shows up here as its fake and goes quietly, so what is
+        left is what nothing knew to look for. REPORTED, never repaired —
+        every screen below is a guess about English, and a wrong guess that
+        REWRITES is the failure the whole method refuses."""
+        src = self._mask_protected_citations(_NFKC(text))
+        neutral = {w.lower() for w in self.known_fake_words()}
+        tracked = {str(rec["real"]).lower() for rec in self.records.values()}
+        findings, local = [], set()
+        for m in _PN_NARRATIVE_RE.finditer(src):
+            if m.group("verb") not in _PN_NARRATIVE_VERBS:
+                continue
+            # The same trimming the defined-term tier uses: a run captured
+            # backwards can start in the sentence before it, a leading role
+            # word is trimmed rather than fatal, and an article-led run ("The
+            # Agreement provided") is refused outright.
+            words, _at = _pn_defined_name_run(m.group("run"))
+            # An HONORIFIC in front of a name in prose is a title, not
+            # identity: "Ms. Rasho emailed" is a row about Rasho, and keeping
+            # the title would both fail the distinctive-head test below and
+            # mint a term narrower than the surname the rest of the document
+            # uses. (The defined-term tier keeps it, deliberately — there it is
+            # part of a registered party name, "Mr. Kool's Collision, LLC".)
+            while words and _pn_word_base(words[0]) in _PN_HONORIFICS:
+                words.pop(0)
+            if not words:
+                continue
+            name = " ".join(words)
+            low = name.lower()
+            if low in local or low in tracked:
+                continue
+            if (_pn_is_never_fake(name) or _pn_is_procedural_phrase(name)
+                    or _pn_is_party_role(name) or _pn_is_public_entity(name)
+                    or _pn_is_protected_locality(name)):
+                continue
+            head = words[0]
+            # The leading word carries the finding: a name leads with its
+            # distinctive token, and `_pn_is_name_token` is the SAME question
+            # the term builder asks before a bare token may exist at all — a
+            # role label, a professional suffix, a capacity word and a
+            # common-word surname are all refused there.
+            if (len(_pn_word_base(head)) < _PN_HARVEST_TOKEN_MIN
+                    or not _pn_is_name_token(head)):
+                continue
+            if any(_pn_word_is_own_fake(w, neutral) for w in words):
+                continue
+            if _pn_review_word_is_vocabulary(head):
+                continue
+            # The ORIGINAL is EVIDENCE where the run has it — the rule
+            # `note_original` states. A word absent from the source cannot
+            # have survived from it.
+            if not self._finding_is_in_original(name):
+                continue
+            local.add(low)
+            findings.append(("narrative name?", name))
+        seen = {(c, s.lower()) for c, s in self.review}
+        out = []
+        for c, s in findings:
+            if (c, s.lower()) not in seen:
+                seen.add((c, s.lower()))
+                self.review.append((c, s))
+                out.append((c, s))
+        return out
 
     def reid_scan(self, text):
         """Adversarial re-identification pass over the FINISHED output: any
@@ -20724,6 +21106,14 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         # (a definition shape register_short_names didn't anticipate).
         review = list(review) + pseudonymizer.review_definition_survivors(
             detect_full, body)
+        # A name the document DEFINES for itself (`Susan Spellman
+        # ("Spellman")`) that no template named and no other anchor reached.
+        review = list(review) + pseudonymizer.defined_name_scan(
+            detect_full, body)
+        # A capitalised run standing as the SUBJECT of a reporting verb
+        # ("Doe asked", "Spellman confirmed") — the one anchor that needs no
+        # label at all, and the only one a fact-section witness carries.
+        review = list(review) + pseudonymizer.narrative_name_scan(body)
         # High-recall tier: role-anchored name shapes in the output that are
         # neither our fakes nor common words — the "unknown name" net.
         review = list(review) + pseudonymizer.unknown_name_scan(body)
@@ -21839,6 +22229,8 @@ def _write_word_text_version(src_path, text, log, pseudonymizer=None,
 
         review = list(pseudonymizer.review_scan(body))
         review += pseudonymizer.review_definition_survivors(text, body)
+        review += pseudonymizer.defined_name_scan(text, body)
+        review += pseudonymizer.narrative_name_scan(body)
         review += pseudonymizer.unknown_name_scan(body)
         review += pseudonymizer.fuzzy_survivor_scan(body)
         review += pseudonymizer.half_scrubbed_scan(body)

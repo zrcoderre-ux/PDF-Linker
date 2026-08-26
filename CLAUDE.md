@@ -1203,6 +1203,103 @@ the party), so its row stays reversible.
   dropped on the evidence that nothing but a heading ever offered it. Keep
   extending them anyway: the prune needs the word to APPEAR somewhere, and a
   list entry costs nothing.
+- **A filing NAMES ITS OWN PARTIES, and nothing read the declaration**
+  (`defined_name_scan`). A complaint introduces the people in it by declaring
+  them: `Susan Spellman ("Spellman")`, `ACME CORPORATION, INC. ("Acme")`. The
+  parenthetical is the document saying, in its own words, that the run in front
+  of it is a NAME and that this is the short form the rest of the filing is
+  written in — corroboration of exactly the kind a STRUCTURED harvest carries
+  ("Yu Decl."), and far stronger than capitalisation alone. Three passes
+  already read the shape and every one of them needs the parent to be KNOWN
+  first: `_pn_split_cell` reads it out of the E-Court template cell (and only
+  for a two-word-or-longer short form), `register_short_names` iterates
+  `self.terms`, and `review_definition_survivors` is scoped to initialisms of a
+  party already tracked. So a party no template named and no role anchor
+  reached — a witness, a non-party employer, a co-defendant added by amendment,
+  a plaintiff in an exhibit from another matter — was defined in the body,
+  printed under its short form on every page after that, and met NO pass at
+  all: not faked, and **not flagged either**, which is the half that makes it
+  worse than an ordinary leak.
+  REPORTED, never repaired, and that is not timidity: `X ("Y")` is also how a
+  filing defines an AGREEMENT, a statute and a published decision, so minting a
+  term off this shape would rename a cited authority the moment one carried it
+  — the trade the whole method refuses. A `yes` on the row makes the value an
+  authoritative term, and the re-run's `register_short_names` then binds the
+  short form off the parent, so ONE operator decision closes both halves.
+  Read from the SOURCE (the definition is in the document, not in the export)
+  and reported only where the value SURVIVED into the export.
+  The screens, in the order they earn their keep. The **DEFINITE ARTICLE**
+  carries the dominant false-positive family and no word list can: `the Subject
+  Property ("Property")`, `the Lease Agreement ("Lease")`, `the Note ("Note")`
+  — a defined THING is introduced with an article and a party never is, while
+  Property, Lease, Policy and Note are all real surnames, so widening a
+  gazetteer to cover them would cost the very names this exists to surface.
+  Refused whether the article stands OUTSIDE the run (lower-case, a lookbehind)
+  or was captured INSIDE it because the sentence began with it — at the stated
+  cost that an entity whose registered name opens with "The" is missed by this
+  tier, which every other harvest still reaches. The **SHORT FORM must be a
+  WORD OF THE PARENT**, the same corroboration `register_short_names` demands;
+  an INITIALISM is deliberately not enough here, because against an UNKNOWN
+  parent `("UCL")`, `("FEHA")` and `("RJN")` are defined legal vocabulary far
+  more often than a party's initials, and the tracked-party case already has
+  its own backstop. The run **STOPS AT A FULL STOP** (`_pn_defined_name_run`) —
+  the `_PN_DECL_NAME_WORD` lesson exactly, or "…enforce the Provision.
+  Carpenter Smith" is read as a party named Provision — with a corporate suffix
+  and an honorific exempt, since those carry a period and are part of a name;
+  the offset it returns is what the article lookbehind must be taken from, or
+  the article of the PREVIOUS sentence refuses the finding. And a candidate
+  inside a protected CITATION span is refused, which is load-bearing rather
+  than belt-and-braces: a brief defining a short form inside the cite (`Ewald
+  v. Nationstar Mortgage, LLC ("Nationstar") (2017) …`) offers the cited party
+  up as this case's own. That parse is the expensive thing on the whole leak
+  path (~0.8 s on a 214 KB brief) and this is the ONE scan asking it about a
+  THIRD body — the other four share the export and its column-ordered twin, so
+  the source is a real extra parse and not a memo hit. So it is paid LAZILY,
+  once, only after a candidate has cleared every other screen: a declaration,
+  an exhibit and a proof of service offer none and pay nothing, and
+  `_mask_protected_citations`' two-entry memo stays a PAIR.
+- **A name is the thing in a filing that DOES something** (`narrative_name_scan`).
+  "Spellman confirmed the transfer", "Rasho emailed the branch manager",
+  "Sarkisyan resigned in March". A capitalised run standing as the SUBJECT of
+  an active reporting verb is a person or a company and nothing else in a
+  pleading stands there — an agreement is signed, a motion is filed, a property
+  is located; the sentence turns passive the moment its subject is not an
+  actor. It is the only anchor that needs no role prefix, no label, no caption
+  column, no signature block and no parenthetical, which is what makes it reach
+  a witness named nowhere but the fact section. Run on the OUTPUT for the
+  reason `unknown_name_scan` is: a party correctly bound shows up as its fake
+  and goes quietly, so what is left is what nothing knew to look for.
+  The **VERB IS LOWER CASE**, which is the whole separation between prose and a
+  heading — "Doe Failed To Mitigate Her Damages" is a section title and every
+  word of it is capitalised, so that one requirement removes the false-positive
+  family `prune_heading_only_terms` exists for. `_PN_NARRATIVE_VERBS` is
+  deliberately not "every past-tense verb": it is verbs whose subject is an
+  ANIMATE or CORPORATE agent, and "provided", "failed", "contained", "required"
+  and "showed" are left off precisely because an agreement, a statute and an
+  exhibit are their commonest subjects. The leading word carries the finding
+  and takes `_pn_is_name_token` — the SAME question the term builder asks
+  before a bare token may exist at all, so a role label, a professional suffix,
+  a capacity word and a common-word surname are refused at one definition — plus
+  `_PN_HARVEST_TOKEN_MIN`, since a two-letter capital before a verb is OCR
+  debris. An HONORIFIC is stripped from the value: "Ms. Rasho emailed" is a row
+  about Rasho, and keeping the title would mint a term narrower than the
+  surname the document actually uses (the defined-term tier KEEPS it, because
+  there it is part of a registered party name — "Mr. Kool's Collision, LLC").
+  The ORIGINAL is evidence here as everywhere. Measured on this repo's own
+  notes — 200 KB of capitalised technical vocabulary in running sentences, the
+  shape most likely to be misread — the two tiers report **four** rows between
+  them, one of which is the document's own worked example of a name. Cost is
+  ~5 ms an export; the citation mask it reads is already warm from
+  `surviving_reals`.
+  Both tiers are REVIEW, so they surface a row in `LEAKS.xlsx` and do NOT gate
+  delivery — the same standing as `unknown_name_scan` and the half-scrub sweep,
+  and the same limitation the "exhibits from another matter" note states.
+  `_pn_review_word_is_vocabulary` is the one neutrality rule they share, for the
+  reason `_weld_core` is shared: two tiers answering "is this word a name?"
+  differently is how a value one pass reports and another cannot is born.
+  Neither is in `_PN_NAME_TRIM_CLASSES` — both values are already exactly the
+  name their anchor declared, and the edge trim is a PERSON-path rule that
+  would cut into an entity's own trailing word.
 - **A HALF-SCRUBBED pair is the most dangerous thing the tool can emit, and the
   scans were structurally blind to it** (`half_scrubbed_scan`). "Xiaoxia
   Ingersoll" shipped 102 times in one batch, "Jiayin Sterling" in all seven
