@@ -10094,6 +10094,36 @@ _PN_DEFAULT_DETECTORS = ["ssn", "email", "phone", "address", "url"]
 # document (a caption's "Res. I.D." echoed on an exhibit) are scrubbed too — and
 # `surviving_reals` can then report it if one gets through.
 _PN_ID_RES = {
+    # THE case number, and the one identifier that had no document-side harvest
+    # at all. A California case number is the strongest re-identification key a
+    # filing carries: one public-portal lookup on "24STCV24253" returns the
+    # caption, the parties, counsel and the whole docket, so a surviving one
+    # inverts the entire pseudonym map at a stroke — worse than a surviving
+    # name, which at least needs a reader who already knows the case. Yet case
+    # numbers reached the term list ONLY from the E-Court template's "Case
+    # Number" column, so a number that column never carried was neither faked
+    # NOR reported: `reid_scan` reads this same table, so the export was
+    # certified clean while carrying it in its caption box.
+    #
+    # A Judicial Council packet is where that bites hardest, and it is what
+    # reported this: CIV-100 and JUD-100 print the number in a caption WIDGET,
+    # typed by whoever filled the form, so it routinely differs from — or is
+    # simply absent from — the spreadsheet ("24 STCV 24253", a related case, an
+    # exhibit from another matter, a packet dropped in a folder with no
+    # Order*.xlsx at all).
+    #
+    # Anchored on an explicit CASE-number label and NEVER on a bare "No.": the
+    # bare form is how a brief gives an unreported decision's trial-court
+    # docket ("No. BC543295, 2015 WL 12751760") and how a separate statement
+    # numbers its own rows ("Response No. 101"). The value may carry the
+    # hyphens and the colon a federal or non-LASC number is written with
+    # ("2:24-cv-01234", "30-2024-01234567-CU-BC-CJC"). The gap admits ONE
+    # newline, since a form's caption box prints the label above the field it
+    # labels — and no more than one, or a BLANK field would reach across to
+    # the page's first numbered item.
+    "case number": re.compile(
+        r"(?i)\bcase[ \t]*(?:no\.?|number|#)[ \t]*:?[ \t]*\n?[ \t]*"
+        r"([A-Za-z0-9]+(?:[-:][A-Za-z0-9]+)*)"),
     "license number": re.compile(
         r"(?i)\blicen[cs]e\s*(?:no\.?|number|#)?\s*:?\s*(\d{6,})"),
     # State Bar number, in every printed form seen in the corpus — "SBN 175977",
@@ -10170,6 +10200,11 @@ _PN_ALNUM_IDS = {"confirmation code", "production number"}
 _PN_REID_CLASSES = frozenset({
     "bar number", "license number", "reservation id", "account id",
     "confirmation code", "ssn", "production number",
+    # The case number is the strongest key of the set: one public-portal lookup
+    # returns the caption, the parties and the docket. It is scrubbed at the
+    # source now, but the output-side scan is what makes an export that somehow
+    # still carries one impossible to certify clean.
+    "case number",
 })
 
 # The NAME-shaped review tiers whose findings take the edge-vocabulary trim in
@@ -10325,6 +10360,21 @@ def _pn_fake_production(val, registry):
                    for i, p in enumerate(parts))
 
 
+# The tail an UNREPORTED decision carries right behind its trial-court docket
+# ("Case No. BC543295, 2015 WL 12751760"; "Case No. B123456 (2019)"). That
+# docket belongs to the cited decision, not to this case.
+# `register_identifiers` already masks the citation spans the parser could
+# READ and `_pn_learn_from_text` masks the table of authorities; this is the
+# belt for the cite the parser was BLINDED on — a gutter number between the
+# volume and the reporter, an OCR'd reporter — where the tail is the only
+# evidence left. Deliberately narrow: a year in parentheses or a WL/LEXIS pin
+# and nothing looser, because a real case number is followed by a date on
+# every proof of service ever filed.
+_PN_CASENO_CITE_TAIL_RE = re.compile(
+    r"[,;]?[ \t]{0,3}"
+    r"(?:\(\d{4}\)|\d{4}[ \t]+(?:WL|U\.S\.[ \t]*Dist\.|LEXIS)\b)")
+
+
 def _pn_identifier_values(text):
     """[(class, value), ...] — label-anchored identifiers found in `text`.
     A "file no." value must contain a digit, so a stray word cannot qualify."""
@@ -10358,6 +10408,17 @@ def _pn_identifier_values(text):
             if (cls == "registration number"
                     and len(re.sub(r"\D", "", val)) < 4):
                 val = re.sub(r"\s+", " ", m.group(0)).strip()
+            if cls == "case number":
+                # A case number carries a real number. California writes them
+                # with 4+ digits ("24STCV24253", "BC543295", a bare "123456"),
+                # while the shapes a case-number label collides with never do —
+                # a blank caption field followed by the form's first numbered
+                # item ("1."), a prose "in this case, number 3". Same floor and
+                # same reasoning as the account-id rule above.
+                if len(re.sub(r"\D", "", val)) < 4:
+                    continue
+                if _PN_CASENO_CITE_TAIL_RE.match(text, m.end()):
+                    continue
             if val.lower() in seen:
                 continue
             seen.add(val.lower())
@@ -11175,7 +11236,8 @@ def _pn_address_adjacency(records):
     return warns
 
 
-def _pn_build_pattern(term, *, whole_word, follow=None, breakable=False):
+def _pn_build_pattern(term, *, whole_word, follow=None, breakable=False,
+                      spaceable=False):
     """Literal-match regex body (NFKC-normalized, escaped), with optional
     word-boundary guards. Runs of whitespace in the term match ANY whitespace
     run in the text, so a party name broken across a line wrap ("Toyota of\\n
@@ -11204,8 +11266,24 @@ def _pn_build_pattern(term, *, whole_word, follow=None, breakable=False):
     branch per position `_pn_word_breaks` allows, whole spelling first so an
     intact word always matches as itself. Deliberately not a term per spelling:
     a real value carrying a phantom space makes half a word look like a word to
-    every pass that decomposes one (see `_pn_word_breaks`)."""
-    body = r"\s+".join(re.escape(p) for p in _NFKC(term).split())
+    every pass that decomposes one (see `_pn_word_breaks`).
+
+    `spaceable` lets whitespace fall between the RUNS of an opaque identifier —
+    "24 STCV 24253", "24STCV\n24253" — because a case number is one token in
+    the filer's head and not in the extraction's. A form field typed with
+    spaces, a scan that spaced the number out, a narrow caption column that
+    wrapped it: each leaves a spelling the literal term matches nowhere, and a
+    case number is the one value where a single miss hands a reader the whole
+    docket. Safe where the same tolerance would be reckless on a name, because
+    every character of the value is anchored — the pattern can only ever land
+    on this exact number, however it was spaced. At most one newline, so a
+    match can never reach across a blank line into the next block."""
+    if spaceable:
+        body = r"[ \t]*\n?[ \t]*".join(
+            re.escape(p) for p in re.findall(r"[^\W\d_]+|\d+|[^\w\s]+",
+                                            _NFKC(term)))
+    else:
+        body = r"\s+".join(re.escape(p) for p in _NFKC(term).split())
     if breakable:
         broken = [re.escape(left) + brk + re.escape(right)
                   for left, right, brk in _pn_word_breaks(_NFKC(term))]
@@ -11279,6 +11357,21 @@ def _pn_term_is_breakable(category, source):
             and source in _PN_KEY_UNMATCHED_SOURCES)
 
 
+# Categories whose value is an OPAQUE IDENTIFIER whose internal spacing carries
+# no meaning — so a stray space inside it is a spelling of the same value, not
+# a different one. Only the case number: it is a single token to everyone who
+# writes it, it is the strongest re-identification key a filing carries, and it
+# is the one identifier that is routinely RE-TYPED by hand (into a Judicial
+# Council form field) rather than copied. A production stamp and a bar number
+# are deliberately NOT here — their runs abut other tokens on a stamp line,
+# where the spacing IS the boundary.
+_PN_SPACEABLE_CATS = frozenset({"case_number"})
+
+
+def _pn_term_is_spaceable(category):
+    return category in _PN_SPACEABLE_CATS
+
+
 class _PnTerm:
     __slots__ = ("category", "real", "fake", "pattern", "flags", "priority",
                  "source", "whole_word", "count", "loaded", "derived",
@@ -11292,7 +11385,8 @@ class _PnTerm:
         self.whole_word = whole_word
         self.pattern = _pn_build_pattern(
             real, whole_word=whole_word, follow=follow,
-            breakable=_pn_term_is_breakable(category, source))
+            breakable=_pn_term_is_breakable(category, source),
+            spaceable=_pn_term_is_spaceable(category))
         self.flags = 0 if case_sensitive else re.IGNORECASE
         self.priority = priority
         self.source = source
@@ -14129,12 +14223,31 @@ class Pseudonymizer:
             cat = cls.replace(" ", "_")
             if (cat, val.lower()) in self.records:
                 continue
+            # A form NUMBER is not a case number, and on a Judicial Council
+            # caption the two stand an inch apart — so the one gate that
+            # answers "is this court-form boilerplate?" is asked here as well
+            # as of the template's own case-number column (`_pn_build_terms`).
+            # Faked, a form id is a nonsense stamp that destroys the form's
+            # identity.
+            if cls == "case number" and _pn_is_never_fake(val):
+                continue
             # SSN shares the detector's faker (valid shape, digit-seeded) so a
             # labelled run-together SSN and a dashed one elsewhere map to the
             # same fake; an alphanumeric id (confirmation code) is faked char-wise
             # so its distinctive letters change too; the rest keep the digit faker.
             if cls == "ssn":
                 fake = self._fake_ssn(val)
+            elif cls == "case number":
+                # Through `_pn_fake_caseno`, NOT the bare digit faker — and
+                # the seed tag it uses ("caseno") is the whole point: it is the
+                # slot the E-Court template draws from and the slot
+                # `_pn_load_key` seeds when a re-run reuses the key, so one
+                # this harvest reads out of a form folds onto the fake the key
+                # already pins instead of minting a second one over a folder
+                # that has already been delivered. It also keeps the two-digit
+                # filing year, which is printed beside the number in every
+                # caption anyway.
+                fake = _pn_fake_caseno(val, self.registry)
             elif cls == "production number":
                 fake = _pn_fake_production(val, self.registry)
             elif cls in _PN_ALNUM_IDS:

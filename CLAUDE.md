@@ -736,6 +736,48 @@ the party), so its row stays reversible.
   shipped as "No. GEARHART543295". A term never built cannot be applied
   anywhere, which is the only version of this that holds wherever the parser
   fails.
+- **THE CASE NUMBER had no document-side harvest at all**, and it is the
+  strongest re-identification key a filing carries: one public-portal lookup on
+  "24STCV24253" returns the caption, the parties, counsel and the whole docket,
+  so a survivor inverts the entire pseudonym map at a stroke — worse than a
+  surviving name, which at least needs a reader who already knows the case.
+  Every other identifier has a label-anchored class in `_PN_ID_RES`; the case
+  number reached the term list ONLY from the E-Court template's "Case Number"
+  column. And `reid_scan` reads that same table, so a number the column never
+  carried was neither faked NOR reported: the export was certified clean while
+  carrying it. A DEFAULT-JUDGMENT PACKET is where that bites, and it is what
+  reported it — CIV-100 and JUD-100 print the number in a caption WIDGET typed
+  by whoever filled the form, so it routinely differs from the spreadsheet, or
+  the folder simply has no `Order*.xlsx` at all (an exhibit from another
+  matter, a related case, a packet dropped in a folder of its own). It is now a
+  `case number` class harvested by `register_identifiers`, faked through
+  `_pn_fake_caseno` — NOT the bare digit faker — so it draws from the same
+  `caseno` registry slot the template draws from and `_pn_load_key` seeds: a
+  number read off a form folds onto the fake the key already pins instead of
+  minting a second one over a folder already delivered, and it keeps the
+  two-digit filing year that is printed beside it in every caption anyway. The
+  class is in `_PN_REID_CLASSES` too, so a survivor can never be certified
+  clean. Anchored on an explicit CASE-number label and NEVER a bare "No.": the
+  bare form is how a brief gives an unreported decision's trial-court docket
+  ("No. BC543295, 2015 WL 12751760") and how a separate statement numbers its
+  own rows ("Response No. 101"). Three screens beyond the label — 4+ digits
+  (the account-id floor's reasoning: a blank caption field followed by the
+  form's first numbered item, a prose "case, number 3"), `_pn_is_never_fake`
+  (a form id and a case number stand an inch apart on a JC caption, and a
+  faked form id is a nonsense stamp), and `_PN_CASENO_CITE_TAIL_RE`, the belt
+  under the citation mask for a cite the PARSER was blinded on, where the
+  year-in-parens or WL/LEXIS pin behind the docket is the only evidence left.
+  Deliberately narrow, because a real case number is followed by a date on
+  every proof of service ever filed. **And its internal spacing carries no
+  meaning** (`_PN_SPACEABLE_CATS`, `_pn_build_pattern(spaceable=True)`): the
+  number is one token to everyone who writes it and not to the extraction, so
+  a field typed with spaces, a scan that spaced it out, and a narrow caption
+  column that wrapped it each leave a spelling the literal term matches
+  nowhere. Whitespace is admitted between the value's RUNS — at most one
+  newline — which would be reckless on a name and costs nothing here, because
+  every character is anchored: the pattern can only ever land on this exact
+  number, however it was spaced. It mints nothing, and `_surviving_records`
+  scans with the same pattern, so replacement and detection stay mirrored.
 - **A REGISTRATION number is only safe to track behind its LABEL.** "a
   registered California process server, Registration No. 833, San Bernardino
   County" names one person in the county's public registry, and the pair
