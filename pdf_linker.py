@@ -10760,6 +10760,20 @@ arrears landlord landlords tenant tenants resident residents lessee lessor
 furnishings appliance appliances pest infestation detector detectors monoxide
 vacate vacating renter renters screening prorated""".split())
 _PN_COMMON_WORDS |= _PN_HOUSING_WORDS
+# The BACK-OFFICE vocabulary an e-mail header addresses instead of a person:
+# "From: Accounts Payable", "To: Undisclosed Recipients", "Cc: Purchasing".
+# Most department names were already covered — Human Resources, Customer
+# Service, Legal, Operations, Employees, Recipients are all in the gazetteer —
+# and this is the accounting/facilities remainder `mail_header_name_scan`
+# turned up. None of them is a California surname, which is the one screen this
+# gazetteer must pass (see the "fair"/"bane"/"green" rule): a word that doubles
+# as a real name goes in _PN_SERVICE_GENERIC_WORDS instead, so a party who
+# genuinely carries it stays reportable.
+_PN_BACKOFFICE_WORDS = frozenset("""
+accounts account payable receivable payroll billing invoicing purchasing
+procurement facilities undisclosed reception dispatch intake helpdesk
+""".split())
+_PN_COMMON_WORDS |= _PN_BACKOFFICE_WORDS
 # The first service-of-process batch (above, from the motion-to-quash corpus
 # that shipped "Motion to Mabry", "Eldridge of Service" and "process radley"):
 # procedural vocabulary that is never anyone's name, so it belongs in the
@@ -10957,6 +10971,55 @@ def _pn_review_word_is_vocabulary(word):
             or _pn_is_entity_keep(base) or _pn_is_role_token(word)
             or base in _PN_REVIEW_NAME_STOP
             or _pn_token_is_procedural(base))
+
+
+# ── A printed e-mail HEADER names people on its own lines ────────────────────
+# An exhibit e-mail printed to PDF carries "From: Susan Spellman" and "To:
+# Marcus Delacroix" as header lines. The display-name path needs the
+# `Name <addr@domain>` PAIR, so a header that prints the name on its own line
+# with the address elsewhere (or nowhere) reached nothing at all — and an
+# e-mail chain is one of the commonest exhibits there is.
+#
+# REVIEW rather than a harvest, unlike the `Attn:`-style labels next to which
+# it would otherwise sit. A header line is not only ever a person: "To: All
+# Employees", "From: Accounts Payable", "To: Undisclosed Recipients". The
+# harvest tier's cost for a wrong guess is a rewritten document; a worksheet
+# row costs one `no`. So the shape is reported and the operator decides.
+#
+# Anchored at the START of a line, because "from" and "to" are the two
+# commonest words in English and only the header form puts one at a line head
+# with a colon after it.
+_PN_MAIL_HEADER_RE = re.compile(
+    r"(?m)^[ \t]*(?i:from|to|cc|bcc|sent\s+by|attendees?|participants?)"
+    r"[ \t]*:[ \t]*(?P<n>[A-Z][A-Za-z'’.-]+(?:[ \t]+[A-Z][A-Za-z'’.-]+){0,3})"
+    r"(?![\w'’])")
+
+
+# ── An HONORIFIC in front of a word is a person reference ────────────────────
+# "Mr. Spellman", "Ms. Delacroix", "Dr. Ardeshirpour". A title is written in
+# front of a surname and in front of nothing else, which makes it the shortest
+# corroborated name anchor there is — and nothing read it. `unknown_name_scan`
+# anchors on a party ROLE, so it never sees a fact section; `narrative_name_scan`
+# needs a verb from its own list, so "a meeting with Ms. Delacroix" and "Mr.
+# Spellman's employment ended" both go quietly. Between them that is most of how
+# a filing refers to a person after it has introduced them once.
+#
+# Safe to read off the OUTPUT because the composing faker KEEPS an honorific
+# verbatim (`_PN_NAME_FURNITURE`), so a correctly bound party comes out as
+# "Mr. <our fake>" and is screened as neutral; what is left standing beside a
+# title is a name nothing knew about.
+#
+# "Dr" is the one title that is also an ordinary word of a filing — the street
+# suffix — and it lands in exactly this shape: "1200 Sunset Dr Los Angeles"
+# reads as a doctor named Los. So "Dr" must carry its PERIOD, which a street
+# suffix does not; the rest have no such collision and are matched with the
+# period optional, since OCR drops it. `Miss`/`Judge`/`Officer` and the other
+# whole-word titles never take one.
+_PN_HONORIFIC_RE = re.compile(
+    r"(?<![\w'’])(?P<title>(?:Dr\.|(?:Mr|Mrs|Ms|Messrs|Prof|Rev|Hon|Sgt|Det)\.?"
+    r"|(?:Miss|Officer|Judge|Justice|Sir|Madam|Madame)))"
+    r"[ \t]+(?P<n>[A-Z][A-Za-z'’-]+(?:[ \t]+[A-Z][A-Za-z'’-]+){0,2})"
+    r"(?![\w'’])")
 
 
 # ── A name is the thing in a filing that DOES something ──────────────────────
@@ -12389,9 +12452,19 @@ _PN_DECL_NAME = (
     rf"{_PN_DECL_NAME_WORD}(?:\s+{_PN_DECL_NAME_WORD}){{0,3}}"
     r"(?:,\s*(?i:esq|jr|sr|ii|iii|iv|m\.?d|ph\.?d|c\.?p\.?a|r\.?n|d\.?d\.?s)\.?)?"
 )
+# DEPOSITION is the sibling of DECLARATION and was reaching no pass at all.
+# "Declaration of X" and the short cite "X Decl. ¶ 4" are both harvested — the
+# declarant cite being the single highest-value place a witness name leaks —
+# while "DEPOSITION OF SUSAN SPELLMAN" and "(Spellman Depo. 45:12-16)" yielded
+# nothing. A summary-judgment or fee motion cites deposition testimony
+# constantly, and the deponent is routinely a witness on no party template, so
+# the name shipped in the caption of every excerpt and in every pin cite. The
+# anchor is the same shape carrying the same corroboration; only the noun
+# differs.
 _PN_DECL_TITLE_RE = re.compile(
     r"(?i:(?:supplemental|amended|further|second|third|fourth|reply|corrected|"
-    r"joint)\s+)?(?i:declaration\s+of)\s+(" + _PN_DECL_NAME + r")")
+    r"joint|videotaped|certified|continued|volume)\s+)?"
+    r"(?i:(?:declaration|deposition)\s+of)\s+(" + _PN_DECL_NAME + r")")
 _PN_DECL_SELF_RE = re.compile(
     r"\bI,\s+(" + _PN_DECL_NAME + r")\s*,\s*(?i:declare|hereby|do\s+hereby|"
     r"state|being\s+duly\s+sworn)")
@@ -12414,7 +12487,19 @@ _PN_DECL_SELF_RE = re.compile(
 # and end at a non-letter (?![A-Za-z]), so it can't bite into a name that merely
 # begins that way ("Declan"); a bare "Dec"/"Decl"/"Declaration" that letters out
 # to something else ("December", "Decker", "Donald") is dropped by the validator.
-_PN_DECL_REF_WORDS = frozenset({"dec", "decl", "declaration"})
+# The reference word, validated letters-only so OCR stray marks still resolve
+# ("Dec.laration" -> declaration). The DEPOSITION forms join it: "Spellman
+# Depo. 45:12", "Spellman Dep. 88:2", "Spellman Deposition, Vol. II". They cost
+# no new machinery — `_PN_DECL_REF_RE` already captures any word starting with
+# a capital D and defers to this set — and they are as safe as the Decl. forms
+# for the same reason: a longer D-word letters out to something not in the set
+# ("Department", "December", "Decker") and is dropped by the validator.
+_PN_DECL_REF_WORDS = frozenset({"dec", "decl", "declaration",
+                                "dep", "depo", "depos", "deposition"})
+# A short reference word followed by a NUMBER can be a date rather than a cite:
+# "Dec. 5, 2024". The deposition forms take no such guard — "Depo. 45:12" is a
+# page:line pin and is exactly what this is looking for.
+_PN_DECL_REF_DATE_WORDS = frozenset({"dec"})
 _PN_DECL_REF_RE = re.compile(
     r"(?<![A-Za-z])(?P<n>" + _PN_DECL_NAME_WORD
     + r"(?:[ \t]+" + _PN_DECL_NAME_WORD + r"){0,2}?)"
@@ -12430,6 +12515,10 @@ _PN_DECL_DESCRIPTOR = frozenset({
     "opposing", "rebuttal", "percipient", "sworn", "verified", "authenticating",
     "foundational", "initial", "final", "corrected", "additional", "further",
     "supplemental", "amended", "joint", "declarant", "moving", "responsive",
+    # The words that describe a DEPOSITION rather than naming its deponent.
+    # "Videotaped Deposition of Marcus Delacroix" otherwise reads as a deponent
+    # named Videotaped — the same shape "Supporting Declaration" is here for.
+    "videotaped", "certified", "continued", "volume", "deponent", "oral",
 })
 
 
@@ -12453,7 +12542,8 @@ def _pn_declarant_ref_names(text):
             continue
         # A bare "Dec." followed by a number is a date ("Dec. 5, 2024"), not a
         # declaration short cite.
-        if refletters == "dec" and re.match(r"[ \t]*\d", nfkc[m.end():]):
+        if (refletters in _PN_DECL_REF_DATE_WORDS
+                and re.match(r"[ \t]*\d", nfkc[m.end():])):
             continue
         toks = m.group("n").split()
         # Drop leading words that aren't the declarant ("See"/"The"/"Plaintiff").
@@ -12908,6 +12998,32 @@ _PN_DBA_TEXT_RE = re.compile(
 _PN_DBA_OF_RE = re.compile(
     rf"(?P<tail>{_PN_DBA_PHRASE_1L})\s*,\s*an?\s+{_PN_DBA_MARK}\s+of[ \t]+"
     rf"(?P<head>{_PN_DBA_PHRASE_1L})")
+# The SAME shape with an ALIAS marker. `_PN_AKA_ALTS` existed only to split a
+# template CELL (`_pn_split_aka`), so an alias stated in BODY TEXT reached no
+# pass at all — and that is the shape a complaint actually uses: "Defendant John
+# Smith, also known as Johnny Smythe, opened the account". Measured on the
+# pipeline as it stood, the legal name was bound and faked and the alias shipped
+# verbatim in the very same sentence — "Defendant Wemyss Paget, also known as
+# Johnny Smythe" — with every review scan silent. The fuzzy sweep cannot reach
+# it (Smith -> Smythe is two edits at a length where the fold allows one) and
+# `half_scrubbed_scan` does not fire, because the alias is a whole name of its
+# own rather than a bare token standing beside a fake.
+#
+# Registered at the SAME tier as a dba, because it carries the same
+# corroboration: nothing but a name follows "also known as". The one difference
+# is what the tail IS — a dba is always a business, while an alias is the same
+# kind of thing as its head, which `_pn_append_name_terms` already knows (it
+# splits on `_PN_AKA_SPLIT_RE` and lets the tail inherit the head's
+# person/entity classification). So the pair is handed back joined by a bare
+# "aka" and that function does the rest.
+#
+# Both sides are held to `_PN_DBA_PHRASE_1L` — no line break. The reasoning is
+# the dba rule's, and it bites harder here: an alias marker sits mid-sentence,
+# so a phrase allowed to jump a wrap on a two-column page would swallow the
+# interleaved signature block.
+_PN_AKA_TEXT_RE = re.compile(
+    rf"(?P<head>{_PN_DBA_PHRASE_1L})[ \t,]*\(?{_PN_AKA_MARK}\)?[ \t,]*"
+    rf"(?P<tail>{_PN_DBA_PHRASE_1L})")
 # A phrase that is only these words names nothing.
 _PN_DBA_PHRASE_STOP = {"the", "a", "an", "this", "that", "its", "his", "her",
                        "their", "and", "or", "of", "is", "was", "court", "no"}
@@ -12950,6 +13066,24 @@ def _pn_clean_phrase(s):
         s = s[:m.start()]
 
 
+def _pn_name_pair_ok(head, tail):
+    """The screens a two-sided name pair read out of PROSE must clear. Shared by
+    the dba harvest and the alias harvest, for the reason `_weld_core` is
+    shared: two passes reading the same shape must not disagree about what
+    counts as a name."""
+    # Both sides must be at least two words. A one-word name read out of prose
+    # ("dba Equity", "aka Smith") would become a term that fires on every
+    # ordinary use of the word; a single-word alias has to be supplied with
+    # --term instead.
+    if len(head.split()) < 2 or len(tail.split()) < 2:
+        return False
+    if head.lower() in _PN_DBA_PHRASE_STOP or tail.lower() in _PN_DBA_PHRASE_STOP:
+        return False
+    if _PN_DBA_PHRASE_REJECT.search(head) or _PN_DBA_PHRASE_REJECT.search(tail):
+        return False
+    return not (_pn_is_party_role(head) or _pn_is_party_role(tail))
+
+
 def _pn_dba_pairs(text):
     """[(legal_name, fictitious_name), ...] read off `text`, de-duplicated."""
     pairs, seen = [], set()
@@ -12957,22 +13091,43 @@ def _pn_dba_pairs(text):
         for m in rx.finditer(text):
             head = _pn_trim_address(_pn_clean_phrase(m.group("head")))
             tail = _pn_trim_address(_pn_clean_phrase(m.group("tail")))
-            # Both sides must be at least two words. A one-word name read out of
-            # prose ("dba Equity") would become a substring term that fires
-            # inside every longer name and every ordinary use of the word; a
-            # single-word dba has to be supplied with --term instead.
-            if len(head.split()) < 2 or len(tail.split()) < 2:
-                continue
-            if head.lower() in _PN_DBA_PHRASE_STOP or tail.lower() in _PN_DBA_PHRASE_STOP:
-                continue
-            if _PN_DBA_PHRASE_REJECT.search(head) or _PN_DBA_PHRASE_REJECT.search(tail):
-                continue
-            if _pn_is_party_role(head) or _pn_is_party_role(tail):
+            if not _pn_name_pair_ok(head, tail):
                 continue
             key = (head.lower(), tail.lower())
             if key not in seen:
                 seen.add(key)
                 pairs.append((head, tail))
+    return pairs
+
+
+def _pn_alias_pairs(text):
+    """[(name, alias), ...] for an aka/fka stated in BODY TEXT — the shape a
+    complaint uses to introduce the other name a party goes by.
+
+    A LEADING role word is trimmed off the head rather than being fatal:
+    "Defendant John Smith, also known as ..." is how the sentence is actually
+    written, and the same trim `_pn_label_names` applies to a caption is what
+    keeps the pair usable. Nothing is trimmed off the TAIL — an alias is stated
+    bare, and a role word appearing there means the phrase ran past the name."""
+    pairs, seen = [], set()
+    for m in _PN_AKA_TEXT_RE.finditer(text):
+        head = _pn_trim_address(_pn_clean_phrase(m.group("head")))
+        tail = _pn_trim_address(_pn_clean_phrase(m.group("tail")))
+        words = head.split()
+        while len(words) > 1 and _pn_is_role_token(words[0]):
+            words = words[1:]
+        head = " ".join(words)
+        if not _pn_name_pair_ok(head, tail):
+            continue
+        # A role word standing INSIDE either side means the phrase ran off the
+        # end of the name ("... aka Defendant Two"), which is the different
+        # thing the leading trim above must not be read as licensing.
+        if any(_pn_is_role_token(w) for w in head.split() + tail.split()):
+            continue
+        key = (head.lower(), tail.lower())
+        if key not in seen:
+            seen.add(key)
+            pairs.append((head, tail))
     return pairs
 
 
@@ -13869,6 +14024,16 @@ class Pseudonymizer:
         for head, tail in _pn_dba_pairs(text):
             new = []
             _pn_append_name_terms(new, f"{head} dba {tail}", "document",
+                                  self.registry)
+            self._add_terms(new)
+        # An ALIAS stated in prose is the same harvest with a different marker,
+        # and the tail inherits the head's person/entity kind rather than
+        # always being a business — which is exactly what `_pn_split_aka` does
+        # inside `_pn_append_name_terms`, so the pair is handed to it joined by
+        # a bare "aka".
+        for head, tail in _pn_alias_pairs(text):
+            new = []
+            _pn_append_name_terms(new, f"{head} aka {tail}", "document",
                                   self.registry)
             self._add_terms(new)
 
@@ -16152,6 +16317,133 @@ class Pseudonymizer:
                 continue
             local.add(low)
             findings.append(("narrative name?", name))
+        seen = {(c, s.lower()) for c, s in self.review}
+        out = []
+        for c, s in findings:
+            if (c, s.lower()) not in seen:
+                seen.add((c, s.lower()))
+                self.review.append((c, s))
+                out.append((c, s))
+        return out
+
+    def honorific_name_scan(self, text):
+        """A capitalised word standing behind a TITLE in the finished output —
+        "Mr. Spellman", "Ms. Delacroix", "Dr. Ardeshirpour" — that is neither
+        one of our stand-ins nor ordinary vocabulary.
+
+        The shortest corroborated anchor there is: a title is written in front
+        of a surname and in front of nothing else. It reaches the population
+        the other two review tiers structurally cannot — `unknown_name_scan`
+        needs a party role and `narrative_name_scan` needs one of its verbs, so
+        "a meeting with Ms. Delacroix" and "Mr. Spellman's employment ended"
+        are invisible to both, and those are most of how a filing refers to a
+        person after introducing them once.
+
+        Reading the OUTPUT is what makes it quiet: `_pn_fake_person` keeps an
+        honorific verbatim, so a party this run bound comes out "Mr. <fake>"
+        and the fake screens as neutral. REPORTED, never repaired — the same
+        standing as every other name-shaped tier."""
+        src = self._mask_protected_citations(_NFKC(text))
+        neutral = {w.lower() for w in self.known_fake_words()}
+        tracked = {str(rec["real"]).lower() for rec in self.records.values()}
+        findings, local = [], set()
+        for m in _PN_HONORIFIC_RE.finditer(src):
+            words = m.group("n").split()
+            # A title may stack ("Mr. and Mrs. Spellman" reaches here as
+            # "Mrs. Spellman"), and a run may trail into ordinary prose —
+            # "Ms. Delacroix Was Terminated" is a heading. Keep only the
+            # leading distinctive words the title actually governs.
+            keep = []
+            for w in words:
+                if _pn_review_word_is_vocabulary(w):
+                    break
+                keep.append(w)
+            if not keep:
+                continue
+            # A TRAILING possessive is not part of the name: "Mr. Spellman's
+            # employment" is a row about Spellman, and keeping the mark would
+            # mint a term narrower than the surname the document uses. Only the
+            # LAST word — an interior possessive is the name continuing, so
+            # stripping it everywhere turned "Mr. Kool's Collision" into "Kool
+            # Collision", a value the document does not contain and a `yes`
+            # would key to nothing. `_pn_word_affixes` is the shared strip, so
+            # an apostrophe INSIDE a name ("O'Brien") stays where it belongs.
+            keep[-1] = _pn_word_affixes(keep[-1])[1] or keep[-1]
+            name = " ".join(keep)
+            low = name.lower()
+            if low in local or low in tracked:
+                continue
+            head = keep[0]
+            if (len(_pn_word_base(head)) < _PN_HARVEST_TOKEN_MIN
+                    or not _pn_is_name_token(head)):
+                continue
+            if any(_pn_word_is_own_fake(w, neutral) for w in keep):
+                continue
+            if (_pn_is_never_fake(name) or _pn_is_procedural_phrase(name)
+                    or _pn_is_party_role(name) or _pn_is_public_entity(name)
+                    or _pn_is_protected_locality(name)):
+                continue
+            # The ORIGINAL is evidence here as everywhere.
+            if not self._finding_is_in_original(name):
+                continue
+            local.add(low)
+            findings.append(("titled name?", name))
+        seen = {(c, s.lower()) for c, s in self.review}
+        out = []
+        for c, s in findings:
+            if (c, s.lower()) not in seen:
+                seen.add((c, s.lower()))
+                self.review.append((c, s))
+                out.append((c, s))
+        return out
+
+    def mail_header_name_scan(self, text):
+        """A name printed on an e-mail HEADER line of the finished output —
+        "From: Susan Spellman", "To: Marcus Delacroix".
+
+        The display-name path binds a name only where it stands in a
+        `Name <addr@domain>` pair, so an exhibit e-mail printed with its header
+        on separate lines names people nothing reads. Two-word minimum and the
+        neutrality screen do the work here, because a header line is not only
+        ever a person ("To: All Employees", "From: Accounts Payable") — which
+        is also why this REPORTS rather than harvesting."""
+        src = self._mask_protected_citations(_NFKC(text))
+        neutral = {w.lower() for w in self.known_fake_words()}
+        tracked = {str(rec["real"]).lower() for rec in self.records.values()}
+        findings, local = [], set()
+        for m in _PN_MAIL_HEADER_RE.finditer(src):
+            words = m.group("n").split()
+            # Trailing possessive only — the honorific tier's rule, and the
+            # same reason: an interior one is the name continuing.
+            words[-1] = _pn_word_affixes(words[-1])[1] or words[-1]
+            # TWO words, deliberately. A header carries a full name when it
+            # carries a name at all, and a single capitalised word after
+            # "To:" is far more often a department, a distribution list or the
+            # first word of a subject that wrapped.
+            if len(words) < 2:
+                continue
+            name = " ".join(words)
+            low = name.lower()
+            if low in local or low in tracked:
+                continue
+            if (_pn_is_never_fake(name) or _pn_is_procedural_phrase(name)
+                    or _pn_is_party_role(name) or _pn_is_public_entity(name)
+                    or _pn_is_protected_locality(name)):
+                continue
+            if any(_pn_word_is_own_fake(w, neutral) for w in words):
+                continue
+            # EVERY word must carry identity, not merely the first: "All
+            # Employees", "Accounts Payable" and "Undisclosed Recipients" all
+            # lead with a distinctive-looking word and name nobody.
+            if any(_pn_review_word_is_vocabulary(w) for w in words):
+                continue
+            if (len(_pn_word_base(words[0])) < _PN_HARVEST_TOKEN_MIN
+                    or not _pn_is_name_token(words[0])):
+                continue
+            if not self._finding_is_in_original(name):
+                continue
+            local.add(low)
+            findings.append(("mail header name?", name))
         seen = {(c, s.lower()) for c, s in self.review}
         out = []
         for c, s in findings:
@@ -21114,6 +21406,11 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         # ("Doe asked", "Spellman confirmed") — the one anchor that needs no
         # label at all, and the only one a fact-section witness carries.
         review = list(review) + pseudonymizer.narrative_name_scan(body)
+        # A title in front of a word ("Mr. Spellman") and an e-mail header line
+        # ("From: Susan Spellman") — two anchors the role- and verb-anchored
+        # tiers are structurally blind to.
+        review = list(review) + pseudonymizer.honorific_name_scan(body)
+        review = list(review) + pseudonymizer.mail_header_name_scan(body)
         # High-recall tier: role-anchored name shapes in the output that are
         # neither our fakes nor common words — the "unknown name" net.
         review = list(review) + pseudonymizer.unknown_name_scan(body)
@@ -22231,6 +22528,8 @@ def _write_word_text_version(src_path, text, log, pseudonymizer=None,
         review += pseudonymizer.review_definition_survivors(text, body)
         review += pseudonymizer.defined_name_scan(text, body)
         review += pseudonymizer.narrative_name_scan(body)
+        review += pseudonymizer.honorific_name_scan(body)
+        review += pseudonymizer.mail_header_name_scan(body)
         review += pseudonymizer.unknown_name_scan(body)
         review += pseudonymizer.fuzzy_survivor_scan(body)
         review += pseudonymizer.half_scrubbed_scan(body)
