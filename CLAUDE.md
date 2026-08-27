@@ -220,7 +220,7 @@ of `pseudonym_key.xlsx` accepts the same operator control words the LEAKS `Fix?`
 column does — `no` (keep this Real Value verbatim), `never` (the nuclear keep of
 the WHOLE value), a `[bracketed]` keep-spec
 (keep the bracketed part, auto-fake the rest), a `{braced}` one (same cut,
-stronger promise) and `=ANOTHER REAL VALUE` (this value is a MISSPELLING of that
+stronger promise) and `*ANOTHER REAL VALUE` (this value is a MISSPELLING of that
 one — see below) — so a mistake baked into the key
 that never surfaced as a leak can be fixed where it lives (`_pn_load_key` returns
 these as `key_decisions`). KEEP protection (`Pseudonymizer._keep_spans`, spans
@@ -323,7 +323,7 @@ kept span releases nothing, one that reaches beyond it still does (`never` on
 "Doe" keeps the word and still fakes "John Doe" as "Yorke Doe"). Nothing is left
 in the clear that the operator did not name.
 
-**A MISSPELLING of another value is named with `=`, and gets a misspelling of
+**A MISSPELLING of another value is named with `*`, and gets a misspelling of
 that value's FAKE** (`_pn_alias_target`, `_pn_apply_aliases`,
 `_PnFakeRegistry.fold_onto`). A filing that spells one party two ways —
 "ANTIONO" beside "ANTIONIO" — hands the tool two Real Values, and two unrelated
@@ -333,7 +333,7 @@ and cannot always reach it: it fires only where the two values are near enough
 (`_pn_name_fold_dist`) AND meet in the same draw, so a spelling a REUSED KEY
 already pinned, or one two edits away at a length that allows one, is past it.
 No heuristic closes that — the operator is the one who knows the two are the
-same person — so they say so, by typing `=ANTIONIO` over the fake in the key's
+same person — so they say so, by typing `*ANTIONIO` over the fake in the key's
 Replacement column or into the LEAKS `Fix?` cell.
 **Not the SAME fake, which is the whole difficulty.** Two Real Values sharing
 one Replacement is precisely what `DeAnonymize.bas` calls ambiguous: it retires
@@ -356,20 +356,27 @@ repaired. An alias that cannot be honoured (the canonical is not bound in this
 case, the two are too far apart, every mirrored form is taken) still FAKES the
 value, by an ordinary draw, and says so: the row is usually answering a LEAK,
 and refusing it quietly would leave the real name standing in the export.
-**Excel turns the instruction into a FORMULA, and reading that back is what
-makes the syntax work at all.** A cell opening with `=` is a formula to Excel,
-so `=ANTIONIO` comes back from an ordinary `data_only` read as `#NAME?` — or as
-nothing at all in a workbook Excel never recalculated — and the operator's text
-survives only in the formula itself. `_pn_xl_typed_text` reads it back (both
-workbooks that accept control words go through `_pn_typed_rows`), which also
-picks up the quoted `="ANTIONIO SARKISYAN"` Excel forces on a MULTI-WORD
-canonical, since it rejects the bare form as malformed. Safe because neither the
-key nor `LEAKS.xlsx` is ever WRITTEN with a formula in it (`_pn_xl_plain_cells`
-sees to that, for its own reasons), so a formula cell in either is always
-something a person typed. `_PN_XL_ERROR_VALUES` is the belt: a cell reading
-`#NAME?` is refused as a typed replacement at BOTH readers, because writing
-Excel's error text into an export as somebody's name is the one outcome worse
-than not reading the alias.
+**A STAR and not an EQUALS SIGN, because the marker has to survive the cell it
+is typed into.** This shipped as `=ANTIONIO` for one release, and `=` opens a
+FORMULA to Excel: the cell turned to `#NAME?` the instant the operator finished
+typing — a worksheet that reads as broken while it is still being filled in —
+and a MULTI-WORD canonical had to be quoted (`="ANTIONIO SARKISYAN"`), because
+Excel rejects the bare form as malformed. Reading it back at all meant going
+for the FORMULA behind the cached error (`_pn_xl_typed_text`), since an
+ordinary `data_only` read hands back `#NAME?`, or nothing at all in a workbook
+Excel never recalculated. A star is ordinary text in every reader: the cell
+says what was typed, there is no error to explain, and a multi-word value needs
+no quoting. `=` is still ACCEPTED (`_PN_ALIAS_MARKS`) and advertised nowhere —
+a workbook already carrying one must keep meaning what it said instead of
+falling through as an undecided row — and that is now the only thing the
+formula reader is for. It stays cheap and stays safe for the same reason it was
+safe before: neither the key nor `LEAKS.xlsx` is ever WRITTEN with a formula in
+it (`_pn_xl_plain_cells` sees to that, for its own reasons), so a formula cell
+in either is always something a person typed. `_PN_XL_ERROR_VALUES` is the
+belt, and outlives the syntax that needed it: a cell reading `#NAME?` is
+refused as a typed replacement at BOTH readers, because writing Excel's error
+text into an export as somebody's name is the one outcome worse than not
+reading the alias.
 **`--fix-leaks` applies a WORKSHEET alias and refuses a KEY one.** A worksheet
 row names a LEAK — unscrubbed text still standing in the export — so faking it
 is exactly what that pass is for. A key row names a binding the exports ALREADY
@@ -1565,6 +1572,8 @@ the party), so its row stays reversible.
   the value. The **Fix?** column round-trips: `yes`=auto-fake, `no`=leave,
   `never`=never fake this value, in this or any folder (the nuclear keep, on the
   dropdown beside yes/no),
+  **`*ANOTHER REAL VALUE` = this value is a MISSPELLING of that one**, so it is
+  faked as the same misspelling of that value's fake (the alias rule above),
   **any other text = an explicit operator-typed replacement**, and
   **`[bracketed]` text naming part of the value = keep that part verbatim and
   auto-fake the rest** (`_pn_bracket_keep`; "Raytheon's [Human Resources]" fakes

@@ -1,5 +1,5 @@
 """
-The `=ANOTHER VALUE` alias: telling the tool that one Real Value is a
+The `*ANOTHER VALUE` alias: telling the tool that one Real Value is a
 MISSPELLING of another.
 
 A filing that spells one party two ways ("ANTIONO" beside "ANTIONIO") gives the
@@ -7,8 +7,14 @@ tool two values. The automatic OCR/typo fold links them when it meets them
 together and near enough; when it does not — a reused key pinned one of them, or
 the two are further apart than `_pn_name_fold_dist` allows — each draws an
 unrelated pool word and one person comes out under two names. The operator says
-so by typing `=ANTIONIO` over the fake in the key's Replacement column, or into
+so by typing `*ANTIONIO` over the fake in the key's Replacement column, or into
 the LEAKS worksheet's Fix? cell.
+
+A STAR and not an equals sign: `=` opens a FORMULA to Excel, so the cell read
+`#NAME?` the moment it was typed and its text could only be recovered from the
+formula behind it. `=` is still ACCEPTED — a workbook already carrying one must
+keep meaning what it said — and that is the only thing the formula reader is
+still for.
 
 The fake is then the SAME misspelling of the canonical's fake — never the same
 fake, because two Real Values sharing one Replacement is exactly what
@@ -42,21 +48,26 @@ def _write_key(path, rows):
 
 # ── parsing the cell ─────────────────────────────────────────────────────────
 
-def test_alias_target_reads_the_bare_form():
+def test_alias_target_reads_the_star():
+    assert P._pn_alias_target("*ANTIONIO") == "ANTIONIO"
+    assert P._pn_alias_target("  *  ANTIONIO  ") == "ANTIONIO"
+    # A star is ordinary text, so a MULTI-WORD canonical needs no quoting —
+    # which is the whole reason it replaced the equals sign.
+    assert P._pn_alias_target("*ANTIONIO SARKISYAN") == "ANTIONIO SARKISYAN"
+
+
+def test_alias_target_still_reads_the_older_equals_spelling():
+    # Never advertised, and never removed: a key already carrying one must keep
+    # meaning what it said rather than fall through as an undecided row.
     assert P._pn_alias_target("=ANTIONIO") == "ANTIONIO"
-    assert P._pn_alias_target("  =  ANTIONIO  ") == "ANTIONIO"
-
-
-def test_alias_target_reads_excels_quoted_form():
-    # Excel refuses `=ANTIONIO SARKISYAN` as a malformed formula, so a
-    # MULTI-WORD canonical has to be typed as a text formula. Same instruction.
+    # …including the quoted form Excel forced on a multi-word value under it.
     assert P._pn_alias_target('="ANTIONIO SARKISYAN"') == "ANTIONIO SARKISYAN"
     assert P._pn_alias_target("=“ANTIONIO SARKISYAN”") == "ANTIONIO SARKISYAN"
 
 
 def test_alias_target_refuses_a_real_formula_and_a_plain_cell():
-    for cell in ("=SUM(A1:A2)", "=B2+1", "=", "=123", "no", "never",
-                 "[Human Resources]", "Keswick Bexley", "", None):
+    for cell in ("=SUM(A1:A2)", "=B2+1", "=B2*3", "=", "*", "*123", "=123",
+                 "no", "never", "[Human Resources]", "Keswick Bexley", "", None):
         assert P._pn_alias_target(cell) is None
 
 
@@ -99,7 +110,7 @@ def test_fold_onto_refuses_a_pair_that_is_not_a_misspelling():
 def test_load_key_parses_the_alias(tmp_path):
     kp = _write_key(tmp_path / "pseudonym_key.xlsx",
                     [("person-token", "ANTIONIO", "Barlowe"),
-                     ("person-token", "ANTIONO", "=ANTIONIO")])
+                     ("person-token", "ANTIONO", "*ANTIONIO")])
     reg = P._PnFakeRegistry()
     terms, decisions = P._pn_load_key(kp, reg, log)
     assert [t.real for t in terms] == ["ANTIONIO"]      # no term from the alias
@@ -109,9 +120,10 @@ def test_load_key_parses_the_alias(tmp_path):
 
 
 def test_load_key_recovers_the_alias_excel_stored_as_a_formula(tmp_path):
-    # Typed into Excel, `=ANTIONIO` is a FORMULA: an ordinary data_only read
-    # hands back nothing at all (or "#NAME?"), so the instruction survives only
-    # in the formula itself — which is what `_pn_xl_typed_text` goes and reads.
+    # The older `=` spelling, which Excel stores as a FORMULA: an ordinary
+    # data_only read hands back nothing at all (or "#NAME?"), so the instruction
+    # survives only in the formula itself — which is what `_pn_xl_typed_text`
+    # goes and reads. A `*` needs none of this, which is why it replaced it.
     kp = _write_key(tmp_path / "pseudonym_key.xlsx",
                     [("person-token", "ANTIONIO", "Barlowe"),
                      ("person-token", "ANTIONO", "PLACEHOLDER")])
@@ -120,6 +132,21 @@ def test_load_key_recovers_the_alias_excel_stored_as_a_formula(tmp_path):
     wb.save(kp)
     assert openpyxl.load_workbook(kp, data_only=True).active["C3"].value is None
 
+    reg = P._PnFakeRegistry()
+    _terms, decisions = P._pn_load_key(kp, reg, log)
+    assert decisions["antiono"]["alias"] == "ANTIONIO"
+
+
+def test_the_star_is_plain_text_and_needs_no_formula_recovery(tmp_path):
+    # The whole reason the star replaced the equals sign: a cell opening with
+    # `=` becomes a FORMULA and reads back as "#NAME?" (or as nothing at all),
+    # so the operator watches the worksheet go wrong as they fill it in. A star
+    # is ordinary text — the cell says what was typed, in every reader.
+    kp = _write_key(tmp_path / "pseudonym_key.xlsx",
+                    [("person-token", "ANTIONIO", "Barlowe"),
+                     ("person-token", "ANTIONO", "*ANTIONIO")])
+    assert (openpyxl.load_workbook(kp, data_only=True).active["C3"].value
+            == "*ANTIONIO")
     reg = P._PnFakeRegistry()
     _terms, decisions = P._pn_load_key(kp, reg, log)
     assert decisions["antiono"]["alias"] == "ANTIONIO"
@@ -139,10 +166,10 @@ def test_an_excel_error_cell_is_never_a_replacement(tmp_path):
 
 def test_decision_rows_parse_the_alias():
     rows = [["Value", "Type", "Fix? (yes/no)", "Notes"],
-            ["ANTIONO", "LEAK", "=ANTIONIO", ""]]
+            ["ANTIONO", "LEAK", "*ANTIONIO", ""]]
     d = P._pn_parse_decision_rows(rows)["antiono"]
     assert d["fix"] == "yes" and d["alias"] == "ANTIONIO"
-    assert d["fixcell"] == "=ANTIONIO"        # round-trips back to the sheet
+    assert d["fixcell"] == "*ANTIONIO"        # round-trips back to the sheet
     # An alias is NOT a keep, so it never reaches the cross-folder KEEP sheet.
     assert not P._pn_decision_is_keep(d)
 
@@ -262,7 +289,7 @@ def _key_rows(folder):
 
 
 def test_fix_leaks_applies_a_worksheet_alias(tmp_path):
-    tdir = _leaks_setup(tmp_path, "=ANTIONIO SARKISYAN")
+    tdir = _leaks_setup(tmp_path, "*ANTIONIO SARKISYAN")
     args = _Args()
     args.key = str(tmp_path / "pseudonym_key.xlsx")
     assert P._fix_leaks_mode(tmp_path, args, {}, log) == 0
@@ -285,7 +312,7 @@ def test_fix_leaks_refuses_an_alias_typed_into_the_key(tmp_path):
     kp = tmp_path / "pseudonym_key.xlsx"
     wb = openpyxl.load_workbook(kp)
     ws = wb["Pseudonym Key"]
-    ws.append(["person-token", "ANTIONO", "=ANTIONIO", "replaced",
+    ws.append(["person-token", "ANTIONO", "*ANTIONIO", "replaced",
                "spreadsheet", 0])
     wb.save(kp)
     before_key, before_txt = _key_rows(tmp_path), (
@@ -323,7 +350,7 @@ def test_full_run_honours_an_alias_typed_into_the_key(tmp_path, monkeypatch):
         ("person", "ANTIONIO SARKISYAN", "Cranfield Marlowe"),
         ("person-token", "ANTIONIO", "Cranfield"),
         ("person-token", "SARKISYAN", "Marlowe"),
-        ("person", "ANTIONO SARKISYAN", "=ANTIONIO SARKISYAN")])
+        ("person", "ANTIONO SARKISYAN", "*ANTIONIO SARKISYAN")])
     monkeypatch.setattr(sys, "argv",
                         ["pdf_linker.py", str(tmp_path), "--key", str(key)])
     P.main()
