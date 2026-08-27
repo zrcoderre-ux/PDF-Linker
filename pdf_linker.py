@@ -35,8 +35,13 @@ For each *.pdf in the folder (processed from shortest to longest by file size):
      same words the LEAKS worksheet's Fix? column accepts: "no" leaves that Real
      Value verbatim, "never" is the nuclear keep of the whole value (below), a
      [bracketed] keep-spec keeps the bracketed part and
-     fakes the rest, and a {braced} keep-spec does the same but with a stronger
-     promise (below). These KEEP decisions are recorded to a SINGLE
+     fakes the rest, a {braced} keep-spec does the same but with a stronger
+     promise (below), and "=ANOTHER REAL VALUE" says this row's value is a
+     MISSPELLING of that one — so it is faked as the same misspelling of that
+     value's fake ("ANTIONO" beside "ANTIONIO" becomes "Barlowwe" beside
+     "Barlowe": one person spelled two ways, and still two distinct rows, since
+     two Real Values sharing one Replacement is what DeAnonymize treats as
+     ambiguous and refuses to reverse). These KEEP decisions are recorded to a SINGLE
      cross-folder sheet — the KEEP tab of master_leaks.xlsx — so they are applied
      on every future run in EVERY folder (accumulating Times Seen / Cases /
      dates), letting the screening learn from real history. A KEEP matches on
@@ -7311,6 +7316,38 @@ def _pn_typo_variants(fake, op, seed, reps=1):
                 yield fake[:i] + repl + fake[i + 1:]
 
 
+# The largest length change a mirrored typo will reproduce. The automatic fold
+# can never ask for more (`_pn_name_fold_dist` tops out at 3), but an operator
+# ALIAS names the pair itself, and composing N single-letter edits branches over
+# every position at every level — so a `=` pointing at a value five letters away
+# is not a misspelling and is refused rather than ground out.
+_PN_FOLD_MAX_REPS = 4
+
+
+def _pn_mirror_op(prev, low):
+    """The typo operation `(op, reps)` that turns `prev` into `low`, in the
+    vocabulary `_pn_typo_variants` speaks: 'ins'/'del' with a repeat count when
+    the length changed, an adjacent 'trans' when two neighbouring letters
+    swapped, else a confusable 'sub'.
+
+    The SAME op is then applied to the fake, so the stand-in deviates the way
+    the real value did and the two lengths track — "Palladino"/"Palladina" ->
+    "Keswick"/"Keswicka" rather than two unrelated pool words."""
+    dl = len(low) - len(prev)
+    if dl > 0:
+        return "ins", dl              # real gained dl chars -> so does the fake
+    if dl < 0:
+        return "del", -dl             # real lost chars -> the fake drops them
+    # Equal length: an adjacent transposition (two swapped, side-by-side
+    # mismatches) mirrors as a swap; anything else as a confusable substitution.
+    mism = [i for i in range(len(low)) if low[i] != prev[i]]
+    if (len(mism) == 2 and mism[1] == mism[0] + 1
+            and low[mism[0]] == prev[mism[1]]
+            and low[mism[1]] == prev[mism[0]]):
+        return "trans", 1
+    return "sub", 1
+
+
 def _pn_case_word_like(fake, original):
     """`fake` re-cased to match how `original` was written.
 
@@ -7436,6 +7473,34 @@ class _PnFakeRegistry:
         a word in the text that the reversal has to account for."""
         return {fake.lower(): real for (_tag, real), fake in self._memo.items()}
 
+    def fold_onto(self, real, prev, prev_fake, seed_tag, key=None):
+        """Bind `real` to a TYPO of `prev_fake` — the stand-in already handed to
+        `prev` — mirroring `real`'s own deviation from `prev`, so a misspelling
+        reads as a misspelling of the same name instead of as a second person.
+
+        Each spelling still keeps its OWN fake (a distinct typo), never the same
+        one: two Real Values sharing a Replacement is exactly what
+        `DeAnonymize.bas` calls ambiguous and retires, which leaves the
+        pseudonym standing in the tentative.
+
+        The single derivation shared by the automatic near-variant fold in
+        `token` and by an operator's `=CANONICAL` alias (`_pn_apply_aliases`),
+        so a fold the tool infers and one the operator declares can never come
+        out differently. Returns the fake, or None when the two values are too
+        far apart to mirror (`_PN_FOLD_MAX_REPS`) or every mirrored variant is
+        already taken."""
+        low, prev = str(real).lower(), str(prev).lower()
+        op, reps = _pn_mirror_op(prev, low)
+        if reps > _PN_FOLD_MAX_REPS:
+            return None
+        if key is None:
+            key = (self._memo_tag(seed_tag), low)
+        for cand in _pn_typo_variants(prev_fake, op, low, reps):
+            if cand.lower() not in self._used:
+                self.typo_folds.append((real, cand, prev, prev_fake, op))
+                return self._take(key, cand)
+        return None
+
     def token(self, real, words, seed_tag):
         """A single canonical-case stand-in word for `real`, never reused for a
         different real value. Draws from `words` in a per-value deterministic
@@ -7479,25 +7544,9 @@ class _PnFakeRegistry:
                             prev, low, _pn_name_fold_dist(prev, low),
                             min_len=_PN_NAME_FOLD_MIN)):
                     continue
-                dl = len(low) - len(prev)
-                if dl > 0:
-                    op, reps = "ins", dl        # real gained dl chars -> so does fake
-                elif dl < 0:
-                    op, reps = "del", -dl        # real lost chars -> fake drops them
-                else:
-                    # Equal length: an adjacent transposition (two swapped,
-                    # side-by-side mismatches) mirrors as a swap; anything else
-                    # as a confusable substitution.
-                    mism = [i for i in range(len(low)) if low[i] != prev[i]]
-                    op = ("trans" if len(mism) == 2 and mism[1] == mism[0] + 1
-                          and low[mism[0]] == prev[mism[1]]
-                          and low[mism[1]] == prev[mism[0]] else "sub")
-                    reps = 1
-                for cand in _pn_typo_variants(prev_fake, op, low, reps):
-                    if cand.lower() not in self._used:
-                        self.typo_folds.append(
-                            (real, cand, prev, prev_fake, op))
-                        return self._take(key, cand)
+                cand = self.fold_onto(real, prev, prev_fake, seed_tag, key=key)
+                if cand is not None:
+                    return cand
                 break     # a near-variant was found but yielded no free typo
         # A HYPHENATED compound surname is two name components, not one word,
         # and its fake must show that: "Ardeshirpour-Zartoshti" -> "Sedgwick-
@@ -11831,26 +11880,35 @@ def _pn_load_key(path, registry, log, remint_recycled=False):
 
     The Replacement column also accepts the same operator instructions the LEAKS
     worksheet's Fix? column does, so a mistake baked into the key can be fixed in
-    place: `no` (leave this Real Value verbatim — do not fake it) and a
+    place: `no` (leave this Real Value verbatim — do not fake it), a
     `[bracketed]` keep-spec (keep the bracketed part verbatim, auto-fake the
-    rest). Such a row builds no faking term; the decision is returned in
+    rest), and `=ANOTHER REAL VALUE` (this row's value is a MISSPELLING of that
+    one, so fake it as the same misspelling of that value's fake). Such a row
+    builds no faking term from its own cell; the decision is returned in
     `key_decisions` (value_lower -> dict shaped like a leak decision) for the
-    caller to apply and persist.
+    caller to apply and persist. An alias row's term is rebuilt by
+    `_pn_apply_aliases` once every other binding exists, since it can only
+    mirror a fake that has already been drawn.
 
     `remint_recycled` DROPS a binding whose fake is a recycled pool word
     ("Deverell5", "quenby3@postbox9.org") so the value is drawn again from the
     pool — see `_pn_triage_pending`, which is what decides it is safe."""
     import openpyxl
+    # Through `_pn_typed_rows`, so a `=ANTIONIO` alias typed over a fake
+    # survives: Excel stores that cell as a FORMULA, and an ordinary read hands
+    # back "#NAME?" or nothing at all (see `_pn_xl_typed_text`).
+    typed = _pn_xl_typed_text(path)
     wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
     ws = wb.active
-    rows = list(ws.iter_rows(values_only=True))
+    rows = _pn_typed_rows(ws, typed.get(ws.title))
     # A binding no export has ever carried sits on its own sheet, where the
     # reversal macro cannot reach it (see `_PN_KEY_PINNED_SHEET`). It is still
     # AUTHORITATIVE going forward — pinning it is the whole reason it was
     # written — so it is read back here exactly like any other row. Both sheets
     # share the header, so the body rows simply concatenate.
     if _PN_KEY_PINNED_SHEET in wb.sheetnames:
-        rows += list(wb[_PN_KEY_PINNED_SHEET].iter_rows(values_only=True))[1:]
+        rows += _pn_typed_rows(wb[_PN_KEY_PINNED_SHEET],
+                               typed.get(_PN_KEY_PINNED_SHEET))[1:]
     header = [(_pn_norm_header(h)) for h in (rows[0] if rows else ())]
     # A key written by an older version carries its columns in an older ORDER —
     # the Context column used to sit at C, between the Real Value and the
@@ -11947,6 +12005,29 @@ def _pn_load_key(path, registry, log, remint_recycled=False):
             key_decisions[real.lower()] = {
                 "value": real, "type": "KEEP", "fix": "no", "replacement": None,
                 "fake_values": None, "fixcell": None, "notes": "pseudonym key"}
+            continue
+        if ctrl in _PN_XL_ERROR_VALUES:
+            # Excel's own error text where a fake should be: the operator typed
+            # something opening with `=` (an alias) and the formula behind it
+            # could not be read back. There is no binding left in this cell, so
+            # the row is dropped rather than applied — writing "#NAME?" into an
+            # export as somebody's name is the one thing that must not happen.
+            log.warning(
+                f"  Pseudonym key: the Replacement cell for {real!r} reads "
+                f"{ctrl!r} — Excel could not evaluate what was typed there. If "
+                f"you meant '={{value}}' (this value is a misspelling of that "
+                f"one), re-type it; the row is being ignored this run.")
+            continue
+        alias = _pn_alias_target(ctrl)
+        if alias:
+            # `=ANTIONIO`: this Real Value is a MISSPELLING of another. The
+            # stored fake is gone (the operator typed over it), so the binding
+            # is re-derived from the canonical's own fake — after every other
+            # row has been read, in `_pn_apply_aliases`.
+            key_decisions[real.lower()] = {
+                "value": real, "type": "ALIAS", "fix": "yes",
+                "replacement": None, "fake_values": None, "fixcell": ctrl,
+                "alias": alias, "notes": "pseudonym key"}
             continue
         if _pn_is_never_cell(ctrl):
             # The whole Real Value brace-kept, without re-typing it inside
@@ -12176,12 +12257,16 @@ def _pn_load_key(path, registry, log, remint_recycled=False):
     if key_decisions:
         never = sum(1 for d in key_decisions.values()
                     if _pn_is_never_cell(d.get("fixcell")))
+        aliased = sum(1 for d in key_decisions.values() if d.get("alias"))
         kept = sum(1 for d in key_decisions.values() if d["fix"] == "no") - never
-        part = len(key_decisions) - kept - never
-        log.info(f"  Pseudonym key: {kept} value(s) marked 'no' (keep verbatim)"
-                 + (f", {never} marked 'never' (keep in every folder)"
-                    if never else "")
-                 + (f" and {part} bracketed keep-spec(s)" if part else "")
+        part = len(key_decisions) - kept - never - aliased
+        said = ([f"{kept} marked 'no' (keep verbatim)"] if kept else [])
+        said += ([f"{never} marked 'never' (keep in every folder)"]
+                 if never else [])
+        said += [f"{part} bracketed keep-spec(s)"] if part else []
+        said += ([f"{aliased} '=' alias(es) (a misspelling of another value)"]
+                 if aliased else [])
+        log.info("  Pseudonym key: " + ", ".join(said)
                  + " in the Replacement column will be honored.")
     if reminted:
         log.warning(
@@ -19812,16 +19897,185 @@ def _pn_decision_is_keep(d):
     return d.get("fix") == "no" or d.get("fake_values") is not None
 
 
+# The ALIAS control: `=ANTIONIO` typed over the fake in the key's Replacement
+# column, or into the LEAKS Fix? cell, says "this Real Value is a MISSPELLING of
+# ANTIONIO". A filing that spells one party two ways gives each spelling its own
+# value, and two values that are not near enough to fold (or that the fold never
+# met, because one arrived through a reused key) draw unrelated pool words: one
+# person, two names, and a drafting pass reads them as two.
+#
+# Deliberately NOT the same fake for both. Two Real Values sharing one
+# Replacement is exactly what `DeAnonymize.bas` treats as ambiguous — it retires
+# the mapping and the pseudonym is left standing in the tentative — so the alias
+# derives a stand-in that is the SAME misspelling of the canonical's fake
+# (`_PnFakeRegistry.fold_onto`): "Barlowe" beside "Barlowwe", one person spelled
+# two ways, two distinct rows to reverse.
+_PN_ALIAS_MARK = "="
+# A cell Excel wrote as a text formula (`="ANTIONIO SARKISYAN"`, which is how a
+# MULTI-WORD canonical has to be typed — Excel rejects `=ANTIONIO SARKISYAN` as
+# a malformed formula) arrives quoted.
+_PN_ALIAS_QUOTES = "\"'\u201c\u201d\u2018\u2019"
+# Characters no party name carries and every real formula does: a cell holding
+# one is arithmetic or a function call, not a value being named, so it falls
+# through to the ordinary explicit-replacement rule.
+_PN_ALIAS_FORMULA_CHARS = "()!&%*/+;:"
+
+
+def _pn_alias_target(cell):
+    """The Real Value that a `=CANONICAL` cell declares its own row to be a
+    MISSPELLING of, or None when the cell is not an alias.
+
+    Reached with the operator's typed text, which for a cell Excel stored as a
+    formula means the formula itself (`_pn_xl_typed_text`) — so both the bare
+    `=ANTIONIO` and the quoted `="ANTIONIO SARKISYAN"` Excel forces on a
+    multi-word value are read as the same instruction."""
+    txt = str(cell or "").strip()
+    if not txt.startswith(_PN_ALIAS_MARK):
+        return None
+    txt = txt[len(_PN_ALIAS_MARK):].strip()
+    if len(txt) > 1 and txt[0] in _PN_ALIAS_QUOTES and txt[-1] in _PN_ALIAS_QUOTES:
+        txt = txt[1:-1].strip()
+    if not txt or not any(c.isalpha() for c in txt):
+        return None
+    if any(c in _PN_ALIAS_FORMULA_CHARS for c in txt):
+        return None
+    return txt
+
+
+def _pn_alias_word_pairs(value, canonical):
+    """[(value_word, canonical_word)] pairing each word of a MISSPELLING with
+    the word of the value it misspells.
+
+    Equal word counts pair BY POSITION, which is what a misspelled name looks
+    like ("ANTIONO SARKISYAN" against "ANTIONIO SARKISYAN"). Otherwise each word
+    takes its nearest unclaimed counterpart by edit distance, so an alias that
+    also gains or loses a word still binds the words the two share."""
+    vw = [w for w in str(value).split() if _pn_word_affixes(w)[1]]
+    cw = [w for w in str(canonical).split() if _pn_word_affixes(w)[1]]
+    if not vw or not cw:
+        return []
+    if len(vw) == len(cw):
+        return list(zip(vw, cw))
+    out, pool = [], list(cw)
+    for w in vw:
+        if not pool:
+            break
+        base = _pn_word_base(w)
+        best = min(pool, key=lambda c: _pn_osa_distance(base, _pn_word_base(c)))
+        pool.remove(best)
+        out.append((w, best))
+    return out
+
+
+def _pn_apply_aliases(decisions, terms, registry, log, allow_rebind=True):
+    """Honour every `=CANONICAL` alias in `decisions`: a Real Value the operator
+    declared a MISSPELLING of another is faked as the SAME misspelling of that
+    value's own fake, so "ANTIONO" and "ANTIONIO" read as one person's name
+    spelled two ways instead of as two unrelated people. Returns
+    `(terms, values)` — the surviving terms, and the values the caller must
+    build terms for.
+
+    WORD for word, because composition is: the words two spellings share are
+    already one binding and are left exactly alone, and only the misspelled word
+    is re-derived (through `_PnFakeRegistry.fold_onto`, the same derivation the
+    automatic OCR/typo fold uses — so a fold the tool infers and one the
+    operator declares can never come out differently). A two-word alias
+    therefore costs one pool word, not two, and the surname keeps the stand-in
+    every other document already used for it.
+
+    Every loaded key term built from a word this MOVES is dropped and handed
+    back for rebuilding. Without that the alias would correct the `*-token` row
+    and leave the composed full-name row still applying its stored fake — the
+    half-applied fix that makes one party read as two, which is the whole
+    failure being repaired.
+
+    A value is returned even when the derivation fails (the canonical is not
+    bound in this case, the two are too far apart to mirror, every mirrored
+    variant is taken). The alias is usually answering a LEAK, and refusing it
+    silently would leave the real name standing in the export; so the value is
+    still faked, by an ordinary pool draw, and the log says the alias could not
+    be honoured.
+
+    `allow_rebind=False` for `--fix-leaks`, which works on text that is already
+    scrubbed: there an alias may bind a value that has no fake yet and must
+    never MOVE one, because the stand-in it would move is already standing in an
+    export that pass cannot rewrite."""
+    aliases = [(d["value"], d["alias"]) for d in decisions.values()
+               if d.get("alias")]
+    if not aliases:
+        return terms, []
+    tag = _PnFakeRegistry._memo_tag("nametok")
+    moved, values = set(), []
+    for value, canon in aliases:
+        values.append(value)
+        if str(value).strip().lower() == str(canon).strip().lower():
+            log.warning(f"  ALIAS: {value!r} names ITSELF as the value it "
+                        f"misspells, so there is nothing to mirror — it is "
+                        f"being faked the ordinary way.")
+            continue
+        pairs = _pn_alias_word_pairs(value, canon)
+        if not pairs:
+            log.warning(f"  ALIAS: {value!r} -> {canon!r} pairs no words — "
+                        f"faking {value!r} the ordinary way.")
+            continue
+        for vword, cword in pairs:
+            vbase, cbase = _pn_word_base(vword), _pn_word_base(cword)
+            if not vbase or not cbase or vbase == cbase:
+                continue          # a word the two spellings share needs nothing
+            prev_fake = registry.tokens_for("nametok").get(cbase)
+            if not prev_fake:
+                log.warning(
+                    f"  ALIAS: {value!r} names {canon!r}, but {cword!r} has no "
+                    f"stand-in in this case — nothing to mirror, so {vword!r} "
+                    f"is faked the ordinary way. (Check the spelling of the "
+                    f"value after the '='.)")
+                continue
+            if (tag, vbase) in registry._memo and not allow_rebind:
+                log.warning(
+                    f"  ALIAS: {vword!r} is already bound to "
+                    f"{registry._memo[(tag, vbase)]!r} and the exports beside "
+                    f"this worksheet already carry it, so this pass leaves it "
+                    f"alone. Click 'Re-run PDF-Linker' to apply the alias.")
+                continue
+            cand = registry.fold_onto(vbase, cbase, prev_fake, "nametok")
+            if cand is None:
+                log.warning(
+                    f"  ALIAS: {vword!r} and {cword!r} are too far apart to "
+                    f"mirror as one slip (or every mirrored form is taken) — "
+                    f"{vword!r} is faked the ordinary way.")
+                continue
+            moved.add(vbase)
+            log.info(f"  ALIAS: {vword!r} is a misspelling of {cword!r}, so it "
+                     f"is faked {cand!r} — the same slip of {prev_fake!r}.")
+    if not moved:
+        return terms, values
+    kept, seen = [], {v.lower() for v in values}
+    for t in terms:
+        if any(_pn_word_base(w) in moved for w in str(t.real).split()):
+            if str(t.real).lower() not in seen:
+                seen.add(str(t.real).lower())
+                values.append(str(t.real))
+            log.info(f"  ALIAS: re-deriving the key's {str(t.real)!r} row — it "
+                     f"is composed from a word the alias moved.")
+            continue
+        kept.append(t)
+    return kept, values
+
+
 def _pn_parse_decision_rows(rows):
     """Parse the (values_only) rows of a decision sheet — LEAKS or KEEP — into
     {value_lower: {value, type, fix, replacement, fake_values, fixcell, notes}}.
     `fix` is normalised to 'yes'/'no'/''. A Fix? entry that is NOT a reserved
     control word ('yes'/'no' and the bare y/n shorthands, and 'never') is one of:
       * BRACKETED text that is part of the value — keep the bracketed part
-        verbatim, auto-fake the rest (`fake_values` holds the fragment(s)); or
+        verbatim, auto-fake the rest (`fake_values` holds the fragment(s));
+      * `=ANOTHER VALUE` — this value is a MISSPELLING of that one, so fake it
+        as the same misspelling of that value's fake (`alias`); or
       * anything else — an explicit typed replacement (`replacement`).
     'never' is the whole value brace-kept: a NUCLEAR keep, recorded as a `no`
-    carrying its own control word in `fixcell` so every nuclear path sees it."""
+    carrying its own control word in `fixcell` so every nuclear path sees it.
+    An alias is an ordinary 'yes' as far as every other pass is concerned — the
+    value IS faked — and carries the canonical value alongside."""
     if not rows:
         return {}
     hdr = [str(h).strip().lower() if h else "" for h in rows[0]]
@@ -19841,8 +20095,13 @@ def _pn_parse_decision_rows(rows):
         val = str(val)
         raw = str(cell("fix? (yes/no)") or "").strip()
         low = raw.lower()
-        replacement, fake_values, fixcell = None, None, None
-        if low in ("yes", "y"):
+        replacement, fake_values, fixcell, alias = None, None, None, None
+        if raw in _PN_XL_ERROR_VALUES:
+            # Excel's own error text, not an instruction — see
+            # `_PN_XL_ERROR_VALUES`. Left UNDECIDED, so the row comes back for
+            # the operator instead of writing "#NAME?" into an export.
+            fix, replacement = "", None
+        elif low in ("yes", "y"):
             fix, replacement = "yes", None
         elif low in ("no", "n"):
             fix, replacement = "no", None
@@ -19854,6 +20113,12 @@ def _pn_parse_decision_rows(rows):
             fix, replacement, fixcell = "no", None, raw
         elif low == "":
             fix, replacement = "", None
+        elif _pn_alias_target(raw):
+            # `=ANTIONIO`: this value is a MISSPELLING of another real value.
+            # An ordinary auto-fake as far as everything downstream is
+            # concerned — only the DERIVATION of the fake changes, in
+            # `_pn_apply_aliases`, which reads `alias`.
+            fix, alias, fixcell = "yes", _pn_alias_target(raw), raw
         else:
             frags = _pn_bracket_keep(val, raw)
             fixcell = raw                 # echo the operator's text back verbatim
@@ -19866,6 +20131,7 @@ def _pn_parse_decision_rows(rows):
         out[val.lower()] = {"value": val, "type": str(cell("type") or "").strip(),
                             "fix": fix, "replacement": replacement,
                             "fake_values": fake_values, "fixcell": fixcell,
+                            "alias": alias,
                             "notes": str(cell("notes") or "").strip(),
                             # Master KEEP only: which case folders this decision
                             # came from, so a run can tell its OWN past decision
@@ -20109,8 +20375,12 @@ def _pn_read_leak_decisions(folder):
         return {}
     try:
         import openpyxl
+        # Through `_pn_typed_rows`, so a `=ANTIONIO` alias survives: Excel
+        # stores that cell as a FORMULA and an ordinary read hands back
+        # "#NAME?" (see `_pn_xl_typed_text`).
+        typed = _pn_xl_typed_text(xlsx)
         wb = openpyxl.load_workbook(xlsx, data_only=True, read_only=True)
-        rows = list(wb.active.iter_rows(values_only=True))
+        rows = _pn_typed_rows(wb.active, typed.get(wb.active.title))
         wb.close()
     except Exception:
         return {}
@@ -20208,6 +20478,69 @@ def _pn_master_leaks_path(cfg):
 _PN_XL_BAD_CHARS_RE = re.compile("[\x7f-\x9f\ud800-\udfff\ufffe\uffff]")
 # Excel's hard limit on the text of one cell.
 _PN_XL_CELL_MAX = 32767
+
+
+# Excel's own error text, which an unreadable formula leaves in a cell. A
+# `=ANTIONIO` alias IS a formula to Excel (see `_pn_xl_typed_text`), so "#NAME?"
+# is precisely what one looks like when the formula behind it could not be read
+# back — and taking that as an explicit replacement would write "#NAME?" into
+# the export as somebody's name. Every control-word reader screens on it.
+_PN_XL_ERROR_VALUES = frozenset({
+    "#NULL!", "#DIV/0!", "#VALUE!", "#REF!", "#NAME?", "#NUM!", "#N/A",
+    "#SPILL!", "#CALC!", "#FIELD!", "#BLOCKED!", "#GETTING_DATA"})
+
+
+def _pn_xl_typed_text(path):
+    """{sheet name: {(row_index, col_index): text}} for every cell of `path`
+    holding a FORMULA — the text a person actually typed into it.
+
+    Excel stores any cell opening with `=` as a formula, and `=ANTIONIO` is how
+    the operator says "this Real Value is a misspelling of ANTIONIO"
+    (`_pn_alias_target`). Read the ordinary way that cell comes back as
+    `#NAME?` — Excel's cached result — or as nothing at all in a workbook Excel
+    has never recalculated, so the instruction survives only in the formula
+    itself.
+
+    Nothing else is affected. Neither the pseudonym key nor `LEAKS.xlsx` is ever
+    WRITTEN with a formula in it (`_pn_xl_plain_cells` makes sure of that, for
+    its own reasons), so a formula cell in one of them is always something a
+    person typed. Best effort throughout: a second pass that cannot be read
+    simply leaves the ordinary values in place, and the error-value screen above
+    is what keeps the fallback safe."""
+    out = {}
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(path, data_only=False, read_only=True)
+    except Exception:
+        return out
+    try:
+        for ws in wb.worksheets:
+            cells = {}
+            for i, row in enumerate(ws.iter_rows(values_only=True)):
+                for j, v in enumerate(row):
+                    if isinstance(v, str) and v.startswith("="):
+                        cells[(i, j)] = v
+            if cells:
+                out[ws.title] = cells
+    except Exception:
+        pass
+    finally:
+        try:
+            wb.close()
+        except Exception:
+            pass
+    return out
+
+
+def _pn_typed_rows(ws, typed):
+    """`ws`'s rows (values only), with each FORMULA cell carrying the operator's
+    own typed text from `typed` (`_pn_xl_typed_text`) instead of its cached
+    result. The rows are lists, not tuples, so a caller may patch one."""
+    rows = [list(r) for r in ws.iter_rows(values_only=True)]
+    for (i, j), text in (typed or {}).items():
+        if i < len(rows) and j < len(rows[i]):
+            rows[i][j] = text
+    return rows
 
 
 def _pn_xl_text(value):
@@ -20987,7 +21320,8 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
         import openpyxl
     except ImportError:
         lines = ["Potential leaks — set Fix? to yes (auto fake), no (leave it "
-                 "here), never (never fake it, in any folder), type the exact "
+                 "here), never (never fake it, in any folder), =OTHER VALUE "
+                 "(this is a misspelling of that one), type the exact "
                  "replacement, or [bracket] the part to KEEP (the rest is "
                  "faked)", ""]
         for r in rows:
@@ -21034,7 +21368,9 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
         dv.showInputMessage = True    # replacement in the cell, not just yes/no
         dv.promptTitle = "Fix?"
         dv.prompt = ("yes = auto fake · no = leave it here · never = never fake "
-                     "this value, in this or any folder · type the exact "
+                     "this value, in this or any folder · =OTHER VALUE = this "
+                     "is a misspelling of that value, so fake it as the same "
+                     "misspelling of that value's fake · type the exact "
                      "replacement to use · or [bracket] the part to KEEP and "
                      "the rest is faked")
         ws.add_data_validation(dv)
@@ -21047,6 +21383,7 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
         log.warning(f"  Wrote leak-review worksheet: {xlsx.name} — {active} "
                     f"item(s) to triage (Fix?: 'yes' scrubs with an auto fake, "
                     f"'no' leaves it here, 'never' leaves it in every folder, "
+                    f"'=OTHER VALUE' says this is a misspelling of that one, "
                     f"or type the exact replacement to use).")
     except OSError as ex:
         log.warning(f"  Could not write leak-review worksheet: {ex}")
@@ -24798,6 +25135,36 @@ def _fix_leaks_mode(folder, args, cfg, log):
     # read with the pre-key set, which is right — their own row is retired
     # separately by `_pn_retire_kept_key_terms`).
     _pn_set_keep_words(registry, decisions)
+    # A `=CANONICAL` alias typed into the KEY's Replacement column MOVES a
+    # binding — and this pass never reopens the PDFs, so the exports beside it
+    # are already scrubbed under the stand-in that row used to carry. Applying
+    # it here would leave that stand-in standing in a deliverable with no row
+    # left to reverse it, which this project treats as worse than a leak (see
+    # `unreversible_fakes`), and the change would not reach the export anyway:
+    # the real value it renames is no longer in that text. So the folder is left
+    # EXACTLY as it stands — key, worksheet, quarantine and launcher all — and
+    # the operator is pointed at the full re-run, which rebuilds the exports
+    # from the PDFs and can honour it. Nothing has been written at this point.
+    #
+    # An alias typed into the LEAKS worksheet is the different thing and IS
+    # applied below: the value it names is a LEAK, unscrubbed text still
+    # standing in the export, so faking it is exactly what this pass is for.
+    key_aliases = [d["value"] for d in key_decisions.values() if d.get("alias")]
+    if key_aliases:
+        msg = ("--fix-leaks: " + ", ".join(repr(v) for v in key_aliases[:6])
+               + (" …" if len(key_aliases) > 6 else "")
+               + " carry a '=' alias in the pseudonym key's Replacement column. "
+                 "That changes a fake the exports already carry, and this pass "
+                 "never re-reads the PDFs — click 'Re-run PDF-Linker' instead. "
+                 "Nothing has been changed.")
+        log.warning(msg)
+        _warn(msg)
+        _copy_folder_after_run(
+            folder, _copy_dest_root(cfg, args, log), log,
+            provider=getattr(args, "provider", "lexis"),
+            hold="a '=' alias in the key needs a full re-run — nothing was "
+                 "applied.")
+        return 0
     # A master row this folder authored is still OURS: the local LEAKS.xlsx is
     # consumed once resolved, so a decision made here survives only there.
     local_vls = (set(key_decisions) | set(folder_decisions)
@@ -24833,6 +25200,11 @@ def _fix_leaks_mode(folder, args, cfg, log):
             weld_follows.update(
                 _pn_bracket_welds(d["value"], d.get("fixcell") or ""))
             continue
+        if d.get("alias"):
+            # `=ANTIONIO`: an ordinary auto-fake whose stand-in MIRRORS another
+            # value's, so it is derived by `_pn_apply_aliases` below — after
+            # `_pn_retire_kept_key_terms`, over the terms this pass will use.
+            continue
         repl = (d.get("replacement") or "").strip()
         if repl and repl.lower() != d["value"].strip().lower():
             explicit[d["value"]] = repl
@@ -24858,6 +25230,14 @@ def _fix_leaks_mode(folder, args, cfg, log):
     terms, retired_reals = _pn_retire_kept_key_terms(
         terms, {vl: d for vl, d in decisions.items() if vl in local_vls},
         registry, log)
+    # A `=CANONICAL` alias in the worksheet: fake this leaked value as the same
+    # misspelling of the value it misspells. `allow_rebind=False` — the exports
+    # are already scrubbed, so a binding that EXISTS must not move under them;
+    # only a value with no fake yet (which is what a leak is) may take one.
+    terms, alias_values = _pn_apply_aliases(
+        {vl: d for vl, d in decisions.items() if vl in local_vls},
+        terms, registry, log, allow_rebind=False)
+    auto_terms += alias_values
     fix_terms = auto_terms + list(explicit)
     if not fix_terms and rejected:
         # Nothing was applied AND a decision was dropped: the folder is not
@@ -25613,6 +25993,12 @@ def main():
         for vl, d in leak_decisions.items():
             if d["fix"] != "yes" or vl not in ours:
                 continue
+            if d.get("alias"):
+                # A `=ANTIONIO` alias is faked like any other yes, but its fake
+                # MIRRORS another value's — so its term is built by
+                # `_pn_apply_aliases` below, once that value's own binding
+                # exists to be mirrored.
+                continue
             fv = d.get("fake_values")
             fix_terms.extend(fv if fv is not None else [d["value"]])
             if fv is not None:
@@ -25734,7 +26120,26 @@ def main():
                          f"bracketed keep-spec fragment(s).")
             for vl, d in key_decisions.items():
                 leak_decisions[vl] = d
-                suppressed.add(vl)
+                if not d.get("alias"):
+                    # An alias leaves nothing of the value standing — it is
+                    # faked whole — so there is nothing to suppress, and a
+                    # spelling that somehow survives should still gate.
+                    suppressed.add(vl)
+
+        # "Ours" for a keep-spec's faking half, plus every decision typed into
+        # this run's key. Computed here because the ALIAS pass needs it too.
+        local_vls = set(key_decisions) | set(folder_decisions) | ours
+        # An operator ALIAS (`=ANTIONIO`, in a key Replacement cell or a LEAKS
+        # Fix? cell): this value is a MISSPELLING of another, so its fake is the
+        # same misspelling of that value's fake instead of an unrelated pool
+        # word. LAST, over the final term list, because it can only mirror a
+        # binding that already exists — the canonical is bound by the key, the
+        # party template or the pre-scan, all of which have run by now.
+        terms, alias_values = _pn_apply_aliases(
+            {vl: d for vl, d in leak_decisions.items() if vl in local_vls},
+            terms, registry, log)
+        if alias_values:
+            terms += _pn_build_terms([], [], alias_values, registry)
 
         # Over the FINAL term list, so a loaded key term is widened too: on a
         # re-run the retired bracket row has become an ordinary binding, but
@@ -25747,7 +26152,6 @@ def main():
         # inside a full party match (a real party this case fakes), which the
         # substitution releases so the party is still scrubbed. So a keep never
         # leaves a real party in the clear, whether learned here or globally.
-        local_vls = set(key_decisions) | set(folder_decisions) | ours
         (pseudonymizer.keep_strict,
          pseudonymizer.keep_soft,
          pseudonymizer.keep_nuclear) = _pn_keep_values(leak_decisions)
