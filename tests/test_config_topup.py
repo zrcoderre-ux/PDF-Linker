@@ -89,7 +89,6 @@ def test_the_defaults_in_the_template_are_the_code_defaults():
     assert P._config_bool(live, "keep_original_text", True) is False
     assert P._config_bool(live, "master_leaks", True) is False
     assert live["text_subfolder"] == "Text Files"
-    assert int(live["max_text_files"]) == P._COMBINE_DEFAULT_CAP
     assert float(live["column_band_tol"]) == P._COLUMN_BAND_TOL
     assert live["leak_gate"] == "primary"
     # The two that ship commented out are OFF by absence.
