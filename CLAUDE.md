@@ -801,6 +801,51 @@ the party), so its row stays reversible.
   every character is anchored: the pattern can only ever land on this exact
   number, however it was spaced. It mints nothing, and `_surviving_records`
   scans with the same pattern, so replacement and detection stay mirrored.
+- **A case-number STAND-IN is issued ONCE, across every case and every
+  machine** (`_PN_MASTER_CASENO_SHEET`, `_pn_fake_caseno`). Uniqueness inside
+  one run is the registry's job (`_used`), but every folder starts a FRESH
+  registry, so a random draw could only ever promise uniqueness within one
+  case — and the space for a filing year is exactly 100,000 (`YY` + the
+  courthouse/division letters + five digits), which is the birthday problem
+  with a small denominator. Measured: 16,000 cases minted in separate runs
+  produced **327** stand-ins claimed by two real cases each, and one
+  chambers-year of 300 cases carries a **36%** chance of at least one. Two
+  unrelated matters then arrive on the desk under one case number, and a reader
+  holding both drafts cannot tell they are two cases — worse than a fake nobody
+  can reverse, because nothing about it looks wrong. So the stand-ins are handed
+  out SEQUENTIALLY: tick 47 is issued once and the counter only ever moves up,
+  which removes the collision by construction rather than by luck. The counter
+  has to be remembered somewhere that TRAVELS — a file beside the config would
+  restart at zero on the second machine and re-issue the whole series — so it
+  lives on the **master workbook**, beside the KEEP sheet and the leak tally,
+  which is already the cross-case state and already the file that syncs.
+  **What is stored is the COUNT and nothing else**: no real case number, no
+  stand-in, no mapping, so the master gains no new knowledge of any case. That
+  is the whole advantage of a counter over a ledger — the real→fake binding
+  stays where it belongs, in that folder's own `pseudonym_key.xlsx`. The
+  sequence fills the value's TRAILING digit run (`_PN_CASENO_SEQ_RE`), the part
+  that counts filings; every earlier run is court structure and stays, which is
+  the rule the two-digit filing year already followed ("24STCV24253" ->
+  "24STCV00047", "BC543295" -> "BC000049", "30-2024-01234567-CU-BC-CJC" ->
+  "30-2024-00000051-CU-BC-CJC"). Three things the counter changes and one it
+  must not. A tick is SKIPPED, never issued, when the candidate equals the
+  value's own real number — a sequence that walks the whole space steps onto
+  some case's own number sooner or later, and a self-map ships the number in a
+  "clean" export (the `_pn_guard_distinct_fake` rule, compared the way it
+  compares; with a random draw that was one chance in 100,000, marching through
+  the sequence it is a certainty). The write takes `max(on_disk, ours)`, so a
+  run that syncs in from another machine costs at most a GAP in the series
+  where writing ours blindly would hand one tick out twice. And it is banked
+  BEFORE the first export is written as well as at the end, so a run that dies
+  part-way cannot hand the ticks it spent to the next folder. What it must not
+  change: a value the KEY pins spends no tick and reproduces exactly — the
+  documents already sent come back byte for byte, which outranks the series.
+  An outgrown counter (100,000 cases for the five-digit LASC sequence,
+  centuries of filings) falls back to the digit draw rather than wrapping back
+  over numbers already out. Deliberately NOT reconciled with history, at the
+  owner's direction: a stand-in an OLD case already carries may be re-issued
+  once, because the counter starts from whatever the master says; what must
+  never happen is two cases sharing one going FORWARD.
 - **A REGISTRATION number is only safe to track behind its LABEL.** "a
   registered California process server, Registration No. 833, San Bernardino
   County" names one person in the county's public registry, and the pair

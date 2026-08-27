@@ -7376,6 +7376,12 @@ class _PnFakeRegistry:
                             # a straight pool draw is recorded (a composed or
                             # folded fake follows its parts)
         self._used = set()  # every fake handed out, lower-cased (global)
+        # How many case-number stand-ins have been minted, EVER — read from the
+        # master workbook at the start of a run and written back after. A case
+        # number is the one value where a collision across cases is intolerable
+        # (see `_PN_MASTER_CASENO_SHEET`), so its stand-ins are handed out in
+        # sequence rather than drawn, and this is the sequence's position.
+        self.caseno_seq = 0
         # Words this run must never hand out as a stand-in: the party names of
         # the authorities the corpus CITES. "Stockton" is in the name pool and
         # the corpus cites Stockton Theatres, Inc. v. Palermo (1956) 47 Cal.2d
@@ -7621,6 +7627,13 @@ class _PnFakeRegistry:
             if cand.lower() not in self._used:
                 return self._take(key, cand)
         return self._take(key, cand)  # give up after 10k tries; keep it stable
+
+    def next_caseno_seq(self):
+        """The next sequence tick. Monotonic, so no tick is ever issued twice —
+        which is what makes a sequential stand-in unique BY CONSTRUCTION rather
+        than by a collision check that can only see this one run."""
+        self.caseno_seq += 1
+        return self.caseno_seq
 
     def alnum(self, real, seed_tag, letters="ABCDEFGHIJKLMNOPQRSTUVWXYZ",
               avoid=None):
@@ -9207,7 +9220,63 @@ def _pn_append_name_terms(terms, raw, source, registry):
 _PN_CASENO_YEAR_RE = re.compile(r"^\d{2}(?=[A-Za-z])")
 
 
+# The SEQUENCE run of a case number: its trailing digit run, which is the part
+# that counts filings ("24STCV24253" -> "24253", "BC543295" -> "543295",
+# "2:24-cv-01234" -> "01234", "30-2024-01234567-CU-BC-CJC" -> "01234567" — the
+# last run, since that number ends in letters). Every EARLIER run is court
+# structure, not identity: the two-digit filing year, the district office, the
+# county prefix. Those were already kept for the LASC year (randomising it
+# produced numbers facially impossible for the filing date printed beside them)
+# and the same reasoning covers the rest.
+_PN_CASENO_SEQ_RE = re.compile(r"(\d+)(?=\D*$)")
+
+
 def _pn_fake_caseno(real, registry):
+    """A case number's stand-in: the same shape, with the sequence replaced by
+    the next tick of a counter that spans every case and every machine.
+
+    Sequential and not drawn, because a case number is the one value where a
+    collision ACROSS cases is intolerable — two unrelated matters arriving on
+    one desk under one number, with nothing about either looking wrong. A tick
+    is issued once, so the stand-ins cannot collide however many cases there
+    are; a random draw could only ever check the folder in front of it. See
+    `_PN_MASTER_CASENO_SHEET` for where the counter lives and why.
+
+    Memoized first, so a number met twice — the caption, the proof of service,
+    a row read back out of the key — costs ONE tick and keeps one stand-in.
+
+    Falls back to the digit draw where the sequence cannot be laid in: a value
+    with no digit run to hold it, or a counter that has outgrown the run's
+    width (100,000 cases for the five-digit LASC sequence — centuries of
+    filings). The fallback is still unique within the run, and it takes that
+    branch rather than wrapping the counter back over numbers already issued.
+    """
+    key = ("caseno", real.lower())
+    if key in registry._memo:
+        return registry._memo[key]
+    m = _PN_CASENO_SEQ_RE.search(real)
+    if m:
+        width = len(m.group(1))
+        head, tail = real[:m.start(1)], real[m.end(1):]
+        # Two ticks are skipped rather than issued, and the second is the one
+        # a counter creates that a random draw did not. `_used` is the belt for
+        # a stand-in this same run already holds — a key row written before the
+        # counter existed, carrying a draw that sits on a tick still ahead of
+        # us. And a sequence that walks the whole space WILL eventually step
+        # onto some case's own number: a fake equal to its real value is a
+        # no-op scrub that ships the number in a "clean" export and re-flags it
+        # on every `--fix-leaks` pass (the rule `_pn_guard_distinct_fake`
+        # states, compared the way it compares). With a draw that was one
+        # chance in 100,000 per case; marching through the sequence it is a
+        # certainty, so it is checked here rather than left to the guard.
+        while True:
+            run = str(registry.next_caseno_seq()).zfill(width)
+            if len(run) != width:
+                break                 # outgrown the sequence: fall through
+            cand = head + run + tail
+            if (cand.lower() not in registry._used
+                    and _pn_norm_map(cand) != _pn_norm_map(real)):
+                return registry._take(key, cand)
     keep = 2 if _PN_CASENO_YEAR_RE.match(real) else 0
     return registry.digits(real, "caseno", keep_prefix=keep)
 
@@ -20316,6 +20385,36 @@ _PN_MASTER_HEADERS = ("Value", "Type", "Times Seen", "Cases",
                       "First Seen", "Last Seen")
 _PN_MASTER_LEAK_SHEET = "Master Leaks"
 _PN_MASTER_KEEP_SHEET = "KEEP"
+# A COUNTER — not a ledger — of how many case-number stand-ins have been
+# minted, on a third sheet of the same workbook.
+#
+# Uniqueness inside one run is the registry's job (`_used`), but every folder
+# starts a FRESH registry, so a random draw could only ever promise uniqueness
+# within one case — and the space for a given filing year is exactly 100,000
+# ("YY" + the courthouse/division letters + five digits), which is the birthday
+# problem with a small denominator. Measured: 16,000 cases minted in separate
+# runs produced 327 stand-ins claimed by two real cases each, and a single
+# chambers-year of 300 cases carries a 36% chance of at least one. Two
+# unrelated matters then arrive under one case number, and a reader with both
+# cannot tell they are two cases — worse than a fake nobody can reverse,
+# because nothing about it looks wrong.
+#
+# Handing the numbers out SEQUENTIALLY removes the collision by construction
+# rather than by luck: tick 47 is issued once and the counter only ever moves
+# up. It needs to be remembered somewhere, and it has to be somewhere that
+# TRAVELS — a file beside the config would restart at zero on the second
+# machine and re-issue the whole series. The master workbook is where the
+# cross-case state already lives (the KEEP sheet, the leak tally) and it is
+# already the file the operator carries between machines.
+#
+# What is stored is the COUNT and nothing else: no real case number, no
+# stand-in, no mapping. The master gains no new knowledge of any case, which is
+# the whole advantage of a counter over a ledger — the real→fake binding stays
+# where it belongs, in that folder's own `pseudonym_key.xlsx`.
+_PN_MASTER_CASENO_SHEET = "CASE NUMBERS"
+_PN_MASTER_CASENO_HEADERS = ("Case Numbers Minted", "Last Updated",
+                             "Last Case Folder")
+_PN_MASTER_CASENO_WIDTHS = (22, 14, 46)
 # The KEEP sheet's Fix? column is named so _pn_parse_decision_rows can read the
 # instruction ("no" or a [bracket] spec) straight back out.
 _PN_MASTER_KEEP_HEADERS = ("Value", "Fix? (yes/no)", "Type", "Times Seen",
@@ -20917,6 +21016,84 @@ def _pn_read_master_keep(cfg):
     except Exception:
         return {}
     return _pn_parse_decision_rows(rows)
+
+
+def _pn_read_master_caseno_seq(cfg):
+    """How many case-number stand-ins have been minted, across every folder and
+    every machine that shares this master workbook. 0 when the sheet is absent
+    or unreadable — a first run and a machine with no master both start there,
+    and the user's standing decision is that re-issuing a stand-in an OLD case
+    already has is acceptable; what must never happen is two cases sharing one
+    going FORWARD."""
+    path = _pn_master_path(cfg)
+    if not path.exists():
+        return 0
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
+        rows = _pn_master_sheet_rows(wb, _PN_MASTER_CASENO_SHEET)
+        wb.close()
+    except Exception:
+        return 0
+    for r in rows[1:]:
+        if r and r[0] not in (None, ""):
+            try:
+                return max(0, int(str(r[0]).strip()))
+            except (TypeError, ValueError):
+                return 0
+    return 0
+
+
+def _pn_write_master_caseno_seq(cfg, seq, case_name, today, log):
+    """Record the counter, and NEVER move it down.
+
+    `max(on_disk, ours)` is the whole concurrency story: the workbook syncs
+    between machines, so a run elsewhere may have advanced it since this run
+    read it, and taking the higher value costs at most a gap in the series —
+    where writing ours blindly would hand the same tick out twice, which is
+    the one thing this exists to prevent. Best-effort like every other master
+    write: a workbook open in Excel is warned about, not fatal."""
+    try:
+        import openpyxl  # noqa: F401
+    except ImportError:
+        return 0
+    on_disk = _pn_read_master_caseno_seq(cfg)
+    master_path = _pn_master_path(cfg)
+    wb = _pn_master_load(master_path)
+    if int(seq or 0) <= on_disk:
+        # Someone else is further ahead: take their number AND leave their
+        # audit line alone, or the two diagnostic columns would describe a run
+        # that did not issue the count beside them.
+        prev = _pn_master_sheet_rows(wb, _PN_MASTER_CASENO_SHEET)[1:2]
+        if prev and prev[0]:
+            today = (str(prev[0][1]) if len(prev[0]) > 1 and prev[0][1]
+                     else today)
+            case_name = (str(prev[0][2]) if len(prev[0]) > 2 and prev[0][2]
+                         else case_name)
+    seq = max(int(seq or 0), on_disk)
+    _pn_master_replace_sheet(wb, _PN_MASTER_CASENO_SHEET,
+                             _PN_MASTER_CASENO_HEADERS,
+                             [[seq, today, case_name]],
+                             _PN_MASTER_CASENO_WIDTHS)
+    _pn_master_save(wb, master_path, log, "case-number counter")
+    return seq
+
+
+def _pn_note_caseno_seq(cfg, registry, case_name, log):
+    """Push this run's counter position back to the master, if it moved.
+
+    Idempotent (the write takes `max(on_disk, ours)`), so it is called both as
+    soon as the terms are built and again at the end of the run: a crash
+    between the two must not hand the ticks it already spent to the next
+    folder, and calling it twice costs one small workbook write."""
+    seq = getattr(registry, "caseno_seq", 0)
+    if not seq or seq <= _pn_read_master_caseno_seq(cfg):
+        return 0
+    written = _pn_write_master_caseno_seq(
+        cfg, seq, case_name, datetime.date.today().isoformat(), log)
+    log.info(f"  Master case numbers: counter at {written} — a case-number "
+             f"stand-in is issued once, in every folder and on every machine.")
+    return written
 
 
 def _pn_update_master_keep(cfg, record_map, case_name, today, log):
@@ -24939,6 +25116,10 @@ def _fix_leaks_mode(folder, args, cfg, log):
         return 1
 
     registry = _PnFakeRegistry()
+    # `--fix-leaks` mints a stand-in for every Fix?=yes the operator typed, and
+    # a flagged value can be a case number, so this pass advances the same
+    # counter the full run does.
+    registry.caseno_seq = _pn_read_master_caseno_seq(cfg)
     # Read the durable decisions FIRST: a `{braced}` nuclear keep is enforced
     # while a fake is composed, and `_pn_load_key` both repairs stored composed
     # fakes and decides which token rows come back as terms — so the brace has
@@ -25094,6 +25275,7 @@ def _fix_leaks_mode(folder, args, cfg, log):
     if _keep_rec:
         _pn_update_master_keep(cfg, _keep_rec, folder.name,
                                datetime.date.today().isoformat(), log)
+    _pn_note_caseno_seq(cfg, registry, folder.name, log)
 
     # The tool's OWN .txt files in the folder — the worksheet's text companion
     # and the ETA/DONE run markers — are not exports and must not be scrubbed
@@ -25736,6 +25918,11 @@ def main():
         if key_path is None and not _is_word_only_folder(folder):
             key_path = _pn_find_downloads_key(log)
         registry = _PnFakeRegistry()
+        # The case-number counter, before any stand-in is minted: they are
+        # handed out in sequence so no two cases can ever share one, and the
+        # sequence's position lives on the master workbook because it has to
+        # survive the move to another machine.
+        registry.caseno_seq = _pn_read_master_caseno_seq(cfg)
         # Decisions feeding this run come from two places:
         #   * this folder's LEAKS worksheet (transient genuine-leak triage), and
         #   * the cross-folder master KEEP sheet (the durable no/bracket
@@ -26048,6 +26235,12 @@ def main():
                    else _config_bool(cfg, "partial_names", False))
         if partial:
             _pn_register_prefix_terms(pseudonymizer, corpus, log)
+        # Every case number this folder holds is bound by now (the template,
+        # the key and the pre-scan harvest have all run), so bank the counter
+        # BEFORE a single export is written: a run that dies part-way must not
+        # hand the ticks it already spent to the next folder. Written again at
+        # the end for anything minted later; the write is idempotent.
+        _pn_note_caseno_seq(cfg, registry, folder.name, log)
 
     # Folder-wide tally of what the PARTIES cited, filled as each document's
     # citations are parsed for the per-export appendix and written out once at
@@ -26173,6 +26366,7 @@ def main():
         if _record:
             _pn_update_master_keep(cfg, _record, folder.name,
                                    datetime.date.today().isoformat(), log)
+        _pn_note_caseno_seq(cfg, registry, folder.name, log)
         # Two addresses on one street with adjacent numbers were faked to two
         # unrelated streets — the failure that moved an ADU off its parcel.
         for w in _pn_address_adjacency(pseudonymizer.records.values()):
