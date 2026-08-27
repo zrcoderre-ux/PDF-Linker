@@ -2456,109 +2456,37 @@ work. `PDF_LINKER_NO_LOCK=1` skips it.
 for an allocation no fixed dpi bounds, and MuPDF failing that allocation aborts
 the interpreter. Dropping the dpi only costs box detection on a page that size,
 which then falls back to ordinary extraction.
+## A folder an older version CONSOLIDATED
 
-## The upload cap (a folder with more than 20 documents)
+An older version measured `Text Files` against a **20-file upload cap** and
+folded the excess into single `COMBINED …` exports, each holding several
+documents behind DOCUMENT banners. That is gone at the owner's direction — a
+better answer to the same problem was found outside this tool — and with it the
+`max_text_files` setting, the two grouping rules, the reproduce-the-previous-
+grouping record, and the leak-gate bookkeeping that had to be remapped onto a
+combined file. A `max_text_files` line in a config file people already have is
+simply ignored now; `_config_add_missing` never removes what it did not write.
 
-The exports go to a drafting model that accepts at most **20 files**
-(`max_text_files`, default `_COMBINE_DEFAULT_CAP`). Most folders are well under
-it; a large case is not, and the operator's remedy — merge some exports by hand
-and remember which — is the kind of bookkeeping that fails quietly. So
-`_combine_exports_for_upload` does it, once every export is written: the excess
-is **COMBINED** into single files that say so in their own first line, list
-their members, and hold each document in full behind its own DOCUMENT banner.
-Nothing is dropped and nothing is shortened; the parts are removed only once
-the combined file is safely written, so `Text Files` is exactly the deliverable
-set and nobody has to work out which of the files in front of them to skip.
+**What is left is the folder it left behind.** A combined export is named for
+nothing in the case (`COMBINED 5 documents.txt`, `Brief (COMBINED 3 parts).txt`),
+so no source PDF maps to it and a full re-run does NOT overwrite it — it would
+sit in `Text Files` beside the freshly-written per-document exports as a stale
+duplicate of text already delivered under other names, and get uploaded with
+them. `_drop_superseded_combined_exports` removes one (and a combined
+`*.txt.LEAK` quarantine) once EVERY document named in its banners has a separate
+export in that folder again — the same supersede rule the combining pass applied
+to its own output, and the same reasoning as `_pn_drop_superseded_quarantine`.
+Run over the deliverable folder and over the `Original Text` reference copies,
+because the old pass combined both; and run BEFORE the leak worksheet and the
+gate, so what those two measure is exactly what will be delivered.
 
-**The `Original Text` sibling is combined too** (`deliverable=False`), even
-though nothing in it is ever uploaded. The cap is not about that folder; the
-SHAPE is. A case that delivers 20 exports and keeps 34 do-not-share originals
-beside them is two different shapes of one case, and "the original of this
-export" stops being one file in the same place — bookkeeping the operator has to
-carry in their head, which is the same thing this pass exists to remove. The
-grouping is derived from that folder's OWN filenames rather than mirrored from
-the deliverable's, because the two folders do not share names: an export's
-filename is pseudonymized and the reference copy keeps the source PDF's real
-stem. The rules are the same and a part marker survives pseudonymization, so the
-split normally comes out the same; where it does not, each file still names its
-own members in its header. Its header says THAT, not "only 20 files can be
-uploaded" (`_combine_original_note`) — and the deliverable's header is unchanged
-to the byte, because a folder already sent must still reproduce. The
-pseudonymizer is NEVER passed on that pass: `_combine_remap_tracking` moves the
-leak gate's per-file bookkeeping onto the combined file, and these files are
-real names by design — never tracked, never quarantined. Harmless for the
-evidence path too (`--fix-leaks` reads this folder via `note_original`): a
-combined file can only ADD words (the banners), and `_real_remainder` only ever
-removes a word ABSENT from the original, so a finding is kept and never dropped.
-
-**Which files, in the operator's two rules.** Rule ONE
-(`_combine_same_name_groups`): the same name with a part marker after it —
-`Brief (1)`, `Brief part 2`, `Vol. II`, `Brief 2 of 5`, a bare trailing index.
-`_combine_split_part` strips the marker and demands `_COMBINE_BASE_MIN` LETTERS
-still stand, so "1 of 3" (which reduces to "1 of") groups with nothing, and the
-bare form demands a separator, or `\d{1,2}` takes the last two digits of
-"Order 2024" and files it under "Order 20". Rule TWO: the **smallest** exports,
-bundled — the (excess + 1) smallest lands exactly on the cap. Both may run.
-
-**The MISCELLANEOUS bundle is ONE file, and a later run GROWS it.** Rule TWO's
-members share nothing but having been small, so a document added to a folder
-already at the cap belongs in the existing bundle as naturally as the ones
-already there. Starting a fresh one instead left a second
-`COMBINED n documents.txt` beside the first, and the run after that a third —
-a handful of miscellaneous files where the whole point of the pass is to have
-as few as possible. `_combine_is_misc_bundle` tells the two rules' output apart
-by NAME, which is the only thing that distinguishes them: a part-group is named
-for the document it rebuilds (`Brief (COMBINED 3 parts)`), the bundle for
-nothing but its own count. A rule ONE part-group must NEVER grow this way — its
-members are the parts of a single document, and an unrelated filing dropped in
-among them would make the file a lie. New members are APPENDED, never merged and
-re-sorted, so the documents already sent keep their order and their text; only
-the header list and the `OF n` counter move, which is the honest cost of the
-file really holding more. A folder left carrying several bundles by an older
-version folds them into one the next time combining is needed (and only then —
-a folder that now fits is left alone). The take is the excess ITSELF rather than
-excess + 1, because an absorbed export disappears into a file that already
-counts.
-
-**Only as much as the cap asks.** `_combine_pick_groups` takes the smallest
-group first, whole while it fits, and SLICES the one that would overshoot to
-the first (excess + 1) parts. Combining is a cost — one leak holds every
-document in the file, and each member loses its own filename — so a folder two
-over does not fold a twelve-part exhibit set into one file when a two-part
-declaration would have done. A part left out of a slice is still a complete
-document under its own name, and the slice says so ("COMBINED 3 of 12 parts").
-
-**A grouping already sent is REPRODUCED, not re-derived**, for the reason a
-re-run reuses `pseudonym_key.xlsx` rather than re-deriving the fakes: adding one
-document moves which files are "the smallest", so a re-derived plan reshuffles a
-folder whose drafts are already written. The DOCUMENT banners are the record —
-`_combined_sections` reads the members back off the previous run's own file, and
-the header carries nothing volatile (no folder count, no timestamp) so an
-unchanged folder reproduces the delivered file byte for byte. A prior grouping
-is kept even once the folder fits again, and `max_text_files = 0` (combining
-OFF) still honours it: "off" stops the tool combining, it never silently
-re-splits a file the operator has sent. A combined file is superseded only once
-**every** member exists as a separate export again; a member whose source PDF is
-gone (or failed this run) has its section carried forward verbatim, because that
-file is the only copy of it there is.
-
-**Factored into the leak gate and `--fix-leaks`.** The gate quarantines FILES,
-so `_combine_remap_tracking` moves `written` / `leaked_by_file` onto the
-combined file — otherwise a leak is reported against a part path that no longer
-exists, nothing is renamed and the export ships. Combining therefore runs BEFORE
-the worksheet and the gate. A leak in any member holds the whole combined file:
-that is the cost, and the gate's message says how many documents are held rather
-than leaving the export count to be read as a document count. `--fix-leaks`
-treats one as the single file it is — the fix applies across the whole thing,
-the quarantine is released whole, and the grouping is never re-split (the
-operator has already uploaded that shape) — but every finding is located by its
-member document (`_pn_locate_export`), because each document in the file numbers
-its pages from 1, so a bare "p.3:7" names as many places as there are documents,
-and the member name is the only thing left in the worksheet saying which SOURCE
-document a leak came from. A combined export QUARANTINED by an earlier run is
-dropped by the same reachability rule `_pn_drop_superseded_quarantine` applies
-and cannot reach here (the `.LEAK` is named for the combined file, not for any
-source PDF), the moment every document in it has a fresh export of its own.
+**NOT before every member is covered**, which is the whole care in it: a member
+whose source PDF is gone (removed from the folder, or failed this run) has no
+other copy, so that file IS the only copy of that document and stands as an
+ordinary export, untouched. `_combined_sections` (the banner reader) and
+`_pn_locate_export` survive for the same reason — until such a file is
+superseded it is a real export, and a leak found in one still has to be located
+by its member document, since every document in it numbers its pages from 1.
 
 ## Performance notes
 
@@ -2663,10 +2591,9 @@ font metrics. Costs 0.11 s on a 523-row key.
 
 **`Authorities Cited.txt` lists what the PARTIES cited**
 (`_write_authorities_list`, fed by `_note_authority`). It sits in the CASE
-FOLDER and deliberately NOT in `Text Files`: that folder is the deliverable,
-measured against the upload cap, so one more file there would cost a document —
-this is a work product for whoever reads the papers, and belongs beside the PDFs
-and the key. Real citation text, because published authorities are public record
+FOLDER and deliberately NOT in `Text Files`: that folder is the deliverable
+that goes to the drafting model, while this is a work product for whoever reads
+the papers, so it belongs beside the PDFs and the key. Real citation text, because published authorities are public record
 and the whole pipeline preserves them byte-for-byte precisely so a cite is never
 renamed; a list that scrubbed the names it exists to report would be useless.
 Grouped by kind (cases / statutes / rules). **CASES run in YEAR order, MOST
