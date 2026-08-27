@@ -219,8 +219,9 @@ not come back to life just because it is also a template row.
 of `pseudonym_key.xlsx` accepts the same operator control words the LEAKS `Fix?`
 column does — `no` (keep this Real Value verbatim), `never` (the nuclear keep of
 the WHOLE value), a `[bracketed]` keep-spec
-(keep the bracketed part, auto-fake the rest) and a `{braced}` one (same cut,
-stronger promise) — so a mistake baked into the key
+(keep the bracketed part, auto-fake the rest), a `{braced}` one (same cut,
+stronger promise) and `=ANOTHER REAL VALUE` (this value is a MISSPELLING of that
+one — see below) — so a mistake baked into the key
 that never surfaced as a leak can be fixed where it lives (`_pn_load_key` returns
 these as `key_decisions`). KEEP protection (`Pseudonymizer._keep_spans`, spans
 added to `_substitute`'s `protected` set; records `kept_hits`) comes in **three
@@ -321,6 +322,68 @@ for the values it is most often typed against. `_keep_spans` passes
 kept span releases nothing, one that reaches beyond it still does (`never` on
 "Doe" keeps the word and still fakes "John Doe" as "Yorke Doe"). Nothing is left
 in the clear that the operator did not name.
+
+**A MISSPELLING of another value is named with `=`, and gets a misspelling of
+that value's FAKE** (`_pn_alias_target`, `_pn_apply_aliases`,
+`_PnFakeRegistry.fold_onto`). A filing that spells one party two ways —
+"ANTIONO" beside "ANTIONIO" — hands the tool two Real Values, and two unrelated
+pool words came back: one person under two names, which a drafting pass reads as
+two people and a reader cannot reconcile. The typo fold exists for exactly this
+and cannot always reach it: it fires only where the two values are near enough
+(`_pn_name_fold_dist`) AND meet in the same draw, so a spelling a REUSED KEY
+already pinned, or one two edits away at a length that allows one, is past it.
+No heuristic closes that — the operator is the one who knows the two are the
+same person — so they say so, by typing `=ANTIONIO` over the fake in the key's
+Replacement column or into the LEAKS `Fix?` cell.
+**Not the SAME fake, which is the whole difficulty.** Two Real Values sharing
+one Replacement is precisely what `DeAnonymize.bas` calls ambiguous: it retires
+the mapping and the pseudonym is left standing in the tentative — the failure
+the alt-spelling rule above exists to prevent. So the alias derives a stand-in
+that is the same SLIP of the canonical's stand-in ("Barlowe" -> "Barlowwe"),
+which reads as one person spelled two ways and still reverses one-to-one. The
+derivation is `fold_onto`, factored out of `_PnFakeRegistry.token` so the fold
+the tool INFERS and the one the operator DECLARES cannot come out differently
+(`_pn_mirror_op` names the slip; `_PN_FOLD_MAX_REPS` refuses a pair too far
+apart to be a misspelling at all, which also bounds the branching).
+WORD for word, because composition is: the words two spellings SHARE are
+already one binding and are left exactly alone, so "ANTIONO SARKISYAN" keeps the
+surname stand-in every other document used and costs one pool word, not two.
+Every loaded key term built from a word the alias MOVES is dropped and rebuilt —
+without that, an alias typed on the `*-token` row would correct the token and
+leave the composed full-name row still applying its stored fake, which is the
+half-applied fix that makes one party read as two, i.e. the very thing being
+repaired. An alias that cannot be honoured (the canonical is not bound in this
+case, the two are too far apart, every mirrored form is taken) still FAKES the
+value, by an ordinary draw, and says so: the row is usually answering a LEAK,
+and refusing it quietly would leave the real name standing in the export.
+**Excel turns the instruction into a FORMULA, and reading that back is what
+makes the syntax work at all.** A cell opening with `=` is a formula to Excel,
+so `=ANTIONIO` comes back from an ordinary `data_only` read as `#NAME?` — or as
+nothing at all in a workbook Excel never recalculated — and the operator's text
+survives only in the formula itself. `_pn_xl_typed_text` reads it back (both
+workbooks that accept control words go through `_pn_typed_rows`), which also
+picks up the quoted `="ANTIONIO SARKISYAN"` Excel forces on a MULTI-WORD
+canonical, since it rejects the bare form as malformed. Safe because neither the
+key nor `LEAKS.xlsx` is ever WRITTEN with a formula in it (`_pn_xl_plain_cells`
+sees to that, for its own reasons), so a formula cell in either is always
+something a person typed. `_PN_XL_ERROR_VALUES` is the belt: a cell reading
+`#NAME?` is refused as a typed replacement at BOTH readers, because writing
+Excel's error text into an export as somebody's name is the one outcome worse
+than not reading the alias.
+**`--fix-leaks` applies a WORKSHEET alias and refuses a KEY one.** A worksheet
+row names a LEAK — unscrubbed text still standing in the export — so faking it
+is exactly what that pass is for. A key row names a binding the exports ALREADY
+carry, and that pass never reopens the PDFs: moving it would leave the previous
+stand-in in a deliverable with no row to reverse it (worse than a leak, per
+`unreversible_fakes`) and would not reach the export anyway, since the real
+value it renames is no longer in that text. So the pass changes NOTHING — key,
+worksheet, quarantine and launcher all stand — and points at the full re-run,
+which rebuilds the exports from the PDFs. Inside the worksheet pass the same
+rule holds one notch down (`allow_rebind=False`): an alias may give a value its
+FIRST fake and never move one it already has. An alias is not a KEEP
+(`_pn_decision_is_keep` is false of it), so it never reaches the cross-folder
+master sheet — it is a statement about two spellings in THIS case, and the fakes
+it mirrors are this case's.
 
 **The KEEP store is a SINGLE cross-folder sheet**, the `KEEP` tab of the master
 workbook (`_pn_master_path`, next to the config or `PDF_LINKER_MASTER` /
