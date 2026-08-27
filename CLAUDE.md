@@ -2895,7 +2895,7 @@ reads as "fully scrubbed".
   "asho " of "Rasho"; the search runs through the regex engine on the original
   instead.
 - **The recovery log names a PART, never a cell, so the run says which cell**
-  (`_pn_xl_audit`, called from `_pn_xl_save` after the read-back). Four causes
+  (`_pn_xl_audit`, called from `_pn_xl_save` after the read-back). Five causes
   of "Excel found a problem with some content" have now been diagnosed from
   nothing but `Repaired Records: String properties from /xl/worksheets/
   sheet1.xml part`, and every one was a shape openpyxl passes through and
@@ -2909,6 +2909,32 @@ reads as "fully scrubbed".
   `pdf_linker.log`. It REPORTS and never repairs or raises: a cell Excel would
   quietly fix is not worth discarding a key over, and the loud failure
   `_pn_xl_save` reserves for an unreadable file has to keep meaning that.
+  **It reads the sheet's FURNITURE as well as its content**, because the fifth
+  cause was not a cell: a witness blind to the part the next cause comes from
+  is not a witness, and this one cost another round of inference for exactly
+  that reason. So the walk also holds every `dataValidation` to Excel's own
+  limits (below), naming the sheet and the range instead of a cell.
+- **A DATA VALIDATION is held to limits three orders of magnitude smaller than
+  a cell's, and the Fix? dropdown outgrew them**
+  (`_pn_xl_fit_validations`, `_PN_XL_DV_TEXT_MAX` 255 / `_PN_XL_DV_TITLE_MAX`
+  32 / `_PN_XL_DV_LIST_MAX` 255). `LEAKS.xlsx` puts a yes/no/never dropdown on
+  its Fix? column and hangs the explanation of every control word off it as the
+  validation's input message — so that sentence grows by a clause each time a
+  control word is added, and documenting `*OTHER VALUE` took it from 181
+  characters to 291. Excel repairs a workbook whose validation is over the
+  limit by DROPPING the validation, so the operator opens the worksheet they
+  are meant to type decisions into and the one statement of what may be typed
+  is gone, behind the repair prompt. Nobody wrote a long string; a feature
+  added a clause — which is why the belt is a CUT at the one save boundary
+  every workbook passes through, beside `_pn_xl_plain_cells`, rather than a
+  rule about how to word a prompt. Cut and not refused: losing the sentence's
+  tail costs the reader a clause where dropping the validation costs them all
+  of it. The authored text is kept comfortably under the limit anyway
+  (`test_leaks_excel_repair.py` pins that on the FILE, and that every control
+  word survived the shortening) — the cut is what stops the NEXT control word
+  breaking the worksheet silently. Structurally invisible to `_pn_xl_verify`
+  for the same reason the formula cell is: the file is well-formed and
+  openpyxl reads it back perfectly.
 - **A workbook is written BESIDE the one on disk and READ BACK before it
   replaces it** (`_pn_xl_save` / `_pn_xl_verify`, shared by the key, `LEAKS.xlsx`
   and the master for the reason `_pn_wrap_sheet` is). `wb.save(path)` TRUNCATES

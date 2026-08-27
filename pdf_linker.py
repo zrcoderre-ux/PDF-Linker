@@ -20494,6 +20494,19 @@ _PN_XL_BAD_CHARS_RE = re.compile("[\x7f-\x9f\ud800-\udfff\ufffe\uffff]")
 # Excel's hard limit on the text of one cell.
 _PN_XL_CELL_MAX = 32767
 
+# ...and its limits on a DATA VALIDATION, which are three orders of magnitude
+# smaller and are the ones a sentence actually runs into. The Fix? column's
+# dropdown carries an input message explaining every control word, so the text
+# grows by a clause every time a control word is added — and it crossed 255 the
+# moment `*OTHER VALUE` was documented there. Excel repairs a workbook whose
+# validation is over the limit by DROPPING it, which costs the operator the one
+# explanation of what to type in the column the worksheet exists for. Neither
+# openpyxl nor `_pn_xl_verify` says a word: the file is well-formed and reads
+# back perfectly, exactly like the three cell-content causes before it.
+_PN_XL_DV_TEXT_MAX = 255        # the input message and the error message
+_PN_XL_DV_TITLE_MAX = 32        # their titles
+_PN_XL_DV_LIST_MAX = 255        # a literal comma-separated list source
+
 
 # Excel's own error text, which an unreadable formula leaves in a cell. An
 # alias typed in the OLD `=` spelling IS a formula to Excel (see
@@ -20644,6 +20657,12 @@ def _pn_xl_save(wb, path, what):
     perfectly and makes Excel repair the workbook by dropping it. That one is
     fixed rather than detected, on the way out, by `_pn_xl_plain_cells`.
 
+    A fourth is not a cell at all: a DATA VALIDATION whose text is over one of
+    Excel's own small limits, which it repairs by dropping the validation
+    (`_pn_xl_fit_validations`). Same shape of failure as the third and fixed the
+    same way — openpyxl writes whatever it is handed, and the read-back cannot
+    see it because the file is perfectly valid XML.
+
     Raises `OSError` on either failure, so the callers' existing handling
     applies unchanged: for the key that is the loud "nothing can restore the real
     names" warning, which is the right voice for it."""
@@ -20656,6 +20675,7 @@ def _pn_xl_save(wb, path, what):
     try:
         for ws in wb.worksheets:
             _pn_xl_plain_cells(ws)
+            _pn_xl_fit_validations(ws)
         wb.save(tmp)
         _pn_xl_verify(tmp)
         for problem in _pn_xl_audit(tmp):
@@ -20712,6 +20732,41 @@ def _pn_xl_plain_cells(ws):
                 cell.data_type = "s"
 
 
+def _pn_xl_fit_validations(ws):
+    """Cut every data validation on `ws` to the lengths Excel will accept.
+
+    A validation is not a cell, so none of the guards above looks at one — and
+    Excel's limits on it are tiny beside a cell's 32,767: **255** characters for
+    the input message and the error message, **32** for either title. Over the
+    limit Excel repairs the workbook by DROPPING the validation, with the same
+    "we found a problem with some content" prompt the three cell-content causes
+    produce, and `_pn_xl_verify` is blind to it for the same reason it is blind
+    to a formula cell: the file is well-formed and openpyxl reads it back
+    happily. This is the one shape where what gets dropped is not a value.
+
+    It bit `LEAKS.xlsx`, whose Fix? column offers a dropdown and hangs the
+    explanation of every control word off it as the input message. That text
+    grows by a clause each time a control word is added, and adding
+    `*OTHER VALUE` took it from 181 characters to 291 — so the operator's only
+    in-sheet statement of what may be typed into the column was dropped by the
+    repair, on the worksheet whose entire job is collecting what they type.
+
+    Cut rather than refused: the sentence is a prompt, and losing its tail costs
+    the reader the last clause where dropping the whole validation costs them
+    all of it. The authored text is kept comfortably under the limit anyway
+    (`test_leaks_excel_repair.py` holds it there), so this is the belt — what
+    stops the NEXT control word breaking the worksheet silently."""
+    holder = getattr(ws, "data_validations", None)
+    for dv in getattr(holder, "dataValidation", ()) or ():
+        for attr, cap in (("prompt", _PN_XL_DV_TEXT_MAX),
+                          ("error", _PN_XL_DV_TEXT_MAX),
+                          ("promptTitle", _PN_XL_DV_TITLE_MAX),
+                          ("errorTitle", _PN_XL_DV_TITLE_MAX)):
+            text = getattr(dv, attr, None)
+            if isinstance(text, str) and len(text) > cap:
+                setattr(dv, attr, text[:cap])
+
+
 def _pn_xl_verify(path):
     """Open `path` and walk every cell of every sheet, so a workbook that cannot
     be read raises HERE rather than in front of the operator.
@@ -20738,10 +20793,10 @@ _PN_XL_SPACE_ATTR = "{http://www.w3.org/XML/1998/namespace}space"
 
 
 def _pn_xl_audit(path):
-    """`["Pseudonym Key!D42: …", …]` — every cell of the written workbook that
+    """`["Pseudonym Key!D42: …", …]` — everything in the written workbook that
     Excel would object to, or `[]`.
 
-    "Excel found a problem with some content" has now been diagnosed four times
+    "Excel found a problem with some content" has now been diagnosed five times
     from nothing but the operator's recovery log, which names a PART and never a
     cell:
 
@@ -20756,11 +20811,19 @@ def _pn_xl_audit(path):
     `pdf_linker.log`, so the next one is a line to read rather than a round of
     inference.
 
-    Checks the string content only, because that is what the message is about:
-    the total text of a cell against `_PN_XL_CELL_MAX` (a rich cell's runs
-    summed, which is the count Excel applies and the one openpyxl never makes),
-    the control characters neither filter removes, and a run that would lose its
-    text to the missing `xml:space` (see `_pn_rich_context`).
+    Checks the string content of every cell: its total text against
+    `_PN_XL_CELL_MAX` (a rich cell's runs summed, which is the count Excel
+    applies and the one openpyxl never makes), the control characters neither
+    filter removes, and a run that would lose its text to the missing
+    `xml:space` (see `_pn_rich_context`).
+
+    ...and every DATA VALIDATION, which is the fifth cause and the first that
+    is not a cell — the sheet's own furniture rather than its content, held to
+    limits three orders of magnitude smaller (`_pn_xl_fit_validations`). The
+    audit was written to be the witness for exactly this: a shape nobody had
+    thought to guard, arriving as the same unattributed line in the recovery
+    log. Being blind to the part of the sheet the next cause came from is how
+    the fifth diagnosis cost another round of inference, so it looks there now.
 
     Reports; never raises and never repairs. A cell Excel would quietly fix is
     not worth discarding a key over — the key already on disk may be older, and
@@ -20779,7 +20842,26 @@ def _pn_xl_audit(path):
             for part, title in names.items():
                 if part not in zf.namelist():
                     continue
-                for c in ET.fromstring(zf.read(part)).iter(_PN_XL_NS + "c"):
+                sheet = ET.fromstring(zf.read(part))
+                for dv in sheet.iter(_PN_XL_NS + "dataValidation"):
+                    where = f"{title} validation {dv.get('sqref') or ''}".strip()
+                    for attr, cap in (("prompt", _PN_XL_DV_TEXT_MAX),
+                                      ("error", _PN_XL_DV_TEXT_MAX),
+                                      ("promptTitle", _PN_XL_DV_TITLE_MAX),
+                                      ("errorTitle", _PN_XL_DV_TITLE_MAX)):
+                        text = dv.get(attr) or ""
+                        if len(text) > cap:
+                            out.append(f"{where}: {attr} is {len(text)} "
+                                       f"characters, over Excel's limit of "
+                                       f"{cap}")
+                    if dv.get("type") == "list":
+                        f1 = dv.find(_PN_XL_NS + "formula1")
+                        src = (f1 is not None and f1.text or "")
+                        if src.startswith('"') and len(src) > _PN_XL_DV_LIST_MAX:
+                            out.append(f"{where}: the list source is "
+                                       f"{len(src)} characters, over Excel's "
+                                       f"limit of {_PN_XL_DV_LIST_MAX}")
+                for c in sheet.iter(_PN_XL_NS + "c"):
                     ist = c.find(_PN_XL_NS + "is")
                     if ist is None:
                         continue
@@ -21386,12 +21468,16 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
         dv.showErrorMessage = False   # offer the dropdown but ALSO allow a typed
         dv.showInputMessage = True    # replacement in the cell, not just yes/no
         dv.promptTitle = "Fix?"
+        # Excel drops a validation whose input message runs past
+        # `_PN_XL_DV_TEXT_MAX`, so this sentence has a hard ceiling — one
+        # clause per control word and no room for prose. `_pn_xl_fit_validations`
+        # is the belt; keeping the authored text under the limit is what stops
+        # the next control word costing the operator the whole explanation.
         dv.prompt = ("yes = auto fake · no = leave it here · never = never fake "
-                     "this value, in this or any folder · *OTHER VALUE = this "
-                     "is a misspelling of that value, so fake it as the same "
-                     "misspelling of that value's fake · type the exact "
-                     "replacement to use · or [bracket] the part to KEEP and "
-                     "the rest is faked")
+                     "it, in any folder · *OTHER VALUE = this is a misspelling "
+                     "of that value, so fake it the same way · or type the "
+                     "exact replacement · or [bracket] the part to KEEP and the "
+                     "rest is faked")
         ws.add_data_validation(dv)
         dv.add(f"{fix_col}2:{fix_col}{len(rows) + 1}")
     except Exception:
