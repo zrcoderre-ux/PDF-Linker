@@ -768,7 +768,30 @@ the party), so its row stays reversible.
   under the citation mask for a cite the PARSER was blinded on, where the
   year-in-parens or WL/LEXIS pin behind the docket is the only evidence left.
   Deliberately narrow, because a real case number is followed by a date on
-  every proof of service ever filed. **And its internal spacing carries no
+  every proof of service ever filed. **And a FALLBACK that needs no label at
+  all, because the number has a SHAPE**: `YY` (the filing year) + a two-letter
+  COURTHOUSE code + a two-letter DIVISION code + the zero-padded sequence —
+  "24STCV24253" is 2024, Stanley Mosk, Civil, #24253. That is what a caption
+  box prints with its label two inches away in another column, what a proof of
+  service prints bare, and what a scan drops the label off entirely; the label
+  anchor sees none of those. Measured over 2.5 MB of this repository's own
+  prose and code — the corpus most likely to throw up a coincidence, being
+  full of identifiers — the shape matched 132 times and every one was a case
+  or docket number, or this tool's own stand-in for one: four letters wedged
+  between a two-digit and a five-digit run are unmistakable, and no ordinary
+  word or figure lands there. Deliberately
+  NOT restricted to this court's own "STCV", though every number this court
+  issues carries it: a folder routinely holds another courthouse's numbers (a
+  related action, a prior case, an exhibit from another matter), and those are
+  exactly the ones no template will ever name. A shape read across a seam
+  ("24 STCV 24253") is CANONICALIZED to the unspaced form before it becomes a
+  value — the registry memoizes on the string it is handed, so leaving the
+  spaces in draws a second stand-in and one filing goes out under two. And
+  because a minted case-number fake has that same shape by construction, the
+  unlabelled anchor is the one reader that could meet a stand-in and mint a
+  second generation over it, so it refuses `registry.minted_fakes()` outright
+  — the `_pn_build_terms` rule, enforced at the one place that could now break
+  it. **Its internal spacing carries no
   meaning** (`_PN_SPACEABLE_CATS`, `_pn_build_pattern(spaceable=True)`): the
   number is one token to everyone who writes it and not to the extraction, so
   a field typed with spaces, a scan that spaced it out, and a narrow caption

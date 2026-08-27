@@ -95,6 +95,89 @@ def test_a_form_id_behind_the_label_never_becomes_a_term():
     assert [t for t in pz.terms if t.category == "case_number"] == []
 
 
+# ── the fallback: the shape, with no label anywhere ────────────────────────
+# YY + a two-letter COURTHOUSE code + a two-letter DIVISION code + the
+# zero-padded sequence. A caption box prints its label two inches away in
+# another column, a proof of service prints the number bare, and a scan drops
+# the label entirely — the label anchor sees none of those.
+
+@pytest.mark.parametrize("text, want", [
+    ("24STCV24253", "24STCV24253"),                  # Stanley Mosk, Civil
+    ("Plaintiff, vs.        24STCV24253\nDEFENDANT.", "24STCV24253"),
+    ("22STCP01234", "22STCP01234"),                  # …Probate
+    ("24STLC12345", "24STLC12345"),                  # …Limited Civil
+    # NOT restricted to this court's own STCV: a folder routinely carries
+    # another courthouse's number (a related action, an exhibit from another
+    # matter), and those are exactly the ones no template will ever name.
+    ("23VECV01234", "23VECV01234"),                  # Van Nuys East
+    ("24SMCV00987", "24SMCV00987"),                  # Santa Monica
+])
+def test_the_shape_alone_is_enough(text, want):
+    assert _harvested(text) == [want]
+
+
+@pytest.mark.parametrize("text, why", [
+    ("RAM24STCV24253", "welded into a Bates stamp — no bare shape"),
+    ("24STCV24253A", "a longer token that merely opens with the shape"),
+    ("filed in 2024 by ACME Corp 12345", "the runs are not adjacent"),
+    ("Exhibit 12 ABCD 345", "the sequence is too short"),
+    # The one case that matters: an unreported decision cited by its
+    # trial-court docket. `register_identifiers` masks the citation spans the
+    # parser could read; this is the belt for one it was blinded on.
+    ("Smith v. Jones, No. 19STCV12345, 2021 WL 1234567", "a cited docket"),
+])
+def test_what_the_shape_must_not_read(text, why):
+    assert _harvested(text) == [], why
+
+
+def test_a_spaced_spelling_is_the_same_number():
+    """The registry memoizes on the string it is handed, so leaving the spaces
+    in would draw a second stand-in and the filing would go out under two."""
+    assert _harvested("24 STCV 24253") == [CASENO]
+    pz = _pz()
+    src = ("CASE NUMBER: 24 STCV 24253\n"
+           "Proof of service in 24STCV24253 was filed.")
+    pz.register_identifiers(src)
+    numbers = [t for t in pz.terms if t.category == "case_number"]
+    assert [t.real for t in numbers] == [CASENO]     # one value, one binding
+    out = pz.apply(src)
+    assert CASENO not in out and "24 STCV 24253" not in out
+    assert out.count(numbers[0].fake) == 2           # both spellings scrubbed
+
+
+def test_our_own_stand_in_is_never_read_back_as_a_real_value():
+    """A minted case-number fake has the same shape as the real one by
+    construction, so the unlabelled anchor is the one reader that could meet a
+    stand-in and mint a second-generation fake over it — a chain
+    `DeAnonymize` can never walk back."""
+    pz = _pz(casenos=[CASENO])
+    fake = next(t.fake for t in pz.terms if t.category == "case_number")
+    before = len(pz.terms)
+    pz.register_identifiers(f"CASE NUMBER: {fake}")
+    assert len(pz.terms) == before
+
+
+def test_the_shape_costs_nothing_on_this_repository_s_own_prose():
+    """The project's own measurement convention: the shape most likely to
+    throw up a coincidence is a corpus full of identifiers, and this one is."""
+    import pathlib
+    root = pathlib.Path(P.__file__).resolve().parent
+    found, scanned = set(), 0
+    for f in list(root.rglob("*.py")) + list(root.rglob("*.md")):
+        text = f.read_text(errors="ignore")
+        scanned += len(text)
+        found.update(_harvested(text))
+    assert scanned > 1_000_000, "the corpus moved — re-measure before trusting"
+    # Every value is a case or docket number: YY+4 letters+sequence, an older
+    # LASC number, a federal docket, or another county's hyphenated form.
+    shapes = [r"(?i)\d{2}[a-z]{4}\d{4,6}", r"[A-Z]{2}\d{6}", r"\d{6}",
+              r"\d:\d{2}-cv-\d{5}", r"30-\d{4}-\d{8}-CU-BC-CJC"]
+    import re as _re
+    for v in sorted(found):
+        assert any(_re.fullmatch(sh, v) for sh in shapes), \
+            f"not a case number: {v!r}"
+
+
 # ── the fake, and the slot it is drawn from ─────────────────────────────────
 
 def test_a_harvested_number_takes_the_fake_the_template_would_have_given_it():
@@ -169,7 +252,7 @@ def test_every_spacing_of_one_number_is_one_number(printed):
 
 @pytest.mark.parametrize("text", [
     "RAM24STCV24253",          # a Bates stamp around it — a weld, not this
-    "24STCV242530",            # a longer number that merely opens with it
+    "24STCV24253A",            # a longer token that merely opens with it
     "in 2024 the plaintiff filed",
 ])
 def test_the_word_boundaries_still_hold(text):

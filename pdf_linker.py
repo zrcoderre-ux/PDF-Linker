@@ -10121,9 +10121,31 @@ _PN_ID_RES = {
     # newline, since a form's caption box prints the label above the field it
     # labels — and no more than one, or a BLANK field would reach across to
     # the page's first numbered item.
+    #
+    # …and a FALLBACK that needs no label at all, because the number has a
+    # shape: `YY` (the filing year) + a two-letter COURTHOUSE code + a
+    # two-letter DIVISION code + the zero-padded sequence — "24STCV24253" is
+    # 2024, Stanley Mosk, Civil, #24253. That is what a caption box prints
+    # with its label two inches away in another column, what a proof of
+    # service prints bare, and what a scan drops the label off entirely; the
+    # label anchor above sees none of those. Measured over 2.5 MB of this
+    # repository's own prose and code — the corpus most likely to throw up a
+    # coincidence, being full of identifiers — the shape matched 132 times
+    # and every one was a case number or this tool's own stand-in for one:
+    # four letters wedged between a two-digit and a five-digit run are
+    # unmistakable, and no ordinary word or figure lands there. Deliberately
+    # NOT restricted to this court's own "STCV", though every number it
+    # issues carries it: a folder routinely holds another courthouse's
+    # numbers (a related action, a prior case, an exhibit from another
+    # matter), and those are exactly the ones no template will ever name.
+    # At most one space at each seam a filer or a scan actually breaks
+    # ("24 STCV 24253") and never a newline, since with no label to anchor it
+    # a match that crossed a line would have nothing corroborating it.
     "case number": re.compile(
-        r"(?i)\bcase[ \t]*(?:no\.?|number|#)[ \t]*:?[ \t]*\n?[ \t]*"
-        r"([A-Za-z0-9]+(?:[-:][A-Za-z0-9]+)*)"),
+        r"(?i)(?:\bcase[ \t]*(?:no\.?|number|#)[ \t]*:?[ \t]*\n?[ \t]*"
+        r"([A-Za-z0-9]+(?:[-:][A-Za-z0-9]+)*)"
+        r"|(?<![A-Za-z0-9])(\d{2}[ \t]?[A-Za-z]{4}[ \t]?\d{4,6})"
+        r"(?![A-Za-z0-9]))"),
     "license number": re.compile(
         r"(?i)\blicen[cs]e\s*(?:no\.?|number|#)?\s*:?\s*(\d{6,})"),
     # State Bar number, in every printed form seen in the corpus — "SBN 175977",
@@ -10382,7 +10404,15 @@ def _pn_identifier_values(text):
     out, seen = [], set()
     for cls, rx in _PN_ID_RES.items():
         for m in rx.finditer(text):
-            val = m.group(1).strip()
+            # The first group that fired. Every class but the case number has
+            # exactly one, so this is `m.group(1)` for all of them; the case
+            # number carries a labelled branch and a shape-anchored one, and
+            # both must reach the same screens below — a value one path reports
+            # and another cannot touch is the mirroring failure `_weld_core`
+            # exists to prevent.
+            val = next((g for g in m.groups() if g), "").strip()
+            if not val:
+                continue
             if not re.search(r"\d", val):
                 continue
             # A bare 1-3 digit "account number" carries no distinguishing
@@ -10409,6 +10439,17 @@ def _pn_identifier_values(text):
                     and len(re.sub(r"\D", "", val)) < 4):
                 val = re.sub(r"\s+", " ", m.group(0)).strip()
             if cls == "case number":
+                # A number the shape branch read across a seam ("24 STCV
+                # 24253") is the SAME number, and it has to key as one: the
+                # registry memoizes on the string it is handed, so leaving the
+                # spaces in would draw a second stand-in for one case and the
+                # filing would go out under two — the many-fakes-one-value
+                # collapse the registry exists to prevent. Canonicalized here
+                # rather than at the faker, so the term, the key row and the
+                # REID scan all name the number the way a docket does; the
+                # term's own pattern is `spaceable`, so it still matches the
+                # spelling the page actually printed.
+                val = re.sub(r"[ \t]+", "", val)
                 # A case number carries a real number. California writes them
                 # with 4+ digits ("24STCV24253", "BC543295", a bare "123456"),
                 # while the shapes a case-number label collides with never do —
@@ -14223,14 +14264,24 @@ class Pseudonymizer:
             cat = cls.replace(" ", "_")
             if (cat, val.lower()) in self.records:
                 continue
-            # A form NUMBER is not a case number, and on a Judicial Council
-            # caption the two stand an inch apart — so the one gate that
-            # answers "is this court-form boilerplate?" is asked here as well
-            # as of the template's own case-number column (`_pn_build_terms`).
-            # Faked, a form id is a nonsense stamp that destroys the form's
-            # identity.
-            if cls == "case number" and _pn_is_never_fake(val):
-                continue
+            if cls == "case number":
+                # A form NUMBER is not a case number, and on a Judicial
+                # Council caption the two stand an inch apart — so the one
+                # gate that answers "is this court-form boilerplate?" is asked
+                # here as well as of the template's own case-number column
+                # (`_pn_build_terms`). Faked, a form id is a nonsense stamp
+                # that destroys the form's identity.
+                if _pn_is_never_fake(val):
+                    continue
+                # …and this tool never takes its OWN output as a real value.
+                # A minted case-number fake has the same shape as the real one
+                # by construction, so the unlabelled anchor is the one reader
+                # that could meet a stand-in and mint a second-generation fake
+                # over it — a chain `DeAnonymize` can never walk back. Both
+                # call sites read source text today; this is what keeps that
+                # true of a call site added later.
+                if val.lower() in self.registry.minted_fakes():
+                    continue
             # SSN shares the detector's faker (valid shape, digit-seeded) so a
             # labelled run-together SSN and a dashed one elsewhere map to the
             # same fake; an alphanumeric id (confirmation code) is faked char-wise
