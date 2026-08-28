@@ -10426,24 +10426,32 @@ def _pn_fake_production(val, registry):
                    for i, p in enumerate(parts))
 
 
-# ── Trial-court DOCKET numbers, harvested by SHAPE ──────────────────────────
-# A trial court number identifies a matter, so every one of them is faked —
-# including inside a citation span, which is the deliberate part. A published
-# authority is cited by volume, reporter and page and carries no docket number
-# at all, so a docket standing in a brief is a matter's number, not a
-# citation's.
+# ── DOCKET numbers, harvested by SHAPE ──────────────────────────────────────
+# A docket number identifies a MATTER, so every one of them is faked, including
+# inside a citation span. The rule that makes this coherent rather than a trade
+# is a fact about how authority is cited: a PUBLISHED opinion is cited by
+# volume, reporter and page — "Kremerman v. White (2021) 71 Cal.App.5th 358" —
+# and carries no docket number anywhere in the citation. So faking
+# docket-shaped values cannot touch a published cite, which is the only thing
+# that must be protected byte-for-byte.
 #
-# STATED, because it is the cost of that rule and it was chosen with the cost
-# in view: an UNREPORTED decision IS cited by its docket
-# ("Krikorian Inv. Servs., Inc. v. Radmanesh, No. BC543295, 2015 WL 12751760"),
-# and this renames it — the export then carries a cite whose decision cannot be
-# looked up. That is the trade the owner directed, against the older rule which
-# left a real docket standing wherever a citation could be read around it. The
-# reversal key still carries the binding, so the original is recoverable; what
-# is lost is the cite reading correctly in the deliverable.
+# What a docket in a brief IS, then, is one of two things, and both must go.
+# A TRIAL-COURT number is this matter's or another matter's. An APPELLATE
+# docket belongs to an UNPUBLISHED opinion (a published one would be cited by
+# reporter), and in a trial court filing that is overwhelmingly this case's own
+# prior appeal — which is precisely a re-identification key: the appellate
+# record is public, so anyone holding "No. B258976" can look up the real
+# parties, and a remand posture is exactly where such a cite appears.
+#
+# Residual, and stated: an unpublished opinion cited as persuasive authority
+# has its docket renamed like any other, so that cite cannot be looked up from
+# the export. The reversal key still carries the binding, so the original is
+# recoverable.
 #
 # Shapes, and only these. A list of formats is as wide as the filings it was
-# built from — an Orange County number ("30-2015-00812345") and most
+# built from — an Orange County number ("30-2015-00812345"), a federal
+# APPELLATE docket ("No. 22-55555", whose two-digit-dash-five-digit shape is
+# far too generic to harvest without rewriting ordinary numbers) and most
 # out-of-state formats are NOT here and are not faked by this pass.
 _PN_LASC_PREFIXES = (
     # Los Angeles civil, by courthouse: Central, Santa Monica, Glendale,
@@ -10452,7 +10460,7 @@ _PN_LASC_PREFIXES = (
     "BC", "SC", "EC", "KC", "LC", "NC", "PC", "TC", "VC", "YC", "GC", "MC",
     "BS", "BQ", "BP", "ZM", "SS", "ES", "KS", "LS", "NS", "PS", "TS", "VS",
 )
-_PN_TRIAL_DOCKET_RES = (
+_PN_DOCKET_RES = (
     # Statewide modern format: two-digit filing year, courthouse + case-type
     # letters, sequence. "25STCV37838", "23STLC00412", "24SMCV00456". Nothing
     # else in a filing has this shape — it is never an appellate docket (those
@@ -10468,18 +10476,26 @@ _PN_TRIAL_DOCKET_RES = (
     # magistrate initials a full caption appends.
     re.compile(r"(?<![A-Za-z0-9])(\d:\d{2}-[a-z]{2}-\d{4,6})(?![A-Za-z0-9])",
                re.IGNORECASE),
+    # California appellate: ONE district letter and six digits. A-H are the six
+    # Courts of Appeal (the Fourth sits in three divisions, D/E/G) and S is the
+    # Supreme Court; no other letter is a district, which is what keeps this
+    # from matching an arbitrary "X123456" identifier. Runs LAST so the
+    # two-letter Los Angeles shape claims "BC543295" first — that value is a
+    # trial-court number, and "B" followed by six digits is not what it is.
+    re.compile(r"(?<![A-Za-z0-9])([A-HS]\d{6})(?![A-Za-z0-9])"),
 )
 
 
-def _pn_trial_dockets(text):
-    """Every trial-court docket number in `text`, by shape, in order.
+def _pn_docket_numbers(text):
+    """Every docket number in `text`, by shape, in order — trial court and
+    unpublished appellate alike.
 
     Read from the UNMASKED body on purpose — masking the citations is exactly
     what used to leave a docket inside one untracked, and tracking it is the
     point. `_pn_is_never_fake` still applies, so a Judicial Council form id can
     never be taken for a docket."""
     out, seen = [], set()
-    for rx in _PN_TRIAL_DOCKET_RES:
+    for rx in _PN_DOCKET_RES:
         for m in rx.finditer(_NFKC(text)):
             val = m.group(1).strip()
             if val.lower() in seen or _pn_is_never_fake(val):
@@ -14331,12 +14347,12 @@ class Pseudonymizer:
         masked out of the harvest (`_pn_mask_toa_entries`)."""
         raw = _NFKC(text)
         text = self._mask_protected_citations(raw)
-        # A trial-court DOCKET is read from the UNMASKED body and registered as
+        # A DOCKET number is read from the UNMASKED body and registered as
         # a `case_number`, which is what carries it through the citation span
         # (`_punch_own_casenos`) so it is faked there too. Harvested FIRST, so a
         # value that is a docket is never also claimed by the label-anchored
         # pass below — one value, one category, one fake.
-        found = [("case number", v) for v in _pn_trial_dockets(raw)]
+        found = [("case number", v) for v in _pn_docket_numbers(raw)]
         claimed = {v.lower() for _, v in found}
         found += [(c, v) for c, v in _pn_identifier_values(text)
                   if v.lower() not in claimed]
