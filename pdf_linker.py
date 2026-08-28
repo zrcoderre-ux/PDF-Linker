@@ -10426,6 +10426,69 @@ def _pn_fake_production(val, registry):
                    for i, p in enumerate(parts))
 
 
+# ── Trial-court DOCKET numbers, harvested by SHAPE ──────────────────────────
+# A trial court number identifies a matter, so every one of them is faked —
+# including inside a citation span, which is the deliberate part. A published
+# authority is cited by volume, reporter and page and carries no docket number
+# at all, so a docket standing in a brief is a matter's number, not a
+# citation's.
+#
+# STATED, because it is the cost of that rule and it was chosen with the cost
+# in view: an UNREPORTED decision IS cited by its docket
+# ("Krikorian Inv. Servs., Inc. v. Radmanesh, No. BC543295, 2015 WL 12751760"),
+# and this renames it — the export then carries a cite whose decision cannot be
+# looked up. That is the trade the owner directed, against the older rule which
+# left a real docket standing wherever a citation could be read around it. The
+# reversal key still carries the binding, so the original is recoverable; what
+# is lost is the cite reading correctly in the deliverable.
+#
+# Shapes, and only these. A list of formats is as wide as the filings it was
+# built from — an Orange County number ("30-2015-00812345") and most
+# out-of-state formats are NOT here and are not faked by this pass.
+_PN_LASC_PREFIXES = (
+    # Los Angeles civil, by courthouse: Central, Santa Monica, Glendale,
+    # Pomona, Van Nuys, Norwalk, Chatsworth, Compton, Torrance, Lancaster,
+    # Central petitions/writs, restraining orders, small claims and probate.
+    "BC", "SC", "EC", "KC", "LC", "NC", "PC", "TC", "VC", "YC", "GC", "MC",
+    "BS", "BQ", "BP", "ZM", "SS", "ES", "KS", "LS", "NS", "PS", "TS", "VS",
+)
+_PN_TRIAL_DOCKET_RES = (
+    # Statewide modern format: two-digit filing year, courthouse + case-type
+    # letters, sequence. "25STCV37838", "23STLC00412", "24SMCV00456". Nothing
+    # else in a filing has this shape — it is never an appellate docket (those
+    # are one letter and six digits) and never appears in a published cite.
+    re.compile(r"(?<![A-Za-z0-9])(\d{2}[A-Z]{2,4}\d{5,6})(?![A-Za-z0-9])"),
+    # Older Los Angeles format: courthouse letters + six digits. Held to the
+    # KNOWN prefixes above rather than any two letters, because a bare
+    # "AB000123" is a Bates stamp far more often than a docket, and the
+    # production-number path already fakes those in their own shape.
+    re.compile(r"(?<![A-Za-z0-9])((?:" + "|".join(_PN_LASC_PREFIXES)
+               + r")\d{6})(?![A-Za-z0-9])"),
+    # Federal district court: "2:23-cv-01234", with or without the judge and
+    # magistrate initials a full caption appends.
+    re.compile(r"(?<![A-Za-z0-9])(\d:\d{2}-[a-z]{2}-\d{4,6})(?![A-Za-z0-9])",
+               re.IGNORECASE),
+)
+
+
+def _pn_trial_dockets(text):
+    """Every trial-court docket number in `text`, by shape, in order.
+
+    Read from the UNMASKED body on purpose — masking the citations is exactly
+    what used to leave a docket inside one untracked, and tracking it is the
+    point. `_pn_is_never_fake` still applies, so a Judicial Council form id can
+    never be taken for a docket."""
+    out, seen = [], set()
+    for rx in _PN_TRIAL_DOCKET_RES:
+        for m in rx.finditer(_NFKC(text)):
+            val = m.group(1).strip()
+            if val.lower() in seen or _pn_is_never_fake(val):
+                continue
+            seen.add(val.lower())
+            out.append(val)
+    return out
+
+
 def _pn_identifier_values(text):
     """[(class, value), ...] — label-anchored identifiers found in `text`.
     A "file no." value must contain a digit, so a stray word cannot qualify."""
@@ -11808,6 +11871,13 @@ def _pn_span_has_hard_seam(src, start, end):
 # NOT the bare *-token / short-name / display-name categories — those are how a
 # standalone kept word would get faked, and the keep must win over them.
 _PN_PARTY_OVERRIDE_CATS = frozenset({"person", "entity", "case_number"})
+
+# Categories cut out of a protected citation span (`_punch_own_casenos`). A
+# published authority carries no docket number, so a protected span holding
+# THIS case's own number is an over-reaching parse, and the number must still
+# be faked. Tracked case numbers only — a harvested docket inside a citation
+# belongs to the decision being cited.
+_PN_CITE_EXEMPT_CATS = frozenset({"case_number"})
 
 # The word units a REVERSAL is expressed in. A composed fake ("Ainsworth
 # Sackett", "tolliver@postbox4.org") is reversed word by word by the macro, so
@@ -14259,9 +14329,19 @@ class Pseudonymizer:
         applied anywhere, which is the only version of this that holds
         wherever the parser fails — the same reason the table of authorities is
         masked out of the harvest (`_pn_mask_toa_entries`)."""
-        text = self._mask_protected_citations(_NFKC(text))
+        raw = _NFKC(text)
+        text = self._mask_protected_citations(raw)
+        # A trial-court DOCKET is read from the UNMASKED body and registered as
+        # a `case_number`, which is what carries it through the citation span
+        # (`_punch_own_casenos`) so it is faked there too. Harvested FIRST, so a
+        # value that is a docket is never also claimed by the label-anchored
+        # pass below — one value, one category, one fake.
+        found = [("case number", v) for v in _pn_trial_dockets(raw)]
+        claimed = {v.lower() for _, v in found}
+        found += [(c, v) for c, v in _pn_identifier_values(text)
+                  if v.lower() not in claimed]
         new = []
-        for cls, val in _pn_identifier_values(text):
+        for cls, val in found:
             cat = cls.replace(" ", "_")
             if (cat, val.lower()) in self.records:
                 continue
@@ -14271,6 +14351,11 @@ class Pseudonymizer:
             # so its distinctive letters change too; the rest keep the digit faker.
             if cls == "ssn":
                 fake = self._fake_ssn(val)
+            elif cls == "case number":
+                # Through the case-number faker, so a harvested docket carries
+                # the same STZV marker a keyed one does and is recognisable as
+                # a fake on sight.
+                fake = _pn_fake_caseno(val, self.registry)
             elif cls == "production number":
                 fake = _pn_fake_production(val, self.registry)
             elif cls in _PN_ALNUM_IDS:
@@ -14963,7 +15048,58 @@ class Pseudonymizer:
                 continue
             for m in rx.finditer(text):
                 spans.append(m.span())
-        return spans
+        return self._punch_own_casenos(text, spans)
+
+    def _punch_own_casenos(self, text, spans):
+        """`spans` with THIS CASE'S OWN case numbers cut out of them.
+
+        A published authority is cited by volume, reporter and page — a case
+        number is not part of that citation — so a protected span that contains
+        this matter's own docket number is a span the parser OVER-REACHED on.
+        It happens routinely: "Case No. 25STCV37838." on the line above a cite
+        is swallowed into the case span, and the number was then neither faked
+        (`_substitute` refuses a protected span) nor reported (`surviving_reals`
+        masks the same spans) — the real docket shipped, silently, which is the
+        worst of the two failure modes this protection trades between.
+
+        Cut at the SOURCE rather than by exempting the category in
+        `_substitute`, so there is one answer to "what is protected here" and
+        the write side and the leak scans cannot drift: every consumer reads
+        this method, so the number is faked AND, if anything still leaves it
+        standing, reported.
+
+        The cut is the number and nothing else — the span either side of it
+        stays protected, so an authority's party names are as safe as they
+        were. Scoped to `_PN_CITE_EXEMPT_CATS`: a TRACKED case number is this
+        matter's own, authoritative and unambiguous. A docket the tool merely
+        HARVESTED is a different question and is deliberately not here — inside
+        a citation it belongs to the decision being cited, which is why
+        `register_identifiers` never builds a term for one."""
+        holes = []
+        for rec in self.records.values():
+            if rec["category"] not in _PN_CITE_EXEMPT_CATS:
+                continue
+            try:
+                rx = self._compiled(rec["pattern"], rec["flags"])
+            except re.error:
+                continue
+            holes.extend(m.span() for m in rx.finditer(text)
+                         if m.start() != m.end())
+        if not holes:
+            return spans
+        holes.sort()
+        out = []
+        for s, e in spans:
+            pos = s
+            for hs, he in holes:
+                if he <= pos or hs >= e:
+                    continue
+                if hs > pos:
+                    out.append((pos, hs))
+                pos = max(pos, he)
+            if pos < e:
+                out.append((pos, e))
+        return out
 
     def _whitelisted_url_spans(self, text):
         """Spans of WHITELISTED URLs — the citation hosts the authorities

@@ -837,16 +837,51 @@ the party), so its row stays reversible.
   makes "a table of authorities is never a source" true BY CONSTRUCTION rather
   than as the emergent result of four corpus-dependent pruning heuristics, each
   with its own precondition — and because prevention costs no pool word and
-  leaves no bare token behind. The same reasoning covers the inside of a
-  citation, where it is NOT merely belt-and-braces: `register_identifiers`
-  masks protected citation spans, because a brief citing an unreported case
-  gives its trial-court docket ("No. BC543295, 2015 WL 12751760") in a shape
-  indistinguishable from a production stamp. That WAS registered and faked;
-  span protection saved it in body text and not in the appendix's
-  percent-encoded query, where no citation parses, so the published docket
-  shipped as "No. GEARHART543295". A term never built cannot be applied
-  anywhere, which is the only version of this that holds wherever the parser
-  fails.
+  leaves no bare token behind. `register_identifiers` still masks protected
+  citation spans for every LABEL-ANCHORED class, so a bar number or a
+  production stamp inside a cite is not read as this case's. The DOCKET is the
+  one exception, and it now runs the other way — see the next bullet.
+- **A TRIAL-COURT DOCKET is faked, citation or not** (`_pn_trial_dockets`,
+  `_PN_CITE_EXEMPT_CATS`, `_punch_own_casenos`). A trial court number
+  identifies a MATTER, so every one of them is faked, including inside a
+  protected citation span. A published authority is cited by volume, reporter
+  and page and carries no docket number at all, so a docket standing in a brief
+  is a matter's number rather than a citation's. Two halves. This case's OWN
+  number was being swallowed by an over-reaching parse — the citation parser
+  walks backwards over a case name, so "Case No. 25STCV37838." on the line
+  above a cite lands inside the span, and the number was then neither faked
+  (`_substitute` refuses a protected span) nor reported (`surviving_reals`
+  masks the same spans): the real docket shipped, silently, which is the worse
+  of the two failures the protection trades between. `_punch_own_casenos` cuts
+  every tracked `case_number` occurrence OUT of the spans, at the single choke
+  point every consumer reads, so replacement and detection cannot answer
+  differently — the discipline `_weld_core` exists for. The cut is the number
+  and nothing else, so the authority's party names in the same span are as safe
+  as they were. And a docket no template names is now HARVESTED by shape from
+  the UNMASKED body, registered as a `case_number` (so it rides the same punch)
+  and faked through `_pn_fake_caseno`, so it carries the STZV marker a keyed
+  one does.
+  **The cost is real and was accepted with it in view.** An UNREPORTED decision
+  IS cited by its docket ("Krikorian Inv. Servs., Inc. v. Radmanesh, No.
+  BC543295, 2015 WL 12751760"), and this renames it: the export carries a cite
+  whose decision cannot be looked up. That reverses the older rule, which
+  refused to build a term for a docket inside a cite — a rule written after
+  exactly that renaming shipped as "No. GEARHART543295", and which in exchange
+  left a real docket standing wherever a citation could be read around it. The
+  reversal key still carries the binding, so the original is recoverable; what
+  is lost is the cite reading correctly in the deliverable. Changed at the
+  owner's direction.
+  **Shapes, and only these**, because a list of formats is only as wide as the
+  filings it was built from: the statewide modern format ("25STCV37838",
+  "23STLC00412"), the older Los Angeles courthouse format held to KNOWN
+  prefixes (`_PN_LASC_PREFIXES` — a bare "AB000123" is a Bates stamp far more
+  often than a docket, and the production-number path already fakes those in
+  their own shape), and the federal district format ("2:15-cv-01234"). An
+  Orange County number ("30-2015-00812345") and most out-of-state formats are
+  NOT covered. An APPELLATE docket is one letter and six digits, so it matches
+  no trial-court shape and a cite to an unpublished opinion keeps it — which is
+  the line the whole rule rests on. A value claimed by this pass is never also
+  claimed by the label-anchored one: one value, one category, one fake.
 - **A REGISTRATION number is only safe to track behind its LABEL.** "a
   registered California process server, Registration No. 833, San Bernardino
   County" names one person in the county's public registry, and the pair
