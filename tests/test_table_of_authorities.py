@@ -246,13 +246,24 @@ def test_an_empty_page_is_not_vouched_for():
     assert P._page_text_layer_is_sound(pg) is False
 
 
-# ─────────────────── an identifier inside a citation is not ours ────────────
-# A brief citing an unreported case gives its trial-court docket — "Krikorian
-# Inv. Servs., Inc. v. Radmanesh, No. BC543295, 2015 WL 12751760" — and that
-# shape is indistinguishable from a production stamp, so it was registered as
-# a term and given a fake. Span protection then saved it in body text and NOT
-# in the appendix's percent-encoded query, where no citation parses: the
-# published docket shipped as "No. GEARHART543295".
+# ────────────── a trial-court docket is faked, citation or not ──────────────
+# A trial court number identifies a MATTER, so every one of them is faked now,
+# including inside a citation span. A published authority is cited by volume,
+# reporter and page and carries no docket number at all, so a docket standing
+# in a brief is a matter's number rather than a citation's.
+#
+# The cost is real and was accepted with it in view: an UNREPORTED decision IS
+# cited by its docket — "Krikorian Inv. Servs., Inc. v. Radmanesh, No.
+# BC543295, 2015 WL 12751760" — and this renames it, so the export carries a
+# cite whose decision cannot be looked up. The reversal key still holds the
+# binding, so the original is recoverable; what is lost is the cite reading
+# correctly in the deliverable. These tests pin that trade rather than the
+# older rule (never build a term for a docket in a cite), which left a real
+# docket standing wherever a citation could be read around it.
+#
+# What is NOT faked stays pinned below: an APPELLATE docket is one letter and
+# six digits, so it matches no trial-court shape, and the cited decision's
+# PARTY NAMES are as protected as they ever were.
 
 CITE = ("Krikorian Inv. Servs., Inc. v. Radmanesh, No. BC543295, "
         "2015 WL 12751760 (Cal. Super. Ct. 2015)")
@@ -266,13 +277,50 @@ def _ids(text):
     return {(t.category, t.real) for t in z.terms}
 
 
-def test_a_published_docket_number_is_never_a_term():
-    assert not [x for x in _ids(CITE) if "543295" in str(x[1])]
+def test_a_docket_inside_a_citation_is_faked():
+    """The trade, stated: this renames the cited decision's docket."""
+    assert ("case_number", "BC543295") in _ids(CITE)
 
 
-def test_a_docket_in_a_table_entry_is_not_a_term_either():
-    assert not [x for x in _ids(TOA + f"{CITE} ............ 9\n")
-                if "543295" in str(x[1])]
+def test_a_docket_in_a_table_entry_is_faked_too():
+    assert ("case_number", "BC543295") in _ids(TOA + f"{CITE} ............ 9\n")
+
+
+def test_the_cited_decision_keeps_its_PARTY_names():
+    """Only the docket moves. Renaming an authority is still the cardinal
+    failure, so the span around the number protects everything else."""
+    reg = P._PnFakeRegistry()
+    z = P.Pseudonymizer(P._pn_build_terms([("Radmanesh", False)], [], [],
+                                          registry=reg), DET, registry=reg)
+    z.register_identifiers(CITE)
+    out = z.apply(CITE)
+    assert "Krikorian Inv. Servs., Inc. v. Radmanesh" in out
+    assert "2015 WL 12751760" in out
+    assert "BC543295" not in out and P._PN_CASENO_MARK in out
+
+
+def test_an_appellate_docket_is_not_a_trial_court_number():
+    """One letter and six digits — it matches no trial-court shape, so a cite
+    to an unpublished appellate opinion keeps its docket."""
+    assert P._pn_trial_dockets("Kremerman v. White, No. B258976 (2021).") == []
+    assert P._pn_trial_dockets("review denied, No. S271234.") == []
+
+
+def test_a_bates_stamp_is_not_read_as_a_docket():
+    """The older Los Angeles shape is held to KNOWN courthouse prefixes, or a
+    production stamp would be faked in a docket's shape instead of its own."""
+    assert P._pn_trial_dockets("Bates AB000123 and XY654321.") == []
+    assert P._pn_trial_dockets("consolidated with BC543295.") == ["BC543295"]
+
+
+def test_a_form_id_is_never_taken_for_a_docket():
+    assert P._pn_trial_dockets("Form CIV-100; see PLD-PI-001(2).") == []
+
+
+def test_every_covered_shape_is_harvested():
+    assert P._pn_trial_dockets("24STCV00123") == ["24STCV00123"]
+    assert P._pn_trial_dockets("23STLC00412") == ["23STLC00412"]
+    assert P._pn_trial_dockets("No. 2:15-cv-01234,") == ["2:15-cv-01234"]
 
 
 @pytest.mark.parametrize("text,cat", [
@@ -287,9 +335,72 @@ def test_this_cases_own_identifiers_still_register(text, cat):
 
 
 def test_an_identifier_beside_a_citation_is_still_ours():
-    # Only what sits INSIDE the citation span is exempt; the sentence around
-    # it is ordinary document text.
+    # The sentence around a citation is ordinary document text, and the docket
+    # inside it is now ours as well.
     text = f"See {CITE}. Counsel's State Bar No. 230831 appears below."
     got = _ids(text)
     assert ("bar_number", "230831") in got
-    assert not [x for x in got if "543295" in str(x[1])]
+    assert ("case_number", "BC543295") in got
+
+
+def test_one_value_takes_one_category_and_one_fake():
+    """A docket is claimed by the docket pass, so the label-anchored pass can
+    never register the same value a second time as a production number."""
+    got = _ids("Case No. BC543295 was consolidated.")
+    assert ("case_number", "BC543295") in got
+    assert not [c for c, r in got if r == "BC543295" and c != "case_number"]
+
+
+# ────────── this case's own number, swallowed by an over-reaching span ──────
+# The citation parser walks backwards over a case name, so "Case No.
+# 25STCV37838." on the line above a cite lands INSIDE the protected span. The
+# number was then neither faked (`_substitute` refuses a protected span) nor
+# reported (`surviving_reals` masks the same spans) — the real docket shipped,
+# silently, which is the worse of the two failures the protection trades
+# between. `_punch_own_casenos` cuts the number out of the span at the single
+# choke point every consumer reads, so the write side and the leak scans
+# cannot answer differently.
+
+SWALLOWED = ("Case No. 25STCV37838.\n"
+             "Stockton Theatres, Inc. v. Palermo (1956) 47 Cal.2d 469.")
+
+
+def _pz_caseno():
+    reg = P._PnFakeRegistry()
+    return P.Pseudonymizer(
+        P._pn_build_terms([], ["25STCV37838"], [], registry=reg), {},
+        registry=reg)
+
+
+def test_the_parser_really_does_swallow_the_number():
+    """Guard for the test below: if the parse ever stops over-reaching, this
+    fails and the case it pins has to be rebuilt on a span that still does."""
+    reg = P._PnFakeRegistry()
+    bare = P.Pseudonymizer(P._pn_build_terms([], [], [], registry=reg), {},
+                           registry=reg)
+    i = SWALLOWED.index("25STCV37838")
+    assert any(s <= i and i < e for s, e in bare._protected_citation_spans(
+        SWALLOWED))
+
+
+def test_a_swallowed_case_number_is_faked():
+    out = _pz_caseno().apply(SWALLOWED)
+    assert "25STCV37838" not in out
+    assert P._PN_CASENO_MARK in out
+
+
+def test_the_authority_in_the_same_span_is_untouched():
+    """The cut is the number and nothing else."""
+    out = _pz_caseno().apply(SWALLOWED)
+    assert "Stockton Theatres, Inc. v. Palermo (1956) 47 Cal.2d 469" in out
+
+
+def test_detection_and_replacement_still_agree():
+    """The punch happens where every consumer reads it, so a number left
+    standing is visible to the leak scan instead of being masked away."""
+    pz = _pz_caseno()
+    i = SWALLOWED.index("25STCV37838")
+    assert not any(s <= i and i < e
+                   for s, e in pz._protected_citation_spans(SWALLOWED))
+    assert pz.surviving_reals(pz.apply(SWALLOWED)) == []
+    assert pz.surviving_reals(SWALLOWED) == ["25STCV37838"]
