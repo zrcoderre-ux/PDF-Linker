@@ -261,9 +261,16 @@ def test_an_empty_page_is_not_vouched_for():
 # older rule (never build a term for a docket in a cite), which left a real
 # docket standing wherever a citation could be read around it.
 #
-# What is NOT faked stays pinned below: an APPELLATE docket is one letter and
-# six digits, so it matches no trial-court shape, and the cited decision's
-# PARTY NAMES are as protected as they ever were.
+# An UNPUBLISHED appellate docket goes the same way, and for a sharper reason:
+# a published opinion is cited by volume, reporter and page and carries no
+# docket at all, so a docket in a brief is either a trial-court number or an
+# unpublished opinion's — and in a trial court filing that is overwhelmingly
+# this case's own prior appeal. The appellate record is public, so the number
+# gives up the real parties on remand.
+#
+# What is NOT faked stays pinned below: a PUBLISHED citation has no docket to
+# fake, and the cited decision's PARTY NAMES are as protected as they ever
+# were.
 
 CITE = ("Krikorian Inv. Servs., Inc. v. Radmanesh, No. BC543295, "
         "2015 WL 12751760 (Cal. Super. Ct. 2015)")
@@ -299,28 +306,57 @@ def test_the_cited_decision_keeps_its_PARTY_names():
     assert "BC543295" not in out and P._PN_CASENO_MARK in out
 
 
-def test_an_appellate_docket_is_not_a_trial_court_number():
-    """One letter and six digits — it matches no trial-court shape, so a cite
-    to an unpublished appellate opinion keeps its docket."""
-    assert P._pn_trial_dockets("Kremerman v. White, No. B258976 (2021).") == []
-    assert P._pn_trial_dockets("review denied, No. S271234.") == []
+def test_an_unpublished_appellate_docket_is_faked():
+    """A PUBLISHED opinion is cited by reporter and carries no docket at all,
+    so a docket standing in a brief is either a trial-court number or an
+    UNPUBLISHED opinion's — and in a trial court filing the latter is
+    overwhelmingly this case's own prior appeal, which is a re-identification
+    key: the appellate record is public, so the number gives up the parties."""
+    assert P._pn_docket_numbers("our prior opinion, No. B258976, reversed.") \
+        == ["B258976"]
+    assert P._pn_docket_numbers("review denied, No. S271234.") == ["S271234"]
+
+
+def test_a_published_citation_carries_no_docket_to_fake():
+    """The fact the whole rule rests on. Nothing in a published cite has the
+    shape, so strict protection of published authority costs nothing here."""
+    cite = "Kremerman v. White (2021) 71 Cal.App.5th 358."
+    assert P._pn_docket_numbers(cite) == []
+    reg = P._PnFakeRegistry()
+    z = P.Pseudonymizer(P._pn_build_terms([], [], [], registry=reg), DET,
+                        registry=reg)
+    z.register_identifiers(cite)
+    assert z.apply(cite) == cite
+
+
+def test_only_a_real_district_letter_counts():
+    """A-H are the six Courts of Appeal and S the Supreme Court; no other
+    letter is a district, which is what keeps this off an arbitrary
+    single-letter identifier."""
+    assert P._pn_docket_numbers("X123456, Z999999, J1234567") == []
 
 
 def test_a_bates_stamp_is_not_read_as_a_docket():
     """The older Los Angeles shape is held to KNOWN courthouse prefixes, or a
     production stamp would be faked in a docket's shape instead of its own."""
-    assert P._pn_trial_dockets("Bates AB000123 and XY654321.") == []
-    assert P._pn_trial_dockets("consolidated with BC543295.") == ["BC543295"]
+    assert P._pn_docket_numbers("Bates AB000123 and XY654321.") == []
+    assert P._pn_docket_numbers("consolidated with BC543295.") == ["BC543295"]
+
+
+def test_a_two_letter_docket_is_not_read_as_an_appellate_one():
+    """"BC543295" is a trial-court number, not "B" plus six digits — the
+    Los Angeles shape has to claim it first."""
+    assert P._pn_docket_numbers("BC543295") == ["BC543295"]
 
 
 def test_a_form_id_is_never_taken_for_a_docket():
-    assert P._pn_trial_dockets("Form CIV-100; see PLD-PI-001(2).") == []
+    assert P._pn_docket_numbers("Form CIV-100; see PLD-PI-001(2).") == []
 
 
 def test_every_covered_shape_is_harvested():
-    assert P._pn_trial_dockets("24STCV00123") == ["24STCV00123"]
-    assert P._pn_trial_dockets("23STLC00412") == ["23STLC00412"]
-    assert P._pn_trial_dockets("No. 2:15-cv-01234,") == ["2:15-cv-01234"]
+    assert P._pn_docket_numbers("24STCV00123") == ["24STCV00123"]
+    assert P._pn_docket_numbers("23STLC00412") == ["23STLC00412"]
+    assert P._pn_docket_numbers("No. 2:15-cv-01234,") == ["2:15-cv-01234"]
 
 
 @pytest.mark.parametrize("text,cat", [

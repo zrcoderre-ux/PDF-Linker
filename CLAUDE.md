@@ -841,12 +841,15 @@ the party), so its row stays reversible.
   citation spans for every LABEL-ANCHORED class, so a bar number or a
   production stamp inside a cite is not read as this case's. The DOCKET is the
   one exception, and it now runs the other way — see the next bullet.
-- **A TRIAL-COURT DOCKET is faked, citation or not** (`_pn_trial_dockets`,
-  `_PN_CITE_EXEMPT_CATS`, `_punch_own_casenos`). A trial court number
-  identifies a MATTER, so every one of them is faked, including inside a
-  protected citation span. A published authority is cited by volume, reporter
-  and page and carries no docket number at all, so a docket standing in a brief
-  is a matter's number rather than a citation's. Two halves. This case's OWN
+- **A DOCKET NUMBER is faked, citation or not** (`_pn_docket_numbers`,
+  `_PN_CITE_EXEMPT_CATS`, `_punch_own_casenos`). A docket identifies a MATTER,
+  so every one of them is faked, including inside a protected citation span.
+  What makes that coherent rather than a trade is a fact about how authority is
+  cited: a PUBLISHED opinion is cited by volume, reporter and page —
+  "Kremerman v. White (2021) 71 Cal.App.5th 358" — and carries no docket number
+  anywhere in the citation. So faking docket-shaped values cannot touch a
+  published cite, which is the only thing that must stay byte-for-byte. Two
+  halves. This case's OWN
   number was being swallowed by an over-reaching parse — the citation parser
   walks backwards over a case name, so "Case No. 25STCV37838." on the line
   above a cite lands inside the span, and the number was then neither faked
@@ -861,27 +864,43 @@ the party), so its row stays reversible.
   the UNMASKED body, registered as a `case_number` (so it rides the same punch)
   and faked through `_pn_fake_caseno`, so it carries the STZV marker a keyed
   one does.
-  **The cost is real and was accepted with it in view.** An UNREPORTED decision
-  IS cited by its docket ("Krikorian Inv. Servs., Inc. v. Radmanesh, No.
-  BC543295, 2015 WL 12751760"), and this renames it: the export carries a cite
-  whose decision cannot be looked up. That reverses the older rule, which
-  refused to build a term for a docket inside a cite — a rule written after
-  exactly that renaming shipped as "No. GEARHART543295", and which in exchange
-  left a real docket standing wherever a citation could be read around it. The
-  reversal key still carries the binding, so the original is recoverable; what
-  is lost is the cite reading correctly in the deliverable. Changed at the
-  owner's direction.
+  **An UNPUBLISHED APPELLATE docket goes the same way, and for a sharper
+  reason.** A published opinion would be cited by reporter, so an appellate
+  docket in a brief belongs to an unpublished one — and in a trial court filing
+  that is overwhelmingly THIS case's own prior appeal. That number is a
+  re-identification key: the appellate record is public, so anyone holding
+  "No. B258976" can look up the real parties, and a remand posture is exactly
+  where such a cite appears. Leaving it was the whole scrub undone by one line
+  of a procedural history.
+  **The cost is real and was accepted with it in view.** An unpublished
+  decision cited as persuasive authority has its docket renamed like any other
+  ("Krikorian Inv. Servs., Inc. v. Radmanesh, No. BC543295, 2015 WL 12751760"),
+  so that cite cannot be looked up from the export. That reverses the older
+  rule, which refused to build a term for a docket inside a cite — a rule
+  written after exactly that renaming shipped as "No. GEARHART543295", and
+  which in exchange left a real docket standing wherever a citation could be
+  read around it. The reversal key still carries the binding, so the original
+  is recoverable; what is lost is the cite reading correctly in the
+  deliverable. Changed at the owner's direction, whose rule is that only
+  PUBLISHED authority needs strict protection — and a published cite has no
+  docket to protect.
   **Shapes, and only these**, because a list of formats is only as wide as the
   filings it was built from: the statewide modern format ("25STCV37838",
   "23STLC00412"), the older Los Angeles courthouse format held to KNOWN
   prefixes (`_PN_LASC_PREFIXES` — a bare "AB000123" is a Bates stamp far more
   often than a docket, and the production-number path already fakes those in
-  their own shape), and the federal district format ("2:15-cv-01234"). An
-  Orange County number ("30-2015-00812345") and most out-of-state formats are
-  NOT covered. An APPELLATE docket is one letter and six digits, so it matches
-  no trial-court shape and a cite to an unpublished opinion keeps it — which is
-  the line the whole rule rests on. A value claimed by this pass is never also
-  claimed by the label-anchored one: one value, one category, one fake.
+  their own shape), the federal district format ("2:15-cv-01234"), and the
+  California appellate format — ONE district letter and six digits, A-H being
+  the six Courts of Appeal (the Fourth sits in three divisions, D/E/G) and S
+  the Supreme Court. No other letter is a district, which is what keeps that
+  last pattern off an arbitrary "X123456" identifier; it runs LAST so the
+  two-letter Los Angeles shape claims "BC543295" first, that value being a
+  trial-court number rather than "B" plus six digits. NOT covered: an Orange
+  County number ("30-2015-00812345"), a federal APPELLATE docket
+  ("No. 22-55555", whose two-digit-dash-five-digit shape is far too generic to
+  harvest without rewriting ordinary numbers), and most out-of-state formats.
+  A value claimed by this pass is never also claimed by the label-anchored
+  one: one value, one category, one fake.
 - **A REGISTRATION number is only safe to track behind its LABEL.** "a
   registered California process server, Registration No. 833, San Bernardino
   County" names one person in the county's public registry, and the pair
