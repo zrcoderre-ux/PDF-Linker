@@ -1060,6 +1060,34 @@ the party), so its row stays reversible.
   which a whitespace split reads as one token and whose period then dissolves
   into the name). `_pn_load_key` seeds the memo with the NAME alone, reducing a
   key written when the whole composed street was stored.
+- **A CASE NUMBER keeps its filing year, fakes its digits, and takes a court
+  code no court issues** (`_pn_fake_caseno`, `_pn_caseno_template`,
+  `_PN_CASENO_MARK` = "STZV"). The year is printed beside the number in every
+  caption ("Complaint Filed: Dec 29, 2025"), so randomising it hides nothing and
+  only makes the fake internally impossible. The LETTERS are the other half, and
+  faking the digits alone left a perfectly well-formed number: "25STCV37838"
+  came back "25STCV51378", a valid Stanley Mosk civil number that may belong to
+  somebody's real case — anyone who pastes it into the LASC portal gets a
+  record, and every reader has to take on trust that it is not the one in front
+  of them. "ZV" is not a case type any California court issues and "STZV" is not
+  a prefix any of them uses, so the search comes back empty BY CONSTRUCTION
+  rather than by luck, and a fake is recognisable on sight. The whole letter RUN
+  goes, not just the case-type half ("24SMCV00456" -> "24STZV70915", not
+  "24SMZV70915"): a courthouse code is itself identifying — it says which of
+  twelve buildings the matter sits in — and one uniform marker is easier to
+  recognise than a family of them. The FIRST run only, since that is where every
+  format carries its code ("BC543295" -> "STZV235607", "2:23-cv-01234" ->
+  "2:23-stzv-25103", the marker taking the run's own casing). Residual, and
+  stated: a number with no letters at all ("543295") has nowhere to carry the
+  marker and is faked digit-for-digit exactly as before, so that fake stays as
+  searchable as it ever was. The DIGITS are untouched by this — `digits()` takes
+  the marked shape as a `template` while the memo key and the seed stay on the
+  REAL value, and the template moves no digit position, so the draw order and
+  count are what they always were and the change is letters-only
+  (`test_the_marker_changes_the_letters_and_nothing_else`). A folder re-run
+  WITHOUT its key therefore gets the digits it has always got, now marked; a
+  folder WITH its key moves nothing at all, since `_pn_load_key` pins the
+  delivered fake in the `caseno` memo.
 - **Detectors** (`_PN_DETECTORS`: ssn/email/phone/address/url) run as regex over
   the text in `apply()`; `_detector_cands`/`_term_cands` produce candidates,
   highest-priority longest-non-overlapping wins.
