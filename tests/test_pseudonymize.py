@@ -452,8 +452,48 @@ class TestCaseNumberYear:
         assert fake[2:] != "STCV37838"
 
     def test_non_year_number_fully_faked(self):
+        """The letters go too, now: an old-format number keeps no court code,
+        because "BC" plus faked digits is a well-formed Los Angeles number that
+        may belong to a real case."""
         _pz_, reg = _pz()
-        assert pl._pn_fake_caseno("BC123456", reg)[:2] == "BC"
+        fake = pl._pn_fake_caseno("BC123456", reg)
+        assert fake.startswith(pl._PN_CASENO_MARK)
+        assert fake[len(pl._PN_CASENO_MARK):] != "123456"
+
+    def test_the_letters_carry_a_code_no_court_issues(self):
+        """The point of the marker: a fake is recognisable on sight and finds
+        nothing in a real docket search."""
+        _pz_, reg = _pz()
+        for real in ("25STCV37838", "23STLC00412", "24SMCV00456", "19BS012345"):
+            fake = pl._pn_fake_caseno(real, reg)
+            assert pl._PN_CASENO_MARK in fake
+            assert "CV" not in fake and "LC" not in fake
+            assert fake != real
+
+    def test_the_marker_changes_the_letters_and_nothing_else(self):
+        """The digits keep the derivation they have always had — same seed,
+        same draw order, same count — so this moved the letters alone."""
+        import re as _re
+        for real in ("25STCV37838", "BC543295", "2:23-cv-01234", "543295"):
+            reg = pl._PnFakeRegistry()
+            keep = 2 if pl._PN_CASENO_YEAR_RE.match(real) else 0
+            r = pl._pn_rng("caseno", real, 0)
+            was = real[:keep] + _re.sub(r"\d", lambda m: str(r.randrange(10)),
+                                        real[keep:])
+            now = pl._pn_fake_caseno(real, reg)
+            assert _re.sub(r"\D", "", now) == _re.sub(r"\D", "", was)
+
+    def test_a_number_with_no_letters_is_unchanged_in_behaviour(self):
+        """Nowhere to carry the marker — stated residual: that fake stays as
+        searchable as it ever was."""
+        _pz_, reg = _pz()
+        fake = pl._pn_fake_caseno("543295", reg)
+        assert fake.isdigit() and len(fake) == 6 and fake != "543295"
+
+    def test_the_marker_replaces_only_the_first_letter_run(self):
+        assert pl._pn_caseno_template("2:23-cv-01234") == "2:23-stzv-01234"
+        assert pl._pn_caseno_template("25STCV37838") == "25STZV37838"
+        assert pl._pn_caseno_template("543295") == "543295"
 
 
 # ── Task 14 — a label may be separated from its name by a line break ───────

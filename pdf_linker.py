@@ -7653,17 +7653,27 @@ class _PnFakeRegistry:
                 swaps.append((fake, new))
         return swaps
 
-    def digits(self, real, seed_tag, keep_prefix=0):
+    def digits(self, real, seed_tag, keep_prefix=0, template=None):
         """A digit-for-digit fake of `real` (e.g. a case number), unique per
         case. Re-seeds on the rare collision so two real numbers never share
         one fake. The first `keep_prefix` characters are copied verbatim — a
         case number's two-digit filing year is not an identifier, and randomising
         it produced numbers that are facially impossible for the filing date
-        printed beside them ("25STCV37838" -> "48STCV51378")."""
+        printed beside them ("25STCV37838" -> "48STCV51378").
+
+        `template` is the shape the fake is BUILT into where that differs from
+        the real value — the case-number marker (`_pn_caseno_template`) rewrites
+        the letters and leaves every digit position where it was. The memo key
+        and the seed stay on `real`, so the binding is still derived from the
+        real value alone; and because the template moves no digit, the digits
+        drawn are the ones this function has always drawn. Uniqueness is tested
+        on the COMPOSED candidate, so a marked fake is registered as what it
+        actually is."""
         key = (seed_tag, real.lower())
         if key in self._memo:
             return self._memo[key]
-        head, tail = real[:keep_prefix], real[keep_prefix:]
+        src = real if template is None else str(template)
+        head, tail = src[:keep_prefix], src[keep_prefix:]
         for attempt in range(10000):
             r = _pn_rng(seed_tag, real, attempt)
             cand = head + re.sub(r"\d", lambda m: str(r.randrange(10)), tail)
@@ -9256,9 +9266,51 @@ def _pn_append_name_terms(terms, raw, source, registry):
 _PN_CASENO_YEAR_RE = re.compile(r"^\d{2}(?=[A-Za-z])")
 
 
+# ...and the LETTERS are replaced by a code no court uses, so a fake case
+# number is recognisable on sight and finds NOTHING in a real docket search.
+# Faking the digits alone left a perfectly well-formed number — "25STCV37838"
+# came back "25STCV51378", which is a valid Stanley Mosk civil number that may
+# belong to somebody's real case: anyone who pastes it into the LASC portal
+# gets a record, and every reader has to take on trust that it is not the one
+# in front of them. "ZV" is not a case type any California court issues and
+# "STZV" is not a prefix any of them uses, so the search comes back empty by
+# construction rather than by luck.
+#
+# The whole letter RUN goes, not just the case-type half: "24SMCV00456" ->
+# "24STZV70915" rather than "24SMZV70915", because a courthouse code is itself
+# identifying (it says which of twelve buildings the matter sits in) and one
+# uniform marker is easier to recognise than a family of them. A number with no
+# letters at all ("543295") has nowhere to carry the marker and is faked
+# digit-for-digit exactly as before — stated as a residual, since that fake
+# stays as searchable as it ever was.
+_PN_CASENO_MARK = "STZV"
+_PN_CASENO_LETTERS_RE = re.compile(r"[A-Za-z]+")
+
+
+def _pn_caseno_template(real):
+    """`real` with its first letter run replaced by the STZV marker — the shape
+    the fake is built into, digits and separators still in their own places.
+
+    The FIRST run only: that is where every format carries its case-type code
+    ("25STCV37838", "BC543295", "2:23-cv-01234"), and replacing every run would
+    write the marker twice into a number that carries a trailing letter."""
+    m = _PN_CASENO_LETTERS_RE.search(str(real))
+    if not m:
+        return real                      # digits only: nothing to mark
+    run = m.group(0)
+    mark = _PN_CASENO_MARK.lower() if run.islower() else _PN_CASENO_MARK
+    return real[:m.start()] + mark + real[m.end():]
+
+
 def _pn_fake_caseno(real, registry):
     keep = 2 if _PN_CASENO_YEAR_RE.match(real) else 0
-    return registry.digits(real, "caseno", keep_prefix=keep)
+    # The DIGITS are derived exactly as they always were — same seed, same
+    # draw order, same count — so this changes the letters of a fake and
+    # nothing else. A folder re-run without its key gets the digits it has
+    # always got, now marked; a folder WITH its key moves nothing at all,
+    # since `_pn_load_key` pins the delivered fake in the `caseno` memo.
+    return registry.digits(real, "caseno", keep_prefix=keep,
+                           template=_pn_caseno_template(real))
 
 
 # Court FORM identifiers and field labels that are public boilerplate, never a
