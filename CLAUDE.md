@@ -401,6 +401,44 @@ its own local keeps back (`_pn_update_master_keep`, accumulating Times Seen /
 Cases / dates) so the screening can learn from real history. This — NOT the
 per-folder `LEAKS.xlsx` — is the preservation vehicle: the transient LEAKS triage
 can be auto-deleted freely without ever dropping a keep.
+**…and a case folder is named on BOTH sheets by a PSEUDONYM, never by its own
+name** (`_pn_case_label`, `_pn_case_id`, `_pn_case_origin`). This workbook is
+permanent, lives OUTSIDE every case folder — next to the config, routinely on a
+synced drive — and is never pruned, so the real folder name in `Cases` and
+`Origin` made the one file whose purpose is cross-matter history into a standing
+list of every matter's parties: the exact thing the rest of the pipeline exists
+to keep out of anything that outlives a folder. The name written is this case's
+OWN stand-ins where the run can prove that is safe (`Rasho v Quillmark - MTC` ->
+`Strangeways v Melbury - MTC`, drawn through the bindings already in the key, so
+the row is traceable through `pseudonym_key.xlsx` exactly as an export is) —
+minting nothing and counting nothing, since a folder name is not a document and
+`rec["count"]` is what `write_key` reports. Where it cannot be proved, the WHOLE
+name gives way to an opaque per-folder id (`Case 3f9c1a7e`, sha256 of the
+normalised name): never half of each, because a name that is partly real is the
+failure being replaced. Three things force the id. NOTHING was replaced — an
+untouched name is not evidence of a safe one, the guard `_real_remainder`
+already states, merely one this case's bindings had nothing to say about. A
+TRACKED value survived the substitution. Or a LEFTOVER word could still be a
+name (`_pn_case_name_leftover`) — the screen that matters, because
+`surviving_reals` answers the narrower question and a party the folder names
+that no template, term or pre-scan ever bound is invisible to it, as it is
+everywhere else in the tool. That screen is deliberately STRICT, which it can
+afford to be because the fallback is cheap: losing a readable label costs one
+folder's rows their readability, where the scrub's own refusals cost a leak or a
+renamed authority. A word left standing must be one of this run's own fakes, not
+name-shaped at all (a case number, a date, "v"), or short enough
+(`_PN_CASE_WORD_MAX`) that the docket shorthand folders are really named with —
+"MTC", "MSJ", "Dept" — is not all forced to the id; ordinary docket vocabulary
+that is longer ("Ex Parte") IS forced to it, and that is the trade. Residual,
+and stated: an unbound surname of four characters or fewer ("Wu", "Doe") still
+passes. The reverse map is kept where it is safe — `pdf_linker.log` stays with
+the case, and each run writes one line naming what the workbook calls this
+folder. An existing workbook HEALS: `_pn_case_aliases` / `_pn_case_migrate`
+rewrite every form of this folder (its real name, the opaque id, an earlier
+label) into today's on the next run in it, on every row and not only the rows
+that run touched, so the real names it was written with go rather than
+accumulating beside the pseudonyms — while another matter's `Origin` is never
+restated as ours, since rewriting it would hand this folder that matter's keeps.
 **A keep-spec means what it says IN ITS OWN FOLDER, and only its keep
 elsewhere.** `Alder Law, P.C. -> [Law]` yields `<fake> Law, P.C.` in the case
 that made it: `keep_strict_local` beats even the full-party override, which is
@@ -413,7 +451,10 @@ Ownership is the `Origin` column of the master KEEP sheet (`_pn_decision_is_ours
 NOT `Cases`: the local `LEAKS.xlsx` is consumed once resolved, so a decision made
 here survives only on the master sheet, and `Cases` accumulates every folder the
 keep has since protected text in. Only the folder that first recorded a value
-authors it. Inheriting the faking half is cross-case inference — the
+authors it. Both columns name a folder by its PSEUDONYM (below), so ownership is
+settled on the ID that rides in the `Origin` cell rather than on the readable
+half — `_pn_decision_is_ours` runs before any key is loaded or term built, at
+both its call sites, so there is nothing there to re-derive a label from. Inheriting the faking half is cross-case inference — the
 failure the closed-entity rule exists to prevent — and it put another case's law
 firm in every folder's log and, once unmatched authoritative bindings were
 pinned, every folder's KEY (`Alder Law, P.C. -> [Law]` wrote a `no match`

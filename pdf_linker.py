@@ -20155,7 +20155,222 @@ def _pn_parse_decision_rows(rows):
     return out
 
 
-def _pn_decision_is_ours(d, folder_name):
+# ── The case folder's NAME, as the cross-case master workbook may carry it ───
+# The master workbook is permanent, lives OUTSIDE any case folder (next to the
+# config, routinely on a synced drive) and accumulates for as long as the tool
+# is used. Its Cases and Origin columns held the case folder's REAL name — so
+# the one file whose whole purpose is cross-matter history was also a standing
+# list of every matter's parties, which is exactly what the rest of the
+# pipeline exists to keep out of anything that outlives a folder. They carry a
+# PSEUDONYM now.
+#
+# The pseudonym is this case's OWN stand-ins wherever the run can prove that is
+# safe: the folder name put through the bindings already in the key, so
+# "Rasho v Quillmark - MTC" reads "Strangeways v Melbury - MTC" and the row is
+# traceable through `pseudonym_key.xlsx` exactly as the exports are. Where it
+# cannot be proved — no pseudonymizer to ask, NOTHING in the name was bound (an
+# untouched name is not evidence of a safe one, the guard `_real_remainder`
+# already states), or a tracked real value would SURVIVE the substitution — the
+# whole name gives way to the opaque id below. Never half of each: a name that
+# is partly real is the failure this replaces, in a file nothing ever prunes.
+_PN_CASE_ID_LEN = 8
+_PN_CASE_OPAQUE_PREFIX = "Case "
+# The longest UNREPLACED name-shaped word a readable label may carry — see
+# `_pn_case_name_leftover`.
+_PN_CASE_WORD_MAX = 4
+# …and how that screen cuts a label into words. NOT `_PN_WORD_RE`, which stops
+# at the first digit: this run's own stand-in carries one whenever the pool ran
+# out ("Deverell5", `_pn_recycled_fake`), and splitting that into "Deverell" +
+# "5" asks `known_fake_words` for a word it does not hold, so the screen calls
+# the tool's own output an unknown name and every such folder loses its label.
+_PN_CASE_WORD_RE = re.compile(r"[^\W_][\w'’\-]*")
+# The id a readable label carries, so ownership can be settled without deriving
+# the label again — see `_pn_case_origin`.
+_PN_CASE_ID_RE = re.compile(r"\s*\[([0-9a-f]{%d})\]\s*$" % _PN_CASE_ID_LEN)
+
+
+def _pn_case_id(folder_name):
+    """A stable opaque identifier for a case FOLDER, derived from its name and
+    nothing else — same folder, same id, on every run and every machine.
+
+    That independence is the whole point. `_pn_decision_is_ours` has to
+    recognise this folder's own past decision at a moment when no key has been
+    loaded and no term built (BOTH its call sites run before either), so the
+    thing Origin is matched on cannot be anything the run has to look up."""
+    norm = " ".join(str(folder_name or "").split()).casefold()
+    if not norm:
+        return ""
+    return _pn_hashlib.sha256(norm.encode("utf-8")).hexdigest()[:_PN_CASE_ID_LEN]
+
+
+def _pn_case_opaque(folder_name):
+    """The id form of a case name — what a folder is called on the master
+    sheets when no readable pseudonym can be shown to be safe."""
+    cid = _pn_case_id(folder_name)
+    return (_PN_CASE_OPAQUE_PREFIX + cid) if cid else ""
+
+
+def _pn_pseudonymize_case_name(name, pz):
+    """`name` with every value this case has ALREADY BOUND replaced by the fake
+    its own record carries — the folder name scrubbed by the same bindings the
+    exports were, minting nothing and counting nothing.
+
+    Counting nothing matters: `rec["count"]` is what `write_key` reports and
+    what `unreversible_fakes` reasons about, and a folder name is not a
+    document. Minting nothing is what keeps the label deterministic and keeps
+    it out of the key — a fake is seeded on its real value, so the same folder
+    against the same key yields the same label on every run, which is what lets
+    a Cases list be a SET of matters rather than a list of run outputs."""
+    src = _NFKC(str(name))
+    cands = []
+    for rec in pz.records.values():
+        real, fake = str(rec.get("real") or ""), str(rec.get("fake") or "")
+        if not real or not fake or _pn_norm_map(real) == _pn_norm_map(fake):
+            continue
+        try:
+            rx = pz._compiled(rec["pattern"], rec["flags"])
+        except (re.error, KeyError):
+            continue
+        for m in rx.finditer(src):
+            if m.start() != m.end():
+                cands.append((0, m.start(), m.end(), rec))
+    if not cands:
+        return src
+    return pz._substitute(src, cands, count=False)
+
+
+def _pn_case_sanitize(label):
+    """A label made safe for the cells it lands in. `Cases` is a
+    semicolon-joined LIST, so a folder named "Smith; Jones v Acme" would arrive
+    back as two matters and never match itself again; and a trailing
+    `[8 hex]` would be read as the id `_pn_case_origin` appends. Both are
+    replaced rather than refused — the label still names the folder."""
+    label = _PN_CASE_ID_RE.sub("", str(label or "")).replace(";", ",")
+    return " ".join(label.split())
+
+
+def _pn_case_name_leftover(tag, pz):
+    """The first word of a candidate label that might still be a real name.
+
+    `surviving_reals` answers "did a value this case TRACKS survive?" and that
+    is the narrower question: a party the folder names that no term, template
+    or pre-scan ever bound is invisible to it, exactly as it is everywhere else
+    in the tool. In an export that costs a leak the gate catches and the
+    operator triages; here it would be a real surname in a permanent cross-case
+    file that nothing prunes and nobody reviews.
+
+    So the leftovers are screened directly, and strictly, because the fallback
+    is CHEAP — losing a readable label costs one folder's rows their
+    readability, where the scrub's own refusals cost a leak or a renamed
+    authority. A word left standing must be one of this run's own stand-ins, or
+    not name-shaped at all (a case number, a date, "v"), or short enough
+    (`_PN_CASE_WORD_MAX`) that the docket shorthand a folder is really named
+    with — "MTC", "MSJ", "Dept" — is not all forced to the id. Longer docket
+    vocabulary IS forced to it ("Ex Parte" costs a folder its label), and that
+    is the trade. Residual, and stated the other way: an unbound surname inside
+    the length cut ("Wu", "Doe") still passes."""
+    known = pz.known_fake_words()
+    for w in _PN_CASE_WORD_RE.findall(tag):
+        if len(w) <= _PN_CASE_WORD_MAX or not _pn_is_name_token(w):
+            continue
+        if _pn_word_is_own_fake(w, known) or _pn_is_generic_token(w) \
+                or w.lower() in _PN_COMMON_WORDS:
+            continue
+        return w
+    return None
+
+
+def _pn_case_label(folder_name, pz=None):
+    """What this case folder is CALLED on the master sheets — never its real
+    name: the pseudonymized form where that is provably complete, else the
+    opaque id (see the block note above)."""
+    name = " ".join(str(folder_name or "").split())
+    if not name:
+        return ""
+    if pz is not None:
+        try:
+            tag = _pn_case_sanitize(_pn_pseudonymize_case_name(name, pz))
+            # Three conditions, each load-bearing. CHANGED, because a name
+            # this case's bindings had nothing to say about is a name about
+            # which nothing has been established. Nothing TRACKED left
+            # standing in what came back. And no LEFTOVER that could still be
+            # a name — the one that catches a party this key never bound,
+            # which `surviving_reals` cannot see and which would otherwise
+            # ship the label half real.
+            if tag and tag != _pn_case_sanitize(_NFKC(name)) \
+                    and not pz.surviving_reals(tag) \
+                    and _pn_case_name_leftover(tag, pz) is None:
+                return tag
+        except Exception:
+            pass          # a label is never worth failing a run over
+    return _pn_case_opaque(name)
+
+
+def _pn_case_origin(folder_name, label=None):
+    """The Origin cell: the label with this folder's id in brackets after it.
+
+    Origin is not decoration — `_pn_decision_is_ours` reads it to tell this
+    folder's own decision (keep the bracket, fake the remainder) from another
+    matter's (the keep alone). A readable pseudonym cannot be re-derived at
+    that moment, so the id rides along in the same cell and the label is what a
+    person reads. The opaque form already IS the id and takes no suffix."""
+    cid = _pn_case_id(folder_name)
+    label = label if label is not None else _pn_case_label(folder_name)
+    opaque = _pn_case_opaque(folder_name)
+    if not cid:
+        return str(label or "")
+    if not label or label == opaque:
+        return opaque
+    return f"{label} [{cid}]"
+
+
+def _pn_case_aliases(folder_name, label=None):
+    """Every form this folder may ALREADY stand as on a master sheet,
+    lower-cased: its REAL name (a workbook written before names were
+    pseudonymized), the opaque id form, and today's label and Origin.
+
+    Read to REPLACE rather than accumulate. A re-run rewrites the entries it
+    finds into today's form, so an existing master workbook loses the real
+    names it was written with on the next run in each folder instead of
+    carrying them beside the pseudonyms for good — and a folder whose label
+    flips (an early run with nothing bound yet, then one with a key) is one
+    matter in the Cases list rather than two."""
+    name = " ".join(str(folder_name or "").split())
+    label = label if label is not None else _pn_case_label(folder_name)
+    out = {name.lower(), _pn_case_opaque(name).lower(),
+           str(label or "").strip().lower(),
+           _pn_case_origin(name, label).strip().lower()}
+    return {a for a in out if a}
+
+
+def _pn_case_migrate_origin(origin, aliases, case_origin, case_id=""):
+    """A stored Origin cell rewritten to today's form when it names THIS
+    folder — by its id where it carries one, else by any of the older forms in
+    `aliases`. Left exactly as found otherwise: another matter's authorship is
+    not ours to restate, and rewriting it would hand this folder its keeps."""
+    origin = str(origin or "").strip()
+    if not origin or not case_origin:
+        return origin
+    m = _PN_CASE_ID_RE.search(origin)
+    if m:
+        return case_origin if case_id and m.group(1) == case_id else origin
+    return case_origin if origin.lower() in (aliases or ()) else origin
+
+
+def _pn_case_migrate(cases, aliases, case_name):
+    """A stored Cases list with every form of THIS folder rewritten to today's
+    label. Applied on READ to every row, not only the rows this run touches, so
+    one run in a folder heals that folder's name everywhere it appears."""
+    cases = set(cases)
+    if not aliases or not case_name:
+        return cases
+    keep = {c for c in cases if c.strip().lower() not in aliases}
+    if len(keep) != len(cases):
+        keep.add(case_name)
+    return keep
+
+
+def _pn_decision_is_ours(d, folder_name, label=None):
     """True when `d` was made in THIS case folder.
 
     The local `LEAKS.xlsx` is consumed once its rows are resolved, so a
@@ -20164,18 +20379,30 @@ def _pn_decision_is_ours(d, folder_name):
     The master rows carry the case folders they came from, so a re-run can
     still recognise its own past decision and keep applying its full meaning
     (keep the bracket, fake the remainder) instead of demoting it to the
-    keep-only treatment an inherited decision gets."""
-    name = str(folder_name or "").strip().lower()
+    keep-only treatment an inherited decision gets.
+
+    The stored name is a PSEUDONYM now, and this runs before any key is loaded
+    or any term built, so the readable half cannot be re-derived here — which
+    is why `_pn_case_origin` writes the folder's id alongside it and this is
+    settled on the id. Everything else is a workbook written by an older
+    version: an Origin (or lone Cases entry) holding the REAL folder name, or
+    the opaque form, still identifies its author, and the next run's write
+    migrates it."""
+    name = " ".join(str(folder_name or "").split())
     if not name:
         return False
-    origin = str(d.get("origin") or "").strip().lower()
+    aliases = _pn_case_aliases(name, label)
+    origin = str(d.get("origin") or "").strip()
     if origin:
-        return name == origin
+        m = _PN_CASE_ID_RE.search(origin)
+        if m:
+            return m.group(1) == _pn_case_id(name)
+        return origin.lower() in aliases
     # A sheet written before the Origin column existed: fall back to the Cases
     # list, which for a decision only ever applied in ONE folder names it.
     cases = [c.strip().lower() for c in str(d.get("cases") or "").split(";")
              if c.strip()]
-    return len(cases) == 1 and cases[0] == name
+    return len(cases) == 1 and cases[0] in aliases
 
 
 def _pn_set_keep_words(registry, decisions, log=None):
@@ -20433,6 +20660,10 @@ def _pn_merge_where(wheres):
 #      marked "leave it alone" (or a bracketed keep-spec) is remembered here and
 #      re-applied on every future run in any folder, accumulating Times Seen /
 #      Cases / dates so the screening can be tuned from real history over time.
+# Both sheets name a case folder by its PSEUDONYM and never by its real name —
+# see the `_pn_case_id` block. This workbook outlives every folder it describes
+# and is not a case file, so the one thing it must not become is a list of the
+# matters it has seen.
 _PN_MASTER_HEADERS = ("Value", "Type", "Times Seen", "Cases",
                       "First Seen", "Last Seen")
 _PN_MASTER_LEAK_SHEET = "Master Leaks"
@@ -20441,10 +20672,12 @@ _PN_MASTER_KEEP_SHEET = "KEEP"
 # instruction ("no" or a [bracket] spec) straight back out.
 _PN_MASTER_KEEP_HEADERS = ("Value", "Fix? (yes/no)", "Type", "Times Seen",
                            "Cases", "First Seen", "Last Seen", "Notes",
-                           # The folder that MADE this decision. "Cases" lists
-                           # every folder the keep has since protected text in,
-                           # which is real history but not authorship — and
-                           # only the author fakes a keep-spec's remainder.
+                           # The folder that MADE this decision, as its
+                           # pseudonym plus the id ownership is settled on
+                           # (`_pn_case_origin`). "Cases" lists every folder
+                           # the keep has since protected text in, which is
+                           # real history but not authorship — and only the
+                           # author fakes a keep-spec's remainder.
                            "Origin")
 
 
@@ -21122,15 +21355,21 @@ def _pn_master_save(wb, master_path, log, what):
         return False
 
 
-def _pn_update_master_leaks(master_path, values, case_name, today, log):
+def _pn_update_master_leaks(master_path, values, case_name, today, log,
+                            aliases=()):
     """Merge this run's genuine-leak values into the master workbook's
     'Master Leaks' sheet — one row per distinct value — WITHOUT disturbing the
-    KEEP sheet. `values` is [(value, type), ...]."""
+    KEEP sheet. `values` is [(value, type), ...].
+
+    `case_name` is what this folder is CALLED here — a pseudonym, never the
+    real folder name (`_pn_case_label`); `aliases` are the other forms it may
+    already stand as, so every row's Cases list is migrated onto it."""
     try:
         import openpyxl  # noqa: F401
     except ImportError:
         return
     wb = _pn_master_load(master_path)
+    aliases = {str(a).strip().lower() for a in (aliases or ()) if str(a).strip()}
     rows = {}   # value_lower -> {value, type, times, cases:set, first, last}
     for r in _pn_master_sheet_rows(wb, _PN_MASTER_LEAK_SHEET)[1:]:
         if not r or r[0] in (None, ""):
@@ -21142,8 +21381,9 @@ def _pn_update_master_leaks(master_path, values, case_name, today, log):
             "value": val,
             "type": (str(r[1]) if len(r) > 1 and r[1] else "LEAK"),
             "times": int(times) if str(times).isdigit() else 1,
-            "cases": {c.strip() for c in str(cases_raw or "").split(";")
-                      if c.strip() and "cases" not in c},
+            "cases": _pn_case_migrate(
+                (c.strip() for c in str(cases_raw or "").split(";")
+                 if c.strip() and "cases" not in c), aliases, case_name),
             "first": (str(r[4]) if len(r) > 4 and r[4] else today),
             "last": (str(r[5]) if len(r) > 5 and r[5] else today)}
 
@@ -21189,12 +21429,19 @@ def _pn_read_master_keep(cfg):
     return _pn_parse_decision_rows(rows)
 
 
-def _pn_update_master_keep(cfg, record_map, case_name, today, log):
+def _pn_update_master_keep(cfg, record_map, case_name, today, log,
+                           aliases=(), origin=None):
     """Merge this run's KEEP decisions into the master workbook's KEEP sheet
     (single persistent sheet across folders and runs), WITHOUT disturbing the
     'Master Leaks' sheet. `record_map` is {value_lower: decision} for the keeps
     made or re-affirmed this run; Times Seen / Cases / dates accumulate so the
-    screening can be tuned from real history. Returns the KEEP-sheet row count."""
+    screening can be tuned from real history. Returns the KEEP-sheet row count.
+
+    `case_name` is this folder's PSEUDONYM (`_pn_case_label`) and `origin` the
+    same thing carrying its id (`_pn_case_origin`) — the real folder name never
+    reaches this workbook. `aliases` are the forms it may already stand as, so
+    a row written by an older version is migrated onto them rather than gaining
+    a second entry for the same matter."""
     if not record_map and not _pn_master_path(cfg).exists():
         return 0
     try:
@@ -21203,6 +21450,10 @@ def _pn_update_master_keep(cfg, record_map, case_name, today, log):
         return 0
     master_path = _pn_master_path(cfg)
     wb = _pn_master_load(master_path)
+    aliases = {str(a).strip().lower() for a in (aliases or ()) if str(a).strip()}
+    origin = origin or case_name
+    _m = _PN_CASE_ID_RE.search(str(origin))
+    case_id = _m.group(1) if _m else ""
 
     rows = {}   # value_lower -> {value, instruction, type, times, cases, first, last, notes}
     for r in _pn_master_sheet_rows(wb, _PN_MASTER_KEEP_SHEET)[1:]:
@@ -21216,12 +21467,18 @@ def _pn_update_master_keep(cfg, record_map, case_name, today, log):
             "instruction": (str(r[1]) if len(r) > 1 and r[1] else "no"),
             "type": (str(r[2]) if len(r) > 2 and r[2] else "KEEP"),
             "times": int(times) if str(times).isdigit() else 1,
-            "cases": {c.strip() for c in str(cases_raw or "").split(";")
-                      if c.strip() and "cases" not in c},
+            "cases": _pn_case_migrate(
+                (c.strip() for c in str(cases_raw or "").split(";")
+                 if c.strip() and "cases" not in c), aliases, case_name),
             "first": (str(r[5]) if len(r) > 5 and r[5] else today),
             "last": (str(r[6]) if len(r) > 6 and r[6] else today),
             "notes": (str(r[7]) if len(r) > 7 and r[7] else ""),
-            "origin": (str(r[8]) if len(r) > 8 and r[8] else "")}
+            # An Origin naming this folder in an older form is OURS and is
+            # rewritten to today's — `_pn_decision_is_ours` recognises both, so
+            # authorship survives the migration it triggers.
+            "origin": _pn_case_migrate_origin(
+                (str(r[8]) if len(r) > 8 and r[8] else ""), aliases, origin,
+                case_id)}
 
     for vl, d in record_map.items():
         instruction = d.get("fixcell") or ("no" if d.get("fix") == "no" else "no")
@@ -21239,7 +21496,7 @@ def _pn_update_master_keep(cfg, record_map, case_name, today, log):
             rows[vl] = {"value": d["value"], "instruction": instruction,
                         "type": vtype, "times": 1, "cases": {case_name},
                         "first": today, "last": today,
-                        "notes": d.get("notes", ""), "origin": case_name}
+                        "notes": d.get("notes", ""), "origin": origin}
         else:
             g["times"] += 1
             g["cases"].add(case_name)
@@ -21262,7 +21519,8 @@ def _pn_update_master_keep(cfg, record_map, case_name, today, log):
 
 
 def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
-                          bound=(), note_for=None):
+                          bound=(), note_for=None, case_name=None,
+                          case_aliases=()):
     """Write/refresh the leak-triage worksheet 'LEAKS.xlsx'. Each DISTINCT
     flagged value is ONE row with a 'Fix?' column — the files and page:line
     locations it was found in are aggregated into that row, so a name that
@@ -21329,9 +21587,14 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
         leak_only = [(g["value"], g["type"]) for vl, g in grouped.items()
                      if not _pn_decision_is_keep(decisions.get(vl, {}))]
         if leak_only:
+            # The workbook is cross-case and permanent, so the folder is named
+            # there by its PSEUDONYM. A caller with no pseudonymizer to derive
+            # one from falls back to the opaque id rather than the real name.
+            case = case_name or _pn_case_opaque(folder.name)
             _pn_update_master_leaks(
-                master_path, leak_only, folder.name,
-                datetime.date.today().isoformat(), log)
+                master_path, leak_only, case,
+                datetime.date.today().isoformat(), log,
+                aliases=case_aliases or _pn_case_aliases(folder.name, case))
 
     # The per-folder worksheet is the TRANSIENT genuine-leak triage only; the
     # durable no/bracket KEEP decisions are excluded here (they are preserved
@@ -23298,6 +23561,10 @@ _CONFIG_BLOCKS = (
     ("master_leaks",
      "# Accumulate every flagged leak into ONE master spreadsheet across all runs\n"
      "# and case folders, so you can spot a value that keeps leaking over time.\n"
+     "# Case folders are named there by their PSEUDONYM (this case's own fakes\n"
+     "# where the key can supply them, else a stable id) — the workbook outlives\n"
+     "# every case in it, so it never carries a real folder name. Which folder an\n"
+     "# id belongs to is recorded in that folder's own pdf_linker.log.\n"
      "# on/off (default: off). This toggle controls the 'Master Leaks' TALLY sheet\n"
      "# only. The 'KEEP' sheet in the SAME workbook — the durable no/[bracket]\n"
      "# decisions, applied across every folder and run — is always maintained (it\n"
@@ -24940,9 +25207,19 @@ def _fix_leaks_mode(folder, args, cfg, log):
     # sheet so a key/worksheet edit made here persists globally.
     _keep_rec = {vl: d for vl, d in decisions.items()
                  if _pn_decision_is_keep(d) and vl in local_vls}
+    # The folder is named on that cross-case sheet by its PSEUDONYM — this
+    # case's own stand-ins where the key can supply them, the opaque id
+    # otherwise. Logged once, because `pdf_linker.log` stays with the case and
+    # is therefore the one place the mapping back is safe to keep.
+    case_label = _pn_case_label(folder.name, pz)
+    case_aliases = _pn_case_aliases(folder.name, case_label)
+    log.info(f'  This folder is named "{case_label}" on the cross-case master '
+             f'workbook.')
     if _keep_rec:
-        _pn_update_master_keep(cfg, _keep_rec, folder.name,
-                               datetime.date.today().isoformat(), log)
+        _pn_update_master_keep(cfg, _keep_rec, case_label,
+                               datetime.date.today().isoformat(), log,
+                               aliases=case_aliases,
+                               origin=_pn_case_origin(folder.name, case_label))
 
     # The tool's OWN .txt files in the folder — the worksheet's text companion
     # and the ETA/DONE run markers — are not exports and must not be scrubbed
@@ -25169,7 +25446,8 @@ def _fix_leaks_mode(folder, args, cfg, log):
         _pn_write_leak_report(folder, pz.leak_report, log, decisions=decisions,
                               cfg=cfg,
                               bound=[r["real"] for r in pz.records.values()],
-                              note_for=pz.triage_note)
+                              note_for=pz.triage_note,
+                              case_name=case_label, case_aliases=case_aliases)
     else:
         # Every LEAK file is fixed: the worksheet and the Apply-Leak-Fixes
         # launcher have done their job — remove them instead of leaving stale
@@ -26014,11 +26292,19 @@ def main():
         # Human-triage worksheet of every located potential leak — written even
         # if the leak gate quarantines below, so the reviewer always gets it.
         # Prior yes/no decisions are carried through (yes was scrubbed above).
+        # As on the fix-leaks pass: the cross-case workbook never carries the
+        # real folder name, and the folder's own log is where the mapping back
+        # is kept.
+        case_label = _pn_case_label(folder.name, pseudonymizer)
+        case_aliases = _pn_case_aliases(folder.name, case_label)
+        log.info(f'  This folder is named "{case_label}" on the cross-case '
+                 f'master workbook.')
         _pn_write_leak_report(folder, pseudonymizer.leak_report, log,
                               leak_decisions, cfg=cfg,
                               bound=[r["real"] for r in
                                      pseudonymizer.records.values()],
-                              note_for=pseudonymizer.triage_note)
+                              note_for=pseudonymizer.triage_note,
+                              case_name=case_label, case_aliases=case_aliases)
         # Record this run's KEEP decisions into the single cross-folder master
         # KEEP sheet: every LOCAL keep (made in this folder), plus any GLOBAL
         # keep that actually protected text here (a real hit) — so Times Seen /
@@ -26030,8 +26316,11 @@ def main():
             if vl in pseudonymizer._keep_local or hit:
                 _record[vl] = d
         if _record:
-            _pn_update_master_keep(cfg, _record, folder.name,
-                                   datetime.date.today().isoformat(), log)
+            _pn_update_master_keep(cfg, _record, case_label,
+                                   datetime.date.today().isoformat(), log,
+                                   aliases=case_aliases,
+                                   origin=_pn_case_origin(folder.name,
+                                                          case_label))
         # Two addresses on one street with adjacent numbers were faked to two
         # unrelated streets — the failure that moved an ADU off its parcel.
         for w in _pn_address_adjacency(pseudonymizer.records.values()):

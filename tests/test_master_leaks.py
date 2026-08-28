@@ -243,11 +243,17 @@ def test_authoring_folder_keeps_the_bracket_and_fakes_the_rest(tmp_path,
     first = _run()
     assert "Alder" not in first          # the identifying word is faked …
     assert "Law, P.C." in first          # … the bracketed part is kept
-    # the decision is now recorded as OURS, authored by this folder
+    # the decision is now recorded as OURS, authored by this folder — under
+    # the folder's PSEUDONYM, never its real name: the party word that names
+    # the folder is faked there exactly as it is in the export, and the id that
+    # settles authorship rides in the same cell.
     keep = openpyxl.load_workbook(tmp_path / "master.xlsx")[
         P._PN_MASTER_KEEP_SHEET]
     row = [r for r in keep.iter_rows(min_row=2, values_only=True) if r[0]][0]
-    assert row[8] == case.name           # Origin
+    assert row[8] == P._pn_case_origin(case.name, row[8].rsplit(" [", 1)[0])
+    assert "Alder" not in row[8] and "Alder" not in str(row[4])   # Origin/Cases
+    assert row[8].endswith(f"[{P._pn_case_id(case.name)}]")
+    assert P._pn_decision_is_ours({"origin": row[8]}, case.name)
 
     import shutil
     shutil.rmtree(case / "Text Files")
