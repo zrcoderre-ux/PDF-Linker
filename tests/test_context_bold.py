@@ -153,7 +153,7 @@ def test_a_plain_reader_still_sees_the_sentence(tmp_path):
             assert isinstance(cell, str), type(cell)
             assert str(r[rv].value).lower() in cell.lower()
 
-    carried, _carried_scrubbed = P._pn_key_context_on_disk(path)
+    carried, _carried_scrubbed, _carried_where = P._pn_key_context_on_disk(path)
     assert carried, "the carry-forward read found nothing"
     assert all(isinstance(v, str) and v for v in carried.values())
 

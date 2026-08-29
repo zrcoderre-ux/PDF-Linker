@@ -59,7 +59,8 @@ def _sheet(path, name="Pseudonym Key"):
 
 def test_the_binding_leads_and_context_follows_it():
     assert P._PN_KEY_HEADERS == ("Category", "Real Value", "Replacement",
-                                 "Context", "Status", "Source", "Occurrences")
+                                 "Context", "File", "Where (page:line)",
+                                 "Status", "Source", "Occurrences")
 
 
 def test_the_widths_stay_in_step_with_the_headers():
@@ -106,7 +107,7 @@ def test_every_binding_loads_from_an_older_layout(tmp_path, headers):
 def test_the_context_loads_from_an_older_layout(tmp_path):
     p = tmp_path / "pseudonym_key.xlsx"
     _write_old_key(p)
-    ctx, _scrubbed = P._pn_key_context_on_disk(p)
+    ctx, _scrubbed, _where = P._pn_key_context_on_disk(p)
     assert ctx["ford motor company"] == "Ford Motor Company built it."
 
 

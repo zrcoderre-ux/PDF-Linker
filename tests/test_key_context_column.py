@@ -78,8 +78,10 @@ def test_the_key_carries_a_context_column_beside_the_replacement(tmp_path):
     # (original on top) as the evidence for the mapping just read.
     assert hdr[2] == "Replacement", hdr
     assert hdr[3] == "Context", hdr
+    # …and the File and Where the quote was read from follow it at E and F.
     assert hdr == ["Category", "Real Value", "Replacement",
-                   "Context", "Status", "Source", "Occurrences"], hdr
+                   "Context", "File", "Where (page:line)",
+                   "Status", "Source", "Occurrences"], hdr
 
 
 def test_every_quote_contains_its_own_real_value(tmp_path):
@@ -127,7 +129,7 @@ def test_a_key_written_before_the_column_existed_still_loads(tmp_path):
     wb.save(key)
 
     assert P._pn_key_looks_like_ours(key)
-    assert P._pn_key_context_on_disk(key) == ({}, {})  # nothing to carry, no crash
+    assert P._pn_key_context_on_disk(key) == ({}, {}, {})  # nothing to carry, no crash
     terms, _dec = P._pn_load_key(key, P._PnFakeRegistry(), log)
     assert any(str(t.real) == "Helen Rasho" for t in terms)
 
@@ -202,7 +204,7 @@ def test_line_offsets_match_the_joined_text():
     # The running offset replaced `len(" ".join(joined))` recomputed per line.
     # If the two ever disagree, every quote is cut in the wrong place.
     parsed = P._pn_body_lines(SOURCE)
-    lines, lowers, text, _ends = P._pn_context_prep(parsed)
+    lines, lowers, text, _ends, _locs = P._pn_context_prep(parsed)
     for (start, end, _prose), low in zip(lines, lowers):
         assert text[start:end].lower() == low, (start, end, text[start:end], low)
 

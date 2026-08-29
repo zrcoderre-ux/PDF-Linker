@@ -171,7 +171,7 @@ class TestKeyColumn:
                    "the export says", "Marlow Deverell", "replaced",
                    "spreadsheet", 1])
         wb.save(key)
-        orig, scrub = P._pn_key_context_on_disk(key)
+        orig, scrub, _where = P._pn_key_context_on_disk(key)
         assert orig["roxane estrada"] == "the document said"
         assert scrub["roxane estrada"] == "the export says"
 
