@@ -184,6 +184,31 @@ a by-NAME check that a Replacement column exists, and a key from any older
 version still reads as ours. (A test that indexes a
 key row by number is making the same mistake — a batch did, and now take the
 index from `_PN_KEY_HEADERS`.)
+**And the quote SAYS which document it came from, and where** (`File` at **E**,
+`Where (page:line)` at **F**, `_pn_site_where`). Evidence the operator cannot go
+and check is worth much less than it looks: a folder is a dozen filings, the
+Context cell quotes one sentence of one of them, and "which one, and where in
+it" was answerable only by searching every export for the sentence. The format
+is the LEAKS worksheet's, and it is the SAME function that produces it
+(`_pn_where_label`) under the same header (`_PN_KEY_WHERE_HEADER`) — two columns
+naming one measurement in two wordings read as two measurements. What it reports
+is the passage the QUOTE was cut at, not every occurrence of the value the way a
+LEAKS row does: that row's job is to send the operator to each place a leak
+survived, while this one explains one cell above it. So it is a RANGE, since a
+sentence on pleading paper runs over two or three gutter lines — `p.4:7-8`,
+spelling the page twice only where the quote really crosses one (`p.7:27-p.8:1`),
+and `line 1-3` for a Word body, which has a line number and no page and must
+never be given a `p.?` naming a page the run does not know. Read off
+`_pn_context_prep`'s own line table, because that table DROPS the blank and
+gutter-only lines and an index into the parsed body would be off by every one of
+them. Minted in the same statement as the quote, from the site it was cut at —
+never measured in a second pass, which is how a location comes to point at
+another file's sentence — and carried forward from the key on disk as a UNIT
+with that quote (`_pn_key_context_on_disk`, now a triple), so a row can only
+name the document its own Context came from. A row with no quote claims no
+location: an empty Context beside a populated Where reads as a place to go and
+look. An older key simply yields nothing for the two columns and gains them on
+the next rewrite.
 **An older layout is not left standing, and the run SAYS so.** Reading by name
 is what makes the key readable; the REWRITE is what migrates it. `write_key`
 re-emits `_PN_KEY_HEADERS` whole every time, and both operator paths reach it —

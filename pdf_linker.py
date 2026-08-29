@@ -11658,8 +11658,12 @@ def _pn_terms_from_xlsx(path, extra_name_headers, log):
 # anything genuinely new in this file gets a fresh fake that can't collide with
 # one already in the key. The written-back key carries every loaded row forward
 # plus the new ones, so it never shrinks.
+# The Where column's header, named once: the key and the LEAKS worksheet both
+# carry it, in the same wording, because it is the same measurement.
+_PN_KEY_WHERE_HEADER = "Where (page:line)"
 _PN_KEY_HEADERS = ("Category", "Real Value", "Replacement",
-                   "Context", "Status", "Source", "Occurrences")
+                   "Context", "File", _PN_KEY_WHERE_HEADER,
+                   "Status", "Source", "Occurrences")
 # The BINDING leads: Real Value then Replacement, side by side at B and C, which
 # is the pair the sheet exists to state and the one every reader — the operator,
 # `DeAnonymize.bas`, this tool's own loader — is here for. ONE Context column
@@ -11675,6 +11679,18 @@ _PN_KEY_HEADERS = ("Category", "Real Value", "Replacement",
 # sideways travel. One cell and not two ROWS for a harder reason — this sheet is
 # read by other programs a row at a time, and a second row per binding would
 # make every one of them read a phantom party.
+#
+# File and Where follow the quote at E and F, naming the document and the
+# printed page:line the Context above them was read from — the same pair the
+# LEAKS worksheet has always carried, in the same format (`_pn_where_label`),
+# asked here of a decision already made. A quote without them is evidence the
+# operator cannot go and check: the cell shows one sentence of one filing out
+# of a folder of them, and "which document, and where in it" was answerable
+# only by searching every export for the sentence. They sit AFTER the Context
+# rather than before it because the row is read as binding, then evidence, then
+# where the evidence came from; and they name the ORIGINAL, since that is the
+# body the first quote is read from (`note_key_context`) and the export shares
+# its line numbering.
 #
 # Safe to insert rather than append, which is worth stating because the reverse
 # is the obvious fear. `DeAnonymize.bas` does NOT read this sheet positionally —
@@ -11693,7 +11709,7 @@ _PN_KEY_FINGERPRINT = ("Category", "Real Value")
 # hand on every workbook; Context is a whole SENTENCE — two of them, stacked —
 # and gets the width a sentence needs. Positional, so it must stay in step with
 # _PN_KEY_HEADERS.
-_PN_KEY_WIDTHS = (14, 30, 30, 120, 14, 16, 12)
+_PN_KEY_WIDTHS = (14, 30, 30, 120, 20, 30, 14, 16, 12)
 # The regex-detector categories: in the batch these were computed live at
 # priority 3, so a loaded literal must sit ABOVE that to reproduce the exact
 # stored fake instead of letting the detector recompute a different one.
@@ -11952,8 +11968,8 @@ def _pn_key_looks_like_ours(path):
 
 
 def _pn_key_context_on_disk(path):
-    """({real_lower: Context}, {real_lower: Scrubbed Context}) from the key
-    already at `path`, both sheets.
+    """({real_lower: Context}, {real_lower: Scrubbed Context},
+    {real_lower: (File, Where)}) from the key already at `path`, both sheets.
 
     A quote can only be re-derived from a document still in the folder, and the
     key outlives the folder's contents — a party named only in a filing that was
@@ -11961,16 +11977,22 @@ def _pn_key_context_on_disk(path):
     too. Read by header NAME, so a key written before either column existed
     simply yields nothing for it.
 
+    The File/Where pair is carried by the SAME reader as the quote it describes,
+    rather than by a second pass over the same workbook: they are one piece of
+    evidence — a sentence, and where it was read — and two readers of one file
+    are two answers waiting to disagree. A row keeps them together for the same
+    reason, so a carried quote never arrives under this run's location.
+
     Best-effort in every direction: no openpyxl, no file, an unreadable file or
     a foreign spreadsheet all return empty maps rather than fail a run over
     columns nothing reverses."""
     try:
         import openpyxl
     except ImportError:
-        return {}, {}
+        return {}, {}, {}
     if not path.exists() or not _pn_key_looks_like_ours(path):
-        return {}, {}
-    out, out_scrubbed = {}, {}
+        return {}, {}, {}
+    out, out_scrubbed, out_where = {}, {}, {}
     try:
         wb = openpyxl.load_workbook(path, read_only=True)
         for ws in wb.worksheets:
@@ -11984,6 +12006,9 @@ def _pn_key_context_on_disk(path):
             # at its rule, so either layout round-trips into the same pair.
             sx = (header.index("scrubbed context")
                   if "scrubbed context" in header else None)
+            where_h = _pn_norm_header(_PN_KEY_WHERE_HEADER)
+            fx = header.index("file") if "file" in header else None
+            wx = header.index(where_h) if where_h in header else None
             for row in rows:
                 if len(row) <= max(rv, cx) or not row[rv]:
                     continue
@@ -11996,10 +12021,14 @@ def _pn_key_context_on_disk(path):
                         out_scrubbed.setdefault(rl, export)
                 if sx is not None and len(row) > sx and row[sx]:
                     out_scrubbed.setdefault(rl, str(row[sx]))
+                fv = str(row[fx]) if fx is not None and len(row) > fx and row[fx] else ""
+                wv = str(row[wx]) if wx is not None and len(row) > wx and row[wx] else ""
+                if fv or wv:
+                    out_where.setdefault(rl, (fv, wv))
         wb.close()
     except Exception:
-        return out, out_scrubbed
-    return out, out_scrubbed
+        return out, out_scrubbed, out_where
+    return out, out_scrubbed, out_where
 
 
 def _pn_load_key(path, registry, log, remint_recycled=False):
@@ -13623,6 +13652,12 @@ class Pseudonymizer:
         # value can be quoted once for the folder rather than once per record.
         self._key_context = {}
         self._key_context_scrubbed = {}
+        # {real_lower: (file name, "p.8:16")} — the document the Context quote
+        # above was read from and where in it. Minted in the same statement as
+        # the quote (`note_key_context`), never separately: a location that can
+        # describe a different document from the sentence beside it is worse
+        # than no location, because it reads as checkable and is not.
+        self._key_context_where = {}
         self.records = {}
         for t in terms:
             # Never install a self-identical mapping (fake == real): it is a
@@ -17215,7 +17250,7 @@ class Pseudonymizer:
             log.info(f"      (+{len(folds) - 8} more; every one is a row in "
                      f"the key)")
 
-    def note_key_context(self, original, scrubbed=None):
+    def note_key_context(self, original, scrubbed=None, source=None):
         """Quote, for every tracked value, the sentence it stands in — read from
         the UNSCRUBBED source, which is the only text that still contains it.
 
@@ -17248,6 +17283,14 @@ class Pseudonymizer:
         as the half above it (`_pn_context_hit`'s `within`), which is why the
         two are read in one loop rather than two.
 
+        `source` is the document this body came from, and with the quote's own
+        line range it fills the key's File and Where columns. Both are taken
+        here, from the site the quote was cut at, so the three cells of one row
+        can only ever describe one passage of one document — the discipline the
+        export half already follows, for the same reason: a quote whose
+        location was measured in a second pass is a location that can point at
+        another file's sentence.
+
         Cost is one `_pn_context` per value still lacking a quote, and
         `_pn_context_prep` makes that a search rather than a scan — a few
         tenths of a second for a folder-sized key, against the ~85 s the same
@@ -17263,6 +17306,8 @@ class Pseudonymizer:
             if not quote:
                 continue
             self._key_context[rl] = quote
+            self._key_context_where[rl] = (str(source or ""),
+                                           _pn_site_where(parsed, site))
             # The export half is taken HERE, from this document's own export
             # and from the passage the quote above came off. Both halves of one
             # cell must describe one passage of one document, and the two used
@@ -17483,7 +17528,7 @@ class Pseudonymizer:
         # on disk: a folder whose documents have moved on still keeps what the
         # last run learned, exactly as the bindings themselves are carried
         # forward. This run's own quote wins where it has one.
-        carried, carried_scrubbed = _pn_key_context_on_disk(path)
+        carried, carried_scrubbed, carried_where = _pn_key_context_on_disk(path)
 
         def row_context(r):
             rl = str(r["real"]).lower()
@@ -17493,6 +17538,16 @@ class Pseudonymizer:
             rl = str(r["real"]).lower()
             return (self._key_context_scrubbed.get(rl)
                     or carried_scrubbed.get(rl, ""))
+
+        def row_where(r):
+            # (File, Where) for the quote `row_context` just returned, and it
+            # has to follow the same fallback or the row would name a document
+            # the sentence beside it did not come from — this run's pair where
+            # this run quoted the value, the pair the key already held where
+            # the quote itself is the carried one.
+            rl = str(r["real"]).lower()
+            return (self._key_context_where.get(rl)
+                    or carried_where.get(rl, ("", "")))
 
         def row_status(r):
             key = (r["category"], str(r["real"]).lower())
@@ -17525,6 +17580,8 @@ class Pseudonymizer:
                                "replacement": r["fake"],
                                "context": row_context(r),
                                "scrubbed_context": row_context_scrubbed(r),
+                               "file": row_where(r)[0],
+                               "where": row_where(r)[1],
                                "status": row_status(r),
                                "source": r["source"],
                                "occurrences": r["count"]}
@@ -17565,11 +17622,14 @@ class Pseudonymizer:
             # sentences, each bolded on the word it was searched by — the real
             # value in the document's own sentence, the fake in the export's —
             # and collapses to the original alone when the two say the same
-            # thing.
+            # thing; then File and Where, naming the document that sentence was
+            # read from and the printed page:line it sits at.
+            where = row_where(r)
             return _pn_xl_row(
                 [r["category"], r["real"], r["fake"],
                  _pn_context_cell(row_context(r), r["real"],
                                   row_context_scrubbed(r), r["fake"]),
+                 where[0], where[1],
                  row_status(r), r["source"], r["count"]])
 
         for r in applied:
@@ -19461,15 +19521,30 @@ def _pn_body_lines(body):
     return out
 
 
+def _pn_where_label(page, gutter, lineno):
+    """One line's human-readable location: 'p.8:16', or 'p.8' where the printed
+    page carries no gutter number, or 'line 42' where there is no page at all.
+
+    The single definition of what a location LOOKS like, shared by the LEAKS
+    Where column and the key's — two columns naming the same thing in two
+    formats would read as two different measurements. A body with no page
+    headers is a Word export (and, on a PDF body, the handful of rows above the
+    first header): it has a line number and nothing else, and claiming 'p.?' for
+    it names a page the run does not know."""
+    if page == "?":
+        return f"line {lineno}"
+    return f"p.{page}:{gutter}" if gutter else f"p.{page}"
+
+
 def _pn_locate(parsed, needle, limit=12):
     """Human-readable 'p.<page>:<line>' locations of `needle` in a parsed body
     (case-insensitive substring), de-duplicated, capped. '(not located)' when a
     welded/reduced finding has no clean line to point at."""
     nl = needle.lower()
     seen, out = set(), []
-    for page, gutter, text in parsed:
+    for lineno, (page, gutter, text) in enumerate(parsed, start=1):
         if nl in text.lower():
-            loc = f"p.{page}:{gutter}" if gutter else f"p.{page}"
+            loc = _pn_where_label(page, gutter, lineno)
             if loc not in seen:
                 seen.add(loc)
                 out.append(loc)
@@ -19521,12 +19596,19 @@ def _pn_context_prep(parsed):
 
     Two entries, keyed on the parsed body's identity — the original body and
     its scrubbed twin alternate within one file's quoting loop (see the note on
-    `_PN_CONTEXT_PREP`)."""
+    `_PN_CONTEXT_PREP`).
+
+    The fifth element is each kept line's own (page, gutter, line number), so a
+    quote can say WHERE it was read from. It is derived here and nowhere else
+    for the reason the rest of this table is: the blank and gutter-only lines
+    are dropped on the way in, so an index into `lines` is not an index into
+    `parsed`, and a second pass reconstructing the mapping would be a second
+    pass able to disagree with this one."""
     for k, prep in _PN_CONTEXT_PREP:
         if k is parsed:
             return prep
-    joined, lines, run = [], [], 0
-    for _page, _gutter, text in parsed:
+    joined, lines, locs, run = [], [], [], 0
+    for lineno, (_page, _gutter, text) in enumerate(parsed, start=1):
         m = _PN_GUTTER_RE.match(text)
         # The gutter number is furniture. Cut the number and its spacing only:
         # the pattern's last atom is the first character of the body, so the
@@ -19542,11 +19624,12 @@ def _pn_context_prep(parsed):
             continue
         off = run + (1 if joined else 0)
         lines.append((off, off + len(body), _pn_line_is_prose(body)))
+        locs.append((_page, _gutter, lineno))
         joined.append(body)
         run = off + len(body)
     text = " ".join(joined)
     prep = (lines, [b.lower() for b in joined], text,
-            [m.end() for m in _PN_SENT_END_RE.finditer(text)])
+            [m.end() for m in _PN_SENT_END_RE.finditer(text)], locs)
     _PN_CONTEXT_PREP.insert(0, (parsed, prep))
     del _PN_CONTEXT_PREP[_PN_CONTEXT_PREP_SLOTS:]
     return prep
@@ -19567,6 +19650,41 @@ def _pn_quote_shape(site):
     "the same lines" is meaningless but "the same number of sentences" still
     holds."""
     return None if site is None else (None, None, site[2], site[3])
+
+
+def _pn_site_where(parsed, site):
+    """'p.8:16' — where in `parsed` the quote `site` came off, as the key's
+    Where column reports it. "" for a value that could not be quoted.
+
+    The question the column answers is where the CONTEXT stands, so the answer
+    is the passage's own line range and not a list of every occurrence of the
+    value (which is what `_pn_locate` gives a LEAKS row, whose job is to send
+    the operator to each place a leak survived). A quoted sentence on pleading
+    paper runs over two or three gutter lines, so the range is reported as one
+    — collapsed to 'p.8:16-18' where both ends sit on the same printed page,
+    since repeating the page there says nothing.
+
+    Read off the same memoized table `_pn_context_hit` searched, whose entries
+    are the lines the quote was actually built from — an index into `parsed`
+    itself would be off by every blank line the prep dropped."""
+    if site is None:
+        return ""
+    locs = _pn_context_prep(parsed)[4]
+    if not locs:
+        return ""
+    lo = min(max(site[0], 0), len(locs) - 1)
+    hi = min(max(site[1], lo), len(locs) - 1)
+    a, b = locs[lo], locs[hi]
+    first = _pn_where_label(*a)
+    if a == b:
+        return first
+    # The far end abbreviates to its number alone while it shares the near
+    # end's page — "p.8:16-18", and "line 1-3" for a body that has no pages to
+    # share. Only a range that really crosses a page spells the page twice.
+    tail = b[2] if b[0] == "?" else b[1]
+    if a[0] == b[0] and tail:
+        return f"{first}-{tail}"
+    return f"{first}-{_pn_where_label(*b)}"
 
 
 def _pn_context_hit(parsed, needle, width=_PN_CONTEXT_MAX, within=None):
@@ -19611,7 +19729,7 @@ def _pn_context_hit(parsed, needle, width=_PN_CONTEXT_MAX, within=None):
     nl = str(needle).lower()
     if not nl:
         return "", None
-    lines, lowers, text, ends = _pn_context_prep(parsed)
+    lines, lowers, text, ends, _locs = _pn_context_prep(parsed)
     lo_want, hi_want = (within[0], within[1]) if within else (None, None)
     # WHOLE-WORD first, bare substring only as a fallback.
     #
@@ -19840,7 +19958,9 @@ _PN_LEAK_COLUMNS = (
     ("Context", "context", 120),
     ("File", "file", 20),
     ("Type", "type", 22),
-    ("Where (page:line)", "where", 30),
+    # Same wording as the key's column (`_PN_KEY_WHERE_HEADER`) because it is
+    # the same measurement, in the same format — see `_pn_where_label`.
+    (_PN_KEY_WHERE_HEADER, "where", 30),
     ("Notes", "notes", 46),
 )
 _PN_LEAK_HEADERS = tuple(h for h, _k, _w in _PN_LEAK_COLUMNS)
@@ -22452,7 +22572,7 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
     # display name, a detector hit) is included; they do not exist yet when the
     # copy is written.
     if pseudonymizer is not None:
-        pseudonymizer.note_key_context(original, body)
+        pseudonymizer.note_key_context(original, body, pdf_path.name)
         del original
     return True
 
@@ -23071,7 +23191,7 @@ def _write_word_text_version(src_path, text, log, pseudonymizer=None,
         # The key's two Context columns, from this document — the PDF path has
         # always done this; a Word-only folder used to deliver a key with the
         # columns empty except what a prior key carried forward.
-        pseudonymizer.note_key_context(text, body)
+        pseudonymizer.note_key_context(text, body, src_path.name)
         if original_subdir:
             orig_dir = src_path.parent / original_subdir
             orig_path = orig_dir / (src_path.stem + ".txt")
