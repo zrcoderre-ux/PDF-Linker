@@ -2381,6 +2381,11 @@ def _image_ocr_rects(page):
 # on purpose: two OCR engines never agree on every word, and it is the bulk
 # agreeing that says the layer is a reading of this same image.
 _IMG_OCR_READ_MIN = 0.5
+# …and how many words the region's own text layer must already carry before
+# VOLUME alone settles it, with no agreement at all. See the second arm of
+# `_image_ocr_already_read`. Far more than any body line that happens to cross
+# a signature-sized image, far less than any page of a re-read scan.
+_IMG_OCR_READ_WORDS_MIN = 25
 
 
 def _image_ocr_already_read(page, rect, found):
@@ -2401,7 +2406,30 @@ def _image_ocr_already_read(page, rect, found):
     words are echoed elsewhere on the page and there is nothing under the seal,
     while a re-read scan's words are already exactly where we are about to put
     them again. So both rules apply, each to its own failure — the page-wide
-    newness test refuses the seal, this refuses the second reading."""
+    newness test refuses the seal, this refuses the second reading.
+
+    TWO arms, because AGREEMENT is exactly what a bad scan cannot supply. The
+    word-overlap arm settles a legible page, where the two readings say the
+    same thing. But the pages most likely to be read twice are the worst scans
+    in the folder — a 6-point Retail Installment Sale Contract filed as an
+    exhibit — and there the two renders produce different letter-soup for the
+    same ink ("MOSS"/"OSS", "oe573"/"98573", "a‘m yeornanisfrags"). Measured on
+    a delivered export, nine such pages agreed on **0-11%** of their tokens, so
+    the overlap arm could not fire on any of them and every one shipped with
+    its text doubled — each word interleaved with the other reading's
+    ("BuyerBuyer NameName andand AddressAddress"), which is worse than an
+    unread image: a whole-word term cannot match a doubled spelling, so the
+    scrub misses the party names, and the citation parser is blinded.
+
+    So the second arm asks about PRESENCE and VOLUME instead, which needs no
+    agreement: a region whose own text layer already says as much as the OCR
+    just read has plainly been read once already, whatever the two copies call
+    the words. Both conditions are load-bearing. The count comparison alone
+    would refuse a scanned exhibit pasted over a native caption (30 words
+    sitting under an image carrying 500), so the region must already carry at
+    LEAST what the OCR found; and the absolute floor keeps it off the founding
+    case, where a signature block's 215x91 pt image holds three words and any
+    body line crossing it holds a handful — never `_IMG_OCR_READ_WORDS_MIN`."""
     words = _IMG_OCR_WORD_RE.findall(found or "")
     if not words:
         return False
@@ -2409,11 +2437,15 @@ def _image_ocr_already_read(page, rect, found):
         inside = page.get_text("text", clip=rect)
     except Exception:
         return False
-    have = {w.lower() for w in _IMG_OCR_WORD_RE.findall(inside)}
+    present = _IMG_OCR_WORD_RE.findall(inside)
+    have = {w.lower() for w in present}
     if not have:
-        return False
+        return False                 # nothing there: genuinely unread
     same = sum(1 for w in words if w.lower() in have)
-    return same >= _IMG_OCR_READ_MIN * len(words)
+    if same >= _IMG_OCR_READ_MIN * len(words):
+        return True
+    return (len(present) >= len(words)
+            and len(present) >= _IMG_OCR_READ_WORDS_MIN)
 
 
 def _image_ocr_new_words(found, have_low):
@@ -17732,17 +17764,24 @@ def _pn_register_prefix_terms(pseudonymizer, corpus, log):
 # ────────────────────────────────────────────────────────────────────────────
 # Write a UTF-8 text file next to each PDF that has a real text layer, so a
 # text-only copy can be uploaded (e.g. to Claude) instead of page images.
-# Scanned-only PDFs — no native text on any page — are skipped: a text export
-# of them would be empty (or, if OCR ran, lower-fidelity), and it wouldn't save
-# any "image space" because their content only exists as images.
 #
 # The text-vs-scanned decision is made from the NATIVE text (before OCR adds a
 # layer). It extracts whenever the document OPENS with real native text — the
 # common case for an e-filed brief or declaration — regardless of how many
 # scanned exhibit images follow. If the head isn't native (e.g. the file opens
 # on a scanned cover), it falls back to a random sample of the rest, so a text
-# body that starts a few pages in is still caught. A scanned-only PDF matches
-# neither test and is skipped.
+# body that starts a few pages in is still caught.
+#
+# A scanned-only PDF matches neither test, and `process_pdf` then asks the SAME
+# question a second time once OCR has run — see the re-ask there. The original
+# rule skipped such a PDF outright, on the ground that its export "would be
+# empty (or, if OCR ran, lower-fidelity)"; a folder of 28 scanned filings duly
+# came back linked, bookmarked and with no `Text Files` folder at all. Empty is
+# answered by measuring the OCR'd text instead of assuming it, and
+# lower-fidelity is what the low-confidence page banners are for — the same
+# text already drives the citation parse, the linking and the leak scan. What
+# survives is the real case: a scan OCR could not read is still skipped,
+# because it will fail the same measurement afterwards.
 _TEXT_PAGE_MIN_WORDS = 8    # a page with this many words counts as "has text"
 # A head page needs more than this to count as a native document body: enough
 # to clear a native e-filing stamp ("Electronically FILED by ...") that can sit
@@ -17763,7 +17802,8 @@ def _sample_page_indices(n_pages: int):
     return sorted(set(head))
 
 
-def _pdf_has_text_layer(doc, log: logging.Logger) -> bool:
+def _pdf_has_text_layer(doc, log: logging.Logger,
+                        after_ocr: bool = False) -> bool:
     """Decide from the native text (call BEFORE OCR) whether a PDF is
     text-based (worth exporting) or effectively all scanned images (skip).
 
@@ -17773,7 +17813,13 @@ def _pdf_has_text_layer(doc, log: logging.Logger) -> bool:
 
     Fallback: if the head isn't native (a scanned cover, say), sample the rest
     and extract when at least half those pages carry text. Scanned-only PDFs
-    pass neither test."""
+    pass neither test.
+
+    `after_ocr` only labels the log line — the same question is being asked of
+    the text OCR produced (see the re-ask in `process_pdf`), so it must be the
+    same measurement, or the two passes could answer differently about one
+    document."""
+    where = " (after OCR)" if after_ocr else ""
     n = doc.page_count
     if n == 0:
         return False
@@ -17782,7 +17828,7 @@ def _pdf_has_text_layer(doc, log: logging.Logger) -> bool:
         default=0,
     )
     if head_words >= _HEAD_MIN_WORDS:
-        log.info(f"  Text-layer check: native document body "
+        log.info(f"  Text-layer check{where}: native document body "
                  f"(opening page has {head_words} words) - exporting text")
         return True
     sample = _sample_page_indices(n)
@@ -17791,8 +17837,10 @@ def _pdf_has_text_layer(doc, log: logging.Logger) -> bool:
         if len(doc[i].get_text("text").split()) >= _TEXT_PAGE_MIN_WORDS
     )
     frac = text_pages / len(sample)
-    log.info(f"  Text-layer check: head not native (max {head_words} words); "
-             f"{text_pages}/{len(sample)} sampled page(s) have text ({frac:.0%})")
+    log.info(f"  Text-layer check{where}: head not native "
+             f"(max {head_words} words); {text_pages}/{len(sample)} sampled "
+             f"page(s) have text ({frac:.0%})"
+             + (" - exporting text" if frac >= 0.5 else ""))
     return frac >= 0.5
 
 
@@ -23420,9 +23468,30 @@ def process_pdf(pdf_path: Path, log: logging.Logger,
     except Exception as e:
         log.warning(f"  Image-region OCR failed (non-fatal): {e}")
 
+    # …and ASK AGAIN, now that OCR has run. The decision above is made from the
+    # NATIVE text and has to be: OCR adds a text layer to every scanned page,
+    # so asking only afterwards would call every document text-based and the
+    # "scanned-only PDFs are skipped" rule would mean nothing. But a folder of
+    # 28 scanned filings then exported NOTHING — no `Text Files` at all, which
+    # is the deliverable — while that same OCR text was good enough for the
+    # citation parse, the linking, the bookmarks and the leak scan that ran off
+    # it. The skip's stated reason (an export "would be empty (or, if OCR ran,
+    # lower-fidelity)") is answered by asking the same question of the text OCR
+    # actually produced. So the pre-OCR answer STANDS where it was yes, and a
+    # NO is re-asked — never the other way round, so a document already judged
+    # text-based can never lose its export to a later pass. Gated on
+    # `ocr_changed` because an unchanged document cannot answer differently
+    # than it did a moment ago, and re-asking would only log the same line
+    # twice. It is the same measurement either way (`_pdf_has_text_layer`
+    # itself, not a looser stand-in), so the two passes cannot disagree about
+    # what counts as a text layer.
+    if extract_text and not want_text_export and ocr_changed:
+        want_text_export = _pdf_has_text_layer(doc, log, after_ocr=True)
+
     # Export the text version now (after OCR fills any minority scanned pages,
     # before marker injection pollutes the text). Non-fatal and independent of
-    # the linking passes below. Skipped for scanned-only PDFs.
+    # the linking passes below. Skipped for a PDF that is scanned-only AND
+    # whose OCR recovered no usable text either.
     if want_text_export:
         try:
             _write_text_version(pdf_path, doc, log, pseudonymizer, text_subdir,
@@ -25847,7 +25916,9 @@ def main():
         action="store_false",
         help="Do not write a plain-text (.txt) companion next to each "
              "text-based PDF. By default a .txt export is written for every "
-             "PDF that has a real text layer (scanned-only PDFs are skipped).",
+             "PDF that has a real text layer — a scanned one included, once "
+             "OCR has given it one; only a scan OCR could not read is "
+             "skipped.",
     )
     # Pseudonymization — ON by default, applied to the .txt export ONLY, never
     # the PDF.

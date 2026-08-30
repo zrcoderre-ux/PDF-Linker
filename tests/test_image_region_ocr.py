@@ -253,3 +253,123 @@ def test_already_read_is_measured_inside_the_rect(found, expected):
     doc = _scanned_doc()
     rect = fitz.Rect(0, 0, 612, 792)
     assert P._image_ocr_already_read(doc[0], rect, found) is expected
+
+
+# ── …and the guard cannot ask a BAD scan to AGREE with itself ───────────────
+# The word-overlap arm settles a legible page. But the pages most likely to be
+# read twice are the worst scans in the folder, and there two renders of the
+# same ink produce different letter-soup — so the arm that needs agreement is
+# blind on exactly the pages that need it. Measured on a delivered export, nine
+# such pages agreed on 0-11% of their tokens and every one shipped doubled.
+
+# A 6-point Retail Installment Sale Contract, as the filer's OCR layer read it…
+BAD_SCAN = (
+    "RETAIL INSTALLMENT SALE CONTRACT SIMPLE FINANCE CHARGE Dealer Number "
+    "Contract Number oe573 MOSS BROS CDJR MORENO VALLEY You the Buyer and "
+    "Co-Buyer if any may buy the vehicle below for cash or on credit a'm "
+    "yeornanisfrags according to the payment schedule Seor hespoveepokthousehold"
+)
+# …and as a second render of the same ink reads it: the headers survive, the
+# fine print comes apart differently.
+BAD_REREAD = (
+    "RETAIL INSTALLMENT SALE CONTRACT SIMPLE FINANCE CHARGE Dealei Numbei "
+    "Contiact Numbei 98573 OSS BR0S CDJH M0REN0 VALIEY Yau tbe Buyei aud "
+    "Ca-Buyei il auy rnay bny tbe vebicle beIow fai casb ai an ciedit arn "
+    "yenrnanisirags accaidiug ta tbe payrneut scbedule Sear bespaveepakbausebald"
+)
+
+
+def _stub_tesseract_page(monkeypatch, recognised):
+    """`_stub_tesseract` lays its whole reading on ONE line of a 220x90 pt
+    page, which silently truncates a page-sized one — the region then offers no
+    words and is dropped for that reason instead of the one under test. This
+    one returns a full page, wrapped, so the overlay really would land."""
+    def _to_pdf(img, extension="pdf", config=None, timeout=None):
+        out = fitz.open()
+        pg = out.new_page(width=612, height=792)
+        words, y = recognised.split(), 60
+        for i in range(0, len(words), 8):
+            pg.insert_text((40, y), " ".join(words[i:i + 8]), fontsize=11)
+            y += 18
+        data = out.tobytes()
+        out.close()
+        return data
+
+    fake = types.ModuleType("pytesseract")
+    fake.pytesseract = types.SimpleNamespace(tesseract_cmd=None)
+    fake.image_to_pdf_or_hocr = _to_pdf
+    monkeypatch.setitem(sys.modules, "pytesseract", fake)
+    pil = types.ModuleType("PIL")
+    pil.Image = types.SimpleNamespace(open=lambda b: b)
+    monkeypatch.setitem(sys.modules, "PIL", pil)
+    monkeypatch.setitem(sys.modules, "PIL.Image", pil.Image)
+    monkeypatch.setattr(P, "_find_tesseract", lambda: "/usr/bin/tesseract")
+    monkeypatch.setattr(P, "_tesseract_usable", lambda t, l: True)
+
+
+def test_the_stub_reading_survives_the_overlay_round_trip(monkeypatch):
+    """Keeps the two tests below honest: the region must really offer its
+    words, or they would pass for the wrong reason."""
+    _stub_tesseract_page(monkeypatch, BAD_REREAD)
+    import pytesseract
+    with fitz.open(stream=pytesseract.image_to_pdf_or_hocr(None),
+                   filetype="pdf") as probe:
+        found = probe[0].get_text("text")
+    have = {w.lower() for w in P._IMG_OCR_WORD_RE.findall(BAD_SCAN)}
+    assert len(P._image_ocr_new_words(found, have)) >= P._IMG_OCR_MIN_NEW
+
+
+def test_the_two_readings_of_a_bad_scan_do_not_agree():
+    """The premise: the overlap arm has nothing to work with here."""
+    have = {w.lower() for w in P._IMG_OCR_WORD_RE.findall(BAD_SCAN)}
+    words = P._IMG_OCR_WORD_RE.findall(BAD_REREAD)
+    same = sum(1 for w in words if w.lower() in have)
+    assert same < P._IMG_OCR_READ_MIN * len(words)
+
+
+def test_a_bad_scan_is_still_recognised_as_already_read():
+    doc = _scanned_doc(BAD_SCAN)
+    rect = fitz.Rect(0, 0, 612, 792)
+    assert P._image_ocr_already_read(doc[0], rect, BAD_REREAD) is True
+
+
+def test_a_bad_scan_is_not_read_a_second_time(monkeypatch):
+    _stub_tesseract_page(monkeypatch, BAD_REREAD)
+    doc = _scanned_doc(BAD_SCAN)
+    before = doc[0].get_text("text")
+    assert P._ocr_image_regions(doc, log) == 0
+    assert doc[0].get_text("text") == before
+
+
+def test_the_page_does_not_come_back_with_every_word_doubled(monkeypatch):
+    """The symptom in the delivered export: `BuyerBuyer NameName andand
+    AddressAddress` — a doubled spelling no whole-word term can match, so the
+    scrub misses the party names and the citation parser is blinded."""
+    _stub_tesseract_page(monkeypatch, BAD_REREAD)
+    doc = _scanned_doc(BAD_SCAN)
+    before = len(doc[0].get_text("text").split())
+    P._ocr_image_regions(doc, log)
+    assert len(doc[0].get_text("text").split()) == before
+
+
+def test_volume_alone_never_reaches_a_signature_block(monkeypatch):
+    """The floor is what keeps the second arm off the founding case: a body
+    line crossing a 215x91 pt image is a handful of words, never a page."""
+    _stub_tesseract(monkeypatch, SIGNATURE)
+    doc = _doc()
+    rect = fitz.Rect(300, 500, 520, 590)
+    # A body line intrudes into the image's own rect…
+    doc[0].insert_text((305, 520), "and for all purposes stated above herein",
+                       fontsize=9)
+    assert P._image_ocr_already_read(doc[0], rect, SIGNATURE) is False
+    assert P._ocr_image_regions(doc, log) == 1
+    assert "Mackenzie" in doc[0].get_text("text")
+
+
+def test_an_exhibit_pasted_over_a_caption_is_still_read():
+    """The count comparison is load-bearing on its own: a region carrying far
+    MORE than the layer under it has not been read."""
+    doc = _scanned_doc(BAD_SCAN)
+    rect = fitz.Rect(0, 0, 612, 792)
+    much_more = BAD_REREAD + " " + " ".join(f"clause{i}" for i in range(200))
+    assert P._image_ocr_already_read(doc[0], rect, much_more) is False

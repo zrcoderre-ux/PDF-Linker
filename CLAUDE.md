@@ -2173,6 +2173,35 @@ extraction, which is what keeps the numbering.
 
 ## Pleading-page extraction (what reaches the export at all)
 
+**A SCANNED-ONLY PDF is asked TWICE whether it has a text layer**
+(`_pdf_has_text_layer`, and the re-ask in `process_pdf`). The `.txt` companion
+is written only for a PDF with a real text layer, and that decision is made
+from the NATIVE text — it HAS to be, since OCR adds a layer to every scanned
+page, so asking only afterwards would call every document text-based and the
+rule would mean nothing. But a folder of 28 scanned filings then produced no
+`Text Files` folder AT ALL — the deliverable — while every one of them was
+OCR'd, and that same OCR text was good enough for the citation parse (83
+citations on the first file), the linking, the bookmarks and the leak scan that
+ran off it. The log said so twice per file and neither line reads as a failure:
+`Text-layer check: head not native (max 0 words); 0/7 sampled page(s) have text
+(0%)`, then `No text layer detected - running OCR`. The skip's stated reason was
+that such an export "would be empty (or, if OCR ran, lower-fidelity)": EMPTY is
+answered by MEASURING the text OCR produced instead of assuming it, and
+lower-fidelity is what the low-confidence and rebuilt-page banners are for.
+So the pre-OCR answer STANDS where it was yes and a NO is re-asked, never the
+other way round — a document already judged text-based can never lose its
+export to a later pass. Gated on `ocr_changed`, because an unchanged document
+cannot answer differently than it did a moment ago and re-asking would only log
+the same line twice (labelled `(after OCR)` when it is the second pass, so the
+log says which one is speaking). It is the SAME measurement both times —
+`_pdf_has_text_layer` itself, not a looser stand-in — or the two passes could
+disagree about one document. What survives is the case the skip was really for:
+a scan OCR could not read fails the same measurement afterwards and still
+writes nothing. Note the workaround this replaces, and why it was not one: the
+OCR layer is saved into the PDF (`Replaced original`), so a SECOND run of the
+folder did produce the exports — which means the tool's answer depended on how
+many times it had been run.
+
 **Text OUTSIDE the numbered band is still CONTENT** (`_detect_line_anchors`
 Step 7). Step 3 collected body spans only to the RIGHT of the gutter and Step 4
 kept only rows within half a lead of a line number — both written to stop such
@@ -2430,6 +2459,30 @@ survive to fail.
   IDEMPOTENT, which matters because the tool replaces the source PDF: the
   overlay is in the file the next run opens, and until now nothing but our own
   OCR being deterministic stopped a re-run stacking another copy.
+  **…and the guard cannot ask a BAD SCAN to AGREE with itself.** That rule
+  measured word OVERLAP — half of what the OCR read already sitting inside the
+  rect — which settles a legible page and is blind on exactly the pages that
+  need it. The page most likely to be read twice is the WORST scan in the
+  folder (a 6-point Retail Installment Sale Contract filed as an exhibit), and
+  there two renders of the same ink produce different letter-soup: "MOSS" and
+  "OSS", "oe573" and "98573", "a‘m yeornanisfrags". Measured on a delivered
+  export, the nine such pages agreed on **0-11%** of their tokens, so the
+  overlap arm could not fire on one of them and **10 of that file's 18
+  image-OCR pages shipped doubled** — each word interleaved with the other
+  reading's, glued where the two copies sat at the same x and spaced where
+  they did not ("BuyerBuyer NameName andand AddressAddress", "Dealer Dealer
+  NumberNumber"). Worse than an unread image, and the same class of harm the
+  double-strike collapse exists for: a whole-word term cannot match a doubled
+  spelling, so the party names ship in the clear, and the citation parser is
+  blinded. So a SECOND arm asks about PRESENCE and VOLUME, which needs no
+  agreement at all — a region whose own text layer already says as much as the
+  OCR just read has plainly been read once, whatever the two copies call the
+  words. Both of its conditions are load-bearing: the count comparison alone
+  would refuse a scanned exhibit pasted over a native caption (30 words under
+  an image carrying 500), so the region must already carry at least what the
+  OCR found; and `_IMG_OCR_READ_WORDS_MIN` keeps it off the founding case,
+  where a signature block's 215x91 pt image holds three words and any body
+  line crossing it holds a handful — never a page.
 - `_ocr_pdf` OCRs pages with **no** text; `_reocr_garbled_pages` rebuilds pages
   whose text extracts as gibberish (bad encoding). Both **parallelize** render+
   OCR across worker threads (Tesseract is a subprocess → releases the GIL);
