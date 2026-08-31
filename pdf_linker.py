@@ -12082,6 +12082,34 @@ _PN_WELD_INTERIOR_RE = re.compile(
     r"[^\W_]+(?:['’\-][^\W_]+|-[ \t]*\r?\n[ \t]*[^\W_]+)*", re.UNICODE)
 
 
+def _pn_span_is_cased(src, start, end):
+    """True when `src[start:end]` carries at least one CAPITAL letter.
+
+    Required of a SHORT core's match site, in both reduced passes. A party
+    name standing in a weld is capitalised — every observed weld is a caption
+    or a caps run ("HELENRASHO", "AMEZCUApain", "MARIA46.") — while a
+    four-letter core nests inside ordinary PROSE constantly, and prose is
+    lower-case. One delivered export had the word "automatically" rewritten
+    as "lambournematically" through the whole promissory-note exhibit (and
+    "automatic stay" as "lambournematic stay"): the party's own "Auto" was a
+    trusted person token, "auto" sits hard against "matically", and every
+    other screen passed — `_PN_COMMON_WORDS` does not carry "auto", and no
+    word list ever carries the next one (a party token "Cont" turns
+    "contractor continued the work contemporaneously" into
+    "norwoodractor norwoodinued the work norwoodemporaneously", measured).
+    The case of the site is the screen no list has to be kept for: the same
+    reasoning as `_pn_term_is_cap_only`, applied at the one tier that matches
+    inside words. Residual, and the same one the cap-only rule already
+    accepts at the owner's direction: a scan that LOWER-CASES a welded name
+    is no longer cured by its short core — the full name still matches in
+    any casing, and the review scans still surface it.
+    SHORT cores only: an eight-plus-letter core does not coincide inside
+    ordinary vocabulary (that is why `_PN_WELD_CORE_MIN` is 8), and widening
+    the rule would change delivered long-tier behaviour for no measured
+    failure."""
+    return any(c.isupper() for c in src[start:end])
+
+
 def _pn_span_is_unbroken(src, start, end):
     """True when NO printed word boundary lies INSIDE `src[start:end]`.
 
@@ -13491,6 +13519,20 @@ _PN_COURT_STAFF_NAME_FIRST_RE = re.compile(
     r"executive\s+officer(?:\s*/\s*clerk\s+of\s+(?:the\s+)?court)?|"
     r"clerk\s+of\s+(?:the\s+)?court|"
     r"research\s+attorney|law\s+clerk)(?![\w])")
+
+# The deputy's line with its furniture HALF GONE: an OCR'd stamp renders
+# "By: M. Quintanilla, Deputy Clerk" as "Ay: MN. Quintanilla Deputy" — the
+# "B" misread, the comma dropped, the "Clerk" lost to the next line — and the
+# name-first pattern above, which anchors on the comma and the full role,
+# matched nothing, so the deputy's real name shipped on the stamp of every
+# conformed copy. The SANDWICH is the corroboration that survives the
+# garbling: a "By"-shaped lead (B or A — the misread observed) ahead of the
+# name AND "Deputy" hard after it, both required, so prose ("approved by the
+# Deputy") and a date line never qualify. The optional "Clerk" is accepted
+# when it did survive.
+_PN_COURT_STAFF_BY_RE = re.compile(
+    r"\b(?i:[ab]y)[ \t]*[:.][ \t]*(?P<n>" + _PN_LABEL_NAME + r")[ \t]*,?"
+    r"[ \t]+(?i:deputy)(?:[ \t]+(?i:clerk))?(?![\w])")
 
 # A department / courtroom number ("Department 515", "Dept. 515", "Dept 72",
 # "Department No. 515"). Only the LABELED number is faked, keeping the label
@@ -14930,8 +14972,17 @@ class Pseudonymizer:
                 # A bare initial is part of the name even when its letter
                 # spells a word ("A." reduced to base "a" failed the
                 # vocabulary gate, so "A. Latchinian" lost its initial and
-                # the whole signature was skipped).
-                if re.fullmatch(r"[A-Z]\.?", w) or _name_word_ok(w):
+                # the whole signature was skipped). Two capitals WITH the
+                # period is an OCR'd initial too ("MN." for "M."); without
+                # the period it stays refused, or the "PM" of the stamp's
+                # own timestamp would walk into the name above it.
+                # …and the stamp's own CLOCK is the token that sits right
+                # where the walk-back arrives: "12:41 PM David W. Slayton"
+                # captured "PM" into the clerk's name (it reads as a
+                # plausible initials word to `_name_word_ok`).
+                if w.upper() in ("AM", "PM"):
+                    break
+                if re.fullmatch(r"[A-Z]\.?|[A-Z]{2}\.", w) or _name_word_ok(w):
                     words.append(w)
                     continue
                 # A deputy's SURNAME may spell an ordinary word — "By J. So,
@@ -14965,7 +15016,8 @@ class Pseudonymizer:
         # a clerk signs a generated notice ("By: N. Lachikian, Deputy Clerk").
         seen_staff = set()
         for rx, cleaner in ((_PN_COURT_STAFF_RE, _clean_name),
-                            (_PN_COURT_STAFF_NAME_FIRST_RE, _clean_tail)):
+                            (_PN_COURT_STAFF_NAME_FIRST_RE, _clean_tail),
+                            (_PN_COURT_STAFF_BY_RE, _clean_tail)):
             for m in rx.finditer(text):
                 words = cleaner(_pn_trim_declarant(m.group("n")))
                 raw = " ".join(words)
@@ -16108,6 +16160,70 @@ class Pseudonymizer:
             src, n = pat.subn(fake, src)
             if n:
                 rec["count"] += n
+        # A WRAPPED address leaves its LOCAL PART standing alone: a letterhead
+        # block breaks after the name half and the domain never makes it onto
+        # the page, so the export carried a bare "nminassian" on its own line —
+        # the attorney's real initial-plus-surname, one line under the faked
+        # phone numbers, matched by nothing because the address detector needs
+        # the "@". The local part of a TRACKED address is a bound value (the
+        # record exists, the key row exists), so per the cured-not-asked rule
+        # it is cured with the fake's own local part, not put on the worksheet.
+        # OWN-LINE ONLY: that is the shape wrapping produces, and it is what
+        # makes the cure safe — a local part that is ordinary vocabulary
+        # ("accounting@…") never occupies a whole line of prose, and the
+        # length/generic screens guard the rest. Residual, and stated: a local
+        # part standing MID-prose, or split from a domain that lands on the
+        # NEXT line, is not cured — the first is too ambiguous to rewrite and
+        # the second is a different miss (the detector's whitespace tolerance
+        # is horizontal only).
+        lines = src.split("\n")
+        locals_map = {}
+        for (cat, _rl), rec in self.records.items():
+            if cat != "email":
+                continue
+            real, fake = str(rec["real"]), str(rec["fake"])
+            if "@" not in real or "@" not in fake or real == fake:
+                continue
+            local = real.split("@", 1)[0].strip()
+            base = re.sub(r"[^a-z0-9]", "", local.lower())
+            # The vocabulary screens are the union every name tier consults,
+            # plus the department words the mail-header pass keeps separately.
+            if (len(base) < 6 or _pn_is_generic_token(base)
+                    or base in _PN_COMMON_WORDS
+                    or base in _PN_BACKOFFICE_WORDS
+                    or _pn_review_is_neutral(base, ())):
+                continue
+            # …and no list is ever complete ("accounting" is on none of
+            # them), so the CORPUS is the screen of last resort — the
+            # `prune_prose_word_terms` doctrine asked of this one text: a
+            # local part that also stands somewhere else as an ordinary word
+            # (mid-line, away from any "@") is vocabulary, and a firm's
+            # "accounting@" wrapped onto its own line must not license
+            # rewriting a word of prose or a section heading. The cost falls
+            # the safe way: a NAME-built local part ("nminassian") never
+            # stands mid-prose unless it too is the name, and skipping the
+            # cure then leaves a leak the review scans can still see, where
+            # curing a heading would corrupt the document.
+            prose_use = any(
+                local.lower() in ln.lower()
+                and ln.strip().rstrip(".,;:").lower() != local.lower()
+                and "@" not in ln
+                and re.search(r"(?<![\w'’])" + re.escape(local)
+                              + r"(?![\w'’@.])", ln, re.IGNORECASE)
+                for ln in lines)
+            if prose_use:
+                continue
+            locals_map[local.lower()] = (local, fake.split("@", 1)[0], rec)
+        if locals_map:
+            for i, line in enumerate(lines):
+                stripped = line.strip().rstrip(".,;:")
+                hit = locals_map.get(stripped.lower())
+                if hit is None:
+                    continue
+                _local, fake_local, rec = hit
+                lines[i] = line.replace(stripped, fake_local, 1)
+                rec["count"] += 1
+            src = "\n".join(lines)
         return src
 
     def _weld_core(self, rec):
@@ -16198,7 +16314,9 @@ class Pseudonymizer:
                 # replacement and quarantines an export nothing can clean.
                 if (_pn_span_is_unbroken(masked, o_s, o_e)
                         and not keep.overlaps(o_s, o_e)
-                        and (not short or _pn_span_is_welded(masked, o_s, o_e))
+                        and (not short or (_pn_span_is_welded(masked, o_s, o_e)
+                                           and _pn_span_is_cased(masked, o_s,
+                                                                 o_e)))
                         and (spliced
                              or _pn_span_has_hard_seam(masked, o_s, o_e)
                              or (not short
@@ -16289,7 +16407,8 @@ class Pseudonymizer:
                 # standing alone it was the boundary-anchored pass's to make,
                 # and that pass yields to keeps and citations this one cannot
                 # see.
-                if short and not _pn_span_is_welded(src, o_s, o_e):
+                if short and not (_pn_span_is_welded(src, o_s, o_e)
+                                  and _pn_span_is_cased(src, o_s, o_e)):
                     start = k + 1
                     continue
                 # Off a splice-flagged page, only a HARD seam is evidence a
@@ -17656,6 +17775,43 @@ class Pseudonymizer:
         known = self.known_fake_words()
         src = self._mask_protected_citations(_NFKC(text))
         out, seen = [], {s.lower() for _c, s in self.review}
+        # ── A TRUNCATED real beside a fake ──────────────────────────────────
+        # The pair scan below wants two CAPITALISED words, and OCR clips the
+        # lead of a word as readily as anything else: a conformed stamp
+        # shipped "avid HUNTINGDON. Bancroft" — "David" with its D lost,
+        # standing lower-case against two of this run's own stand-ins, so the
+        # half-scrub reads as fully scrubbed and no tier could see it (the
+        # fuzzy sweep needs a Title-case candidate of fold length; "avid" is
+        # four lower-case letters and an ordinary English word besides). The
+        # corroboration that overrides the vocabulary screen is DOUBLE: the
+        # neighbour must be one of OUR person fakes, and the word must be a
+        # tracked name token with only its LEADING one or two characters
+        # missing — the clip a scan actually makes. Reported as the fragment
+        # itself, which is what stands in the export.
+        toks = {t for t in self._tracked_name_token_index()[1] if len(t) >= 5}
+        if toks:
+            for m in re.finditer(r"(?<![\w'’])[a-z]{4,}(?![\w'’])", src):
+                frag = m.group(0)
+                if frag in seen:
+                    continue
+                if not any(t.endswith(frag) and 1 <= len(t) - len(frag) <= 2
+                           for t in toks):
+                    continue
+                # The fake must stand in the same NAME RUN — within the next
+                # few words, an initial allowed between ("avid W. Bancroft"),
+                # or immediately before. A fake further away is ordinary
+                # prose distance and proves nothing about this word.
+                tail = src[m.end():m.end() + 40]
+                head = src[max(0, m.start() - 25):m.start()]
+                nearby = re.findall(r"[A-Z][A-Za-z'’.-]*", tail)[:3] \
+                    + re.findall(r"[A-Z][A-Za-z'’.-]*", head)[-1:]
+                if not any(_pn_word_base(w) in fakes for w in nearby):
+                    continue
+                if not self._finding_is_in_original(frag):
+                    continue
+                seen.add(frag)
+                self.review.append(("half-scrubbed name?", frag))
+                out.append(("half-scrubbed name?", frag))
         # Every ADJACENT pair inside a capitalised run, which `finditer` over a
         # two-word pattern cannot give: the pairs overlap, so a leading role
         # word ("Plaintiff Xiaoxia Ingersoll") consumed the survivor and the
