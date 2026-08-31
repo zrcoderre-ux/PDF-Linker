@@ -10091,6 +10091,183 @@ def _pn_name_fold_dist(a, b):
     return 1
 
 
+# ── A DEGRADED text layer, and what it does to a whole-word term ─────────────
+# A filing is born-digital and extracts cleanly; the EXHIBITS behind it are
+# whatever the parties had. A fax-generation scan is the common one, and its
+# text layer arrives as letter soup — "Wcstlalce", "Weatla.ko", "Wesnuke",
+# "Wi:t;Ulilke", fifteen distinct spellings of the plaintiff's own name across
+# two pages of one delivered export. Every one of them is a LEAK, and every one
+# was invisible: a term matches WHOLE WORDS, so a name the scan mangled is not
+# the word the pattern is looking for, and `surviving_reals` scans with that
+# same pattern, so replacement and detection agree and both are blind. The
+# reduced weld pass cannot reach it either — that pass folds a lost SPACE, not
+# a substituted letter.
+#
+# This is NOT `_text_looks_garbled`, and the two must not be merged. That one
+# gates a DESTRUCTIVE pass (the page's real text is redacted and replaced with
+# 300-dpi guesses), so it is deliberately conservative and has been retuned
+# three times because each retune destroyed a page it misjudged. Measured on
+# the export above, it says False for both fax pages — correctly, since
+# re-OCRing a fax at 300 dpi recovers nothing that is not already there. What
+# is wanted here is the opposite trade: a NON-destructive read of how much of
+# a region is word-shaped, whose worst case is a widened review tolerance and
+# one log line.
+#
+# The measure is the fraction of word tokens that could not be a word of any
+# language the filing is written in: a mark with alphanumerics hard against it
+# on both sides ("miu!e", "d~boor", "o{pro~"), a five-consonant run
+# ("Wcstlalce", "roodificntiClllS"), or no vowel at all. The mark class is
+# deliberately narrow — `.` `,` `:` `;` `/` `-` `&` `@` and `()`/`[]` are all
+# exempt, because an abbreviation, a pin cite ("45:12-16"), a time stamp, a
+# statutory subdivision ("585(a)") and this tool's own ink-form checkbox all
+# put one inside an alphanumeric run. Each signal is cheap and each is
+# aggregated over hundreds of tokens, which is why the threshold can be loose
+# where a per-word guess could not be. Measured:
+#
+#     corpus                                    ratio
+#     this repo's own notes (CLAUDE.md)         0.002
+#     the export's born-digital pages           0.000 - 0.020
+#     its two fax-generation exhibit pages      0.042, 0.076
+#
+# An interior CASE FLIP was measured as a fourth signal and REJECTED. It is a
+# real mark of a degraded scan ("DeLLler", "SKiK", "TlTLE") but it contributed
+# only 6 of 63 flags on the worst page here, and it fires on every ordinary
+# CamelCase word an exhibit carries — PayPal, iPhone, eBay, YouTube, and the
+# surname particles McDonald / MacBook / DiGiorno / LaSalle that
+# `_page_looks_spliced` already learned to exempt for the same reason. A small
+# gain against a whole false-positive family is the trade this project's own
+# ratio has been retuned three times to avoid.
+#
+# `()` and `[]` are exempt from the interior-mark test on purpose: a statutory
+# subdivision ("585(a)", "2.257(a)") and this tool's own ink-form checkbox
+# rendering ("[X]", "[ ]") both put one inside an alphanumeric run, and an
+# ink-form page read as degraded on that alone.
+#
+# Residual, and stated: a genuine English word with a five-consonant run
+# ("strengths", "twelfths") and a Slavic surname with one ("Borshchov") each
+# count as a mangled token. Neither is a verdict — the measure is a ratio over
+# a whole block, and a page needs four such words in every hundred and twenty
+# before it reads as degraded at all.
+#
+# Cost is ~58 ms on a 311 KB body, paid ONCE — `Pseudonymizer._degraded_spans`
+# memoizes the alternating pair the way the citation mask does, so the fuzzy
+# sweep and the end-of-file note share the one pass.
+_PN_DEGRADED_RATIO = 0.03
+# Below this a block is too short to judge — the same reasoning
+# `_text_looks_garbled` applies to its own 200-character floor.
+_PN_DEGRADED_MIN_TOKENS = 40
+# Blocks are measured on LINE boundaries at roughly this many word tokens. A
+# degraded exhibit sits inside a clean filing, so a document-wide average
+# dilutes it to nothing; the leak is local and so is the measurement.
+_PN_DEGRADED_BLOCK_TOKENS = 120
+
+_PN_WORDISH_RE = re.compile(r"\S*[A-Za-z]\S*")
+# `\w` and not `[0-9A-Za-z]` on every side of this, which is the whole care in
+# it: an ACCENTED LATIN letter is a word character and never a mark. Written
+# against ASCII the class read "ó" as an interior mark, so "Alarcón" and
+# "Rodríguez" scored as mangled — and a Los Angeles filing is full of them, so
+# a page of Spanish surnames would have read as a degraded scan.
+_PN_MANGLE_MARK_RE = re.compile(r"(?<=\w)[^\w'’.,:;/&@()\[\]\s-](?=\w)")
+_PN_CONSONANT_RUN_RE = re.compile(r"[bcdfghjklmnpqrstvwxz]{5,}", re.I)
+_PN_VOWELS = frozenset("aeiouyAEIOUYàáâãäå"
+                       "èéêëìíîï"
+                       "òóôõöùúûü")
+
+
+def _pn_token_is_mangled(tok):
+    """True when a word token could not be a word — the per-token half of
+    `_pn_degraded_spans`. Deliberately shape-only: no gazetteer is consulted,
+    because the words a degraded page produces are by construction words no
+    list has ever heard of."""
+    if _PN_MANGLE_MARK_RE.search(tok):
+        return True
+    core = tok.strip(".,:;()[]'\"“”‘’-")
+    if len(core) < 4 or not core.isalpha():
+        return False
+    if not any(c in _PN_VOWELS for c in core):
+        return True
+    return bool(_PN_CONSONANT_RUN_RE.search(core))
+
+
+def _pn_degraded_ratio(text):
+    """The fraction of `text`'s word tokens that could not be words, or None
+    when there are too few tokens to judge."""
+    toks = _PN_WORDISH_RE.findall(text)
+    if len(toks) < _PN_DEGRADED_MIN_TOKENS:
+        return None
+    return sum(1 for t in toks if _pn_token_is_mangled(t)) / len(toks)
+
+
+def _pn_degraded_spans(text):
+    """`[(start, end)]` — the character spans of `text` whose text layer reads
+    as degraded, measured block by block on line boundaries. Empty for an
+    ordinary document, which is what keeps this free on the common case."""
+    spans, start, toks = [], 0, 0
+    pos = 0
+    for line in text.splitlines(keepends=True):
+        toks += len(_PN_WORDISH_RE.findall(line))
+        pos += len(line)
+        if toks >= _PN_DEGRADED_BLOCK_TOKENS:
+            r = _pn_degraded_ratio(text[start:pos])
+            if r is not None and r >= _PN_DEGRADED_RATIO:
+                spans.append((start, pos))
+            start, toks = pos, 0
+    if toks:
+        r = _pn_degraded_ratio(text[start:pos])
+        if r is not None and r >= _PN_DEGRADED_RATIO:
+            spans.append((start, pos))
+    # Adjacent blocks describe one degraded exhibit; merge so a value sitting
+    # on a block seam is inside the span rather than on its edge.
+    merged = []
+    for s, e in spans:
+        if merged and s <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], e)
+        else:
+            merged.append((s, e))
+    return merged
+
+
+# How much wider than the MINTING fold the review scan may reach. The two
+# questions look identical and their costs are orders of magnitude apart:
+# `_pn_name_fold_dist` decides whether to MINT a stand-in — a wrong answer
+# silently renames a person and ships — while `fuzzy_survivor_scan` decides
+# whether to ASK the operator, and a wrong answer costs one worksheet row. The
+# scan inherited the mint's threshold, so it was calibrated by the mint's risk
+# rather than its own, and a name two slips out went unreported.
+#
+# ONE edit wider by default. Measured against a deliberately over-large tracked
+# set (802 tokens; a real case tracks 50-300): on 42 KB of clean legal text the
+# rows go 4 -> 10, and on 223 KB of this repo's own capitalised technical prose
+# 12 -> 57. TWO wider is not affordable in clean text — the same corpora give
+# 38 and 226, which is a worksheet nobody reads — so the second edit is spent
+# only where the run can SEE the text layer is degraded, and there it is nearly
+# free: 26 rows across the two fax pages above, six of them the plaintiff's own
+# name.
+_PN_SCAN_FOLD_BUMP = 1
+_PN_SCAN_FOLD_BUMP_DEGRADED = 2
+# …and the second edit is licensed by the TRACKED name, not by the survivor.
+# `_pn_name_fold_dist`'s own reasoning is that a longer token plausibly carries
+# more independent typos, and three slips inside a five-letter token is 60% of
+# it — on the export above a five-letter party word ("Sales") reached "Dealer",
+# "Deale" and "Iller" that way, three of the five noise rows on the degraded
+# pages, while every real hit came off an eight-letter one. Measured on the
+# TRACKED token because that is the spelling the run is sure of; the survivor
+# is the mangled half and may have lost characters outright ("Wcatlak").
+_PN_SCAN_DEGRADED_MIN = 8
+
+
+def _pn_scan_fold_dist(word, tracked, degraded=False):
+    """The edit distance at which the REVIEW sweep will ask about `word` being
+    a mangled spelling of the tracked value `tracked` — the minting fold
+    (`_pn_name_fold_dist`) plus what a report can afford and a substitution
+    cannot. NOT symmetric: `tracked` is the spelling the run is sure of, and
+    it alone licenses the wider reach inside a degraded region."""
+    bump = _PN_SCAN_FOLD_BUMP
+    if degraded and len(tracked) >= _PN_SCAN_DEGRADED_MIN:
+        bump = _PN_SCAN_FOLD_BUMP_DEGRADED
+    return _pn_name_fold_dist(word, tracked) + bump
+
+
 def _pn_fake_domain(domain, registry=None):
     """A stable, injective fake host for a real domain. Common public providers
     (gmail, yahoo, outlook, …) pass through unchanged — they carry no identity.
@@ -11412,6 +11589,32 @@ _PN_TOKEN_CATS = frozenset({"person-token", "entity-token", "short-name"})
 # while the CASE rule above reaches every bare token — it costs a real surname
 # nothing, because a filing capitalises one wherever it stands.
 _PN_ENTITY_TOKEN_CATS = frozenset({"entity-token", "short-name"})
+
+# The record categories `fuzzy_survivor_scan` measures an output word against —
+# every NAME-shaped tracked value, entities included. `declarant` rides with
+# the person categories; `case_number`, `address`, `email` and the rest are
+# structured identifiers, whose survivors are `reid_scan`'s business and whose
+# shapes an edit-distance fold says nothing useful about.
+_PN_FUZZY_TARGET_CATS = frozenset({
+    "person", "person-token", "declarant", "display-name",
+    "entity", "entity-token", "short-name",
+})
+# …of which these are the ENTITY side, screened with `_pn_is_generic_token`
+# before a word may become a fuzzy target: a firm name is built out of ordinary
+# vocabulary ("Financial", "Solar", "Lending", "Law") and a person's is not,
+# the same asymmetry `_PN_WELD_SHORT_CORE_CATS` draws for the same reason.
+#
+# That screen is PARTIAL and knowingly so — it was written to decide bare-token
+# eligibility, and a block of corporate-form vocabulary passes it ("Services",
+# "Holdings", "Group", "Partners", "Industries", "Insurance", "Automotive").
+# Measured with all sixteen of those admitted as targets: ZERO rows on 42 KB of
+# clean legal text, five on 223 KB of this repo's own capitalised technical
+# prose, which is the tolerance the other REVIEW tiers already run at. The
+# candidate side carries the rest of the weight (`_pn_review_is_neutral`), and
+# a row here costs one worksheet line and gates nothing — so this stays one
+# screen shared with the term builder rather than growing a second word list
+# that could answer the same question differently.
+_PN_FUZZY_ENTITY_CATS = _PN_ENTITY_TOKEN_CATS | frozenset({"entity"})
 
 
 def _pn_term_is_cap_only(category):
@@ -16899,29 +17102,112 @@ class Pseudonymizer:
         return out
 
     def _tracked_name_token_index(self):
-        """{3-gram: {token}} over every tracked PERSON name token, plus the set
+        """{3-gram: {token}} over every tracked NAME token, plus the set
         itself. The index is what makes the fuzzy sweep affordable: comparing
         every output word against every tracked token is a product, and a
         single edit inside a token of length >= `_PN_NAME_FOLD_MIN` always
         leaves at least one 3-gram intact, so a shared shingle is a necessary
         condition for being within the fold distance. Cached; `_add_terms`
-        drops the cache."""
+        drops the cache.
+
+        **An ENTITY is a party, and it was not in here.** The set was the
+        PERSON categories alone, so the one scan built to catch a mangled
+        survivor could not see a company name at all — and a company is the
+        plaintiff in most of what this tool processes. One delivered export
+        carried fifteen distinct fax-scan spellings of its plaintiff's own
+        name across two exhibit pages ("Wcstlalce", "Weatla.ko", "Wesnuke",
+        "Wi:t;Ulilke") while the clean spelling was faked on every other page,
+        and not one of them was a candidate here: the target was never in the
+        index, so the distance was never measured. Nothing about the scan's
+        reasoning is person-specific — it compares an output word against the
+        REAL values this case tracks, and a distinctive company name is at
+        least as distinctive as a surname.
+
+        That is NOT the reasoning `name_fake_words` follows, and the two must
+        not be confused. There the set is our own STAND-INS, and an entity's
+        fake word ("Relations", "Operations") sits beside ordinary capitalised
+        prose all the time, so scoping it to people is right. Here the risk is
+        the mirror image: the GENERIC words a firm name is built from —
+        "Services", "Financial", "Law", "Automotive" — would make ordinary
+        vocabulary a fuzzy target throughout the brief. `_pn_is_generic_token`
+        is the screen the term builder already applies before a bare token may
+        exist at all, so both ends ask one question; the FULL name still
+        contributes its distinctive words."""
         if getattr(self, "_fuzzy_idx", None) is not None:
             return self._fuzzy_idx
         toks, idx = set(), {}
         for (cat, _rl), rec in self.records.items():
-            if cat not in ("person", "person-token", "declarant",
-                           "display-name"):
+            if cat not in _PN_FUZZY_TARGET_CATS:
                 continue
+            entity = cat in _PN_FUZZY_ENTITY_CATS
             for w in str(rec["real"]).split():
                 base = _pn_word_base(w)
                 if len(base) < _PN_NAME_FOLD_MIN or not base.isalpha():
+                    continue
+                if entity and _pn_is_generic_token(base):
                     continue
                 toks.add(base)
                 for i in range(len(base) - 2):
                     idx.setdefault(base[i:i + 3], set()).add(base)
         self._fuzzy_idx = (idx, toks)
         return self._fuzzy_idx
+
+    def _degraded_spans(self, text):
+        """`_pn_degraded_spans` memoized the way `_mask_protected_citations`
+        is, and for the same reason: two consumers ask about the same body
+        (the fuzzy sweep, then the end-of-file note), and the block alternates
+        between an export and its column-ordered twin, so a single slot is
+        evicted before it is read. TWO entries, capped, so it cannot grow with
+        the folder.
+
+        Keyed on the TEXT ALONE and deliberately not on `_scan_state_key()`:
+        unlike the keep spans and the citation mask, degradation is a property
+        of the characters on the page and of nothing this run decided, so an
+        operator's KEEP or a reloaded key cannot change the answer."""
+        memo = getattr(self, "_degraded_memo", None)
+        if memo is None:
+            memo = self._degraded_memo = {}
+        spans = memo.get(text)
+        if spans is None:
+            spans = _pn_degraded_spans(text)
+            if len(memo) >= 2:
+                memo.clear()
+            memo[text] = spans
+        return spans
+
+    def degraded_text_note(self, text):
+        """One sentence naming the regions of an export whose TEXT LAYER reads
+        as degraded, or None when it all reads cleanly.
+
+        A whole-word term cannot match a name the scan mangled — that is what
+        `_pn_build_pattern` builds, and `_surviving_records` scans with the
+        same pattern, so replacement and detection agree and BOTH are blind.
+        The fuzzy sweep reaches one or two slips past that and no further. So
+        a fax-generation exhibit is a region the scrub structurally cannot
+        clean, and until now nothing said so: the export was delivered
+        looking exactly like the pages the tool really did read, and fifteen
+        spellings of the plaintiff's own name rode out inside it.
+
+        The same doctrine as the low-dpi, re-OCR and ink-form banners — an
+        inferred reading is never presented as equal to a read one — except
+        that here the tool did not produce the degraded text and cannot
+        repair it. What it can do is stop implying the page was scrubbed.
+        REVIEW only: it gates nothing, mints nothing and moves no fake."""
+        body = _NFKC(text)
+        spans = self._degraded_spans(body)
+        if not spans:
+            return None
+        where = []
+        for s, e in spans:
+            head = next((ln.strip() for ln in body[s:e].splitlines()
+                         if ln.strip()), "")
+            where.append(head[:60] if head else f"offset {s}")
+        share = sum(e - s for s, e in spans) / max(len(body), 1)
+        return (f"{len(spans)} region(s), ~{share:.0%} of the text, read as a "
+                f"degraded text layer (a fax or a poor scan): whole-word "
+                f"matching cannot reach a name the scan mangled, so names "
+                f"there may stand unscrubbed and unreported. Starting at: "
+                + "; ".join(repr(w) for w in where[:4]))
 
     def fuzzy_survivor_scan(self, text):
         """A word in the FINISHED output that is one OCR slip away from a real
@@ -16941,14 +17227,27 @@ class Pseudonymizer:
         variants the tool is CONFIDENT about are already registered as terms
         (`_pn_name_variants`); this is the net under them.
 
-        Fold distance scales with token length exactly as the registry's own
-        typo fold does (`_pn_name_fold_dist`), so two genuinely different
-        short surnames are never linked."""
+        Fold distance scales with token length as the registry's own typo
+        fold does, so two genuinely different short surnames are never
+        linked — but it is the fold's distance PLUS what a report can afford
+        and a substitution cannot (`_pn_scan_fold_dist`), and one edit wider
+        again inside a region whose text layer reads as degraded
+        (`_pn_degraded_spans`). A fax exhibit's spellings sit two and three
+        slips out, which is past anything the minting fold may reach; the
+        block measure is the positive evidence that makes the wider reach
+        cheap in exactly the place it is needed."""
         idx, toks = self._tracked_name_token_index()
         if not toks:
             return []
         known = self.known_fake_words()
-        src = self._mask_protected_citations(_NFKC(text))
+        body = _NFKC(text)
+        src = self._mask_protected_citations(body)
+        # Measured on the UNMASKED body — degradation is a property of the
+        # page, and a masked citation is blanked to spaces, which would read
+        # as a region with no tokens at all. Safe to mix the offsets because
+        # `_mask_uncached` replaces character for character, so the mask is
+        # length-preserving and a match's span means the same in both.
+        degraded = _PnSpanIndex(self._degraded_spans(body))
         out, seen = [], {s.lower() for _c, s in self.review}
         for m in re.finditer(r"(?<![\w'’])[A-Z][A-Za-z'’-]+(?![\w'’])", src):
             word = m.group(0)
@@ -16963,9 +17262,10 @@ class Pseudonymizer:
             near = set()
             for i in range(len(base) - 2):
                 near |= idx.get(base[i:i + 3], set())
+            deg = degraded.overlaps(m.start(), m.end())
             hit = next((t for t in sorted(near)
                         if _pn_edit_distance_within(
-                            base, t, _pn_name_fold_dist(base, t),
+                            base, t, _pn_scan_fold_dist(base, t, deg),
                             min_len=_PN_NAME_FOLD_MIN)), None)
             if hit is None:
                 continue
@@ -22481,6 +22781,12 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
             shown = "; ".join(f"{c}: {s}" for c, s in review[:8])
             log.warning(f"  Pseudonymization REVIEW on {pdf_path.name}: "
                         f"identifier(s) to check before sharing ({shown}).")
+        # A region the scrub structurally could not clean is worth saying out
+        # loud even when every scan came back quiet — especially then.
+        degraded = pseudonymizer.degraded_text_note(body)
+        if degraded:
+            log.warning(f"  Pseudonymization REVIEW on {pdf_path.name}: "
+                        f"{degraded}")
 
         log.info(f"  Pseudonymize: leak scans done in "
                  f"{time.time() - _pn_t0:.0f}s; locating findings")
@@ -23133,6 +23439,10 @@ def _write_word_text_version(src_path, text, log, pseudonymizer=None,
             shown = "; ".join(f"{c}: {s}" for c, s in review[:8])
             log.warning(f"  Pseudonymization REVIEW on {src_path.name}: "
                         f"identifier(s) to check before sharing ({shown}).")
+        degraded = pseudonymizer.degraded_text_note(body)
+        if degraded:
+            log.warning(f"  Pseudonymization REVIEW on {src_path.name}: "
+                        f"{degraded}")
 
         # Location points into the export; Context quotes the ORIGINAL — the
         # rule `_pn_leak_context` states, shared with the PDF path.
