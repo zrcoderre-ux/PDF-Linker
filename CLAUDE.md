@@ -1636,8 +1636,7 @@ the party), so its row stays reversible.
   process server's name, bound and scrubbed everywhere the page spelled it
   correctly, still shipped as "Michale Rodgers" and "Miachael Rodgers". The
   near spellings the tool is CONFIDENT about are already terms
-  (`_pn_name_variants`); this is the net under them, at the same length-scaled
-  fold distance the registry's own typo fold uses (`_pn_name_fold_dist`).
+  (`_pn_name_variants`); this is the net under them.
   REPORTED, never repaired — a near-miss substitution would rename a cited
   authority the moment the OCR mangled one, which is the trade the whole method
   refuses. Affordable via a 3-gram index over tracked tokens: a single edit in
@@ -1646,6 +1645,99 @@ the party), so its row stays reversible.
   product. The citation mask is now memoized (one entry, keyed on the text)
   because three scans over one export ask for the same masked body and the mask
   runs the whole citation parser.
+  **…and the net had a party-shaped hole in it and a threshold that was not
+  its own.** A delivered export carried FIFTEEN distinct fax-scan spellings of
+  its own plaintiff's name across two exhibit pages — "Wcstlalce",
+  "Weatla.ko", "Wesnuke", "Wi:t;Ulilke", "Wcrtlake" — while the clean spelling
+  was faked on every other page: a half-scrubbed document naming the party, and
+  nothing reported one of them. Three causes, each closed at its own end.
+  (1) `_tracked_name_token_index` held the PERSON categories alone, so an
+  ENTITY plaintiff was not a candidate at all — the distance was never
+  measured because the target was never in the index, and a company is the
+  plaintiff in most of what this tool processes. Nothing in the scan's
+  reasoning is person-specific: it compares an output word against the REAL
+  values this case tracks, and a distinctive company name is at least as
+  distinctive as a surname. That is NOT `name_fake_words`' rule and must not be
+  confused with it — there the set is our own STAND-INS, and an entity's fake
+  word ("Relations", "Operations") sits beside ordinary capitalised prose all
+  the time. The mirror-image risk here is the GENERIC words a firm name is
+  built from, so the entity side is screened with `_pn_is_generic_token`
+  (`_PN_FUZZY_TARGET_CATS` / `_PN_FUZZY_ENTITY_CATS`) — the same screen the
+  term builder applies before a bare token may exist at all, so both ends ask
+  one question. That screen is partial and knowingly so: sixteen corporate-form
+  words pass it ("Services", "Holdings", "Group", "Industries"), and admitting
+  all sixteen as targets measured ZERO rows on 42 KB of clean legal text and
+  five on 223 KB of this repo's own prose — the tolerance the other REVIEW
+  tiers already run at, and cheaper than a second word list that could answer
+  the same question differently.
+  (2) The scan borrowed `_pn_name_fold_dist`, which is the MINTING fold: it
+  decides whether to hand two spellings one stand-in, where a wrong answer
+  silently renames a person and ships. This scan decides whether to ASK, where
+  a wrong answer costs one worksheet row. Sharing the threshold calibrated the
+  report by the mint's risk. `_pn_scan_fold_dist` is the fold plus one, which
+  is measured affordable (rows go 4 → 10 on 42 KB of clean legal text against a
+  deliberately over-large 802-token target set, 12 → 57 on this repo's notes)
+  where plus TWO is not (38 and 226 — a worksheet nobody reads). The minting
+  fold itself is UNMOVED, deliberately: a folded fake is what a delivered key
+  pins, and widening it would move bindings a re-run without its key
+  re-derives.
+  (3) The second edit is spent only where the run can SEE the text layer is
+  degraded (`_pn_degraded_spans`), and it is licensed by the TRACKED name
+  rather than by the survivor (`_PN_SCAN_DEGRADED_MIN`, so `_pn_scan_fold_dist`
+  is deliberately NOT symmetric): the fold's own reasoning is that a longer
+  token plausibly carries more independent typos, and three slips inside a
+  five-letter token is 60% of it — a five-letter party word ("Sales") reached
+  "Dealer", "Deale" and "Iller" that way, three of the five noise rows on the
+  degraded pages, while every real hit came off an eight-letter one. The
+  tracked spelling is the one the run is sure of; the survivor is the mangled
+  half and may have lost characters outright ("Wcatlak"). On the delivered
+  export the whole change turns nine rows where there were none, EIGHT of them
+  the plaintiff's own name. Residual, and stated: spellings four or more slips
+  out stay out of reach by this route, and no distance or similarity screen
+  reaches them — `difflib` needs a ratio of 0.67 to catch "Wcsllaxe", which
+  reports 150+ rows on this repo's own prose. What covers those is the
+  degraded-region line below, which needs no per-word guess at all.
+- **A DEGRADED text layer is a region the scrub CANNOT clean, and the run says
+  so** (`_pn_degraded_spans`, `_pn_token_is_mangled`, `degraded_text_note`). A
+  filing is born-digital and extracts cleanly; the EXHIBITS behind it are
+  whatever the parties had, and a fax generation is the common one. A term
+  matches WHOLE WORDS, and `_surviving_records` scans with that same pattern,
+  so replacement and detection agree and BOTH are blind to a name the scan
+  mangled; the reduced weld pass folds a lost SPACE, not a substituted letter.
+  The export was therefore delivered looking exactly like the pages the tool
+  really did read. Same doctrine as the low-dpi, re-OCR and ink-form banners —
+  an inferred reading is never presented as equal to a read one — except that
+  here the tool did not produce the degraded text and cannot repair it; what it
+  can do is stop implying the page was scrubbed.
+  **This is NOT `_text_looks_garbled` and the two must never be merged.** That
+  one gates a DESTRUCTIVE pass (the page's real text is redacted and replaced
+  with 300-dpi guesses), so it is deliberately conservative and has been
+  retuned three times because each retune destroyed a page it misjudged — and
+  it says False for both fax pages here, correctly, since re-OCRing a fax
+  recovers nothing that is not already there. This is the opposite trade: a
+  NON-destructive read whose worst case is a widened review tolerance and one
+  log line. The measure is the fraction of word tokens that could not be words
+  — an interior mark with alphanumerics hard against it on both sides
+  ("miu!e", "d~boor"), a five-consonant run ("Wcstlalce"), or no vowel at all —
+  aggregated over hundreds of tokens, which is why the threshold can be loose
+  where a per-word guess could not be. Measured: this repo's own notes 0.002,
+  the export's born-digital pages 0.000–0.020, its two fax pages 0.042 and
+  0.076, against a cut at `_PN_DEGRADED_RATIO` 0.03. The mark class is narrow
+  on purpose — `.` `,` `:` `;` `/` `-` `&` `@` and `()`/`[]` are exempt,
+  because an abbreviation, a pin cite ("45:12-16"), a time stamp, a statutory
+  subdivision ("585(a)") and this tool's OWN ink-form checkbox all put one
+  inside an alphanumeric run. An interior CASE FLIP was measured as a fourth
+  signal and REJECTED: it contributed 6 of 63 flags on the worst page and fires
+  on every ordinary CamelCase word an exhibit carries (PayPal, iPhone, eBay,
+  and the surname particles McDonald/DiGiorno `_page_looks_spliced` already
+  exempts for the same reason). Measured LOCALLY, in blocks of
+  `_PN_DEGRADED_BLOCK_TOKENS` on line boundaries: a degraded exhibit sits
+  inside a clean filing, so a document-wide average dilutes it to nothing and
+  the leak is local. ~58 ms on a 311 KB body, paid ONCE — memoized on the
+  alternating pair the way the citation mask is, so the fuzzy sweep and the
+  end-of-file note share the one pass, and keyed on the TEXT ALONE rather than
+  `_scan_state_key()` because degradation is a property of the characters on
+  the page and of nothing this run decided.
   (worksheet tab `LEAKS`; the old `pdf_linker_leaks.xlsx` name is still READ so
   a folder triaged under a prior version keeps its decisions). Columns lead
   with the flagged **Value**, its **Fix?** decision and the **Context** the
