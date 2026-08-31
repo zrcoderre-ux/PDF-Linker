@@ -9021,6 +9021,30 @@ def _pn_append_person_terms(terms, raw, source, registry):
         terms.append(_PnTerm("person", var_real, var_fake, whole_word=True,
                              case_sensitive=False, priority=2, source=source,
                              derived=True))
+    # A roster, an account table and a docket write a person SURNAME-FIRST
+    # with no comma — "BOND SELBORNE", "SAVERNAKE POMEROJ", "DENG XIAOXIA" —
+    # and the docket-roster rule that "word order costs nothing because every
+    # token registers" has exactly one exception: a surname that is also a
+    # GENERIC word ("Bond", "Branch", "Store") is deliberately refused a bare
+    # token, so the reversed row was covered by nothing and one delivered
+    # exhibit table shipped the customer's real surname beside his faked given
+    # name ("BOND SELBORNE" — every other row in the table consistent). The
+    # reversed SPELLING is registered instead, with the correspondingly
+    # reversed fake, so the two orders stay one person forward and reverse
+    # word by word through the same token rows. Two-word names only — that is
+    # the shape a table writes, and permuting a longer name would be inventing
+    # spellings no document carries. Marked `derived`: a spelling this tool
+    # invents earns a key row by MATCHING, never merely by existing.
+    words = raw.split()
+    fake_words = fake_full.split()
+    if (len(words) == 2 and len(fake_words) == 2
+            and all(len(_pn_word_base(w)) >= 2 and _pn_is_name_token(w)
+                    for w in words)
+            and words[0].lower() != words[1].lower()):
+        terms.append(_PnTerm("person", f"{words[1]} {words[0]}",
+                             f"{fake_words[1]} {fake_words[0]}",
+                             whole_word=True, case_sensitive=False,
+                             priority=2, source=source, derived=True))
     for real_tok, fake_tok, _is_surname in bare:
         # A generic word ("Legal" of a firm name, "Warranty", "Beach" of
         # "Long Beach") must never be a free-standing token — it rewrites
@@ -10168,6 +10192,7 @@ _PN_WORDISH_RE = re.compile(r"\S*[A-Za-z]\S*")
 # "Rodríguez" scored as mangled — and a Los Angeles filing is full of them, so
 # a page of Spanish surnames would have read as a degraded scan.
 _PN_MANGLE_MARK_RE = re.compile(r"(?<=\w)[^\w'’.,:;/&@()\[\]\s-](?=\w)")
+_PN_URLISH_TOKEN_RE = re.compile(r"(?i)https?://|(?<![\w.])www\.")
 _PN_CONSONANT_RUN_RE = re.compile(r"[bcdfghjklmnpqrstvwxz]{5,}", re.I)
 _PN_VOWELS = frozenset("aeiouyAEIOUYàáâãäå"
                        "èéêëìíîï"
@@ -10179,6 +10204,13 @@ def _pn_token_is_mangled(tok):
     `_pn_degraded_spans`. Deliberately shape-only: no gazetteer is consulted,
     because the words a degraded page produces are by construction words no
     list has ever heard of."""
+    # A URL is a word-shaped token FULL of interior marks by design — the
+    # authorities appendix this tool itself writes ends every export with
+    # lines like "...xhtml?lawCode=CCP&sectionNum=585.", and the `?` and `=`
+    # read as mangle marks, so a JUD-100 short enough for its appendix to
+    # dominate a block reported its own verification links as a degraded fax.
+    if _PN_URLISH_TOKEN_RE.search(tok):
+        return False
     if _PN_MANGLE_MARK_RE.search(tok):
         return True
     core = tok.strip(".,:;()[]'\"“”‘’-")
@@ -10243,8 +10275,35 @@ def _pn_degraded_spans(text):
 # only where the run can SEE the text layer is degraded, and there it is nearly
 # free: 26 rows across the two fax pages above, six of them the plaintiff's own
 # name.
+# What a degraded scan renders a LETTER as, read back: the reduction the
+# debris tier of `fuzzy_survivor_scan` compares on ("Pre1tlge" -> "preltlge",
+# "Va-iq11ez" -> "vaiqllez"). A reading aid for a REVIEW pass, not a minting
+# map, so unlike `_PN_CONFUSABLES` it need not be an involution — several
+# digits legitimately read as one letter.
+_PN_DIGIT_LETTERS = {"0": "o", "1": "l", "2": "z", "3": "e", "4": "a",
+                     "5": "s", "6": "b", "7": "t", "8": "b", "9": "g"}
 _PN_SCAN_FOLD_BUMP = 1
 _PN_SCAN_FOLD_BUMP_DEGRADED = 2
+# A capitalised token that may carry debris (digits, an interior mark), for
+# the debris tier — and the evidence that it does: a digit anywhere, or a
+# PERIOD with alphanumerics hard against it on both sides. An interior HYPHEN
+# is deliberately NOT debris on its own: a compound surname ("Sedgwick-
+# Linford") carries one legitimately — including this run's own compound
+# FAKES, which must never be reported back as misspelled names — while every
+# observed debris spelling carries a digit or a speck period too
+# ("Va-iq11ez", "Dca.ler", "Weatla.ko").
+_PN_DEBRIS_CAND_RE = re.compile(
+    r"(?<![\w'’])[A-Z][A-Za-z0-9'’.\-]*[A-Za-z0-9](?![\w'’])")
+_PN_DEBRIS_MARK_RE = re.compile(r"[0-9]|(?<=[A-Za-z0-9])\.(?=[A-Za-z0-9])")
+# A contact label on a form or letterhead line, tolerating the garbling the
+# label itself picks up ("Addresii:", "ADDRBSS:", "Dca.ler Address:"). The
+# value taken is the run from the first digit-bearing token to the end of the
+# line, trimmed of fill-rule junk and of a second label the line ran into.
+_PN_CONTACT_LABEL_RE = re.compile(
+    r"(?i)\b(?:tel|telephone|phone|fax|addr[a-z]{2,6}|ssn)\b[ \t]*[.:;]")
+_PN_CONTACT_VALUE_RE = re.compile(r"[^\s]*\d[^\n]*")
+_PN_CONTACT_TRIM_RE = re.compile(
+    r"(?i)(?:[\s_.,:;~·▪-]|\b(?:tel|telephone|phone|fax|ssn|addr[a-z]{2,6})\b)*$")
 # …and the second edit is licensed by the TRACKED name, not by the survivor.
 # `_pn_name_fold_dist`'s own reasoning is that a longer token plausibly carries
 # more independent typos, and three slips inside a five-letter token is 60% of
@@ -12945,9 +13004,32 @@ _PN_DECL_TITLE_RE = re.compile(
     r"(?i:(?:supplemental|amended|further|second|third|fourth|reply|corrected|"
     r"joint|videotaped|certified|continued|volume)\s+)?"
     r"(?i:(?:declaration|deposition)\s+of)\s+(" + _PN_DECL_NAME + r")")
+# The comma after the name is OPTIONAL and "the undersigned" may stand between
+# the name and the verb: a court form prints the anchor as
+# "I, ______________, the undersigned declare and certify", and a filled copy
+# extracts with the typed name where the rule was and the second comma
+# swallowed — "I, Maria Ramos the undersigned declare". Requiring the comma
+# refused exactly the declaration form this anchor exists for. Safe to relax
+# because the NAME group still demands capitalised name words and
+# `_pn_is_personlike_declarant` still screens the capture ("I, THE UNDERSIGNED,
+# declare" captures two stopwords and is dropped).
 _PN_DECL_SELF_RE = re.compile(
-    r"\bI,\s+(" + _PN_DECL_NAME + r")\s*,\s*(?i:declare|hereby|do\s+hereby|"
-    r"state|being\s+duly\s+sworn)")
+    r"\bI,\s+(" + _PN_DECL_NAME + r")\s*,?[\s~]*"
+    r"(?:(?i:the\s+undersigned)[\s,]*)?"
+    r"(?i:declare|hereby|do\s+hereby|state|being\s+duly\s+sworn)")
+
+# …and the same anchor with the FILL-IN RULE still visible. A declaration form
+# rules the name slot ("I, ______________, the undersigned declare"), the
+# declarant types onto the rule, and extraction interleaves the two — one
+# delivered export read "I, ___ l_ria_Ra_m_o_s _____ ~ the undersigned
+# declare": the declarant's own name, on page one, in the clear, and matched
+# by nothing — a whole-word term cannot land across the underscores, and the
+# clean-name anchor above sees no name words at all. The capture is bounded to
+# one line and the verb run is the corroboration, exactly as above.
+_PN_DECL_RULE_RE = re.compile(
+    r"\bI,[ \t]*(?P<n>[^\n,]{1,80}?)[ \t]*,?[\s~]*"
+    r"(?:(?i:the[ \t]+undersigned)[ \t,]*)?"
+    r"(?i:declare|hereby|do[ \t]+hereby|state|being[ \t]+duly[ \t]+sworn)")
 
 # A declaration is cited by its declarant's name — "Smith Decl.", "Alarcón
 # Declaration, ¶ 4", "Yu Dec." — which is the single highest-value place a
@@ -13206,6 +13288,24 @@ _PN_LABEL_RES = (
     # rejects a bare party role and a protected locality.
     re.compile(r"(?P<n>" + _PN_LABEL_NAME + r")[ \t]*,[ \t]*"
                r"(?i:an[ \t]+individual|individually)(?![A-Za-z])"),
+    # A court form's signature block prints the label UNDER the typed name:
+    #     Narine Kinatyan                           feYA
+    #     (TYPE OR PRINT NAME)         (SIGNATURE OF DECLARANT)
+    # The label states that the line above it is a typed NAME — corroboration
+    # as strong as a role prefix, printed by the Judicial Council itself — and
+    # nothing read it, so the CIV-100 item-6 mailing declarant (an assistant or
+    # paralegal, on no party template, anchored by no role, no "Declaration
+    # of", no "I, X, declare") shipped in the clear in three exports of one
+    # batch. The name line may trail scanner debris from the signature scrawl
+    # ("feYA", "i}"), so only the LEADING name run is taken; one intervening
+    # line of non-word debris (the ">" the form's signature arrow extracts as)
+    # is stepped over; and an OCR'd paren is tolerated on the label ("{TYPE OR
+    # PRINT NAME)"). An unfilled form has no capitalised name run above the
+    # label — "Date:" and form prose fail the two-word screen — so a blank
+    # signature block yields nothing.
+    re.compile(r"(?m)^[ \t]*(?P<n>" + _PN_LABEL_NAME + r")[^\n]*\n"
+               r"(?:[^\w\n]*\n){0,2}"
+               r"[ \t]*[({\[]?[ \t]*(?i:type[ \t]+or[ \t]+print[ \t]+name)"),
     # The POS-010 field that names the server: "Person who served papers:"
     # then its "a. Name:" sub-field. A bare "Name:" label is far too broad to
     # anchor on; the compound is not.
@@ -13376,8 +13476,12 @@ _PN_COURT_STAFF_RE = re.compile(
 # rule above cannot see this shape, so the clerk's name was never registered
 # as court personnel; it rode into the review sheet as a "possible person
 # name" on every notice of appeal instead of being scrubbed.
+# The comma-to-role gap admits ONE newline: the e-filing stamp is a narrow
+# box, so it wraps exactly there — "David W. Slayton,\nExecutive Officer/
+# Clerk of Court" — and a same-line-only pattern never saw the Executive
+# Officer at all. Same reasoning and same bound as `_PN_LABEL_GAP`.
 _PN_COURT_STAFF_NAME_FIRST_RE = re.compile(
-    r"(?P<n>" + _PN_LABEL_NAME + r")[ \t]*,[ \t]*"
+    r"(?P<n>" + _PN_LABEL_NAME + r")[ \t]*,[ \t]*\n?[ \t]*"
     r"(?i:judicial\s+assistant|courtroom\s+assistant|court(?:room)?\s+clerk|"
     r"deputy\s+clerk|court\s+reporter|bailiff|court\s+attendant|"
     # The e-filing stamp names the Executive Officer/Clerk of Court and the
@@ -14818,18 +14922,40 @@ class Pseudonymizer:
             ("By N. Lachikian") that _clean_name's cut-at-first-bad-word rule
             would reject whole."""
             raw = re.sub(r"\s+", " ", name).strip().strip(".,;:").split()
-            words = []
-            for w in reversed(raw):
+            words, vocab_used = [], False
+            for i, w in enumerate(reversed(raw)):
                 w = re.sub(r"['’][sS]$", "", w)
+                if not w:
+                    break
                 # A bare initial is part of the name even when its letter
                 # spells a word ("A." reduced to base "a" failed the
                 # vocabulary gate, so "A. Latchinian" lost its initial and
                 # the whole signature was skipped).
-                if not w or not (re.fullmatch(r"[A-Z]\.?", w)
-                                 or _name_word_ok(w)):
-                    break
-                words.append(w)
+                if re.fullmatch(r"[A-Z]\.?", w) or _name_word_ok(w):
+                    words.append(w)
+                    continue
+                # A deputy's SURNAME may spell an ordinary word — "By J. So,
+                # Deputy Clerk" shipped on every stamped page of one batch
+                # because "So" failed the vocabulary gate, while "A. Mowbray"
+                # beside it was faked. The site is structured (the name is
+                # bounded by "By" ahead and ", <role>" behind), so the screen
+                # protects nothing here; admitted only in the SURNAME position,
+                # Title-case, once, and only into a name that also carries a
+                # real anchor (an initial or a name-shaped word) — a run-on
+                # capture ("Been Filed") has no anchor and still dies.
+                if (i == 0 and not vocab_used and w.isalpha() and len(w) >= 2
+                        and w[:1].isupper() and w[1:].islower()
+                        and not _pn_is_role_token(w)
+                        and _pn_word_base(w) not in _PN_JUDGE_STOP):
+                    words.append(w)
+                    vocab_used = True
+                    continue
+                break
             words.reverse()
+            if vocab_used and not any(
+                    re.fullmatch(r"[A-Z]\.?", w) or _name_word_ok(w)
+                    for w in words):
+                return []
             if words and _pn_is_protected_locality(" ".join(words)):
                 return []
             return words
@@ -14899,7 +15025,7 @@ class Pseudonymizer:
             self._own_fakes.add(fake.lower().rstrip(" .,;:"))
         return rec
 
-    def _detector_cands(self, text, offset=0):
+    def _detector_cands(self, text, offset=0, degraded=None):
         out = []
         for cat in self.detectors:
             regex, faker = _PN_DETECTORS[cat]
@@ -14913,6 +15039,27 @@ class Pseudonymizer:
                 # head of every intact kept URL as a phantom folder-wide leak.
                 if cat == "url" and (_pn_url_whitelisted(match)
                                      or _pn_url_fragmentary(match)):
+                    continue
+                # A SCHEMELESS domain match is a guess about SHAPE — a word
+                # that happens to end in ".org" — and inside a region whose
+                # text layer reads as degraded the shape evidence is
+                # worthless: a fax page renders ordinary prose as exactly
+                # such words, and one delivered export had the middle of
+                # "covenants" replaced with a fake domain ("cuve!postbay.org
+                # and agreem~ts"), OUR stand-in written into the document's
+                # own sentence. That is the failure the whole method refuses
+                # — a wrongly rewritten word costs more than a value left
+                # standing — so the candidate is dropped and no record is
+                # minted (a record would gate delivery via `surviving_reals`;
+                # the url/domain REVIEW class reads this same regex over the
+                # output, so the soup still earns a worksheet row and an
+                # operator `yes` can still fake it). A match carrying its
+                # scheme or a leading "www." states it is a URL rather than
+                # merely being shaped like one, and stays faked even there.
+                if (cat == "url" and degraded is not None
+                        and not re.match(r"(?i)https?://|www\.", match)
+                        and degraded.overlaps(m.start() + offset,
+                                              m.end() + offset)):
                     continue
                 # A bare 10-digit run that is really an OCR'd date ("06/06/2025"
                 # -> "0610612025") must not be faked as a phone; the date stays.
@@ -15659,7 +15806,9 @@ class Pseudonymizer:
         # The repeat pass runs AFTER _display_name_cands so a name first met in
         # this very text is already a record and its other occurrences are
         # covered on the same pass, not only from the next page onward.
-        cands = (self._detector_cands(text) + self._term_cands(text)
+        degraded = _PnSpanIndex(self._degraded_spans(text))
+        cands = (self._detector_cands(text, degraded=degraded)
+                 + self._term_cands(text)
                  + self._display_name_cands(text)
                  + self._display_name_repeat_cands(text))
         return self._substitute(
@@ -15684,9 +15833,14 @@ class Pseudonymizer:
         joined = "\n".join(bodies)
         cands = (self._term_cands(joined) + self._display_name_cands(joined)
                  + self._display_name_repeat_cands(joined))
+        # The degraded verdict is asked of the JOINED page, not the single
+        # line: a line is far too short for the block measure to say anything
+        # (`_PN_DEGRADED_MIN_TOKENS`), and the per-line offsets are already in
+        # the joined text's coordinate space.
+        degraded = _PnSpanIndex(self._degraded_spans(joined))
         off = 0
         for b in bodies:
-            cands += self._detector_cands(b, off)
+            cands += self._detector_cands(b, off, degraded=degraded)
             off += len(b) + 1
         out = self._substitute(
             joined, cands, reflow=True,
@@ -16874,6 +17028,122 @@ class Pseudonymizer:
                 out.append((c, s))
         return out
 
+    def degraded_contact_scan(self, text):
+        """A CONTACT LABEL whose value the detectors could not read, inside a
+        region whose text layer is degraded — "TEL: rAX: _,.___._ (228)
+        424-3-575", "ADDRESS: l440S Whorto1t I..n". The label is printed form
+        furniture and survives garbling far better than the value beside it
+        does, so it is the one anchor left standing on a fax page: the real
+        phone number and the guarantor's street shipped in one delivered
+        export with every detector silent, because a detector matches a SHAPE
+        and the scan had broken the shape ("424-3-575" splits the last four
+        digits; "l440S" opens the house number with a letter).
+
+        REPORTED, never repaired — repairing would mean guessing which marks
+        are digits, and a wrong guess writes a wrong phone number into the
+        deliverable. The value is the digit-bearing run after the label, RAW,
+        so the row is locatable and a typed replacement or `yes` fixes exactly
+        what is there. A value carrying one of this run's own fakes is skipped
+        (the detector that DID match already replaced it, and reporting our
+        own output is a row no answer can clear). Degraded regions only: on a
+        clean page an unmatched labelled value is ordinary furniture — an
+        empty "FAX:" line — and the detectors' own misses there are the
+        review scans' business."""
+        body = _NFKC(text)
+        spans = self._degraded_spans(body)
+        if not spans:
+            return []
+        degraded = _PnSpanIndex(spans)
+        findings, local = [], set()
+        pos = 0
+        for line in body.split("\n"):
+            start, pos = pos, pos + len(line) + 1
+            if not degraded.overlaps(start, pos - 1):
+                continue
+            lm = _PN_CONTACT_LABEL_RE.search(line)
+            if not lm:
+                continue
+            tail = line[lm.end():]
+            dm = _PN_CONTACT_VALUE_RE.search(tail)
+            if not dm:
+                continue
+            value = dm.group(0)
+            # Trim the fill-rule junk and any second label the line ran into.
+            value = _PN_CONTACT_TRIM_RE.sub("", value).strip()
+            # A phone or SSN is digits, so fewer than four says the line is a
+            # section number or a date fragment. An ADDRESS is mostly letters
+            # — its garbled house number may keep a single digit ("2UIHB Pass
+            # Rd") — so there the gate is a digit plus a street-shaped rest.
+            digits = sum(c.isdigit() for c in value)
+            addressish = lm.group(0).lower().lstrip().startswith("addr")
+            if digits < (1 if addressish else 4):
+                continue
+            if addressish and len(value.split()) < 2:
+                continue
+            low = value.lower()
+            if low in local:
+                continue
+            if any(f and f in low for f in self._own_fakes):
+                continue        # the detector already replaced this one
+            if not self._finding_is_in_original(value):
+                continue
+            local.add(low)
+            findings.append(("unscrubbed contact info?", value))
+        seen = {(c, s.lower()) for c, s in self.review}
+        out = []
+        for c, s in findings:
+            if (c, s.lower()) not in seen:
+                seen.add((c, s.lower()))
+                self.review.append((c, s))
+                out.append((c, s))
+        return out
+
+    def form_rule_name_scan(self, text):
+        """A name TYPED ONTO A FILL-IN RULE at the declaration's own anchor —
+        "I, ___ l_ria_Ra_m_o_s _____ ~ the undersigned declare". The rule's
+        underscores interleave with the typed name at extraction, so no
+        whole-word term can ever match it, the clean-name harvest sees no name
+        words, and the declarant of the filing shipped on page one in the
+        clear with every scan silent.
+
+        REPORTED, never repaired, and reported RAW: which letters are the name
+        and which are the rule is a question only a reader can settle
+        ("l_ria_Ra_m_o_s" is Maria Ramos to a person and soup to a pattern),
+        and the raw spelling is what stands in the export, so the row is
+        locatable and a `yes` or a typed replacement fakes exactly what is
+        there. Only the `I, … declare` anchor is read: a fill-in TITLE ("as
+        the __ D_e_a_le_r C_o_m_p_lia_n_ce M_a_n_ag_e_r __ ,") is a job, not
+        a name, and a row for it is pure triage cost. A BLANK rule — an
+        unfilled form, nothing typed — carries no letters and yields nothing.
+        """
+        src = self._mask_protected_citations(_NFKC(text))
+        findings, local = [], set()
+        for m in _PN_DECL_RULE_RE.finditer(src):
+            raw = m.group("n").strip()
+            # Trim the rule's own furniture from the edges; what is left is
+            # the typed entry (with the rule still threaded through it).
+            value = raw.strip("_~ \t-")
+            letters = re.sub(r"[\W\d_]", "", value)
+            if "_" not in value:
+                continue        # a clean name — the harvest anchor's business
+            if len(letters) < 4:
+                continue        # a blank or near-blank rule: nothing was typed
+            low = value.lower()
+            if low in local:
+                continue
+            if not self._finding_is_in_original(value):
+                continue
+            local.add(low)
+            findings.append(("name on a form rule?", value))
+        seen = {(c, s.lower()) for c, s in self.review}
+        out = []
+        for c, s in findings:
+            if (c, s.lower()) not in seen:
+                seen.add((c, s.lower()))
+                self.review.append((c, s))
+                out.append((c, s))
+        return out
+
     def honorific_name_scan(self, text):
         """A capitalised word standing behind a TITLE in the finished output —
         "Mr. Spellman", "Ms. Delacroix", "Dr. Ardeshirpour" — that is neither
@@ -17276,6 +17546,56 @@ class Pseudonymizer:
             seen.add(base)
             self.review.append(("misspelled name?", word))
             out.append(("misspelled name?", word))
+        # ── The candidate carrying the scanner's own DEBRIS ─────────────────
+        # The tier above wants a clean Title-case word, and a degraded scan
+        # does not produce those: it renders "Vasquez" as "Va-iq11ez" and
+        # "Prestige" as "Pre1tlge" — an interior digit or mark inside a letter
+        # run — so the very region the widened tolerance exists for was full
+        # of words the candidate pattern refused to look at. Inside a degraded
+        # region ONLY, a debris-bearing candidate is admitted and compared on
+        # its LETTER REDUCTION (digits read back through `_PN_DIGIT_LETTERS`,
+        # marks dropped). Two rules differ from the clean tier, each licensed
+        # by the debris itself — a clean word never carries an interior digit,
+        # so the "Dealer"~"sales" noise family does not exist here:
+        #   * no `_PN_SCAN_DEGRADED_MIN` floor on the tracked name, or a
+        #     seven-letter surname ("Vasquez", "Wharton") stays unreachable;
+        #   * no 3-gram screen — the debris mangles every trigram window
+        #     ("vaiqllez" shares none with "vasquez"), and the screen exists
+        #     to make a per-word scan affordable on EVERY page where this
+        #     tier runs only on a degraded region's debris words. Direct
+        #     comparison there measured ~0.1 s against a deliberately
+        #     over-large 802-token set.
+        # Reported RAW, so the row is locatable in the export and a `yes`
+        # fakes exactly what is there. Measured on the export that reported
+        # this: eleven rows, among them the signatory ("Va-iq11ez"), the
+        # dealership ("Pre1tlge") and the guarantor's street ("Whorto1t").
+        if degraded:
+            ordered = sorted(toks)
+            for m in _PN_DEBRIS_CAND_RE.finditer(src):
+                raw = m.group(0)
+                core = raw.strip(".,:;()[]'\"-")
+                if not _PN_DEBRIS_MARK_RE.search(core):
+                    continue
+                if not degraded.overlaps(m.start(), m.end()):
+                    continue
+                base = "".join(c.lower() if c.isalpha()
+                               else _PN_DIGIT_LETTERS.get(c, "")
+                               for c in core if c.isalnum())
+                if len(base) < _PN_NAME_FOLD_MIN or raw.lower() in seen:
+                    continue
+                if (base in known or _pn_word_is_own_fake(core, known)
+                        or _pn_review_is_neutral(base, known)):
+                    continue
+                bump = _PN_SCAN_FOLD_BUMP_DEGRADED
+                hit = next((t for t in ordered
+                            if _pn_edit_distance_within(
+                                base, t, _pn_name_fold_dist(base, t) + bump,
+                                min_len=_PN_NAME_FOLD_MIN)), None)
+                if hit is None or not self._finding_is_in_original(raw):
+                    continue
+                seen.add(raw.lower())
+                self.review.append(("misspelled name?", raw))
+                out.append(("misspelled name?", raw))
         return out
 
     def name_fake_words(self):
@@ -21168,9 +21488,33 @@ def _pn_retire_kept_key_terms(terms, decisions, registry, log):
     keeps = {vl: d for vl, d in decisions.items() if _pn_decision_is_keep(d)}
     if not keeps:
         return terms, []
+    # A DERIVED spelling is the SAME party as its parent — the surname-first
+    # table order ("Bellweather Marcus"), an abbreviated middle name ("Steven
+    # W. Burt"), a wrap-split hyphen form — so a keep on the parent must
+    # retire it too, or the variant survives as a live full-party term: it
+    # keeps faking the value the operator said to leave, and its words count
+    # as "another party still carries the word", so the bare tokens are never
+    # orphaned either and the keep is defeated twice over. A variant names no
+    # parent, so kinship is read off its WORDS: every multi-letter word of the
+    # derived real inside one kept value's word set (single letters dropped —
+    # an initial abbreviates a word the parent spells out). The residual —
+    # a different party's variant whose words happen to nest inside a kept
+    # value's — costs that variant's own match, never a wrongly kept value.
+    def _kept_as_parent(t):
+        words = {w.lower() for w in _PN_WORD_RE.findall(str(t.real))
+                 if len(w) > 1}
+        if not words:
+            return None
+        for vl, d in keeps.items():
+            if words <= {w.lower() for w in _PN_WORD_RE.findall(vl)}:
+                return d
+        return None
+
     retired, gone_words, kept_terms = [], set(), []
     for t in terms:
         d = keeps.get(str(t.real).lower())
+        if d is None and getattr(t, "derived", False):
+            d = _kept_as_parent(t)
         if d is None:
             kept_terms.append(t)
             continue
@@ -22763,6 +23107,11 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         # tiers are structurally blind to.
         review = list(review) + pseudonymizer.honorific_name_scan(body)
         review = list(review) + pseudonymizer.mail_header_name_scan(body)
+        # A name typed onto a form's fill-in rule, which no term can match.
+        review = list(review) + pseudonymizer.form_rule_name_scan(body)
+        # A labelled phone/address the detectors could not read, on a page
+        # whose text layer is degraded.
+        review = list(review) + pseudonymizer.degraded_contact_scan(body)
         # High-recall tier: role-anchored name shapes in the output that are
         # neither our fakes nor common words — the "unknown name" net.
         review = list(review) + pseudonymizer.unknown_name_scan(body)
@@ -23431,6 +23780,8 @@ def _write_word_text_version(src_path, text, log, pseudonymizer=None,
         review += pseudonymizer.narrative_name_scan(body)
         review += pseudonymizer.honorific_name_scan(body)
         review += pseudonymizer.mail_header_name_scan(body)
+        review += pseudonymizer.form_rule_name_scan(body)
+        review += pseudonymizer.degraded_contact_scan(body)
         review += pseudonymizer.unknown_name_scan(body)
         review += pseudonymizer.fuzzy_survivor_scan(body)
         review += pseudonymizer.half_scrubbed_scan(body)

@@ -837,6 +837,50 @@ the party), so its row stays reversible.
   refused. Missing these is how a Reply's Exhibit A shipped a prior case's
   whole party list — or worse, HALF of each name, wherever one token happened
   to be keyed from elsewhere.
+- **A court form prints its label UNDER the typed name, and a fill-in rule
+  prints THROUGH it.** The CIV-100's item-6 mailing declarant — an assistant,
+  on no template, anchored by no role, no title and no "I, X, declare" —
+  stands above a `(TYPE OR PRINT NAME)` label, and nothing read a TRAILING
+  label on the line below, so the name shipped in the clear in three exports
+  of one batch. The label is the corroboration (a `_PN_LABEL_RES` anchor:
+  leading name run only, one line of signature-scrawl debris stepped over, an
+  OCR'd brace tolerated, and an unfilled block yields nothing because form
+  furniture fails the two-word screen). The declaration's own anchor has the
+  second form of the same problem: the form rules the name slot
+  ("I, ____________, the undersigned declare"), so `_PN_DECL_SELF_RE` now
+  tolerates the swallowed comma and the "the undersigned" filler — and where
+  the TYPED name came out interleaved with the rule ("I, ___ l_ria_Ra_m_o_s
+  _____ ~ the undersigned declare": the declarant of a delivered filing, page
+  one, in the clear), `form_rule_name_scan` REPORTS the raw entry. Which
+  letters are the name and which are the rule is a question only a reader can
+  settle, the raw spelling is what is locatable in the export, and a blank
+  rule (no letters typed) yields nothing. The `I, … declare` anchor only — a
+  fill-in TITLE ("as the __ D_e_a_le_r C_o_m_p_lia_n_ce M_a_n_ag_e_r __") is
+  a job, not a name, and a row for it is pure triage cost.
+- **A TABLE writes a person SURNAME-FIRST, and one class of surname had no
+  coverage there.** The docket-roster rule above — word order costs nothing
+  because every token registers — has exactly one exception: a surname that
+  is also a GENERIC word ("Bond", "Branch", "Store") is deliberately refused
+  a bare token, so "BOND SELBORNE" shipped a customer's real surname beside
+  his faked given name in an exhibit's account table while every other row
+  came out consistent. `_pn_append_person_terms` now registers the REVERSED
+  spelling of a two-word person name as a `derived` term with the
+  correspondingly reversed fake, so the two orders read as one person forward
+  and reverse word for word through the same token rows. Two-word names only
+  — that is the shape a table writes, and permuting a longer name would be
+  inventing spellings no document carries. No pool word is drawn (the fake is
+  the words already minted), so a delivered folder re-runs byte-identically
+  except where the reversed row was the leak being fixed.
+  **…and a DERIVED spelling retires with its parent.** A keep (`no`) on the
+  parent retired the parent's terms while the reversed spelling survived as a
+  live full-party term — it kept faking the kept value, and its words counted
+  as "another party still carries the word", so the bare tokens were never
+  orphaned either: the keep defeated twice over. `_pn_retire_kept_key_terms`
+  now reads kinship off the WORDS (every multi-letter word of a derived real
+  inside one kept value's word set — single letters dropped, since an initial
+  abbreviates a word the parent spells out), which also retires the
+  abbreviated-middle-name and wrap-split variants the same keep always meant
+  to cover.
 - **A TABLE OF AUTHORITIES is never a SOURCE of terms, and neither is the
   inside of a citation.** A table of authorities lists published decisions, so
   nothing in it is a value of THIS case and everything in it is a name the tool
@@ -866,6 +910,23 @@ the party), so its row stays reversible.
   citation spans for every LABEL-ANCHORED class, so a bar number or a
   production stamp inside a cite is not read as this case's. The DOCKET is the
   one exception, and it now runs the other way — see the next bullet.
+- **A SCHEMELESS domain match is a guess about SHAPE, and inside a degraded
+  region the shape evidence is worthless.** The bare-domain branch of the url
+  detector is anchored on nothing but "a word that ends in .org", and a fax
+  page renders ordinary prose as exactly such words: one delivered export had
+  the middle of "covenants" replaced with a fake domain ("cuve!postbay.org
+  and agreem~ts") — OUR stand-in written into the document's own sentence,
+  the wrongly-rewritten-word failure the whole method refuses.
+  `_detector_cands` now takes the degraded-span index from both apply paths
+  (the joined page in `apply_lines`, since a single line is far too short for
+  the block measure) and drops a schemeless url candidate inside a degraded
+  span — no fake, and no record either, because a record would quarantine the
+  file via `surviving_reals` over text the tool refuses to touch. Not silent:
+  the url/domain REVIEW class reads the same regex over the output, so the
+  soup still earns a worksheet row and an operator `yes` can still fake it. A
+  match carrying its scheme or a leading "www." states that it is a URL
+  rather than merely being shaped like one, and stays faked even there; on a
+  clean page nothing changes.
 - **A DOCKET NUMBER is faked, citation or not** (`_pn_docket_numbers`,
   `_PN_CITE_EXEMPT_CATS`, `_punch_own_casenos`). A docket identifies a MATTER,
   so every one of them is faked, including inside a protected citation span.
@@ -938,7 +999,18 @@ the party), so its row stays reversible.
   the filing signs "By: N. Lachikian, Deputy Clerk" and was covered, while the
   Executive Officer/Clerk of Court signs with a role
   `_PN_COURT_STAFF_NAME_FIRST_RE` did not carry, so that name shipped on every
-  stamped page.
+  stamped page. Two more stamp shapes have since shipped and are closed the
+  same way. The stamp is a NARROW BOX, so it wraps between the name's comma
+  and the role ("David W. Slayton,\nExecutive Officer/Clerk of Court") and a
+  same-line-only pattern never saw the Executive Officer at all — the
+  comma-to-role gap now admits one newline, `_PN_LABEL_GAP`'s own bound. And a
+  deputy's SURNAME may spell an ordinary word: "By J. So, Deputy Clerk" failed
+  the vocabulary gate and shipped on every stamped page of one batch
+  ("A. Mowbray" beside it was faked, which is what gave it away), so
+  `_clean_tail` admits one Title-case vocabulary word in the SURNAME position
+  — the site is structured, bounded by "By" ahead and ", <role>" behind — and
+  only into a name that also carries a real anchor (an initial or a
+  name-shaped word), so a run-on capture still dies.
 - **A fake is never the name of an AUTHORITY the corpus cites.** "Stockton" is
   in the name pool and the corpus cited *Stockton Theatres, Inc. v. Palermo*
   (1956) 47 Cal.2d 469. The citation survives the forward pass — that is what
@@ -1690,13 +1762,51 @@ the party), so its row stays reversible.
   "Dealer", "Deale" and "Iller" that way, three of the five noise rows on the
   degraded pages, while every real hit came off an eight-letter one. The
   tracked spelling is the one the run is sure of; the survivor is the mangled
-  half and may have lost characters outright ("Wcatlak"). On the delivered
-  export the whole change turns nine rows where there were none, EIGHT of them
-  the plaintiff's own name. Residual, and stated: spellings four or more slips
-  out stay out of reach by this route, and no distance or similarity screen
-  reaches them — `difflib` needs a ratio of 0.67 to catch "Wcsllaxe", which
-  reports 150+ rows on this repo's own prose. What covers those is the
-  degraded-region line below, which needs no per-word guess at all.
+  half and may have lost characters outright ("Wcatlak").
+  **…and a degraded scan's spellings are not clean Title-case words**, which
+  is all the candidate pattern would look at — so the very region the widened
+  tolerance exists for was full of words the scan refused to see ("Mark
+  Va-iq11ez", "Pre1tlge", "Whorto1t": an interior digit or mark inside a
+  letter run). Inside a degraded region ONLY, a DEBRIS-bearing candidate
+  (`_PN_DEBRIS_CAND_RE` / `_PN_DEBRIS_MARK_RE` — a digit, or a speck period
+  with alphanumerics hard against it; an interior HYPHEN is deliberately not
+  debris, or every compound surname and this run's own compound fakes would
+  qualify) is admitted and compared on its LETTER REDUCTION
+  (`_PN_DIGIT_LETTERS`, digits read back as the letters a scan renders them
+  from). Two rules differ from the clean tier, each licensed by the debris
+  itself, since a clean word never carries an interior digit and the
+  "Dealer"~"sales" noise family therefore does not exist here: no
+  `_PN_SCAN_DEGRADED_MIN` floor on the tracked name (or a seven-letter
+  "Vasquez" stays unreachable), and no 3-gram screen — the debris mangles
+  every trigram window ("vaiqllez" shares none with "vasquez"), and the
+  screen exists to make a per-word scan affordable on EVERY page where this
+  tier runs only on a degraded region's debris words; direct comparison there
+  measured ~0.1 s against a deliberately over-large 802-token set. Reported
+  RAW, so the row is locatable and a `yes` fakes exactly what is there. On
+  the delivered export the two tiers together turn nineteen rows where there
+  were none — the Westlake family, the signatory, the dealership and the
+  guarantor's street among them. Residual, and stated: spellings four or more
+  slips out, and a value that appears ONLY mangled (nothing tracked to
+  compare against), stay out of reach by this route. What covers those is the
+  degraded-region line below, which needs no per-word guess at all, and the
+  labelled-contact sweep beside it.
+  **A CONTACT LABEL survives garbling far better than the value beside it**
+  (`degraded_contact_scan`). "TEL: rAX: _,.___._ (228) 424-3-575" and
+  "ADDRESS: l440S Whorto1t I..n" shipped a real phone number and the
+  guarantor's street with every detector silent — a detector matches a SHAPE
+  and the scan had broken the shape — and with nothing tracked to fuzzy-match
+  against, since the values appear nowhere clean. The label is the one anchor
+  left standing, so inside a degraded region a labelled value the detectors
+  did not read earns a REVIEW row: the digit-bearing run after the label,
+  RAW, trimmed of fill-rule junk and of a second label the line ran into. A
+  phone or SSN needs four digits (fewer is a section number); an ADDRESS is
+  mostly letters, so there the gate is one digit plus a street-shaped rest
+  ("2UIHB Pass Rd"). A value carrying one of this run's own fakes is skipped
+  — the detector that DID match already replaced it, and reporting our own
+  output is a row no answer can clear. Degraded regions only: on a clean page
+  an empty "FAX:" line is ordinary furniture. Residual, and stated: an
+  unlabelled continuation line ("Biloxi, MS 39.532" under the street) is not
+  reached; the row above it is what sends the operator to the block.
 - **A DEGRADED text layer is a region the scrub CANNOT clean, and the run says
   so** (`_pn_degraded_spans`, `_pn_token_is_mangled`, `degraded_text_note`). A
   filing is born-digital and extracts cleanly; the EXHIBITS behind it are
@@ -1726,7 +1836,11 @@ the party), so its row stays reversible.
   on purpose — `.` `,` `:` `;` `/` `-` `&` `@` and `()`/`[]` are exempt,
   because an abbreviation, a pin cite ("45:12-16"), a time stamp, a statutory
   subdivision ("585(a)") and this tool's OWN ink-form checkbox all put one
-  inside an alphanumeric run. An interior CASE FLIP was measured as a fourth
+  inside an alphanumeric run — and a URL-shaped token is exempt whole: the
+  authorities appendix this tool itself writes ends every export with
+  verification links, and their `?`/`=` read as marks, so a JUD-100 short
+  enough for its appendix to dominate a block reported its own links as a
+  degraded fax. An interior CASE FLIP was measured as a fourth
   signal and REJECTED: it contributed 6 of 63 flags on the worst page and fires
   on every ordinary CamelCase word an exhibit carries (PayPal, iPhone, eBay,
   and the surname particles McDonald/DiGiorno `_page_looks_spliced` already
