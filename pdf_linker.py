@@ -24497,12 +24497,16 @@ _WORK_OCR_PAGE = 40.0
 _WORK_TEXT_PAGE = 1.0
 
 
-def _pdf_work_weight(pdf):
-    """A cheap per-file cost weight for the ETA: count pages that will need OCR
-    (empty or garbled text layer — the same test the re-OCR pass uses) heavily,
-    text pages lightly. Metadata only — no rendering, no OCR — so it is fast
-    even on a big scanned set. Returns None if the file can't be opened (caller
-    falls back to a bytes-based weight)."""
+def _pdf_work_profile(pdf):
+    """`(weight, ocr_pages, text_pages)` for one PDF, or None if it can't be
+    opened (the caller falls back to a bytes-based weight).
+
+    The PAGE COUNTS come back beside the weight because the two answer
+    different questions and one pass can settle both. The weight prices this
+    file's share of the run; the mix says which SHAPE of folder this is, which
+    is what picks the throughput to seed the ETA from — see `_eta_bucket`.
+    Asking a second function would mean a second `get_text` over every page of
+    a big scanned set, which is the one thing this pass is written to avoid."""
     try:
         import fitz
         ocr = text = 0
@@ -24513,9 +24517,21 @@ def _pdf_work_weight(pdf):
                     ocr += 1
                 else:
                     text += 1
-        return (ocr * _WORK_OCR_PAGE + text * _WORK_TEXT_PAGE) or _WORK_TEXT_PAGE
+        weight = (ocr * _WORK_OCR_PAGE
+                  + text * _WORK_TEXT_PAGE) or _WORK_TEXT_PAGE
+        return weight, ocr, text
     except Exception:
         return None
+
+
+def _pdf_work_weight(pdf):
+    """A cheap per-file cost weight for the ETA: count pages that will need OCR
+    (empty or garbled text layer — the same test the re-OCR pass uses) heavily,
+    text pages lightly. Metadata only — no rendering, no OCR — so it is fast
+    even on a big scanned set. Returns None if the file can't be opened (caller
+    falls back to a bytes-based weight)."""
+    prof = _pdf_work_profile(pdf)
+    return prof[0] if prof else None
 
 
 # Remembered processing throughput (work-units per second) from the last run,
@@ -24542,6 +24558,128 @@ def _save_eta_rate(rate):
     try:
         if rate and rate > 0:
             _eta_rate_path().write_text(f"{rate:.6f}", encoding="utf-8")
+    except Exception:
+        pass
+
+
+# ── …and ONE remembered rate could not seed TWO populations ─────────────────
+# The rate above is a single machine-wide number from whichever run finished
+# last, and measured over 41 full runs of one operator's history the full-run
+# throughput spans **21x** (0.076 to 1.55 work-units/sec) in two clear
+# populations: a folder of scanned filings and a folder of born-digital ones.
+# Every run inherited whichever kind ran last, so **14 of those 41 started with
+# a seed off by more than 3x**, and the seeded ETA was routinely wrong by
+# HOURS — one folder opened claiming it would finish at 00:14 and finished at
+# 20:23. (The mid-run estimate was never the problem: its median error over the
+# same 41 runs is SEVEN SECONDS. Only the cold start is wrong.)
+#
+# Why the two populations exist is worth stating, because it is not what it
+# looks like: `_WORK_OCR_PAGE` prices an OCR page at 40x a text page, and the
+# scanned folders come out FASTER per work unit, so the ratio is too high — a
+# text page's own passes (heading detection, bookmarks, linking, the scrub) are
+# not cheap. Re-fitting that ratio needs the page MIX of past runs, which the
+# ledger did not record and now does. Until then a per-population rate absorbs
+# the mispricing exactly, which is what makes this the cheap fix rather than a
+# workaround: each shape of folder is seeded from its own kind.
+#
+# Two changes, and the second matters as much as the first. The rate is kept
+# per BUCKET, and it is a rolling MEDIAN of the last few runs rather than the
+# last one alone — the ledger shows 27 of 80 runs OVERLAPPING another, and
+# concurrent runs share cores, so each measures a depressed rate and then
+# last-writer-wins hands that depressed rate to whatever starts next. A median
+# over a handful of samples throws out that outlier instead of inheriting it.
+# Deliberately SHORT (`_ETA_RATE_SAMPLES`), so a genuinely faster machine or a
+# changed folder mix is still followed within a few runs.
+_ETA_RATES_FILE = "pdf_linker_eta_rates.txt"
+_ETA_RATE_SAMPLES = 5
+# The two shapes, by the share of PAGES needing OCR — pages and not work units,
+# because the 40:1 weight puts a folder with one scanned exhibit in ten at 82%
+# of the WORK, which would sort almost every folder into one bucket and split
+# nothing.
+_ETA_SCANNED_SHARE = 0.5
+
+
+def _eta_rates_path():
+    return _config_path().with_name(_ETA_RATES_FILE)
+
+
+def _eta_bucket(ocr_pages, text_pages):
+    """Which throughput population a folder of this page mix belongs to, or
+    None when nothing could be measured (every file failed to open, so the
+    weights came from the bytes fallback and the mix is unknown)."""
+    total = ocr_pages + text_pages
+    if total <= 0:
+        return None
+    return "scanned" if ocr_pages >= _ETA_SCANNED_SHARE * total else "native"
+
+
+def _load_eta_samples():
+    """`{bucket: [rate, …]}`, newest first. Best-effort: an unreadable or
+    half-written file is simply no history, never an error."""
+    out = {}
+    try:
+        for line in _eta_rates_path().read_text(encoding="utf-8").splitlines():
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+            rates = []
+            for tok in parts[1:]:
+                try:
+                    v = float(tok)
+                except ValueError:
+                    continue
+                if v > 0:
+                    rates.append(v)
+            if rates:
+                out[parts[0]] = rates[:_ETA_RATE_SAMPLES]
+    except Exception:
+        pass
+    return out
+
+
+# A folder whose mix could not be measured at all (every file failed to open,
+# so the weights came from the bytes fallback) is its own population rather
+# than a special case: it keeps its own samples, and nothing it measures can
+# leak into a bucket that knows what it is.
+_ETA_BUCKET_UNKNOWN = "unknown"
+
+
+def _load_eta_rate_for(bucket):
+    """The rate to seed a run of this shape with: the rolling median of that
+    bucket's samples, else the legacy single-rate file (so an install that has
+    been running for months keeps a seed on its first run under the new
+    scheme), else None.
+
+    It deliberately does NOT fall back to the OTHER bucket. That is precisely
+    the mistake being fixed — a native folder seeded from a scanned one is the
+    6.4-hour miss — and with no seed at all the marker reads "(estimating…)"
+    for one file, after which the live estimate is accurate to seconds. A
+    number wrong by hours is worse than no number.
+
+    Which is also why the legacy file is now only ever READ. Writing this run's
+    rate to it as well would restore the leak by the back door: the next folder
+    of the other shape, with no samples of its own yet, would read it and be
+    seeded from this one."""
+    rates = _load_eta_samples().get(bucket or _ETA_BUCKET_UNKNOWN)
+    if rates:
+        import statistics
+        return statistics.median(rates)
+    return _load_eta_rate()
+
+
+def _record_eta_rate(bucket, rate):
+    """Push one run's measured throughput onto the front of its bucket, keeping
+    the last `_ETA_RATE_SAMPLES`."""
+    bucket = bucket or _ETA_BUCKET_UNKNOWN
+    if not rate or rate <= 0:
+        return
+    try:
+        samples = _load_eta_samples()
+        samples[bucket] = ([rate] + samples.get(bucket, []))[:_ETA_RATE_SAMPLES]
+        _eta_rates_path().write_text(
+            "".join(f"{name} {' '.join(f'{r:.6f}' for r in rates)}\n"
+                    for name, rates in sorted(samples.items())),
+            encoding="utf-8")
     except Exception:
         pass
 
@@ -24589,17 +24727,46 @@ def _save_fix_rate(rate):
 # the rate files.
 _ETA_HISTORY_FILE = "pdf_linker_eta_history.csv"
 _ETA_HISTORY_COLUMNS = (
-    "Run Started", "Kind", "Folder", "Files", "Work Units", "Seed Rate",
-    "Seeded ETA", "Last ETA", "Finished", "Elapsed (sec)", "Final Rate",
-    "Seeded ETA Error (sec)", "Last ETA Error (sec)")
+    "Run Started", "Kind", "Folder", "Files", "Work Units", "OCR Page Share",
+    "Rate Bucket", "Seed Rate", "Seeded ETA", "Last ETA", "Finished",
+    "Elapsed (sec)", "Final Rate", "Seeded ETA Error (sec)",
+    "Last ETA Error (sec)")
 
 
 def _eta_history_path():
     return _config_path().with_name(_ETA_HISTORY_FILE)
 
 
+def _eta_history_migrate(path):
+    """Bring an existing ledger up to `_ETA_HISTORY_COLUMNS` before appending.
+
+    A column added later would otherwise write rows that no longer line up with
+    the header the file was started with, and a ledger whose columns say the
+    wrong thing is worse than one that never gained the column. Old rows are
+    carried across BY NAME and gain empty cells for what they never recorded —
+    a run that predates the bucket has no bucket, and saying so is right. Rows
+    are only ever rewritten, never dropped; a file that cannot be read is left
+    exactly as it stands."""
+    try:
+        import csv
+        with path.open("r", encoding="utf-8", newline="") as fh:
+            rows = list(csv.reader(fh))
+        if not rows or tuple(rows[0]) == _ETA_HISTORY_COLUMNS:
+            return
+        old = rows[0]
+        kept = [dict(zip(old, r)) for r in rows[1:] if any(c.strip() for c in r)]
+        with path.open("w", encoding="utf-8", newline="") as fh:
+            w = csv.writer(fh)
+            w.writerow(_ETA_HISTORY_COLUMNS)
+            for r in kept:
+                w.writerow([r.get(c, "") for c in _ETA_HISTORY_COLUMNS])
+    except Exception:
+        pass
+
+
 def _note_eta_accuracy(kind, folder, files, work, seed_rate, seeded_eta,
-                       last_eta, started, finished, elapsed, final_rate):
+                       last_eta, started, finished, elapsed, final_rate,
+                       ocr_share=None, bucket=None):
     """Append one run's ETA predictions beside the outcome they predicted.
 
     `work` is in the kind's own unit (OCR-weighted work units for a full run,
@@ -24619,12 +24786,16 @@ def _note_eta_accuracy(kind, folder, files, work, seed_rate, seeded_eta,
         import csv
         path = _eta_history_path()
         fresh = not path.exists() or path.stat().st_size == 0
+        if not fresh:
+            _eta_history_migrate(path)
         with path.open("a", encoding="utf-8", newline="") as fh:
             w = csv.writer(fh)
             if fresh:
                 w.writerow(_ETA_HISTORY_COLUMNS)
             w.writerow([
                 _clock(started), kind, str(folder), files, f"{work:.0f}",
+                f"{ocr_share:.2f}" if ocr_share is not None else "",
+                bucket or "",
                 f"{seed_rate:.6f}" if seed_rate else "",
                 _clock(seeded_eta), _clock(last_eta), _clock(finished),
                 f"{elapsed:.0f}",
@@ -26493,9 +26664,13 @@ def main():
     # files and only reaching a monster at the very end (where a stall would cost
     # a whole night). Ties break on size, so order is deterministic.
     weights = {}
+    _ocr_pages = _text_pages = 0
     for p in pdfs:
-        w = _pdf_work_weight(p)
-        weights[p] = w if w is not None else max(1.0, sizes[p] / 50000.0)
+        prof = _pdf_work_profile(p)
+        weights[p] = prof[0] if prof else max(1.0, sizes[p] / 50000.0)
+        if prof:
+            _ocr_pages += prof[1]
+            _text_pages += prof[2]
     pdfs = sorted(pdfs, key=lambda p: (-weights[p], -sizes[p], p.name))
     log.info(f"Found {len(pdfs)} PDF(s) to process (heaviest first)")
 
@@ -26551,12 +26726,18 @@ def main():
     # prediction survives the DONE stamp that replaces the marker carrying it.
     _run_started = datetime.datetime.now()
     _seed_rate, _eta_seeded, _eta_last = None, None, None
+    # Which throughput population this folder belongs to. A scanned batch and a
+    # born-digital one differ by an order of magnitude in work-units/sec, so the
+    # seed is taken from runs of the SAME shape — see `_eta_bucket`.
+    _bucket = _eta_bucket(_ocr_pages, _text_pages)
+    _ocr_share = (_ocr_pages / (_ocr_pages + _text_pages)
+                  if (_ocr_pages + _text_pages) else None)
     if show_eta:
         _write_eta_marker(folder, "(estimating...)")
-        # Seed an immediate projected finish from the last run's throughput, so a
-        # large re-run shows a time right away instead of "(estimating...)" until
-        # the first file lands. Refined live below.
-        _seed_rate = _load_eta_rate()
+        # Seed an immediate projected finish from what folders of this shape
+        # have run at, so a large re-run shows a time right away instead of
+        # "(estimating...)" until the first file lands. Refined live below.
+        _seed_rate = _load_eta_rate_for(_bucket)
         if _seed_rate:
             _eta_seeded = datetime.datetime.now() + datetime.timedelta(
                 seconds=total_work / _seed_rate)
@@ -26639,14 +26820,17 @@ def main():
         # immediately instead of estimating from scratch.
         _elapsed = time.monotonic() - proc_start
         if _elapsed > 0 and done_work > 0:
-            _save_eta_rate(done_work / _elapsed)
+            _record_eta_rate(_bucket, done_work / _elapsed)
         _write_done_marker(folder)   # clean finish stamps 'DONE <finish time>'
         # ...and the prediction lands in the accuracy ledger BESIDE the
-        # outcome, which the marker dance above just destroyed.
+        # outcome, which the marker dance above just destroyed — with the mix
+        # and the bucket it was seeded from, so the split can be audited and
+        # the 40:1 page weight itself re-fitted from real runs.
         _note_eta_accuracy(
             "full run", folder, len(pdfs), total_work, _seed_rate,
             _eta_seeded, _eta_last, _run_started, datetime.datetime.now(),
-            _elapsed, done_work / _elapsed if _elapsed > 0 else 0)
+            _elapsed, done_work / _elapsed if _elapsed > 0 else 0,
+            ocr_share=_ocr_share, bucket=_bucket)
 
     # Bulk Word→text conversion (gated above). Done after the PDFs so every leak
     # finding lands in the same worksheet and the same quarantine gate below.

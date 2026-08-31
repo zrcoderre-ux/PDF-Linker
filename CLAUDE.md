@@ -3012,6 +3012,47 @@ Append-only and best-effort: a ledger that cannot be written never costs a run.
 Empty cells mean the run had nothing to predict with (first run, no stored
 rate; single-file batch, no mid-run update) — they are not failures.
 
+**…and the first thing it proved was that ONE remembered rate cannot seed TWO
+populations** (`_eta_bucket`, `_load_eta_rate_for`, `_record_eta_rate`,
+`pdf_linker_eta_rates.txt`). Read over 80 real runs the ledger separated the
+two halves of the estimate cleanly, and only one half was wrong. The MID-RUN
+estimate is excellent — median error **7 seconds** across 41 full runs, worst
+49 — so the 40:1 page weight proportions the remaining work well and needs no
+work. The SEEDED one was wrong by **hours**: median 405 s, worst 22,979 s, one
+folder opening with a claim of 00:14 that finished at 20:23. The cause is that
+the seed was a single machine-wide number from whichever run finished last,
+while full-run throughput spans **21×** (0.076 to 1.55 work-units/sec) in two
+clear populations — scanned filings and born-digital ones — so **14 of 41 runs
+started with a seed off by more than 3×**.
+Worth stating because it is not what it looks like: the scanned folders come
+out FASTER per work unit, so `_WORK_OCR_PAGE`'s 40:1 is too HIGH — a text
+page's own passes (heading detection, bookmarks, linking, the scrub) are not
+cheap. Re-fitting that ratio needs the page MIX of past runs, which the ledger
+did not record and now does (`OCR Page Share`, `Rate Bucket`). Until then a
+per-population rate absorbs the mispricing exactly, which is what makes it the
+cheap fix rather than a workaround.
+So the rate is kept per BUCKET, split on the share of PAGES needing OCR — pages
+and NOT work units, because the 40:1 weight puts a folder with one scanned
+exhibit in ten at 82% of the WORK and would sort nearly everything one way. And
+it is a rolling MEDIAN of the last `_ETA_RATE_SAMPLES` runs rather than the last
+one alone: the ledger also showed **27 of 80 runs OVERLAPPING another**, and
+concurrent runs share cores, so each measures a depressed rate and
+last-writer-wins then hands it to whatever starts next. Short on purpose, so a
+genuinely faster machine is still followed within a few runs. A folder whose mix
+could not be measured at all is its own bucket rather than a special case.
+**No bucket ever falls back to the OTHER**, which is the whole point — a native
+folder seeded from a scanned one IS the 6.4-hour miss — and it is why the legacy
+single-rate file is now only ever READ (writing this run's rate to it as well
+would restore the leak by the back door, the next folder of the other shape
+reading it before it has samples of its own). With no seed the marker says
+`(estimating…)` for one file, after which the live estimate is good to seconds:
+a number wrong by hours is worse than no number. Backtested on that same
+history the median seeded error falls ~35% and the worst case from 6.4 h to
+3.9 h — understated, because the backtest has to classify a run by its own
+MEASURED rate (the old ledger carries no page mix), which is exactly the
+circularity the real split avoids by classifying from the mix before the run
+starts. The new columns are what will settle it properly.
+
 **An all-Word folder never borrows another case's party list.** Key resolution
 normally falls back to the newest `Order*.xlsx` in Downloads (where the E-Court
 export lands) — right for a PDF batch, wrong for a Word one: a Word folder is
