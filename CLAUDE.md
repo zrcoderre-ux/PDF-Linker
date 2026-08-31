@@ -1010,7 +1010,26 @@ the party), so its row stays reversible.
   `_clean_tail` admits one Title-case vocabulary word in the SURNAME position
   — the site is structured, bounded by "By" ahead and ", <role>" behind — and
   only into a name that also carries a real anchor (an initial or a
-  name-shaped word), so a run-on capture still dies.
+  name-shaped word), so a run-on capture still dies. Two more, from an OCR'd
+  conformed-copy stamp. The deputy line can lose its furniture ENTIRELY —
+  "By: M. Quintanilla, Deputy Clerk" rendered as "Ay: MN. Quintanilla
+  Deputy", the B misread, the comma dropped, the "Clerk" lost — so
+  `_PN_COURT_STAFF_BY_RE` reads the SANDWICH that survives the garbling: a
+  "By"-shaped lead ([AB]y with its colon) ahead of the name AND "Deputy" hard
+  after it, both required, so "approved by the Deputy" in prose never
+  qualifies; `_clean_tail` also takes a two-capital initial WITH its period
+  ("MN." is OCR's "M.") while a bare two-capital word stays refused, and
+  "AM"/"PM" break the walk outright — the stamp's own clock sits exactly
+  where the walk-back arrives, and "12:41 PM David W. Slayton" captured "PM"
+  into the clerk's name. And OCR clips the LEAD of a word: "avid HUNTINGDON.
+  Bancroft" is "David" with its D lost, standing lower-case beside two of
+  this run's own stand-ins — invisible to every capitalised tier, an
+  ordinary English word besides — so `half_scrubbed_scan` gains the
+  truncated-real shape: a lower-case word of four-plus letters that is a
+  tracked name token missing its leading one or two characters, with one of
+  our person fakes in the same name run (an initial allowed between). The
+  double corroboration is what overrides the vocabulary screen; "an avid
+  reader" in prose has no fake beside it and stays a word.
 - **A fake is never the name of an AUTHORITY the corpus cites.** "Stockton" is
   in the name pool and the corpus cited *Stockton Theatres, Inc. v. Palermo*
   (1956) 47 Cal.2d 469. The citation survives the forward pass — that is what
@@ -1255,6 +1274,24 @@ the party), so its row stays reversible.
   `_pn_email_canon` is what every fake derivation seeds on, so spelling can no
   longer fork identity. `_fake_email` strips the same whitespace before taking
   the address apart, since the two must agree on what one looks like.
+- **A WRAPPED address leaves its bare LOCAL PART standing, and the detector
+  needs the "@"** (`scrub_emails`, second sweep). A letterhead block breaks
+  after the name half of an address and the domain never reaches the page, so
+  one export carried "nminassian" alone on its own line — the attorney's real
+  initial-plus-surname, one line under the faked phone numbers, matched by
+  nothing. The local part of a TRACKED address is a bound value (the record
+  and the key row exist), so per the cured-not-asked rule it is cured with
+  the fake's own local part rather than put on the worksheet. OWN-LINE only —
+  that is the shape wrapping produces, and a section heading or a word of
+  prose is never rewritten by it. The vocabulary screens are the union every
+  name tier consults, and because no list is ever complete ("accounting" is
+  on none of them) the CORPUS is the screen of last resort, the
+  `prune_prose_word_terms` doctrine asked of the one text in hand: a local
+  part that also stands mid-line away from any "@" is vocabulary and is left
+  alone everywhere. Residual, and stated: a local part standing only
+  MID-prose, or split from a domain on the NEXT line, is not cured — the
+  first is too ambiguous to rewrite, the second is a different miss (the
+  detector's whitespace tolerance is horizontal only).
 - **A whitelisted URL is protected as a SPAN, not merely skipped by the
   detector** (`_whitelisted_url_spans`, in `_substitute`'s protected set beside
   the citation spans). `_detector_cands` always refused a whitelisted host, but
@@ -2134,10 +2171,25 @@ the party), so its row stays reversible.
   entity's words are generic, "law"/"firm" nest inside "lawsuit"/"confirm"),
   named by the operator's own party list (`_trusted_party_tokens`, which already
   drops connectors so the "De" of "Cruz De Amezcua" never qualifies), not in
-  `_PN_COMMON_WORDS`, name-shaped, and **actually welded** at the match site
+  `_PN_COMMON_WORDS`, name-shaped, **actually welded** at the match site
   (`_pn_span_is_welded`) — a clean standalone occurrence belongs to the
   boundary-anchored pass, which yields to keeps and citations this pass cannot
-  see.
+  see — and **CASED** (`_pn_span_is_cased`): the site must carry a capital
+  letter. A four-letter core nests inside ordinary PROSE constantly, prose is
+  lower-case, and every observed real weld is a caption or caps run
+  ("HELENRASHO", "AMEZCUApain", "MARIA46."). One delivered export had
+  "automatically" rewritten as "lambournematically" through a whole
+  promissory-note exhibit (and "automatic stay" as "lambournematic stay") off
+  a trusted person token "Auto" — `_PN_COMMON_WORDS` does not carry "auto",
+  and no list carries the next one: a token "Cont" turns "contractor
+  continued the work contemporaneously" into "norwoodractor norwoodinued the
+  work norwoodemporaneously", measured. The case of the site is the screen no
+  list has to be kept for — `_pn_term_is_cap_only`'s reasoning, applied at
+  the one tier that matches inside words, mirrored in both reduced passes,
+  and carrying the same residual that rule already accepts: a scan that
+  lower-cases a welded name is no longer cured by its short core. Short
+  cores only — an eight-plus-letter core does not coincide inside
+  vocabulary, which is why `_PN_WELD_CORE_MIN` is 8.
   **Classify the SEAM, not the page, where the page signal cannot reach.** A
   caps run welded to a paragraph NUMBER ("MICHAEL14.", "MARIA46.") is invisible
   to `_page_looks_spliced`, and the obvious repair — add `[A-Z]{3,}\d{2,}` —
