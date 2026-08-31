@@ -212,6 +212,21 @@ def test_a_short_block_yields_no_verdict():
     assert P._pn_degraded_ratio("Wcstlalce oott5 r~asonable") is None
 
 
+def test_a_url_is_never_a_mangled_token():
+    """The authorities appendix this tool itself writes ends every export
+    with verification links, and `?`/`=` read as interior marks — a JUD-100
+    short enough for the appendix to dominate a block reported its own links
+    as a degraded fax."""
+    line = ("CCP § 585(a)  ->  https://leginfo.legislature.ca.gov/faces/"
+            "codes_displaySection.xhtml?lawCode=CCP&sectionNum=585.")
+    assert not any(P._pn_token_is_mangled(t) for t in line.split())
+    appendix = "\n".join(
+        f"CCP § {n}  ->  https://leginfo.legislature.ca.gov/faces/"
+        f"codes_displaySection.xhtml?lawCode=CCP&sectionNum={n}."
+        for n in range(400, 460))
+    assert P._pn_degraded_spans(appendix) == []
+
+
 def test_the_mangle_signals():
     for bad in ("miu!e", "d~boor", "o{pro~", "Wcstlalce", "roodificntiClllS"):
         assert P._pn_token_is_mangled(bad), bad
