@@ -987,6 +987,46 @@ the party), so its row stays reversible.
   harvest without rewriting ordinary numbers), and most out-of-state formats.
   A value claimed by this pass is never also claimed by the label-anchored
   one: one value, one category, one fake.
+  **A case number does not always arrive GLUED, and both halves of that failed
+  at once** (`_pn_docket_codes`, `_pn_docket_seam_re`, `_pn_mask_case_numbers`,
+  `_pn_caseno_canon`). Extraction spaces one out ("25 STCP 01234") and a narrow
+  caption column wraps between the code and the sequence, so the strict shape
+  matched nothing — and a delivered folder came back with the real docket
+  standing in the clear AND its letters replaced by a surname
+  ("25 LAMBOURNE 01234"), because the code left loose beside the caption is an
+  ordinary capitalised word to every name harvest. **The letters of a docket
+  are a court's CASE-TYPE CODE**: which courthouse, which kind of proceeding —
+  public taxonomy that identifies nobody, so renaming it protects no one and
+  costs the reader the form of the document. So the codes are masked out of the
+  harvest input at `_pn_learn_from_text`'s single choke point, the same seam
+  and the same reasoning as `_pn_mask_toa_entries`: a term never built cannot
+  be applied, cannot leave a bare token behind and cannot draw a pool word.
+  `register_identifiers` is the one pass handed the unmasked text — reading the
+  docket is its job. The mask is looser than the faking pass and can afford to
+  be, since a mask only ever REFUSES a name. The FAKING side needs the opposite
+  discipline: tolerating whitespace in the shape itself would claim "42 USC
+  12345" and "29 CFR 160000", which is renaming authority, so an open seam is
+  matched only for a code this folder also writes inside a WELL-FORMED number.
+  The corroboration is the document's own, learned corpus-wide before anything
+  is harvested (`note_docket_codes`, at the seam `reserve_authority_names`
+  uses), because the caption states the number properly and the exhibit page
+  whose text layer broke it apart carries only the open spelling. And the two
+  spellings are ONE number: `_pn_fake_caseno` SEEDS on the whitespace-stripped
+  identity and MEMOIZES on the printed one, so they draw the same digits and
+  still get a row each — "25STZV69051" beside "25 STZV 69051", one docket to a
+  reader and two distinct bindings to `DeAnonymize.bas`, which retires a fake
+  two Real Values both claim. The canonical spelling of a glued number is
+  itself, so nothing already delivered moves. Residual, and stated: with no
+  well-formed docket anywhere in the folder there is nothing to say those
+  letters are a court code, so the open spelling stands — the mask still
+  refuses it a name, which costs nothing. The one route the mask cannot reach
+  is a code written away from any digits in a slot a name harvest anchors on
+  ("Attn: STCP Clerk"); `_is_court_code_term` refuses that on the same
+  corroboration, taking the near-spellings `_pn_name_variants` minted with it
+  (they carry the refused term's own fake and no code of their own, so screened
+  one at a time they outlived their parent). Never applied to the operator's
+  party list, a `--term` or a reused key: a party genuinely named for those
+  letters is theirs to declare.
 - **A REGISTRATION number is only safe to track behind its LABEL.** "a
   registered California process server, Registration No. 833, San Bernardino
   County" names one person in the county's public registry, and the pair
