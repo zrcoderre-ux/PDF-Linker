@@ -7653,7 +7653,7 @@ class _PnFakeRegistry:
                 swaps.append((fake, new))
         return swaps
 
-    def digits(self, real, seed_tag, keep_prefix=0, template=None):
+    def digits(self, real, seed_tag, keep_prefix=0, template=None, seed=None):
         """A digit-for-digit fake of `real` (e.g. a case number), unique per
         case. Re-seeds on the rare collision so two real numbers never share
         one fake. The first `keep_prefix` characters are copied verbatim — a
@@ -7668,14 +7668,20 @@ class _PnFakeRegistry:
         real value alone; and because the template moves no digit, the digits
         drawn are the ones this function has always drawn. Uniqueness is tested
         on the COMPOSED candidate, so a marked fake is registered as what it
-        actually is."""
+        actually is.
+
+        `seed` is the value the DRAW is seeded on where that differs from
+        `real` — the canonical spelling of a case number, so two spellings of
+        one docket draw the same digits (`_pn_caseno_canon`). The memo key
+        stays on `real`, so each spelling keeps its own reversible row; it
+        defaults to `real`, which is what every other caller passes."""
         key = (seed_tag, real.lower())
         if key in self._memo:
             return self._memo[key]
         src = real if template is None else str(template)
         head, tail = src[:keep_prefix], src[keep_prefix:]
         for attempt in range(10000):
-            r = _pn_rng(seed_tag, real, attempt)
+            r = _pn_rng(seed_tag, real if seed is None else seed, attempt)
             cand = head + re.sub(r"\d", lambda m: str(r.randrange(10)), tail)
             if cand.lower() not in self._used:
                 return self._take(key, cand)
@@ -9287,7 +9293,11 @@ def _pn_append_name_terms(terms, raw, source, registry):
 # That year is printed beside the number in every caption ("Complaint Filed: Dec
 # 29, 2025"), so randomising it does not hide anything — it only makes the fake
 # internally inconsistent. Keep it; fake the rest.
-_PN_CASENO_YEAR_RE = re.compile(r"^\d{2}(?=[A-Za-z])")
+# The seam is tolerated because a case number does not always arrive glued:
+# extraction spaces one out ("25 STCP 01234") and a narrow caption column wraps
+# it. That spelling is still this matter's number, so its year is still the
+# year printed beside it.
+_PN_CASENO_YEAR_RE = re.compile(r"^\d{2}(?=\s{0,3}[A-Za-z])")
 
 
 # ...and the LETTERS are replaced by a code no court uses, so a fake case
@@ -9326,6 +9336,18 @@ def _pn_caseno_template(real):
     return real[:m.start()] + mark + real[m.end():]
 
 
+def _pn_caseno_canon(real):
+    """The IDENTITY of a case number: its spelling with every space taken out.
+
+    A matter has one number, and a document routinely prints it two ways —
+    "25STCP01234" in the caption and "25 STCP 01234" where extraction spaced it
+    out or a narrow column wrapped it. Seeded on the spelling, the two drew
+    unrelated digit runs, so one matter read as two dockets in the export and
+    in the key. This is `_pn_email_canon`'s rule for the same reason: spelling
+    must not fork identity."""
+    return re.sub(r"\s+", "", str(real))
+
+
 def _pn_fake_caseno(real, registry):
     keep = 2 if _PN_CASENO_YEAR_RE.match(real) else 0
     # The DIGITS are derived exactly as they always were — same seed, same
@@ -9333,8 +9355,16 @@ def _pn_fake_caseno(real, registry):
     # nothing else. A folder re-run without its key gets the digits it has
     # always got, now marked; a folder WITH its key moves nothing at all,
     # since `_pn_load_key` pins the delivered fake in the `caseno` memo.
+    #
+    # SEEDED on the canonical spelling and MEMOIZED on the printed one, so the
+    # spaced spelling of a number draws the SAME digits as the glued one and
+    # still gets its own row: one number to a reader ("25STZV69051" beside
+    # "25 STZV 69051"), two distinct bindings to `DeAnonymize.bas`, which
+    # retires a fake two Real Values both claim. The canonical spelling of a
+    # glued number is itself, so nothing already delivered moves.
     return registry.digits(real, "caseno", keep_prefix=keep,
-                           template=_pn_caseno_template(real))
+                           template=_pn_caseno_template(real),
+                           seed=_pn_caseno_canon(real))
 
 
 # Court FORM identifiers and field labels that are public boilerplate, never a
@@ -10722,23 +10752,125 @@ _PN_DOCKET_RES = (
 )
 
 
-def _pn_docket_numbers(text):
+# The statewide shape's CASE-TYPE CODE, for the two rules below: which letters
+# a case number is built around.
+_PN_DOCKET_CODE_RE = re.compile(r"(?<![A-Za-z0-9])\d{2}([A-Z]{2,4})\d{5,6}"
+                                r"(?![A-Za-z0-9])")
+# ...and the same number with its seams OPEN. A case number does not always
+# reach the text glued: extraction spaces one out ("25 STCP 01234"), a fax
+# generation drops a character's worth of kerning, and a narrow caption column
+# wraps between the code and the sequence. That spelling was matched by nothing
+# — so the real docket shipped in the clear, and the code left standing was
+# free to be harvested as a name and renamed ("25 LAMBOURNE 01234").
+#
+# Tolerating whitespace in the shape ITSELF would be unsafe: "42 USC 12345" and
+# "29 CFR 160000" have exactly this shape and are authority, which the whole
+# method refuses to rename. So the CODE must be CORROBORATED — this same text
+# must also carry a well-formed number built on it — and a caption carries one
+# in nearly every filing that mentions a docket at all. Nothing is guessed
+# about which letters are a court code; the document says so.
+_PN_DOCKET_SEAM = r"\s{0,3}"
+
+
+def _pn_docket_codes(text):
+    """The case-type codes this text writes inside a well-formed statewide
+    docket number ("STCV", "STCP", "SMCV") — the corroboration both the seam
+    rule and the harvest mask are built on."""
+    return {m.group(1) for m in _PN_DOCKET_CODE_RE.finditer(_NFKC(text))}
+
+
+def _pn_docket_seam_re(codes):
+    """A pattern for a statewide docket number written with its seams open,
+    restricted to `codes`. None when the text corroborated none."""
+    if not codes:
+        return None
+    alt = "|".join(re.escape(c) for c in sorted(codes, key=len, reverse=True))
+    return re.compile(r"(?<![A-Za-z0-9])(\d{2}" + _PN_DOCKET_SEAM
+                      + r"(?:" + alt + r")" + _PN_DOCKET_SEAM
+                      + r"\d{5,6})(?![A-Za-z0-9])")
+
+
+def _pn_docket_numbers(text, codes=()):
     """Every docket number in `text`, by shape, in order — trial court and
     unpublished appellate alike.
 
     Read from the UNMASKED body on purpose — masking the citations is exactly
     what used to leave a docket inside one untracked, and tracking it is the
     point. `_pn_is_never_fake` still applies, so a Judicial Council form id can
-    never be taken for a docket."""
+    never be taken for a docket.
+
+    `codes` are case-type codes corroborated ELSEWHERE in the folder, unioned
+    with this text's own. A caption states the number properly and an exhibit
+    page may carry only the spelling a fax generation broke, so corroboration
+    that stopped at the file boundary would leave that page's docket in the
+    clear — and the pre-scan has already read the whole folder before any of
+    this runs."""
+    text = _NFKC(text)
     out, seen = [], set()
-    for rx in _PN_DOCKET_RES:
-        for m in rx.finditer(_NFKC(text)):
+    passes = list(_PN_DOCKET_RES)
+    # The seam pass runs LAST, so a glued spelling always claims its own value
+    # first and the open one is only ever an ADDITIONAL spelling of a number
+    # the document has already stated properly.
+    seam = _pn_docket_seam_re(_pn_docket_codes(text) | set(codes))
+    if seam is not None:
+        passes.append(seam)
+    for rx in passes:
+        for m in rx.finditer(text):
             val = m.group(1).strip()
             if val.lower() in seen or _pn_is_never_fake(val):
                 continue
             seen.add(val.lower())
             out.append(val)
     return out
+
+
+# Every docket shape, for the harvest mask below. Looser than the faking pass
+# on purpose, and it can afford to be: a mask only ever REFUSES a name, so a
+# statute cite blanked here costs nothing, where the same reach in the faking
+# pass would rename authority.
+_PN_DOCKET_MASK_RES = _PN_DOCKET_RES + (
+    re.compile(r"(?<![A-Za-z0-9])(\d{2}" + _PN_DOCKET_SEAM + r"[A-Z]{2,4}"
+               + _PN_DOCKET_SEAM + r"\d{4,6})(?![A-Za-z0-9])"),
+)
+
+
+def _pn_mask_case_numbers(text):
+    """`text` with every docket number blanked to spaces.
+
+    **A court's CASE-TYPE CODE is not a name.** The letters of a case number
+    say which courthouse and which kind of proceeding — public taxonomy that
+    identifies no one — and a name pass reading them mints a party out of
+    them: a folder came back with its dockets' "STCP" replaced by a surname,
+    "25 LAMBOURNE 01234", because the number had come apart in extraction and
+    the code was left standing beside the caption as an ordinary capitalised
+    word. Every capitalised-run harvest can reach that shape, so the refusal
+    belongs where none of them can miss it rather than in each one.
+
+    PREVENTIVE, and masked at `_pn_learn_from_text`'s single choke point for
+    the reason `_pn_mask_toa_entries` is: a term never built cannot be applied
+    before a pruner runs, cannot leave a bare token behind, and cannot draw a
+    pool word. The HARVEST INPUT only — `register_identifiers` is handed the
+    unmasked text, because tracking the docket is the whole point of reading
+    it, and the export, the scrubber and the leak scan never see this copy.
+
+    Length-preserving, and whitespace stays whitespace, so a line structure a
+    label-anchored pattern depends on survives the blanking intact."""
+    # Scanned on the text AS GIVEN, never on a normalised copy: NFKC is not
+    # length-preserving (a ligature expands), so an offset taken in the
+    # normalised string would blank the wrong characters of this one. Every
+    # docket shape is ASCII, so normalising buys nothing here anyway.
+    spans = []
+    for rx in _PN_DOCKET_MASK_RES:
+        for m in rx.finditer(text):
+            spans.append((m.start(1), m.end(1)))
+    if not spans:
+        return text
+    chars = list(text)
+    for s, e in spans:
+        for i in range(s, min(e, len(chars))):
+            if not chars[i].isspace():
+                chars[i] = " "
+    return "".join(chars)
 
 
 def _pn_identifier_values(text):
@@ -13904,6 +14036,11 @@ class Pseudonymizer:
         self.review = []         # (class, sample) open-world findings across files
         self.leak_report = []    # {file, type, value, where} rows for the
                                  # human-triage worksheet (page:line located)
+        # Case-type codes corroborated anywhere in the folder ("STCV", "STCP").
+        # Filled by `note_docket_codes` from the pre-scan's whole-corpus read,
+        # so a page carrying only a BROKEN spelling of its docket is still
+        # matched — see `_pn_docket_numbers`.
+        self.docket_codes = set()
         self.suppressed = set()  # value_lowers the reviewer marked "no fix" in
                                  # the worksheet — never quarantine on these
         # The UNSCRUBBED text of each export, when the run has it: the "original
@@ -14086,11 +14223,22 @@ class Pseudonymizer:
         and any value pruned as citation-only (a per-file re-harvest must not
         resurrect it). Returns True when anything was added."""
         added = False
+        # A court code refused below takes its near-spellings with it. The
+        # variants `_pn_name_variants` mints ("STCCP", "STPC") carry the
+        # REFUSED term's own fake and no code of their own, so screened one at
+        # a time they survived their parent and went on renaming a mistyped
+        # code — orphan terms standing for a value the run has just decided is
+        # not a name. Collected up front, so the order of the batch cannot
+        # decide it.
+        refused = {str(t.fake).lower() for t in new_terms
+                   if self._is_court_code_term(t)}
         for t in new_terms:
             k = (t.category, t.real.lower())
             if k in self.records:
                 continue
             if t.real.lower() in getattr(self, "_pruned_reals", ()):
+                continue
+            if refused and str(t.fake).lower() in refused:
                 continue
             # Never install a self-identical mapping (fake == real): a no-op
             # scrub that ships the real value and loops --fix-leaks.
@@ -14120,6 +14268,38 @@ class Pseudonymizer:
             self._trusted_tok_cache = None   # recompute over the new term set
             self._fuzzy_idx = None
         return added
+
+    def _is_court_code_term(self, term):
+        """True when a DOCUMENT harvest offered up a court's case-type code as
+        somebody's name.
+
+        `_pn_mask_case_numbers` stops a code being read out of the number it
+        belongs to, which is where this arrives from in practice. This is the
+        residual: a code written on its own, away from any digits, standing in
+        a slot a name harvest anchors on ("Attn: STCP Clerk", "/s/ STCP
+        Whitaker"). The corroboration is the folder's own dockets — nothing is
+        guessed about which letters are a code — and a name made of nothing
+        BUT a code and the furniture beside it is not a party.
+
+        Never applied to the operator's own party list, a `--term` or a reused
+        key: refusing a real name the operator supplied is the failure the
+        whole method exists to prevent, and a party genuinely named for those
+        letters is theirs to declare."""
+        if not self.docket_codes or term.source != "document":
+            return False
+        if term.category not in _PN_TOKEN_CATS and term.category not in (
+                "person", "entity"):
+            return False
+        words = [w for w in re.split(r"[^\w]+", term.real) if w]
+        if not words:
+            return False
+        seen_code = False
+        for w in words:
+            if w.upper() in self.docket_codes:
+                seen_code = True
+            elif not _pn_is_generic_token(_pn_word_base(w)):
+                return False        # a real name word rides with it: keep it
+        return seen_code
 
     def register_short_names(self, text):
         """Register a parenthetical short form the document itself defines:
@@ -14456,6 +14636,17 @@ class Pseudonymizer:
                              self.variant_note(value)) if n]
         return " | ".join(parts)
 
+    def note_docket_codes(self, text):
+        """Learn the case-type codes this folder's well-formed docket numbers
+        are built on, so a broken spelling elsewhere can be recognised.
+
+        Called once from the pre-scan with the WHOLE corpus, at the seam
+        `reserve_authority_names` uses: everything has been read and nothing
+        has been substituted. Additive — it can only widen what a later
+        `register_identifiers` will match, never move a binding."""
+        self.docket_codes |= _pn_docket_codes(text)
+        return self.docket_codes
+
     def reserve_authority_names(self, text, log=None):
         """Take the authorities `text` cites out of the fake pools, re-minting
         any stand-in already drawn on one. Returns [(old, new), ...].
@@ -14736,7 +14927,8 @@ class Pseudonymizer:
         # (`_punch_own_casenos`) so it is faked there too. Harvested FIRST, so a
         # value that is a docket is never also claimed by the label-anchored
         # pass below — one value, one category, one fake.
-        found = [("case number", v) for v in _pn_docket_numbers(raw)]
+        found = [("case number", v)
+                 for v in _pn_docket_numbers(raw, self.docket_codes)]
         claimed = {v.lower() for _, v in found}
         found += [(c, v) for c, v in _pn_identifier_values(text)
                   if v.lower() not in claimed]
@@ -23506,8 +23698,16 @@ def _pn_learn_from_text(pseudonymizer, text, stem=None):
     published decisions, so it is pure cost as a source of terms — see
     `_pn_mask_toa_entries`. It is masked HERE, at the single choke point every
     register_* pass goes through, so no pass can be added later that quietly
-    reads from a table again."""
+    reads from a table again.
+
+    CASE NUMBERS are masked out of the NAME passes for the same reason and at
+    the same seam (`_pn_mask_case_numbers`): the letters of a docket are a
+    court's case-type code, never a party, and a code left standing where the
+    number came apart was harvested and renamed. `register_identifiers` is the
+    one pass handed the unmasked text — reading the docket is its job."""
     text = _pn_mask_toa_entries(text)
+    ids_text = text
+    text = _pn_mask_case_numbers(text)
     pseudonymizer.register_declarant_names(text)
     pseudonymizer.register_declarant_refs(text)
     pseudonymizer.register_court_names(text)
@@ -23522,7 +23722,7 @@ def _pn_learn_from_text(pseudonymizer, text, stem=None):
     pseudonymizer.register_label_names(text)
     pseudonymizer.register_short_names(text)
     pseudonymizer.register_entity_acronyms(text)
-    pseudonymizer.register_identifiers(text)
+    pseudonymizer.register_identifiers(ids_text)
     pseudonymizer.register_localities(text)
     pseudonymizer.register_addresses(text)
 
@@ -23575,6 +23775,11 @@ def _pn_prescan_folder(pdfs, pseudonymizer, log, extra_texts=()):
     # cites are known before a single further stand-in is drawn — and while the
     # ones already drawn can still be moved (nothing is substituted yet).
     full = "\n\f\n".join(t for _stem, t in corpus)
+    # The case-type codes of this folder's dockets, learned before any file is
+    # harvested: a caption states its number properly, and the exhibit page
+    # whose text layer broke it apart is then still recognisable as carrying
+    # the same docket rather than a code standing loose beside a name.
+    pseudonymizer.note_docket_codes(full)
     swaps = pseudonymizer.reserve_authority_names(full, log)
     if swaps:
         log.info(f"  Pseudonymize: {len(swaps)} stand-in(s) re-minted off the "
