@@ -12361,6 +12361,47 @@ _PN_AUTHORITY_REPORTER_RE = re.compile(
 # semicolon, bracket or docket label means the "v." belongs to something else
 # (a string cite that already closed, a caption's own service block).
 _PN_AUTHORITY_BREAK_RE = re.compile(r"[;()\[\]]|(?<!\w)No\.", re.IGNORECASE)
+
+
+# "In re Marriage of Kelley Hartwell", "In the Matter of the Estate of Bowen" —
+# the other way a case names itself, and the one with no " v. " in it at all.
+# Nothing but more of the name may stand between the lead and the candidate, so
+# the phrase in ordinary prose ("in re-filing the motion") anchors nothing.
+_PN_IN_RE_RE = re.compile(
+    r"(?<!\w)In\s+(?:re|the\s+Matter\s+of)\s+"
+    r"(?:(?:[A-Z][\w&'’.-]*|of|the|and)[ \t,]+){0,8}$")
+
+
+def _pn_in_case_name(text, s):
+    """True when [s,…) stands inside the NAME OF A CITED CASE — after a " v. "
+    with nothing but more party name between, or after an "In re" lead.
+
+    The " v. " half is the LEFT half of `_in_authority_context`, asked on its
+    own.
+
+    That method requires BOTH anchors (a " v. " before and a year or reporter
+    after) because it decides whether to REWRITE, where a wrong refusal leaves
+    a real party standing in the clear. A REVIEW tier decides whether to ASK,
+    and the costs are the other way round: refusing a row loses one line of a
+    worksheet, while reporting a cited decision's party invites the operator to
+    mark it `yes` — which mints it as an AUTHORITATIVE term and renames the
+    authority in every export. So one anchor is enough here, and the anchor is
+    the left one, because it is the half that survives a cite the parser could
+    not read: the year and the reporter are exactly what an OCR'd or wrapped
+    cite loses, while " v. " is two characters in the middle of the name.
+
+    Accepted cost, stated: a brief reciting its OWN action inline ("In Rasho v.
+    Quillmark, LLC (\"Quillmark\")…") has a " v. " to the left too, so that
+    definition earns no row. Such a party is this case's own and is reached by
+    the caption, the template and every role anchor; a published decision's
+    party is reached by none of them and must not be offered up as ours."""
+    left = text[max(0, s - _PN_AUTHORITY_WINDOW):s]
+    if _PN_IN_RE_RE.search(left):
+        return True
+    v = None
+    for v in _PN_AUTHORITY_V_RE.finditer(left):
+        pass                          # the nearest " v. " to the candidate
+    return v is not None and not _PN_AUTHORITY_BREAK_RE.search(left[v.end():])
 # Only a NAME-shaped candidate can rename an authority. A detector hit (an SSN,
 # a phone number) inside a citation is not a thing, and refusing one would be
 # pure leak.
@@ -17201,9 +17242,22 @@ class Pseudonymizer:
             # initials, and the tracked-party initialism already has its own
             # backstop in `review_definition_survivors`.
             bases = {_pn_word_base(w) for w in words}
+            shorts = _pn_paren_short_forms(m.group("body"))
+            # A short form carrying a " v. " is a CASE short name — the
+            # document telling the reader what it will call an AUTHORITY, not
+            # what it will call a party: `Market Lofts Community Assn. v. 9th
+            # Street Market Lofts, LLC (2014) 222 Cal.App.4th 924, 932
+            # (hereinafter "Mkt Lofts v 9th St")`. No party of any matter is
+            # named "X v. Y", so the token settles it outright, and it settles
+            # it on the PARENTHETICAL's own text — which is what makes it hold
+            # where the shape of the surrounding cite does not, a short cite
+            # defined a second time deep in an argument having no year or
+            # reporter left beside it.
+            if any(_PN_AUTHORITY_V_RE.search(s) for s in shorts):
+                continue
             if not any(self._defined_short_corroborates(short, bases,
                                                         _neutral_word)
-                       for short in _pn_paren_short_forms(m.group("body"))):
+                       for short in shorts):
                 continue
             flags = [not _neutral_word(w) for w in words]
             if not any(flags):
@@ -17222,6 +17276,18 @@ class Pseudonymizer:
                 continue
             if not rx.search(out_txt):
                 continue          # faked, or absent from the export — fine
+            # …and the run itself must not be a cited decision's PARTY. The
+            # span check below asks what the parser could READ, and a parse
+            # that fails hands back nothing at all: `Market Lofts Community
+            # Assn. v. 9th Street Market Lofts, LLC ("Market Lofts")` cited
+            # with no year or reporter in reach — a short cite, or one whose
+            # reporter run the scan mangled — parsed as nothing, and the
+            # published decision's own defendant was reported as a name this
+            # case had failed to scrub. The doctrine `_in_authority_context`
+            # states for the rewrite path, applied to the report: protection
+            # must not DEPEND on a parser succeeding.
+            if _pn_in_case_name(src, start):
+                continue
             if cite_spans is None:
                 cite_spans = _PnSpanIndex(self._protected_citation_spans(src))
             if cite_spans.overlaps(start, m.end("run")):
@@ -20457,8 +20523,20 @@ def _pseudonymized_txt_path(out_dir: Path, pdf_path: Path, pseudonymizer, log):
 # whole run into one spreadsheet, EACH ROW LOCATED to the printed page and
 # gutter line so it can be found in seconds, with a blank "Fix?" column for the
 # reviewer to triage. Written next to pdf_linker.log; removed on a clean run.
+# The banner tail is OPTIONAL and must be TOLERATED, not merely written: a page
+# whose text layer was rebuilt, whose images were read by OCR, or that the grind
+# recognised below `_OCR_LOW_DPI` carries a " — REVIEW: …" clause between the
+# page number and the closing rule (`_write_text_version`). The pattern demanded
+# " ======" hard after the number, so every such header failed to match — and a
+# header that does not match does not merely lose its own page, it leaves the
+# parser holding the LAST page it did match, so every line of every banner-
+# bearing page after it is reported at that page's number. On a filing whose
+# scanned exhibits all carry a banner that is the whole back half of the
+# document collapsed onto the last clean page: a value standing on page 43
+# located at "p.4". The banner is exactly the page a reader most needs to find,
+# since its words are guesses.
 _PN_PAGE_HEADER_RE = re.compile(
-    r"^====== Page (\d+)(?: \(printed p\. (.+?)\))? ======$")
+    r"^====== Page (\d+)(?: \(printed p\. ([^)]+)\))?(?: — .*)? ======$")
 # Two-or-more spaces after the number, not exactly two: the visual layout
 # indents a body line to its own printed column, so a centered heading on a
 # numbered line reads " 1        NOTICE OF MOTION" and a fixed-width gap would
@@ -20466,10 +20544,41 @@ _PN_PAGE_HEADER_RE = re.compile(
 _PN_GUTTER_RE = re.compile(r"^\s*(\d+)\s{2,}\S")
 
 
+def _pn_page_label(pdf, printed):
+    """How a page NAMES ITSELF in a location: the PDF page, and the printed
+    page beside it where the document carries a different one.
+
+    The PDF page LEADS, which reverses the older rule. That rule preferred the
+    printed number on the ground that it is what the operator reads off the
+    paper — true of a filing that is one document, and wrong of the compiled
+    ones this tool mostly meets. A declaration bundle, an exhibit set and a
+    compendium all RESTART their numbering at every sub-document
+    (`_footer_page_label` reads each page's own stamp precisely so a reset
+    cannot desynchronise it), so the printed number is not unique in the file:
+    a value standing on the 43rd page of the PDF was located at "p.1", and the
+    four pages it stood on came back as "p.1, p.2, p.3, p.4" — four numbers
+    that name no page a reader can turn to, since a dozen pages of that PDF
+    print "1". The PDF page is what a viewer's page box takes and what the
+    export's own "====== Page 43" header says, so it is the half that can be
+    ACTED on.
+
+    The printed number is kept because it is the half that can be CITED — a
+    court cites the printed page — and dropping it would trade one failure for
+    the other. It is appended only where it differs, so an ordinary
+    born-digital filing (PDF page 3 printing "3") reports "p.3:7" exactly as
+    before and a delivered key's Where column does not move; a roman
+    front-matter page always differs and always says so."""
+    pdf = (pdf or "").strip()
+    printed = (printed or "").strip()
+    if not printed or printed == pdf:
+        return pdf or "?"
+    return f"{pdf} (printed p.{printed})"
+
+
 def _pn_body_lines(body):
     """Parse an assembled .txt body into [(page_label, line_label, text), ...],
-    tracking the current page (from '====== Page N ======' headers, preferring
-    the printed page number) and the current gutter line number, so a finding
+    tracking the current page (from '====== Page N ======' headers, by
+    `_pn_page_label`) and the current gutter line number, so a finding
     can be reported as 'p.8:16'. A continuation row keeps the last gutter
     number; the authorities appendix is labelled 'appendix'."""
     page, gutter = "?", None
@@ -20477,7 +20586,7 @@ def _pn_body_lines(body):
     for raw in body.split("\n"):
         mh = _PN_PAGE_HEADER_RE.match(raw)
         if mh:
-            page, gutter = (mh.group(2) or mh.group(1)), None
+            page, gutter = _pn_page_label(mh.group(1), mh.group(2)), None
             continue
         if raw.startswith("====== Authorities"):
             page, gutter = "appendix", None

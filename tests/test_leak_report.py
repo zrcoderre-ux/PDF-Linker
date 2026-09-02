@@ -36,10 +36,11 @@ def _sheet(path):
     return [dict(zip([str(h) for h in rows[0]], r)) for r in rows[1:]]
 
 
-def test_locate_reports_printed_page_and_gutter_line():
+def test_locate_reports_pdf_page_printed_page_and_gutter_line():
     parsed = P._pn_body_lines(BODY)
-    assert P._pn_locate(parsed, "Travelers") == "p.1:1, p.5:16, p.5:17"
-    assert P._pn_locate(parsed, "175977") == "p.5:16"
+    assert (P._pn_locate(parsed, "Travelers")
+            == "p.1:1, p.2 (printed p.5):16, p.2 (printed p.5):17")
+    assert P._pn_locate(parsed, "175977") == "p.2 (printed p.5):16"
     assert P._pn_locate(parsed, "absent-value") == "(not located)"
 
 

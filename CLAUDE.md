@@ -209,6 +209,34 @@ name the document its own Context came from. A row with no quote claims no
 location: an empty Context beside a populated Where reads as a place to go and
 look. An older key simply yields nothing for the two columns and gains them on
 the next rewrite.
+
+**A page is named by its PDF number, with the printed one beside it**
+(`_pn_page_label`). The older rule preferred the PRINTED number, on the ground
+that it is what the operator reads off the paper — true of a filing that is one
+document, and wrong of the compiled ones this tool mostly meets. A declaration
+bundle, an exhibit set and a compendium RESTART their numbering at every
+sub-document (`_footer_page_label` reads each page's own stamp precisely so a
+reset cannot desynchronise it), so the printed number is not unique in the
+file: a value standing on the 43rd page of a PDF was located at `p.1`, and the
+four pages it stood on came back as `p.1, p.2, p.3, p.4` — four numbers naming
+no page a reader can turn to, since a dozen pages of that PDF print "1". The
+PDF page is what a viewer's page box takes and what the export's own
+`====== Page 43` header says, so it is the half that can be ACTED on; the
+printed page is the half that can be CITED, so it is kept, appended only where
+it DIFFERS (`p.43 (printed p.1):16`). An ordinary born-digital filing, whose
+PDF page 3 prints "3", reads `p.3:7` exactly as before and a delivered key's
+Where column does not move.
+**…and a REVIEW banner does not cost a page its number at all**
+(`_PN_PAGE_HEADER_RE`). A page whose text layer was REBUILT, whose images were
+read by OCR, or that the grind recognised below `_OCR_LOW_DPI` carries a
+" — REVIEW: …" clause between its number and the closing rule. The header
+pattern demanded that rule hard after the number, so every such header failed
+to match — and a header that does not match does not merely lose its own page:
+the parser keeps the LAST page it did match, so every line of every
+banner-bearing page after it is reported at that page's number. On a filing
+whose scanned exhibits all carry a banner that is the whole back half of the
+document collapsed onto the last clean page. The banner is exactly the page a
+reader most needs to find, since its words are guesses.
 **An older layout is not left standing, and the run SAYS so.** Reading by name
 is what makes the key readable; the REWRITE is what migrates it. `write_key`
 re-emits `_PN_KEY_HEADERS` whole every time, and both operator paths reach it —
@@ -1637,7 +1665,33 @@ the party), so its row stays reversible.
   inside a protected CITATION span is refused, which is load-bearing rather
   than belt-and-braces: a brief defining a short form inside the cite (`Ewald
   v. Nationstar Mortgage, LLC ("Nationstar") (2017) …`) offers the cited party
-  up as this case's own. That parse is the expensive thing on the whole leak
+  up as this case's own. **But protection must not DEPEND on a parser
+  succeeding** — the doctrine `_in_authority_context` states for the rewrite
+  path, and the report needs it more, because a `yes` on the row mints the
+  value as an AUTHORITATIVE term and renames the decision in every export. A
+  parse that fails hands back nothing at all, and a SHORT cite is exactly the
+  shape that fails: `Market Lofts Community Assn. v. 9th Street Market Lofts,
+  LLC ("Market Lofts")` with no year or reporter left in reach parsed as
+  nothing, and the published decision's own defendant was reported as a name
+  this case had failed to scrub. So the SHAPE is screened too
+  (`_pn_in_case_name`): a run standing after a " v. " with nothing but more
+  party name between, or after an `In re` / `In the Matter of` lead — the other
+  way a case names itself, and the one with no " v. " in it at all. ONE anchor,
+  where `_in_authority_context` requires two, because the costs run the other
+  way: that method decides whether to REWRITE, where a wrong refusal leaves a
+  real party in the clear, while this one decides whether to ASK, where a wrong
+  refusal loses one line of a worksheet. The left anchor is the one that
+  survives a cite the parser could not read — the year and the reporter are
+  what an OCR'd or wrapped cite loses; " v. " is two characters in the middle
+  of the name. Accepted cost, stated: a brief reciting its OWN action inline
+  ("In Rasho v. Quillmark, LLC ("Quillmark")…") earns no row, and such a
+  party is reached by the caption, the template and every role anchor. The
+  PARENTHETICAL is screened on its own text as well: a short form carrying a
+  versus token (`(hereinafter "Mkt Lofts v 9th St")`) is the document saying
+  what it will call an AUTHORITY, since no party of any matter is named
+  "X v. Y" — which is what holds where the shape of the surrounding cite does
+  not, a short cite defined a second time deep in an argument having no cite
+  furniture beside it at all. That parse is the expensive thing on the whole leak
   path (~0.8 s on a 214 KB brief) and this is the ONE scan asking it about a
   THIRD body — the other four share the export and its column-ordered twin, so
   the source is a real extra parse and not a memo hit. So it is paid LAZILY,
