@@ -13508,12 +13508,118 @@ _PN_LABEL_RES = (
                r"(?:[^\w\n]*\n){0,2}"
                r"[ \t]*[({\[]?[ \t]*(?i:type[ \t]+or[ \t]+print[ \t]+name)"),
     # The POS-010 field that names the server: "Person who served papers:"
-    # then its "a. Name:" sub-field. A bare "Name:" label is far too broad to
-    # anchor on; the compound is not.
+    # then its "a. Name:" sub-field. A bare "Name:" label needs the line
+    # discipline `_PN_SIGBLOCK_NAME_RE` applies; the compound needs none.
     re.compile(r"(?i:person[ \t]+who[ \t]+served[ \t]+papers)[ \t]*:?[ \t]*\n?"
                r"[ \t]*(?:[a-z]\.[ \t]*)?(?i:name)[ \t]*:?" + _PN_LABEL_GAP +
                r"(?P<n>" + _PN_LABEL_NAME + r")"),
 )
+
+# A word in the VALUE of a name label, as a SCAN renders it. Every anchor above
+# reads its value through `_PN_LABEL_NAME`, which requires each word to be
+# Title-case — and `_pn_label_names` asserts that a second time before it
+# returns. That is the right rule for a value read out of prose, where the
+# capital is the only thing saying "name"; it is the wrong one after a label
+# that says so outright, and the difference cost four leaks of one guaranty's
+# signature block: the exhibit's OCR lower-cases the surname and mangles it
+# ("Name: <fake> vazqvez", "Prnt Name: <fake> v~zquei", "Name: <fake>
+# vauiuez"), so the run yielded its Title-case first word alone, failed the
+# two-word screen, and the block reached no pass at all.
+#
+# So the LEAD word still carries the ordinary shape — a run needs one anchor of
+# its own, and an unfilled slot ("Name: ______", "Name:" over a rule) has none
+# and yields nothing — while the words AFTER it may be lower-case or carry a
+# speck of the scanner's debris. Each still has to be a word: a letter to open
+# it and a letter or digit to close it, so a fill rule and a stray mark are not
+# names.
+_PN_OCR_NAME_TAIL = r"[A-Za-z][A-Za-z0-9.'’~-]*[A-Za-z0-9]"
+_PN_SIGBLOCK_NAME = (r"[A-Z][A-Za-z.'’-]*(?:[ \t]+" + _PN_OCR_NAME_TAIL + r"){1,3}")
+# "Name:" and "Print Name:" — a signature block's own label for the line under
+# the scrawl, and at the owner's direction a strong enough signal on its own.
+# The standing note said a bare "Name:" was far too broad to anchor on, and
+# what makes it narrow is the LINE, not the word: the label must OPEN its line
+# (after at most a form's list letter), so "BRANCH NAME:", "COURT NAME:" and
+# "FIRM NAME:" — the form furniture the breadth worry is really about — are
+# refused by the word standing in front of it. "Print" is the one lead admitted,
+# with the spellings a scan makes of it, because "PRINT NAME" is the same slot
+# and the vowel is the first thing a fax generation loses.
+_PN_PRINT_SPELLINGS = r"print|prlnt|pnnt|prnt|pmt|pnt"
+# The LABEL alone, so the harvest below and the lower-case leak tier
+# (`_pn_lower_name_site`) cannot disagree about what a name label looks like.
+_PN_NAME_LABEL_RE = re.compile(
+    r"(?im)^[ \t]*(?:[a-z][.)][ \t]*)?(?:(?:" + _PN_PRINT_SPELLINGS +
+    r")\.?[ \t]+)?name[ \t]*:")
+_PN_SIGBLOCK_NAME_RE = re.compile(
+    _PN_NAME_LABEL_RE.pattern + r"[ \t]*(?P<n>" + _PN_SIGBLOCK_NAME + r")")
+
+
+# How far either side of a lower-case candidate a name run is looked for, and
+# what counts as a word in it. One printed line only — a name run does not
+# cross a wrap, and reaching over one would read the line below as a neighbour.
+_PN_LOWER_RUN_SPAN = 40
+_PN_RUN_WORD_RE = re.compile(r"[A-Za-z][A-Za-z'’-]*")
+# The subject of a narrative verb OPENS its clause. Nothing else qualifies: a
+# lower-case word standing mid-clause in front of one of those verbs is
+# ordinary prose ("the notice merely restates", "which macro writes the row"),
+# and that is the whole difference between 4 noise rows and 0 on 1.6 MB.
+_PN_CLAUSE_OPEN_RE = re.compile(r"(?:^|[.;:,]|\n)[ \t\"'(]*$")
+# The verb may sit on the NEXT printed line: legal prose on pleading paper
+# wraps mid-sentence, and the export keeps the gutter number, so the real
+# occurrence reads "…, vizquez\n 7  executed a written Personal Guaranty". One
+# newline and one gutter number are stepped over — `_PN_LABEL_GAP`'s own bound,
+# for the same reason.
+_PN_LOWER_VERB_RE = re.compile(
+    r"[ \t]*(?:\n[ \t]*(?:\d{1,2}[ \t]+)?)?[ \t]*(?P<verb>[a-z]{3,})(?![\w'’])")
+
+
+def _pn_lower_name_site(text, s, e, person_fakes):
+    """Why the lower-case word at [s,e) may be somebody's name anyway — the
+    corroboration that stands in for the capital it does not have. "" when the
+    site says nothing.
+
+    `fuzzy_survivor_scan` reads a Title-case candidate, and that is not a
+    detail: measured against a deliberately over-large tracked set, admitting
+    every lower-case word within the fold distance turns up **38** rows on this
+    repo's own notes and **36** on its docstrings, all of them ordinary
+    vocabulary — "squash"~"suasn", "readers"~"rogders", "merely"~"kelely". A
+    worksheet of those is a worksheet nobody reads, so the capital is doing
+    real work and cannot simply be dropped.
+
+    What it is doing is standing in for evidence, and where the evidence is
+    present in its own right the capital is not needed. That is the same trade
+    `half_scrubbed_scan` already makes for a truncated real ("avid HUNTINGDON.
+    Bancroft"), where a double corroboration overrides the vocabulary screen.
+    It matters because a scanned guaranty LOWER-CASES the name it mangles: one
+    delivered batch shipped its own defendant's surname four times — "Name:
+    <fake> vazqvez", "Prnt Name: <fake> v~zquei", "Name: <fake> vauiuez", and
+    "…, vizquez executed a written Personal Guaranty" — with every leak scan
+    silent, because each tier asks for a capital first and asks about the name
+    second.
+
+    Three sites, and each says "name" without reference to the word's own
+    shape. A name LABEL on the line, which is the document declaring it. One
+    of THIS RUN's own person fakes in the same run, which is the half-scrubbed
+    pair — a stand-in beside a word that is one slip from the real name it
+    replaced is not a coincidence. And the subject position of a narrative
+    verb, the `narrative_name_scan` anchor, which needs the clause opening for
+    it or ordinary prose qualifies. Measured on the same two corpora, all
+    three together: **zero** rows.
+    """
+    ls = text.rfind("\n", 0, s) + 1
+    m = _PN_NAME_LABEL_RE.match(text, ls)
+    if m and m.end() <= s:
+        return "on a name label's own line"
+    le = text.find("\n", e)
+    le = len(text) if le < 0 else le
+    left = _PN_RUN_WORD_RE.findall(text[max(ls, s - _PN_LOWER_RUN_SPAN):s])
+    right = _PN_RUN_WORD_RE.findall(text[e:min(le, e + _PN_LOWER_RUN_SPAN)])
+    if any(w.lower() in person_fakes for w in left[-2:] + right[:2]):
+        return "in a name run with one of our own stand-ins"
+    v = _PN_LOWER_VERB_RE.match(text, e)
+    if (v and v.group("verb") in _PN_NARRATIVE_VERBS
+            and _PN_CLAUSE_OPEN_RE.search(text[max(0, s - 40):s])):
+        return "the subject of a narrative verb"
+    return ""
 
 
 # A "Name  (312) 555-1212" contact line: a capitalized personal name followed
@@ -13533,7 +13639,13 @@ def _pn_label_names(text):
     roster lines that pair a name with a phone number. A single "Roxanne and
     Thomas Purscelley" yields both, sharing the trailing surname."""
     out, seen = [], set()
-    for rx in (*_PN_LABEL_RES, _PN_ROSTER_LINE_RE):
+    for rx in (*_PN_LABEL_RES, _PN_ROSTER_LINE_RE, _PN_SIGBLOCK_NAME_RE):
+        # The Title-case assertion below is the same rule `_PN_LABEL_NAME`
+        # states, restated where the pieces are split — right for a value read
+        # out of prose and wrong after a label that says "name" outright, which
+        # is the whole point of the signature-block anchor. Waived for that one
+        # only, and only past its lead word, which the pattern still requires.
+        cased = rx is not _PN_SIGBLOCK_NAME_RE
         for m in rx.finditer(text):
             raw = re.sub(r"\s+", " ", m.group("n")).strip()
             pieces = [p.strip() for p in re.split(r"\s+(?:and|&)\s+", raw) if p.strip()]
@@ -13566,7 +13678,8 @@ def _pn_label_names(text):
                 if any(_pn_word_base(w) in _PN_NON_NAME_WORDS or _pn_is_role_token(w)
                        for w in words):
                     continue
-                if not all(w[:1].isupper() for w in words if w[:1].isalpha()):
+                if cased and not all(w[:1].isupper()
+                                     for w in words if w[:1].isalpha()):
                     continue
                 if piece.lower() not in seen:
                     seen.add(piece.lower())
@@ -17896,7 +18009,13 @@ class Pseudonymizer:
         # length-preserving and a match's span means the same in both.
         degraded = _PnSpanIndex(self._degraded_spans(body))
         out, seen = [], {s.lower() for _c, s in self.review}
-        for m in re.finditer(r"(?<![\w'’])[A-Z][A-Za-z'’-]+(?![\w'’])", src):
+        # A LOWER-CASE candidate is admitted, and pays for it with
+        # corroboration the capital would otherwise have stood in for — a
+        # scanned guaranty lower-cases the surname it mangles, so every tier
+        # asking for a capital first was blind to its own defendant's name.
+        # See `_pn_lower_name_site` for the measurement.
+        person_fakes = {w.lower() for w in self.name_fake_words()}
+        for m in re.finditer(r"(?<![\w'’])[A-Za-z][A-Za-z'’-]+(?![\w'’])", src):
             word = m.group(0)
             base = _pn_word_base(word)
             if (len(base) < _PN_NAME_FOLD_MIN or not base.isalpha()
@@ -17915,6 +18034,14 @@ class Pseudonymizer:
                             base, t, _pn_scan_fold_dist(base, t, deg),
                             min_len=_PN_NAME_FOLD_MIN)), None)
             if hit is None:
+                continue
+            # Asked LAST of the cheap screens and only of a word that is
+            # already a near-miss: the corroboration walks its line, and the
+            # widened pattern hands this loop ten times the candidates
+            # (3,584 -> 37,453 on a 249 KB body), so asking every one of them
+            # would spend 0.2 s a file to answer about a few dozen.
+            if word[:1].islower() and not _pn_lower_name_site(
+                    src, m.start(), m.end(), person_fakes):
                 continue
             # The ORIGINAL text is EVIDENCE where the run has it: a word that
             # is not in the source cannot have survived from it.
