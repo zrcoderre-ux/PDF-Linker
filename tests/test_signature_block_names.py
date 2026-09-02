@@ -175,11 +175,18 @@ def test_the_capital_tier_is_unchanged():
 def test_ordinary_prose_reports_no_lower_case_row():
     """Measured on this repo's own notes — 249 KB of capitalised technical
     vocabulary in running sentences, against a deliberately over-large tracked
-    set. The corroboration is what makes the tier affordable."""
+    set. The corroboration is what makes the tier affordable: without it this
+    same corpus turns up 38 rows, every one of them vocabulary
+    ("squash"~"suasn", "readers"~"rogders", "merely"~"kelely").
+
+    "Vazquez" is deliberately NOT tracked here. The notes now carry the
+    doctrine this tier was written for, quoting its four spellings verbatim, so
+    a run tracking that name reports them off the prose — correctly, which is
+    the opposite of what this test measures."""
     import pathlib
     notes = pathlib.Path(__file__).resolve().parent.parent / "CLAUDE.md"
-    pz = _pz(("Eduardo Vazquez", "Helen Rasho", "Marcus Delacroix",
-              "Susan Spellman", "Michael Rodgers", "Westlake Financial",
-              "Wharton Holdings", "Angela White", "Gregory Walton"))
+    pz = _pz(("Helen Rasho", "Marcus Delacroix", "Susan Spellman",
+              "Michael Rodgers", "Westlake Financial", "Wharton Holdings",
+              "Angela White", "Gregory Walton"))
     rows = pz.fuzzy_survivor_scan(notes.read_text(encoding="utf-8"))
     assert [v for _c, v in rows if v[:1].islower()] == []
