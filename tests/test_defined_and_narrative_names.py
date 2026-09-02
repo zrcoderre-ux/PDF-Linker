@@ -132,15 +132,52 @@ def test_a_published_authority_is_never_a_finding():
 
 
 def test_the_citation_guard_is_load_bearing():
-    """Not belt-and-braces: a brief that defines a short form INSIDE the cite
-    offers the cited party up as this case's own, and the span check is the
-    only thing that refuses it."""
+    """A brief that defines a short form INSIDE a cite offers the cited party
+    up as this case's own, and a `yes` on that row would mint it as an
+    AUTHORITATIVE term and rename the decision in every export."""
     text = ('(See Ewald v. Nationstar Mortgage, LLC ("Nationstar") '
             '(2017) 13 Cal.App.5th 947.)')
     assert _defined(text) == []
-    off = _pz()
-    off._protected_citation_spans = lambda t: []
-    assert _defined(text, off) == ["Nationstar Mortgage, LLC"]
+
+
+def test_the_guard_does_not_depend_on_the_parser_succeeding():
+    """The span check asks what the parser could READ, and a parse that fails
+    hands back nothing at all — a short cite, or one whose reporter run the
+    scan mangled. So the SHAPE is checked too: a run standing after a " v. "
+    with nothing but more party name between is a cited decision's party
+    whatever the parser managed. The doctrine `_in_authority_context` states
+    for the rewrite path, applied to the report."""
+    blind = _pz()
+    blind._protected_citation_spans = lambda t: []
+    assert _defined('(See Ewald v. Nationstar Mortgage, LLC ("Nationstar") '
+                    '(2017) 13 Cal.App.5th 947.)', blind) == []
+    # The shape that has no year or reporter left beside it at all, which is
+    # what the span check cannot see even unblinded.
+    assert _defined('See Market Lofts Community Assn. v. 9th Street Market '
+                    'Lofts, LLC ("Market Lofts"), which held otherwise.') == []
+    # …and the other way a case names itself, with no " v. " in it at all.
+    assert _defined('(See In re Marriage of Kelley Hartwell ("Hartwell") '
+                    '(2008) 167 Cal.App.4th 562.)') == []
+
+
+def test_a_case_short_name_is_not_a_party():
+    """`… (hereinafter "Mkt Lofts v 9th St")` is the document saying what it
+    will call an AUTHORITY. No party of any matter is named "X v. Y", so the
+    versus token settles it on the parenthetical's own text — which is what
+    makes it hold where the shape of the surrounding cite does not."""
+    assert _defined(
+        'Market Lofts Community Assn. v. 9th Street Market Lofts, LLC (2014) '
+        '222 Cal.App.4th 924, 932 (hereinafter "Mkt Lofts v 9th St") is '
+        'controlling.') == []
+
+
+def test_the_real_party_is_still_reported():
+    """The screens above are shaped on the CITE, so a party defined in ordinary
+    prose — the whole reason this tier exists — is untouched by them."""
+    assert _defined('Plaintiff Susan Spellman ("Spellman") signed the lease.') \
+        == ["Susan Spellman"]
+    assert _defined('Defendant Sunrise Motors Group ("Sunrise") sold it.') \
+        == ["Sunrise Motors Group"]
 
 
 def test_the_citation_parse_is_paid_only_where_there_is_a_candidate():

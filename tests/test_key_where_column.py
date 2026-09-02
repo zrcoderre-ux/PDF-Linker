@@ -89,17 +89,20 @@ def test_every_quoted_row_names_its_document_and_its_page(tmp_path):
         assert str(r["Where (page:line)"]).startswith(("p.", "line ")), r
 
 
-def test_the_location_is_the_printed_page_the_quote_came_off(tmp_path):
-    """The value's own page, taken from the site the quote was cut at — and the
-    PRINTED number where the page header carries one, since that is what the
-    operator reads off the paper."""
+def test_the_location_is_the_pdf_page_the_quote_came_off(tmp_path):
+    """The value's own page, taken from the site the quote was cut at — the PDF
+    page, since that is the number a viewer's page box takes and the number the
+    export's own header carries, with the PRINTED page beside it where the
+    document numbers itself differently."""
     key = tmp_path / "pseudonym_key.xlsx"
     _run().write_key(key, log)
     by_real = {str(r["Real Value"]): r for r in _rows(key)}
     assert by_real["Helen Rasho"]["Where (page:line)"] == "p.1:2"
     # "Marcus Delacroix" is quoted from the sentence that wraps lines 7-8 of
-    # the page printed as 4 — one range, the page named once.
-    assert by_real["Marcus Delacroix"]["Where (page:line)"] == "p.4:7-8"
+    # the SECOND PDF page, which prints itself as 4 — one range, the page named
+    # once, and both numbers said because they differ.
+    assert (by_real["Marcus Delacroix"]["Where (page:line)"]
+            == "p.2 (printed p.4):7-8")
 
 
 def test_a_body_with_no_pages_is_located_by_line(tmp_path):
@@ -219,10 +222,53 @@ def test_the_line_label_never_invents_a_page():
     assert P._pn_where_label("?", "3", 40) == "line 40"
 
 
+def test_a_page_names_the_pdf_page_first_and_the_printed_one_beside_it():
+    """A compiled filing RESTARTS its numbering at every sub-document, so the
+    printed number names no page a reader can turn to: the 43rd page of an
+    exhibit bundle prints "1", and so do a dozen others. The PDF page leads;
+    the printed page is kept because it is the half a court cites, and is said
+    only where it differs, so an ordinary filing's key does not move."""
+    assert P._pn_page_label("43", "1") == "43 (printed p.1)"
+    assert P._pn_where_label(P._pn_page_label("43", "1"), "16", 9) \
+        == "p.43 (printed p.1):16"
+    # The ordinary born-digital case: the two agree, so nothing is appended and
+    # a delivered key's Where column reads exactly as it always did.
+    assert P._pn_page_label("3", "3") == "3"
+    assert P._pn_page_label("3", None) == "3"
+    # Roman front matter always differs, and always says so.
+    assert P._pn_page_label("5", "iv") == "5 (printed p.iv)"
+
+
+def test_a_review_banner_does_not_cost_the_page_its_number():
+    """A page whose text layer was rebuilt, whose images were read by OCR, or
+    that was recognised below `_OCR_LOW_DPI` carries a " — REVIEW: …" clause in
+    its header. The header pattern demanded the closing rule hard after the
+    page number, so every such header failed to match — and a header that does
+    not match does not merely lose its own page: the parser keeps the LAST page
+    it matched, so a whole scanned exhibit set was reported at the number of
+    the last clean page before it."""
+    body = "\n".join([
+        "====== Page 1 ======",
+        " 1  Helen Rasho signed the lease.",
+        "====== Page 43 — REVIEW: recognised at only 99 dpi, text is LOW "
+        "CONFIDENCE ======",
+        " 7  Helen Rasho signed it again.",
+        "====== Page 44 (printed p. 2) — REVIEW: the text layer was unreadable "
+        "and was REBUILT by OCR; spellings, numbers and citations on this page "
+        "are GUESSES ======",
+        " 3  Marcus Delacroix witnessed it.",
+        "",
+    ])
+    parsed = P._pn_body_lines(body)
+    assert P._pn_locate(parsed, "signed it again") == "p.43:7"
+    assert (P._pn_locate(parsed, "Marcus Delacroix")
+            == "p.44 (printed p.2):3")
+
+
 def test_the_site_where_is_read_off_the_prep_table():
     """`_pn_context_prep` drops blank and gutter-only lines, so an index into
     the parsed body would be off by every one of them."""
     parsed = P._pn_body_lines(SOURCE)
     _q, site = P._pn_context_hit(parsed, "Marcus Delacroix")
-    assert P._pn_site_where(parsed, site) == "p.4:7-8"
+    assert P._pn_site_where(parsed, site) == "p.2 (printed p.4):7-8"
     assert P._pn_site_where(parsed, None) == ""
