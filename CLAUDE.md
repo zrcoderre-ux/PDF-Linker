@@ -885,6 +885,61 @@ the party), so its row stays reversible.
   rule (no letters typed) yields nothing. The `I, … declare` anchor only — a
   fill-in TITLE ("as the __ D_e_a_le_r C_o_m_p_lia_n_ce M_a_n_ag_e_r __") is
   a job, not a name, and a row for it is pure triage cost.
+- **A SIGNATURE BLOCK says "Name:", and the scan LOWER-CASES the name beside
+  it** (`_PN_SIGBLOCK_NAME_RE`, `_pn_lower_name_site`). One delivered batch
+  shipped its own defendant's surname four times across four documents —
+  `Name: <fake> vazqvez`, `Prnt Name: <fake> v~zquei`, `Name: <fake> vauiuez`
+  in the guaranty signature blocks, and `…, vizquez executed a written Personal
+  Guaranty agreement` in a declaration — with EVERY leak scan silent. The given
+  name was bound and faked on the same line, so each block shipped as a
+  half-scrubbed pair reading like a finished scrub: the worst thing this tool
+  can emit, and here it was also the party the case is about.
+  One shape underneath all four. Every name tier asks for a CAPITAL first and
+  asks about the name second — `_PN_LABEL_NAME` requires each word Title-case,
+  `_pn_label_names` asserts it a second time after splitting, the narrative
+  tier needs a capitalised run, and `fuzzy_survivor_scan`'s candidate pattern
+  is `[A-Z][A-Za-z'’-]+`. A fax generation of a guaranty lower-cases the name
+  it mangles, so the capital that every tier treats as the evidence is exactly
+  what the page had lost.
+  **The label is the evidence, so after it the shape stops being it.** A bare
+  `Name:` was refused as "far too broad to anchor on" and what makes it narrow
+  is the LINE, not the word: the label must OPEN its line (after at most a
+  form's list letter), so `BRANCH NAME:`, `COURT NAME:` and `FIRM NAME:` — the
+  furniture the breadth worry is really about — are refused by the word
+  standing in front of it. `Print Name:` is the same slot and is admitted with
+  the spellings a scan makes of it (`_PN_PRINT_SPELLINGS`; the vowel is the
+  first thing a fax loses). The LEAD word still carries the ordinary
+  Title-case form — a run needs one anchor of its own, and an unfilled slot
+  (`Name: ______`) has none and yields nothing — while the words AFTER it may
+  be lower-case or carry a speck of debris (`_PN_OCR_NAME_TAIL`), each still
+  opening and closing on an alphanumeric so a fill rule is not a name. This is
+  a HARVEST, so the block is SCRUBBED rather than merely reported, and a
+  spelling near enough folds onto a misspelling of the party's own stand-in —
+  one person to a reader, one row each to the macro. Residual, and stated: no
+  bare token falls out of a lower-case real, and that is right rather than a
+  gap, since a bare token is cap-only (`_pn_term_is_cap_only`) and a token
+  built from a lower-case spelling could never match itself; the mangled
+  surname standing ALONE is the report tier's business, below.
+  **…and `fuzzy_survivor_scan` admits a LOWER-CASE candidate where the SITE
+  corroborates it.** The declaration's prose carries no label, so only the
+  fuzzy net could reach it, and it was refusing to look. The capital cannot
+  simply be dropped: measured against a deliberately over-large tracked set,
+  admitting every lower-case word within the fold distance turns up **38** rows
+  on this repo's own notes and **36** on its docstrings, every one of them
+  ordinary vocabulary (`squash`~`suasn`, `readers`~`rogders`,
+  `merely`~`kelely`) — a worksheet nobody reads. So the capital is replaced,
+  not removed, by evidence that says "name" without reference to the word's own
+  shape: a name LABEL on the line; one of THIS RUN's own person fakes in the
+  same run (the half-scrubbed pair — a stand-in beside a word one slip from the
+  real name it replaced is not coincidence); or the SUBJECT position of a
+  narrative verb, which needs the clause opening for it or ordinary prose
+  qualifies. The verb may sit on the NEXT printed line, since legal prose wraps
+  mid-sentence and the export keeps the gutter number, which is how the
+  declaration's own occurrence is printed. All three together measured **zero**
+  rows on those same 1.6 MB. Asked LAST of the cheap screens and only of a word
+  already found to be a near-miss: the widened pattern hands the loop ten times
+  the candidates (3,584 -> 37,453 on a 249 KB body), so asking every one would
+  spend 0.2 s a file to answer about a few dozen.
 - **A TABLE writes a person SURNAME-FIRST, and one class of surname had no
   coverage there.** The docket-roster rule above — word order costs nothing
   because every token registers — has exactly one exception: a surname that
