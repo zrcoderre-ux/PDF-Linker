@@ -23341,6 +23341,57 @@ def _pn_drop_superseded_quarantine(txt_path, src_path, log):
                         f"{p.name}: {e}")
 
 
+# The unscrubbed reference copy is named for its source document with
+# `(Original)` appended — `Brief.pdf` -> `Brief (Original).txt`. The folder
+# already says what the file is ("Original Text (real names - do not share)"),
+# but a folder name travels with the folder and a FILENAME travels with the
+# file: an operator who opens one, or drags it out beside the shareable export
+# of the same document, otherwise has two `Brief.txt` with nothing in either
+# name to say which one carries the real names. The suffix is written with
+# SPACES and parentheses because these files are read by people, and it goes
+# after the stem so the two copies still sort together.
+_ORIG_TXT_SUFFIX = " (Original)"
+
+
+def _original_txt_name(stem: str) -> str:
+    """Filename of the do-not-share reference copy for a document `stem`."""
+    return f"{stem}{_ORIG_TXT_SUFFIX}.txt"
+
+
+def _original_txt_source_name(name: str) -> str:
+    """`name` with the `(Original)` suffix removed, i.e. the export name of the
+    same document. Unchanged for a name that never carried one."""
+    stem, dot, ext = name.rpartition(".")
+    if not dot or not stem.endswith(_ORIG_TXT_SUFFIX):
+        return name
+    return f"{stem[:-len(_ORIG_TXT_SUFFIX)]}.{ext}"
+
+
+def _drop_superseded_original(orig_path: Path, stem: str, out_dir: Path, log):
+    """Remove the reference copy an EARLIER version wrote for this document
+    under the bare `<stem>.txt`, now that `orig_path` carries the same text
+    under the `(Original)` name.
+
+    Left standing it is a second unscrubbed copy of the same document in the
+    do-not-share folder, indistinguishable in age from the live one — the same
+    reasoning as `_pn_drop_superseded_quarantine`, and it can only ever remove
+    a file this run has just rewritten under another name.
+
+    Refused when the reference folder IS the export folder: `original_text_
+    subfolder` is operator-set, and pointed at `Text Files` the bare name is
+    the DELIVERABLE, not a superseded copy."""
+    stale = orig_path.with_name(stem + ".txt")
+    if stale == orig_path or stale.parent == out_dir or not stale.is_file():
+        return
+    try:
+        stale.unlink()
+        log.info(f"  Dropped superseded original text version {stale.name} — "
+                 f"this run's {orig_path.name} replaces it.")
+    except OSError as e:
+        log.warning(f"  Could not remove superseded original text version "
+                    f"{stale.name} (non-fatal): {e}")
+
+
 def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
                         pseudonymizer=None, text_subdir="Text Files",
                         original_subdir=None, authorities=None) -> bool:
@@ -23356,10 +23407,11 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
     written (it is not withheld).
 
     When `original_subdir` is also given (and a pseudonymizer is running), the
-    UNSCRUBBED text is additionally written to that sibling folder under the
-    PDF's real name — a QA / reference copy. It carries real names by design,
-    so it is never tracked for the leak gate and never quarantined; the folder
-    name is meant to flag that it must not be shared.
+    UNSCRUBBED text is additionally written to that sibling folder as
+    `<the PDF's real name> (Original).txt` — a QA / reference copy. It carries
+    real names by design, so it is never tracked for the leak gate and never
+    quarantined; the folder name and the filename both flag that it must not be
+    shared.
     """
     out_dir = pdf_path.parent / text_subdir
     txt_path = out_dir / (pdf_path.stem + ".txt")
@@ -23580,17 +23632,19 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         # would otherwise have no evidence at all. Never in the case folder:
         # that is the thing that gets synced and shared.
         _cache_original(pdf_path.parent, pdf_path.stem, original)
-        # Optional reference copy in a sibling folder, under the real filename.
-        # Real names by design → never tracked for the leak gate, never
-        # quarantined.
+        # Optional reference copy in a sibling folder, under the real filename
+        # plus `(Original)`. Real names by design → never tracked for the leak
+        # gate, never quarantined.
         if original_subdir:
             orig_dir = pdf_path.parent / original_subdir
-            orig_path = orig_dir / (pdf_path.stem + ".txt")
+            orig_path = orig_dir / _original_txt_name(pdf_path.stem)
             try:
                 orig_dir.mkdir(parents=True, exist_ok=True)
                 orig_path.write_text(original, encoding="utf-8", newline="\n")
                 log.info(f"  Wrote original text version: "
                          f"{original_subdir}/{orig_path.name}")
+                _drop_superseded_original(orig_path, pdf_path.stem, out_dir,
+                                          log)
             except OSError as e:
                 log.warning(f"  Could not write original text version "
                             f"(non-fatal): {e}")
@@ -24111,7 +24165,13 @@ def _drop_superseded_combined_exports(folder, text_subdir, log):
     `text_subdir` whose documents all exist as separate exports again.
 
     Called for the deliverable folder and for the do-not-share reference copies
-    alike, since an older version combined both."""
+    alike, since an older version combined both — and the reference copies are
+    the reason `live` carries the de-suffixed name as well. A combined file's
+    banners name each member as it was exported (`Brief.txt`), while the
+    separate reference copy beside it is now `Brief (Original).txt`, so matching
+    on the written name alone would find no member covered and leave every
+    legacy combined ORIGINAL standing for good. The alias only ever names a file
+    that is really there."""
     text_dir = folder / text_subdir
     if not text_dir.is_dir():
         return
@@ -24130,6 +24190,7 @@ def _drop_superseded_combined_exports(folder, text_subdir, log):
             marked.append((pth, sections))
         elif pth.suffix == ".txt":
             live.add(pth.name)
+            live.add(_original_txt_source_name(pth.name))
     for pth, sections in marked:
         if not all(name in live for name, _b in sections):
             continue        # a member has no other copy — this file IS it
@@ -24441,8 +24502,9 @@ def _write_word_text_version(src_path, text, log, pseudonymizer=None,
     log.info(f"  Wrote {'pseudonymized ' if pseudonymizer else ''}text "
              f"version: {text_subdir}/{txt_path.name}")
 
-    # Optional UNSCRUBBED reference copy, under the real filename — same policy
-    # as the PDF path (real names by design, never gated, must not be shared).
+    # Optional UNSCRUBBED reference copy, under the real filename plus
+    # `(Original)` — same policy as the PDF path (real names by design, never
+    # gated, must not be shared).
     # (The evidence itself — `note_original` and the TEMP cache — was recorded
     # BEFORE the scrub, beside `_pn_learn_from_text`.)
     if pseudonymizer is not None:
@@ -24452,13 +24514,15 @@ def _write_word_text_version(src_path, text, log, pseudonymizer=None,
         pseudonymizer.note_key_context(text, body, src_path.name)
         if original_subdir:
             orig_dir = src_path.parent / original_subdir
-            orig_path = orig_dir / (src_path.stem + ".txt")
+            orig_path = orig_dir / _original_txt_name(src_path.stem)
             try:
                 orig_dir.mkdir(parents=True, exist_ok=True)
                 orig_path.write_text(text.rstrip("\n") + "\n",
                                      encoding="utf-8", newline="\n")
                 log.info(f"  Wrote original text version: "
                          f"{original_subdir}/{orig_path.name}")
+                _drop_superseded_original(orig_path, src_path.stem, out_dir,
+                                          log)
             except OSError as e:
                 log.warning(f"  Could not write original Word text version "
                             f"(non-fatal): {e}")
@@ -25111,8 +25175,11 @@ _CONFIG_BLOCKS = (
      "# Also write the UNSCRUBBED text to a second folder, for QA / your own\n"
      "# reference? on/off (default: off). The pseudonymized folder above stays\n"
      "# the shareable one; this second folder holds the ORIGINAL text under the\n"
-     "# real filename and, by design, contains real names — it is never checked\n"
-     "# by the leak gate and must NOT be shared. Diff the two folders to confirm\n"
+     "# real filename with (Original) after it -- Brief.pdf writes\n"
+     "# Brief (Original).txt -- and, by design, contains real names: it is never\n"
+     "# checked by the leak gate and must NOT be shared. The suffix is on the\n"
+     "# file as well as the folder so a copy opened or dragged out on its own\n"
+     "# still says which of the two it is. Diff the two folders to confirm\n"
      "# the scrub is clean and nothing load-bearing (a citation, a date) changed.\n"
      "keep_original_text = off\n"
      ),

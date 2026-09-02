@@ -3144,6 +3144,28 @@ font metrics. Costs 0.11 s on a 523-row key.
 
 ## Folder artifacts (what a finished folder should contain)
 
+**An unscrubbed reference copy SAYS SO in its own name**
+(`_ORIG_TXT_SUFFIX`, `_original_txt_name`). `keep_original_text` writes the
+real-name text of `Brief.pdf` as `Brief (Original).txt`, where it used to be
+`Brief.txt` — the same name the shareable export in `Text Files` carries. The
+folder name is the only thing that ever distinguished them, and a folder name
+travels with the FOLDER: opened from a recent-files list, mailed, or dragged
+out beside the export of the same document, two files called `Brief.txt` say
+nothing about which one holds the parties' real names. The suffix goes after
+the stem (so the two copies still sort together) and is written with spaces
+and parentheses, these being files a person reads.
+Two consequences, both handled. A folder run by an EARLIER version carries the
+bare `Brief.txt` in that folder, so the write drops it
+(`_drop_superseded_original`, `_pn_drop_superseded_quarantine`'s reasoning —
+it can only remove a file this run has just rewritten under another name),
+REFUSING to when `original_text_subfolder` names the export folder itself,
+where the bare name is the deliverable. And a legacy COMBINED file's banners
+name each member as it was exported (`Brief.txt`), so
+`_drop_superseded_combined_exports` counts a reference copy under its
+de-suffixed name too, or every combined ORIGINAL would stand for good. Nothing
+else moves: the TEMP evidence cache is keyed by stem and never named this way,
+and `--fix-leaks` reads that folder by glob.
+
 **`Authorities Cited.txt` lists what the PARTIES cited**
 (`_write_authorities_list`, fed by `_note_authority`). It sits in the CASE
 FOLDER and deliberately NOT in `Text Files`: that folder is the deliverable

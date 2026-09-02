@@ -182,7 +182,8 @@ def test_the_old_layer_reaches_the_do_not_share_copy_only(tmp_path):
 
     export = (tmp_path / "Text Files" / next(
         p.name for p in (tmp_path / "Text Files").glob("*.txt"))).read_text()
-    original = (tmp_path / "Original Text" / "Motion.txt").read_text()
+    original = (tmp_path / "Original Text"
+                / "Motion (Original).txt").read_text()
 
     # The shared export gets the WARNING and none of the garbled text: it is
     # unscrubbable by construction, so a copy there is real names nothing can

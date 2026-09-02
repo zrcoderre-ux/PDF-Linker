@@ -57,8 +57,8 @@ def test_two_folders_written_scrubbed_and_original(tmp_path):
     # shareable: party names gone, cited authority preserved
     assert "Ramirez" not in scrubbed and "Ford Motor Company" not in scrubbed
     assert "Donlen v. Ford Motor Co., 217 Cal.App.4th 138" in scrubbed
-    # original: real names present, under the REAL filename
-    assert otxt[0].name == "Motion.txt"
+    # original: real names present, under the REAL filename plus `(Original)`
+    assert otxt[0].name == "Motion (Original).txt"
     assert "Ernest N Ramirez" in orig and "Ford Motor Company" in orig
 
     # the original copy is NOT tracked for the leak gate
@@ -128,3 +128,80 @@ def test_no_original_folder_when_disabled(tmp_path):
     assert (tmp_path / "Text Files").is_dir()
     # no sibling original folder created
     assert [d for d in tmp_path.iterdir() if d.is_dir()] == [tmp_path / "Text Files"]
+
+
+def test_the_original_is_named_for_its_document_plus_original(tmp_path):
+    """`Motion.pdf` -> `Motion (Original).txt`, beside the export's `Motion.txt`.
+
+    The folder name already says these files carry real names, but a folder
+    name travels with the folder: opened on its own, or dragged out beside the
+    shareable export of the same document, two files called `Motion.txt` say
+    nothing about which one is which.
+    """
+    pdf = tmp_path / "Motion.pdf"
+    _doc().save(pdf)
+    with fitz.open(pdf) as doc:
+        pl._write_text_version(pdf, doc, log, _pz(), "Text Files",
+                               "Original Text (real names - do not share)")
+
+    original = tmp_path / "Original Text (real names - do not share)"
+    assert [p.name for p in original.glob("*.txt")] == ["Motion (Original).txt"]
+    # ...and the shareable export keeps the plain name it always had.
+    assert (tmp_path / "Text Files" / "Motion.txt").is_file()
+    assert "Ernest N Ramirez" in (original / "Motion (Original).txt").read_text()
+
+
+def test_a_copy_written_under_the_old_name_is_dropped(tmp_path):
+    """A folder run by an EARLIER version carries `Motion.txt` in the
+    do-not-share folder. Left standing beside the new `Motion (Original).txt`
+    it is a second unscrubbed copy of the same document, and nothing in either
+    name says which run wrote it."""
+    pdf = tmp_path / "Motion.pdf"
+    _doc().save(pdf)
+    original = tmp_path / "Original Text (real names - do not share)"
+    original.mkdir()
+    (original / "Motion.txt").write_text("an earlier run's copy\n")
+
+    with fitz.open(pdf) as doc:
+        pl._write_text_version(pdf, doc, log, _pz(), "Text Files",
+                               original.name)
+
+    assert [p.name for p in original.glob("*.txt")] == ["Motion (Original).txt"]
+
+
+def test_the_export_folder_is_never_pruned_by_that(tmp_path):
+    """`original_text_subfolder` is operator-set. Pointed at the EXPORT folder,
+    `Motion.txt` there is the deliverable — not a superseded reference copy —
+    so nothing is removed."""
+    pdf = tmp_path / "Motion.pdf"
+    _doc().save(pdf)
+    with fitz.open(pdf) as doc:
+        pl._write_text_version(pdf, doc, log, _pz(), "Text Files",
+                               "Text Files")
+
+    names = {p.name for p in (tmp_path / "Text Files").glob("*.txt")}
+    assert names == {"Motion.txt", "Motion (Original).txt"}
+
+
+def test_a_legacy_combined_original_is_still_superseded(tmp_path):
+    """A combined file's banners name each member as it was EXPORTED
+    (`Brief.txt`), while the reference copy beside it is now
+    `Brief (Original).txt` — so the supersede check has to recognise the two as
+    one document, or every legacy combined ORIGINAL stands for good."""
+    original = tmp_path / "Original Text (real names - do not share)"
+    original.mkdir()
+    combined = (f"{pl._COMBINE_MARK}\n\n"
+                f"### DOCUMENT 1 OF 2 IN THIS COMBINED FILE: Brief.txt ###\n"
+                f"body one\n"
+                f"### DOCUMENT 2 OF 2 IN THIS COMBINED FILE: Reply.txt ###\n"
+                f"body two\n")
+    (original / "COMBINED 2 documents.txt").write_text(combined)
+    (original / "Brief (Original).txt").write_text("body one\n")
+
+    # Reply has no separate copy yet — the combined file IS the only copy of it.
+    pl._drop_superseded_combined_exports(tmp_path, original.name, log)
+    assert (original / "COMBINED 2 documents.txt").is_file()
+
+    (original / "Reply (Original).txt").write_text("body two\n")
+    pl._drop_superseded_combined_exports(tmp_path, original.name, log)
+    assert not (original / "COMBINED 2 documents.txt").exists()
