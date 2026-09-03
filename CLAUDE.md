@@ -1406,6 +1406,20 @@ the party), so its row stays reversible.
   owner chose: a re-run now scrubs a little LESS than it used to, so a folder
   already delivered under the old behaviour can come back with a bare
   common-word surname standing where the previous re-run had faked it.
+  **…and the builder's answer for a single ENTITY word is always no.**
+  `_pn_entity_bare` registers an entity's suffix-stripped short form only as
+  a MULTI-word phrase ("Midland States" off "Midland States Bank"), a single
+  leftover word ("Redwood", "Tutors") being skipped to keep unrelated prose
+  intact — while `write_key` harvests a row per WORD of the composed name and
+  `_pn_load_key` read each back as a live term. So a re-run scrubbed a bare
+  "Midland" the first run left standing, and would have faked "States" inside
+  "United States" wherever a page capitalised it: the corpus prunes that
+  screen a bare business token on the first run never reach a value a key
+  pinned. `_pn_load_key` now builds no term for a one-word `entity-token` row
+  whatever the word (memo seeded, row kept, so a composed fake still reverses
+  word by word). A short form the document DEFINES (`("Midland")`) is a
+  `short-name` row of its own, built by `register_short_names` and read back
+  as a term, and is unaffected (`test_entity_word_rows.py`).
 - **A POSSESSIVE is the party's own fake, not a second party.** The registry
   memoizes on the string it is handed, so `_pn_fake_name_token` drawing on the
   RAW token made "RASHO'S" a different real value from "Rasho" and it drew an

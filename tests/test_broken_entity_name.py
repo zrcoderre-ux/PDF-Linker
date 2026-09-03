@@ -96,16 +96,15 @@ def test_the_break_never_reaches_ordinary_prose():
 def test_the_key_alone_reproduces_the_delivered_export(tmp_path):
     """The tolerance is asked of the row's own category and source, so a
     re-run off the key alone scrubs the broken spelling exactly as the first
-    run did. (The bare short form `("M idland")` is left out: a key carries a
-    row per WORD of a composed name, so a re-run has a bare "Midland" token
-    the first run never built — true of the whole spelling before this
-    change, and not this tolerance's doing.)"""
-    text = BROKEN.replace(' ("M idland")', "")
+    run did — the bare `("M idland")` included, which neither run touches:
+    the builder makes no one-word entity token, and the loader now declines
+    the per-word row `write_key` harvests (`test_entity_word_rows.py`)."""
+    text = BROKEN
     reg = P._PnFakeRegistry()
     z = P.Pseudonymizer(P._pn_build_terms(PARTIES, [], [], registry=reg),
                         {}, registry=reg)
     first = z.apply(text)
-    assert "idland" not in first
+    assert "M idland States Bank" not in first
     path = tmp_path / "pseudonym_key.xlsx"
     z.write_key(path, log)
     reg2 = P._PnFakeRegistry()

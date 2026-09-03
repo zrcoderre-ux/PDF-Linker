@@ -98,10 +98,14 @@ def test_an_older_layout_still_reads_as_ours(tmp_path, headers):
 def test_every_binding_loads_from_an_older_layout(tmp_path, headers):
     p = tmp_path / "pseudonym_key.xlsx"
     _write_old_key(p, headers)
-    terms, _decisions = P._pn_load_key(p, P._PnFakeRegistry(), log)[:2]
+    reg = P._PnFakeRegistry()
+    terms, _decisions = P._pn_load_key(p, reg, log)[:2]
     assert {(t.real, str(t.fake)) for t in terms} == {
-        ("Ford Motor Company", "Halloran Trading Company"),
-        ("Ford", "Halloran")}
+        ("Ford Motor Company", "Halloran Trading Company")}
+    # The one-word entity row builds no forward term (the builder never makes
+    # one — `test_entity_word_rows.py`) but its binding is still pinned, so
+    # the composed fake reverses and re-derives word for word.
+    assert reg._memo.get(("name_or_entity", "ford")) == "Halloran"
 
 
 def test_the_context_loads_from_an_older_layout(tmp_path):
