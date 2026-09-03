@@ -5332,22 +5332,40 @@ def _link_cover_to_causes(doc, cover_occurrences, body_occurrences,
 # ("3") and the curly opener/closer (\u201c3\u201d) appear in real-world
 # filings — the curly form is what Word produces with smart-quotes on,
 # and many caption-page templates wrap the number that way.
-_EXHIBIT_QUOTE_OPEN = "[\"'\u201c\u2018]"
-_EXHIBIT_QUOTE_CLOSE = "[\"'\u201d\u2019]"
+#
+# A SCANNED slip sheet arrives through OCR, and OCR does not read a double
+# quote as one character: a big straight quote in a display face comes
+# back as two apostrophes (''1''), as two apostrophes with a space between
+# them (' ' 2 ''), as a backtick pair (``3''), or as a prime (\u2033). A
+# delivered exhibit set carried exactly those spellings and earned no
+# cover page, no bookmark and no body links. So a quote is a RUN of
+# quote-shaped glyphs, horizontal whitespace allowed between them and
+# between the run and the identifier, and one class serves both sides —
+# OCR keeps no distinction between an opener and a closer. The run can
+# only ever stand where a quote could, so a line the label regex refused
+# for cause cannot start matching: the identifier is still one to three
+# digits or one or two capitals, and the letter branch still demands a
+# separator before any descriptor.
+_EXHIBIT_QUOTE_CHAR = "[\"'`\u00b4\u2018\u2019\u201a\u201b\u201c\u201d\u201e\u201f\u2032\u2033]"
+_EXHIBIT_QUOTE_RUN = _EXHIBIT_QUOTE_CHAR + r"(?:[ \t]*" + _EXHIBIT_QUOTE_CHAR + r")*"
+# The closing run, with the whitespace that may precede it — what
+# _find_exhibit_cover_pages strips off the numeric branch's remainder
+# before asking whether the cover is strict.
+_EXHIBIT_QUOTE_LEAD_RE = re.compile(r"^[ \t]*" + _EXHIBIT_QUOTE_RUN)
 
 _EXHIBIT_COVER_RE = re.compile(
     r"""
     ^\s*
     (?:EXHIBIT|Exhibit|EX\.|Ex\.|EXH\.|Exh\.)
     \s+
-    """ + _EXHIBIT_QUOTE_OPEN + r"""?                  # optional opening quote
+    (?:""" + _EXHIBIT_QUOTE_RUN + r"""[ \t]*)?         # optional opening quote run
     (?:
         (?P<num>\d{1,3}) \b
-        """ + _EXHIBIT_QUOTE_CLOSE + r"""?             # optional closing quote
+        (?:[ \t]*""" + _EXHIBIT_QUOTE_RUN + r""")?     # optional closing quote run
         .{0,40}                                        # numeric: any short trailing descriptor
       |
         (?P<letter>[A-Z]{1,2}) \b
-        """ + _EXHIBIT_QUOTE_CLOSE + r"""?             # optional closing quote
+        (?:[ \t]*""" + _EXHIBIT_QUOTE_RUN + r""")?     # optional closing quote run
         (?:\s*[\u2014\u2013\-:]\s*.{1,40})?            # letter: optional separator + descriptor
     )
     \s*$
@@ -5437,7 +5455,7 @@ def _find_exhibit_cover_pages(doc):
                 strict_idents.add(ident)
             else:
                 rest = m.string[m.end("num"):].strip()
-                rest = re.sub(r"^" + _EXHIBIT_QUOTE_CLOSE, "", rest).strip()
+                rest = _EXHIBIT_QUOTE_LEAD_RE.sub("", rest).strip()
                 if not rest or rest[0] in "—–-:":
                     strict_idents.add(ident)
             label_pages.add(i)
@@ -5574,16 +5592,22 @@ def _link_exhibit_references(doc, log: logging.Logger):
                 continue
             # Build every spelling we want to match for this identifier.
             # The bare form covers "Exhibit 5"; the quoted forms cover
-            # "Exhibit \"5\"" (straight) and "Exhibit \u201c5\u201d" (curly).
-            # All three appear in real filings, sometimes in the same
-            # document — the body text of a declaration commonly switches
-            # between forms paragraph to paragraph. Cover-page detection
-            # is already quote-tolerant via _EXHIBIT_COVER_RE; this loop
-            # is the body-reference counterpart.
+            # "Exhibit \"5\"" (straight), "Exhibit \u201c5\u201d" (curly)
+            # and "Exhibit ''5''" — the two apostrophes OCR makes of a
+            # straight double quote on a scanned page. All appear in real
+            # filings, sometimes in the same document — the body text of
+            # a declaration commonly switches between forms paragraph to
+            # paragraph. Cover-page detection is quote-tolerant via
+            # _EXHIBIT_COVER_RE, whose quote RUN also admits the spaced
+            # OCR spellings (' ' 5 ''); this loop is the body-reference
+            # counterpart and searches fixed phrases, so it takes only
+            # the unspaced form — a spaced one is unbounded and rare in
+            # running text.
             ident_forms = (
                 ident,
                 f"\"{ident}\"",
                 f"\u201c{ident}\u201d",
+                f"''{ident}''",
             )
             for prefix in _EXHIBIT_PREFIXES:
                 for ident_form in ident_forms:
@@ -6619,11 +6643,18 @@ def _build_bookmark_tree(doc, toc_entries, exhibit_cover_map,
 # Match labels that are essentially just an exhibit identifier — used to
 # suppress redundant nested bookmarks inside the exhibit they belong to.
 # "Exhibit 5", "EXHIBIT 5", "Ex. 5", "Exhibit B", "EXHIBIT AA". Allows
-# optional trailing punctuation. The label has ALREADY been stripped of
-# its page-number tail by _clean_footer_label upstream, so this is
-# purely a label-shape match.
+# optional trailing punctuation, and the identifier may sit inside the
+# same quote run the cover regex tolerates ('EXHIBIT "A"', "EXHIBIT ''A''"
+# off a scan) — a footer that repeats the slip sheet's own spelling is
+# still just the exhibit's id. The label has ALREADY been stripped of its
+# page-number tail by _clean_footer_label upstream, so this is purely a
+# label-shape match.
 _LABEL_JUST_EXHIBIT_RE = re.compile(
-    r"^\s*(?:Exhibit|EXHIBIT|Ex\.?|EX\.?|Exh\.?|EXH\.?)\s+([A-Za-z0-9]+)\s*[.:]?\s*$"
+    r"^\s*(?:Exhibit|EXHIBIT|Ex\.?|EX\.?|Exh\.?|EXH\.?)\s+"
+    r"(?:" + _EXHIBIT_QUOTE_RUN + r"[ \t]*)?"
+    r"([A-Za-z0-9]+)"
+    r"(?:[ \t]*" + _EXHIBIT_QUOTE_RUN + r")?"
+    r"\s*[.:]?\s*$"
 )
 
 
