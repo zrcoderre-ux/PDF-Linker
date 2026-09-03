@@ -76,7 +76,9 @@ def test_a_harvested_entity_is_not_broken():
     terms = []
     P._pn_append_name_terms(terms, "Midland States Bank", "document", reg)
     z = P.Pseudonymizer(terms, {}, registry=reg)
-    assert z.apply("M idland States Bank") == "M idland States Bank"
+    # The broken word stays broken: no tolerance for a harvested name. (The
+    # bare "States" token beside it is the entity path's ordinary business.)
+    assert "M idland" in z.apply("M idland States Bank")
 
 
 def test_a_multi_word_term_keeps_matching_across_a_line_wrap():
@@ -88,7 +90,7 @@ def test_a_multi_word_term_keeps_matching_across_a_line_wrap():
 
 def test_the_break_never_reaches_ordinary_prose():
     prose = ("The mid land was surveyed by the state's bank examiner; the "
-             "States Bank of the Midlands, as he called it, is a fiction.")
+             "Statehouse Bank of the Midlands, as he called it, is a fiction.")
     _z, out = _run(PARTIES, prose)
     assert out == prose
 

@@ -7443,6 +7443,18 @@ class _PnFakeRegistry:
         # extension of `_PN_FIRM_WORDS` reaches them without a new parameter on
         # a dozen call sites. Set once per run by `_pn_set_keep_words`.
         self.keep_words = frozenset()
+        # …and the operator's MULTI-word nuclear keeps, as tuples of word
+        # bases. A phrase is kept as a UNIT — verbatim where it stands, and
+        # nowhere else: `{United States}` keeps "United States" and has nothing
+        # to say about "States" inside "Midland States Bank" (see
+        # `_pn_nuclear_split`).
+        self.keep_phrases = frozenset()
+
+    def kept_positions(self, bases):
+        """Indices of `bases` (word bases, in order) that lie inside an
+        occurrence of a kept PHRASE — what the composing fakers leave
+        verbatim on top of `keeps_word`."""
+        return _pn_phrase_positions(bases, self.keep_phrases)
 
     def keeps_word(self, base):
         """True when a word must be left verbatim inside a composed fake: the
@@ -8353,8 +8365,11 @@ def _pn_fake_person(name, registry):
     # the operator's own `{braced}` keeps are kept verbatim — but only while a
     # distinctive word is still left to fake, or the "fake" would be the name
     # itself and scrub nothing.
-    furniture = {m.start() for m in words
-                 if registry.keeps_word(_pn_word_base(m.group(0)))}
+    phrase_idx = registry.kept_positions(
+        [_pn_word_base(m.group(0)) for m in words])
+    furniture = {m.start() for i, m in enumerate(words)
+                 if registry.keeps_word(_pn_word_base(m.group(0)))
+                 or i in phrase_idx}
     if not [m for m in words
             if not _keep(m.group(0), m.start()) and m.start() != trail_at
             and m.start() not in furniture]:
@@ -8567,7 +8582,8 @@ def _pn_rejoin_words(text, words, replacements):
     return "".join(out)
 
 
-def _pn_restore_furniture(real, fake, keep_words=frozenset()):
+def _pn_restore_furniture(real, fake, keep_words=frozenset(),
+                          keep_phrases=frozenset()):
     """Repair a stored fake that an older build composed by faking the FURNITURE
     of a name — "Law Offices of Scott C. Stratman" -> "Braxton Mansffield
     bancroft Merrick C. Whitlock", "the Waggoner" -> "chetwood Atwater". Those
@@ -8586,12 +8602,15 @@ def _pn_restore_furniture(real, fake, keep_words=frozenset()):
     fw = list(_PN_WORD_RE.finditer(str(fake)))
     if not rw or len(rw) != len(fw):
         return None
+    phrase_idx = _pn_phrase_positions(
+        [_pn_word_base(m.group(0)) for m in rw], keep_phrases)
     out, cursor, changed = [], 0, False
-    for rm, fm in zip(rw, fw):
+    for i, (rm, fm) in enumerate(zip(rw, fw)):
         out.append(fake[cursor:fm.start()])
         rtok = rm.group(0)
         base = _pn_word_base(rtok)
-        if (base in _PN_NAME_FURNITURE or base in keep_words) and fm.group(0) != rtok:
+        if ((base in _PN_NAME_FURNITURE or base in keep_words
+             or i in phrase_idx) and fm.group(0) != rtok):
             out.append(rtok)
             changed = True
         else:
@@ -8730,6 +8749,10 @@ def _pn_fake_entity_parts(name, registry, prefer=None):
     # only the other words ("California Pizza Kitchen" -> "California <fake>").
     state_keep = _pn_state_keep_flags([_pn_word_affixes(t)[1].lower() for t in toks])
 
+    # A kept PHRASE is verbatim where the phrase itself stands in the name.
+    phrase_idx = registry.kept_positions(
+        [_pn_word_base(_pn_word_affixes(t)[1]) for t in toks])
+
     def _furniture(idx, core):
         # Firm furniture ("LAW OFFICES OF ..."), an HONORIFIC, an operator
         # `{braced}` keep, and a lone INITIAL, which is identity a whole entity
@@ -8743,7 +8766,8 @@ def _pn_fake_entity_parts(name, registry, prefer=None):
         # of `_PN_HONORIFICS`: "Mr. Kool's Collision, LLC" came out
         # "EVERLINE. REDWOOD'S LIGHTWELL, LLC".
         base = _pn_word_base(core)
-        return ((registry.keeps_word(base) or len(core) == 1)
+        return ((registry.keeps_word(base) or len(core) == 1
+                 or idx in phrase_idx)
                 and not state_keep[idx])
     # Kept only while a distinctive word is still left to fake, so a name made
     # of nothing else ("The Law Firm", "M & M") never maps onto itself.
@@ -8786,13 +8810,17 @@ def _pn_person_token_map(name, registry):
                     or w.isupper() and not name.isupper())
         return _pn_is_suffix_token(w, bare_ambiguous=evidence)
 
+    words = list(_PN_WORD_RE.finditer(name))
+    phrase_idx = registry.kept_positions(
+        [_pn_word_base(m.group(0)) for m in words])
     keep_furniture = any(
         len(m.group(0)) > 1 and not _suffix(m)
         and m.group(0).strip(".,").lower() not in _PN_DOC_ABBREV
         and not registry.keeps_word(_pn_word_base(m.group(0)))
-        for m in _PN_WORD_RE.finditer(name))
+        and i not in phrase_idx
+        for i, m in enumerate(words))
     out = {}
-    for m in _PN_WORD_RE.finditer(name):
+    for i, m in enumerate(words):
         w = m.group(0)
         # A single letter is an INITIAL and `_pn_fake_person` keeps it verbatim
         # — minting a whole pool surname for it here burned one pool word per
@@ -8801,7 +8829,7 @@ def _pn_person_token_map(name, registry):
         if len(w) == 1 or _suffix(m) or w.strip(".,").lower() in _PN_DOC_ABBREV:
             continue
         base = _pn_word_base(w)
-        if keep_furniture and registry.keeps_word(base):
+        if keep_furniture and (registry.keeps_word(base) or i in phrase_idx):
             continue
         if base:
             # Drawn on the BASE, exactly as `_pn_fake_name_token` does — keyed
@@ -8983,6 +9011,39 @@ def _pn_append_entity_terms(terms, raw, source, registry, prefer=None):
                              for w in bare[0].split()))):
         terms.append(_PnTerm("entity-token", bare[0], bare[1], whole_word=True,
                              case_sensitive=False, priority=1, source=source))
+    # …and each DISTINCTIVE word on its own, so a bare "Midland" is scrubbed
+    # wherever the filing writes the bank by one word. The suffix-stripped
+    # bare form above skipped a single leftover word on purpose ("Redwood",
+    # "Tutors"), and a re-run off the key then scrubbed what the first run had
+    # left standing: the key carries a row per word of the composed name, and
+    # `_pn_load_key` read each back as a term. At the owner's direction the
+    # two ends now agree on the WIDER answer — over-pseudonymize rather than
+    # under — behind the screens every bare business token takes: the word
+    # must be name-shaped and not generic vocabulary (`_pn_is_name_token`,
+    # `_pn_is_generic_token`), at least `_PN_HARVEST_TOKEN_MIN` letters, not
+    # a corporate suffix or a state kept verbatim (never in `mapping`), and
+    # the corpus prunes still drop one the folder writes as prose
+    # (`_corpus_prunable`). A word the operator brace-kept is never a token.
+    # What that leaves ("States" off "Midland States Bank", wherever the
+    # corpus never writes it lower-case) is the operator's to protect with a
+    # phrase keep — `{United States}` keeps that phrase as a unit and nothing
+    # else.
+    seen = {t.real.lower() for t in terms}
+    for tok in raw.split():
+        core = _pn_word_affixes(tok)[1]
+        base = core.lower()
+        fake_tok = mapping.get(base)
+        if (not fake_tok or base in seen or len(base) < _PN_HARVEST_TOKEN_MIN
+                or not re.search(r"[A-Za-z]", core)
+                or _pn_is_generic_token(base) or _pn_is_entity_keep(base)
+                or _pn_is_role_token(core) or not _pn_is_name_token(core)
+                or base in registry.keep_words):
+            continue
+        seen.add(base)
+        terms.append(_PnTerm("entity-token", core,
+                             _pn_titlecase_like(fake_tok, core),
+                             whole_word=True, case_sensitive=False,
+                             priority=1, source=source))
     return mapping
 
 
@@ -12708,14 +12769,16 @@ def _pn_load_key(path, registry, log, remint_recycled=False):
             parts = _pn_keep_spec_parts(str(fake))[1]
         else:
             continue
-        for part in parts:
-            nuke.update(b for b in (_pn_word_base(w)
-                                    for w in _PN_WORD_RE.findall(part)) if b)
-    if nuke - set(registry.keep_words):
-        registry.keep_words = frozenset(registry.keep_words | nuke)
-        log.info(f"  Pseudonym key: {len(nuke)} brace-kept word(s) will never be "
-                 f"faked, in any row — {', '.join(sorted(nuke)[:8])}"
-                 + (" …" if len(nuke) > 8 else ""))
+        nuke.update(parts)
+    nuke_words, nuke_phrases = _pn_nuclear_split(nuke)
+    if nuke_words - set(registry.keep_words):
+        registry.keep_words = frozenset(registry.keep_words | nuke_words)
+        log.info(f"  Pseudonym key: {len(nuke_words)} brace-kept word(s) will "
+                 f"never be faked, in any row — "
+                 f"{', '.join(sorted(nuke_words)[:8])}"
+                 + (" …" if len(nuke_words) > 8 else ""))
+    if nuke_phrases - set(registry.keep_phrases):
+        registry.keep_phrases = frozenset(registry.keep_phrases | nuke_phrases)
 
     terms, seen, key_decisions, reminted = [], set(), {}, []
     for row in rows[1:]:
@@ -12833,7 +12896,8 @@ def _pn_load_key(path, registry, log, remint_recycled=False):
         # value).
         if cat in ("person", "entity", "short-name", "display-name",
                    "person-token", "entity-token"):
-            fixed = _pn_restore_furniture(real, fake, registry.keep_words)
+            fixed = _pn_restore_furniture(real, fake, registry.keep_words,
+                                          registry.keep_phrases)
             if fixed:
                 log.info(f"  Pseudonymize: repaired key row {real!r} -> {fixed!r} "
                          f"(was {fake!r}; firm/connector and brace-kept words "
@@ -12928,22 +12992,12 @@ def _pn_load_key(path, registry, log, remint_recycled=False):
         if (cat in ("person-token", "entity-token") and len(real.split()) == 1
                 and (_pn_is_generic_token(_pn_word_base(real))
                      or not _pn_is_name_token(real)
-                     or _pn_word_base(real) in registry.keep_words)):
-            continue
-        # …and the builder's answer for a single ENTITY word is always no:
-        # `_pn_entity_bare` registers the suffix-stripped bare form only as a
-        # MULTI-word phrase, a single leftover word ("Redwood", "Tutors") being
-        # skipped to keep unrelated prose intact. `write_key` still harvests a
-        # row per word of the composed name — "Midland", "States" off "Midland
-        # States Bank" — so a re-run scrubbed a bare "Midland" the first run
-        # left standing, and would have faked "States" inside "United States"
-        # wherever a page capitalised it, with the corpus prunes that screen a
-        # bare business token on the first run never reaching a value a key
-        # pinned. The row stays and the memo is seeded above, so a composed
-        # fake still reverses word by word; only the forward term goes. A
-        # short form the document DEFINES (`("Midland")`) is its own
-        # `short-name` row and is unaffected.
-        if cat == "entity-token" and len(real.split()) == 1:
+                     or _pn_word_base(real) in registry.keep_words
+                     # …and the entity path's own floor on a bare word
+                     # (`_pn_append_entity_terms`), so the two ends agree.
+                     or (cat == "entity-token"
+                         and (len(_pn_word_base(real)) < _PN_HARVEST_TOKEN_MIN
+                              or _pn_is_entity_keep(_pn_word_base(real)))))):
             continue
         # The same rule for a single-word HARVESTED person/entity row. A
         # motion-to-quash corpus harvested "Quash", "Proof", "Server" and
@@ -13080,6 +13134,7 @@ def _pn_build_terms(names, casenos, extra_terms, registry=None, _prewarm=True):
     if _prewarm:
         rec = _PnTokenOrderRecorder()
         rec.keep_words = registry.keep_words   # the dry run must mint the same
+        rec.keep_phrases = registry.keep_phrases
         _pn_build_terms(names, casenos, extra_terms, rec, _prewarm=False)
         for tok in sorted(rec.pool_of, key=lambda s: (len(s), s)):
             pool, tag = rec.pool_of[tok]
@@ -17291,12 +17346,15 @@ class Pseudonymizer:
         faker keeps the kept word verbatim anyway ("Labor Rasho" ->
         "Labor Yeardley")."""
         keep = frozenset(getattr(self.registry, "keep_words", ()) or ())
-        if not keep:
+        phrases = frozenset(getattr(self.registry, "keep_phrases", ()) or ())
+        if not keep and not phrases:
             return False
         words = [b for b in (_pn_word_base(piece)
                              for piece in re.split(r"\W+", _NFKC(str(value))))
                  if b]
-        return bool(words) and all(w in keep for w in words)
+        inside = _pn_phrase_positions(words, phrases)
+        return bool(words) and all(w in keep or i in inside
+                                   for i, w in enumerate(words))
 
     def _real_remainder(self, value):
         """`value` with this run's OWN STAND-INS removed — the part that is
@@ -18559,8 +18617,12 @@ class Pseudonymizer:
             if cat not in ("person", "person-token", "display-name",
                            "declarant"):
                 continue
-            for w in str(rec["fake"]).split():
+            fw = str(rec["fake"]).split()
+            inside = self.registry.kept_positions([_pn_word_base(w) for w in fw])
+            for i, w in enumerate(fw):
                 base = _pn_word_base(w)
+                if i in inside:
+                    continue          # a kept PHRASE, verbatim in the fake
                 # A word the composing faker KEPT is not a stand-in — it is the
                 # document's own text, sitting inside our fake because the
                 # furniture of a party name is preserved verbatim ("The
@@ -21854,9 +21916,50 @@ def _pn_decision_nuclear_parts(d):
     return braces
 
 
+def _pn_phrase_positions(bases, phrases):
+    """Indices of `bases` covered by an occurrence of any tuple in `phrases`
+    — the one definition of "this word stands inside a kept phrase", shared
+    by the registry, the furniture repair and the finding screens."""
+    out = set()
+    if not phrases or not bases:
+        return out
+    n = len(bases)
+    for ph in phrases:
+        k = len(ph)
+        for i in range(n - k + 1):
+            if tuple(bases[i:i + k]) == ph:
+                out.update(range(i, i + k))
+    return out
+
+
+def _pn_nuclear_split(parts):
+    """(words, phrases) — a nuclear keep is a VERBATIM QUOTE of what it
+    contains. A one-word part keeps that word wherever it stands, inside a
+    composed fake included (`{Law}` -> "Kaldor Law, P.C."). A multi-word part
+    keeps the PHRASE, as a unit, and its words nowhere else.
+
+    It shipped the other way: every word of a brace went on the keep list,
+    "since composition is per word" — so `{United States}` on the master
+    sheet kept "States" verbatim inside "Midland States Bank" (a delivered
+    export reads "THORNFIELD STATES BANK") and would have kept a bare
+    "States" standing anywhere. That is a keep the operator never typed. The
+    phrase is still protected as a span (`keep_nuclear`), and the composing
+    fakers leave it verbatim where the phrase itself stands inside a party
+    name (`_PnFakeRegistry.kept_positions`)."""
+    words, phrases = set(), set()
+    for part in parts:
+        bases = [b for b in (_pn_word_base(w)
+                             for w in _PN_WORD_RE.findall(str(part))) if b]
+        if len(bases) == 1:
+            words.add(bases[0])
+        elif bases:
+            phrases.add(tuple(bases))
+    return frozenset(words), frozenset(phrases)
+
+
 def _pn_nuclear_words(decisions):
-    """Lower-cased WORDS that a `{braced}` keep protects, gathered across every
-    decision — the operator's own extension of `_PN_FIRM_WORDS`.
+    """Lower-cased single WORDS that a `{braced}` keep protects, gathered
+    across every decision — the operator's own extension of `_PN_FIRM_WORDS`.
 
     A nuclear keep is enforced where it cannot cost anything: the composing
     faker keeps the word verbatim, so "Alder Law, P.C." with `{Law}` becomes
@@ -21865,16 +21968,19 @@ def _pn_nuclear_words(decisions):
     faking half: keeping a word inside a composed fake can never leave a party
     in the clear, so there is no cross-case inference to guard against.
 
-    A multi-word brace ("{Human Resources}") contributes each of its words, since
-    composition is per word. The full phrase is still protected as a span."""
-    out = set()
-    for d in decisions.values():
-        for part in _pn_decision_nuclear_parts(d):
-            for w in _PN_WORD_RE.findall(str(part)):
-                base = _pn_word_base(w)
-                if base:
-                    out.add(base)
-    return frozenset(out)
+    A multi-word brace is a PHRASE keep and contributes no word here — see
+    `_pn_nuclear_split` and `_pn_nuclear_phrases`."""
+    return _pn_nuclear_split(
+        part for d in decisions.values()
+        for part in _pn_decision_nuclear_parts(d))[0]
+
+
+def _pn_nuclear_phrases(decisions):
+    """The multi-word nuclear keeps, as tuples of word bases — kept as units
+    where they stand (`_pn_nuclear_split`)."""
+    return _pn_nuclear_split(
+        part for d in decisions.values()
+        for part in _pn_decision_nuclear_parts(d))[1]
 
 
 def _pn_decision_is_keep(d):
@@ -22400,13 +22506,21 @@ def _pn_set_keep_words(registry, decisions, log=None):
     faker leaves those words verbatim. Must run BEFORE terms are built or a key
     is loaded — a nuclear keep is enforced at composition time, so a fake minted
     before it lands would carry the very word the operator brace-kept."""
-    words = _pn_nuclear_words(decisions)
+    words, phrases = _pn_nuclear_split(
+        part for d in decisions.values()
+        for part in _pn_decision_nuclear_parts(d))
     registry.keep_words = words
+    registry.keep_phrases = phrases
     if words and log:
         log.info(f"  KEEP (nuclear): {len(words)} brace-kept word(s) will never "
                  f"be faked, in this or any name — "
                  f"{', '.join(sorted(words)[:8])}"
                  f"{' …' if len(words) > 8 else ''}")
+    if phrases and log:
+        shown = [" ".join(ph) for ph in sorted(phrases)[:6]]
+        log.info(f"  KEEP (nuclear): {len(phrases)} brace-kept phrase(s) kept "
+                 f"as a unit wherever the phrase stands, and nowhere else — "
+                 f"{', '.join(shown)}{' …' if len(phrases) > 6 else ''}")
     return words
 
 

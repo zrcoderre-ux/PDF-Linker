@@ -124,12 +124,13 @@ def test_goldset_keep_fidelity_is_total():
 
 
 def test_goldset_high_recall_net_flags_the_unlisted():
-    # Tier 2: names the term list does NOT cover (the deferred bare
-    # "Travelers", the P3-J third party) must surface in the unknown-name
-    # scan — never silently pass.
+    # Tier 2: a name the term list does NOT cover (the P3-J third party) must
+    # surface in the unknown-name scan — never silently pass. The bare
+    # "Travelers" used to be deferred to this net; a party's distinctive word
+    # is its own token now (`test_entity_word_rows.py`), so it is SCRUBBED.
     z, out = _gold_run()
     flagged = {s for _c, s in z.unknown_name_scan(out)}
-    assert any("Travelers" in s for s in flagged), flagged
+    assert "Travelers" not in out, out
     assert any("Consumers Credit Union" in s for s in flagged), flagged
 
 
