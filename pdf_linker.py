@@ -9188,6 +9188,33 @@ def _pn_authority_cite_index(text):
                 base = _pn_word_base(w)
                 if len(base) >= 4 and base.isalpha():
                     out.setdefault(base, set()).add(key)
+    # …and the case names the parser could NOT read but the SHAPE can: a
+    # cite wrapped over a page banner, an OCR'd reporter, a `supra` short
+    # form whose full cite sits in another document, and a cite STRUNG behind
+    # another with its year out of reach (`_pn_cite_shape_spans`). A word
+    # inside a case name is a party of a published decision until the
+    # operator's own template says otherwise — the prune, the fake-pool
+    # screen and the worksheet's Notes column all read this index, so a
+    # bare "Sanders" in prose is dropped as a harvested term for the same
+    # reason Angela White is, and the row that survives says which decision
+    # it came from. At the owner's direction.
+    for m in _PN_CITE_SHAPE_RE.finditer(text):
+        run = m.group("full") or m.group("strung") or m.group("short")
+        if not run:
+            continue
+        if m.group("strung") and not _pn_string_cite_seam(text, m.start()):
+            continue
+        key = re.sub(r"\s+", " ", run).strip()
+        if m.group("short"):
+            key += ", supra"
+        words = [b for b in (_pn_word_base(w) for w in _pn_name_words(key))
+                 if len(b) >= 4 and b.isalpha()]
+        # A cite the parser DID read is already here under its full key;
+        # the shape's bare name would only add a second, shorter one.
+        if not words or all(b in out for b in words):
+            continue
+        for base in words:
+            out.setdefault(base, set()).add(key)
     return out
 
 
@@ -10623,6 +10650,8 @@ _PN_WORDISH_RE = re.compile(r"\S*[A-Za-z]\S*")
 # a page of Spanish surnames would have read as a degraded scan.
 _PN_MANGLE_MARK_RE = re.compile(r"(?<=\w)[^\w'’.,:;/&@()\[\]\s-](?=\w)")
 _PN_URLISH_TOKEN_RE = re.compile(r"(?i)https?://|(?<![\w.])www\.")
+# The whole URL token, scheme or "www." to the next whitespace.
+_PN_URL_SPAN_RE = re.compile(r"(?i)(?:https?://|(?<![\w.])www\.)\S+")
 _PN_CONSONANT_RUN_RE = re.compile(r"[bcdfghjklmnpqrstvwxz]{5,}", re.I)
 _PN_VOWELS = frozenset("aeiouyAEIOUYàáâãäå"
                        "èéêëìíîï"
@@ -12900,8 +12929,20 @@ _PN_CITE_NAME_WORD = r"(?:[A-Z][\w&'’.-]*|of|the|and|de|la|&|\d+[A-Za-z]\w*)"
 # of a party named Martinez, "Gavina v. Smith (1944) 25 Cal.2d 501" as one
 # of a party named Gavin. Each hop is bounded: one page header at most, the
 # gutter number one or two digits followed by the writer's own two spaces.
+# …and the head of the next page may carry FURNITURE before its first
+# numbered line — the firm's letterhead block, an e-filing stamp — which the
+# export prints as unnumbered rows. A string cite that closed page 3 with
+# "Krongos v. Pacific Gas & Electric Co." found its "(1992) 7 Cal.App.4th
+# 387" on page 4 behind "[attorney name], Esq." and the firm's address, so the
+# tail was never in reach and the plaintiff was reported. A few short
+# unnumbered lines are stepped over AFTER a page header only — never inside
+# an ordinary wrap — and the tail is still required, so the hop admits
+# nothing on its own.
+_PN_CITE_PAGE_FURNITURE = (r"(?:(?![ \t]*(?:\d{1,2}[ \t]{2,}|={6}))"
+                           r"[^\n]{1,90}\n(?:[ \t]*\n)*){0,4}")
 _PN_CITE_WS = (r"(?:[ \t]+|[ \t]*\n(?:[ \t]*\n)*"
-               r"(?:[ \t]*={6}[ \t]+Page[^\n]*\n(?:[ \t]*\n)*)?"
+               r"(?:[ \t]*={6}[ \t]+Page[^\n]*\n(?:[ \t]*\n)*"
+               + _PN_CITE_PAGE_FURNITURE + r")?"
                r"[ \t]*(?:\d{1,2}[ \t]{2,})?[ \t]*)")
 _PN_CITE_NAME_RUN = (_PN_CITE_NAME_WORD + r"(?:,?" + _PN_CITE_WS
                      + _PN_CITE_NAME_WORD + r"){0,7}")
@@ -12920,8 +12961,31 @@ _PN_CITE_SHAPE_RE = re.compile(
     + _PN_CITE_NAME_RUN + r")(?=" + _PN_CITE_TAIL + r")"
     r"|(?P<short>[A-Z][\w&'’.-]*(?:" + _PN_CITE_WS
     + r"[A-Z][\w&'’.-]*){0,3})"
-    r"(?=,(?:" + _PN_CITE_WS + r")?supra\b)"
+    r"(?=[ \t]*,(?:" + _PN_CITE_WS + r")?supra\b)"
+    # A name run with a " v. " in it and NO tail in reach, admitted only
+    # where `_pn_string_cite_seam` finds it strung behind another cite.
+    r"|(?P<strung>" + _PN_CITE_NAME_RUN + _PN_CITE_V + _PN_CITE_NAME_RUN
+    + r")"
     r")")
+# What stands before a STRUNG cite: the pin or reporter of the cite before
+# it, then a semicolon. "…71 Cal.App.5th 358, 373-374; Krongos v. Pacific Gas
+# & Electric Co." — the semicolon after a citation is how a string cite is
+# written, and a capitalised " v. " run after it is the next authority
+# whether or not its own year is anywhere in reach (the one in question sat
+# at the head of the next page, behind the firm's letterhead). The seam is
+# the missing anchor, at the owner's direction.
+_PN_STRING_CITE_SEAM_RE = re.compile(
+    r"(?:" + _PN_AUTHORITY_YEAR_RE.pattern + r"|(?<!\w)\d{1,4}\s+(?:"
+    + REPORTER_PATTERN + r")|(?<![A-Za-z])supra\b)"
+    r"(?:[^;\n]|\n[ \t]*(?:\d{1,2}[ \t]{2,})?){0,40};"
+    r"[ \t]*\n?[ \t]*(?:\d{1,2}[ \t]{2,})?[ \t]*$")
+
+
+def _pn_string_cite_seam(text, s):
+    """True when the text before offset `s` ends in a string-cite seam — a
+    year, a volume+reporter run or a `supra`, a pin at most, then ";" and
+    the whitespace (one wrap allowed) up to `s`."""
+    return _PN_STRING_CITE_SEAM_RE.search(text, max(0, s - 160), s) is not None
 # A word that CLOSES the sentence before a cite and opens its signal — "See",
 # "Cf.", "Accord" — is not part of a plaintiff's name, whatever its capital.
 _PN_CITE_SIGNAL_WORDS = frozenset({
@@ -12963,9 +13027,11 @@ def _pn_cite_shape_spans(text):
         if m.group("inre"):
             spans.append((s, e))
             continue
-        run = m.group("full") or m.group("short") or ""
+        if m.group("strung") and not _pn_string_cite_seam(text, s):
+            continue
+        run = m.group("full") or m.group("strung") or m.group("short") or ""
         head = run
-        if m.group("full"):
+        if m.group("full") or m.group("strung"):
             vm = re.search(_PN_CITE_V, run)
             head = run[:vm.start()] if vm else run
         at = _pn_cite_run_start(head)
@@ -12973,6 +13039,20 @@ def _pn_cite_shape_spans(text):
             continue
         spans.append((s + at, e))
     return spans
+
+
+def _pn_cite_short_names(text):
+    """The SHORT names the document's own citations declare — the word in
+    front of ", supra" — which the brief then uses bare: "Sanders is
+    instructive", "the court in Sanders". `_pn_cite_shape_spans` blanks the
+    name where it stands in the cite, and every bare mention went on to the
+    name-shaped review tiers as an unscrubbed name."""
+    out = set()
+    for m in _PN_CITE_SHAPE_RE.finditer(text):
+        run = m.group("short")
+        if run:
+            out.add(_pn_word_base(run.split()[0]).lower())
+    return out
 
 
 def _pn_before_v(text, e):
@@ -16964,7 +17044,19 @@ class Pseudonymizer:
         anchors = [m for m in (_PN_AUTHORITY_YEAR_RE.search(after),
                                _PN_AUTHORITY_REPORTER_RE.search(after)) if m]
         if not anchors:
-            return False
+            # A cite STRUNG behind another ("…358, 373-374; Krongos v.
+            # Pacific Gas & Electric Co.") may have its year on the next
+            # page, behind that page's furniture; the seam before the
+            # plaintiff is the anchor the tail would have been.
+            if not _pn_string_cite_seam(text, s):
+                return False
+            m = re.match(_PN_CITE_NAME_RUN, after)
+            defendant = after[:m.end()] if m else ""
+            if not defendant.strip():
+                return False
+            plaintiff = text[s:e] + bv.group("between")
+            return not (self._side_is_trusted(plaintiff)
+                        and self._side_is_trusted(defendant))
         anchor = min(anchors, key=lambda m: m.start())
         defendant = after[:anchor.start()]
         if (_PN_AUTHORITY_BREAK_RE.search(defendant)
@@ -16989,7 +17081,16 @@ class Pseudonymizer:
         anchors = [m for m in (_PN_AUTHORITY_YEAR_RE.search(right),
                                _PN_AUTHORITY_REPORTER_RE.search(right)) if m]
         if not anchors:
-            return False
+            # No tail in reach: the defendant of a cite STRUNG behind
+            # another, whose plaintiff run opens at a string-cite seam.
+            pm = re.search(r"(?:" + _PN_CITE_NAME_WORD + r",?" + _PN_CITE_WS
+                           + r"){1,8}$", left[:v.start()])
+            if pm is None or not _pn_string_cite_seam(text, s - len(left)
+                                                      + pm.start()):
+                return False
+            lead = pm.group(0)
+            return not (self._side_is_trusted(lead)
+                        and self._side_is_trusted(text[s:e]))
         # The anchor must belong to THIS name's citation. Both windows are 80
         # characters wide, so they happily straddle two different cites — and a
         # real party name sitting between them was read as a cited party and
@@ -17365,6 +17466,16 @@ class Pseudonymizer:
             memo[text] = masked
         return masked
 
+    def _tracked_real_words(self):
+        """Every word (lower-cased base) of every tracked real value."""
+        out = set()
+        for (_cat, _rl), rec in self.records.items():
+            for w in str(rec["real"]).split():
+                b = _pn_word_base(w).lower()
+                if b:
+                    out.add(b)
+        return out
+
     def _mask_uncached(self, text):
         # The parser's spans, and the classic citation SHAPE beside them —
         # a cite the parser could not read is a cite all the same, and the
@@ -17372,6 +17483,22 @@ class Pseudonymizer:
         spans = list(self._protected_citation_spans(text))
         if _PN_AUTHORITY_V_RE.search(text) or "supra" in text or "In re" in text:
             spans += _pn_cite_shape_spans(text)
+        # The bare SHORT NAME of a cited decision, wherever the brief uses
+        # it: "(Sanders, supra, 119 Cal.App.2d at p. 365.)" declares
+        # "Sanders" the short name, and "Sanders is instructive" two lines
+        # down was reported as a slip of a tracked party. Never a word of a
+        # value this case TRACKS — `_surviving_records` reads through this
+        # mask, and a real party who shares a cited decision's name must
+        # stay reportable where it survives.
+        if "supra" in text:
+            shorts = _pn_cite_short_names(text) - self._tracked_real_words()
+            for w in shorts:
+                if len(w) < _PN_HARVEST_TOKEN_MIN:
+                    continue
+                for m in re.finditer(r"(?<![\w'’])" + re.escape(w)
+                                     + r"(?:['’]s)?(?![\w'’])", text,
+                                     re.IGNORECASE):
+                    spans.append((m.start(), m.end()))
         if not spans:
             return text
         chars = list(text)
@@ -19358,6 +19485,13 @@ class Pseudonymizer:
         # clipped spelling of the name it is really the whole of.
         cand_re = re.compile(
             r"(?<![\w'’/|])[A-Za-z][A-Za-z'’-]+(?![\w'’/|])")
+        # A word inside a URL is not a name standing in the document. The
+        # authorities appendix this tool writes ends every export with a
+        # verification link per cite, and its query spells the case name
+        # out — "scholar?q=Angle%20M.%20v.%20Superior%20Court" — so the
+        # plaintiff blanked in the cite was reported off the link.
+        urls = _PnSpanIndex([(m.start(), m.end()) for m in
+                             _PN_URL_SPAN_RE.finditer(src)])
 
         def _screened(word, base):
             return (len(base) < _PN_NAME_FOLD_MIN or not base.isalpha()
@@ -19383,7 +19517,7 @@ class Pseudonymizer:
         for m in cand_re.finditer(src):
             word = m.group(0)
             base = _pn_word_base(word)
-            if _screened(word, base):
+            if _screened(word, base) or urls.overlaps(m.start(), m.end()):
                 continue
             near = set()
             for i in range(len(base) - 2):
@@ -19487,6 +19621,7 @@ class Pseudonymizer:
                 a, b = m.group("a"), m.group("b")
                 ba, bb = _pn_word_base(a), _pn_word_base(b)
                 if (not ba.isalpha() or not bb.isalpha()
+                        or urls.overlaps(m.start(), m.end())
                         or (ba in toks and bb in toks)
                         or ba in known or bb in known
                         or _pn_word_is_own_fake(a, known)
@@ -19557,7 +19692,8 @@ class Pseudonymizer:
                 word = m.group(0)
                 base = _pn_word_base(word)
                 if (base in reported or base in pair_taken or base in targets
-                        or word[:1].islower() or _screened(word, base)):
+                        or word[:1].islower() or _screened(word, base)
+                        or urls.overlaps(m.start(), m.end())):
                     continue
                 if not any(_pn_ocr_distance_within(
                         base, v, _pn_name_fold_dist(base, v),
@@ -19601,6 +19737,8 @@ class Pseudonymizer:
         if degraded or slash_page:
             ordered = sorted(toks)
             for m in _PN_DEBRIS_CAND_RE.finditer(src):
+                if urls.overlaps(m.start(), m.end()):
+                    continue
                 raw = m.group(0)
                 core = raw.strip(".,:;()[]'\"-")
                 if not _PN_DEBRIS_MARK_RE.search(core):
