@@ -2977,6 +2977,43 @@ method is built on. Relatedly, `_side_is_trusted` needs MOST of a side's
 identifying words, not any one — a case with a party named "North" cleared both
 sides of *BMW of North America* and stripped its protection outright.
 
+**…and the shape guard covered the DEFENDANT only, so a cite the parser
+missed had its plaintiff reported** (`_pn_cite_shape_spans`,
+`_PN_CITE_SHAPE_RE`, `_before_v_context`, `_pn_before_v`). Both shape
+screens — `_in_authority_context` for the rewrite and `_pn_in_case_name`
+for the report — looked for a " v. " to the LEFT of a candidate, which is
+where a defendant stands and never a plaintiff. So wherever the parser
+could not read a cite (wrapped over a page banner, an OCR'd reporter, a
+`supra` whose full cite is in another document) the defendant was kept and
+the plaintiff faked on the write side, and on the review side the plaintiff
+stood unmasked for every name-shaped tier — a batch reported the plaintiffs
+of its appellate cites as leaks. Three things close it, at the seams that
+already exist. The CLASSIC PATTERN is matched on SHAPE alone —
+`X v. Y (2021) 71 Cal.App.5th 358`, the federal `(9th Cir. 1999)` year, `X,
+supra, …`, `In re Marriage of X (2008) …` — and `_mask_uncached` blanks
+those NAMES beside the parser's spans, so every tier that reads through
+the mask (the fuzzy and half-scrub sweeps, the narrative, honorific and
+mail-header tiers, and `_surviving_records`) is covered at one choke point.
+The shape is deliberately the STRICT one, a " v. " or a `supra` AND a year
+or a volume+reporter run hard after the name, so a caption ("RASHO,
+Plaintiff, v. QUILLMARK"), this case's docket and an unpublished `No.`
+cite never qualify; a run captured from the left is cut back at a citation
+signal ("See", "Cf.") and at a full stop that closes an ordinary word,
+while an abbreviation inside the name ("Assn.", "Servs.") is kept. The
+name only is blanked — the year, reporter and pin stay for the identifier
+scans. `_in_authority_context` gains the plaintiff's half
+(`_before_v_context`): the candidate followed by a " v. " with nothing but
+more party name between, then the defendant, then the year or reporter
+with no break — both anchors, for the reason the defendant's half needs
+both, and the same trusted-sides exemption, so this case's own caption
+recited inline is still scrubbed; `_surviving_records` mirrors it as it
+always did. And `_pn_in_case_name` takes the candidate's END and asks the
+same question, for the role-anchored tier (which reads unmasked text) and
+the defined-term tier. Residual, and stated: a party closing the sentence
+before a cite with no signal word between ("…against Quillmark, Inc. Smith
+v. Jones (2020)…") reads as that cite's plaintiff and is left unfaked at
+that one spot, the trade the guard has always made.
+
 **A page must be APPENDABLE before anything is inserted into it**
 (`_repair_page_annots`, called once after the already-linked fast path so a
 document we would not have touched is never dirtied). `/Annots 175 0 R` is legal

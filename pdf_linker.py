@@ -11644,6 +11644,10 @@ def _pn_unknown_name_findings(text, neutral_words):
             continue
         if _pn_is_public_entity(name) or _pn_is_protected_locality(name):
             continue
+        # A run standing in the NAME OF A CITED CASE — "Respondent Kremerman
+        # v. White (2021)…" — is that decision's party, not this case's.
+        if _pn_in_case_name(text, m.start("n"), m.end("n")):
+            continue
         def _neutral(w):
             base = _pn_word_base(w)
             # A token that CONTAINS a known fake is a welded stand-in ("HENDRY2
@@ -12703,9 +12707,116 @@ _PN_IN_RE_RE = re.compile(
     r"(?:(?:[A-Z][\w&'’.-]*|of|the|and)[ \t,]+){0,8}$")
 
 
-def _pn_in_case_name(text, s):
-    """True when [s,…) stands inside the NAME OF A CITED CASE — after a " v. "
-    with nothing but more party name between, or after an "In re" lead.
+# The CLASSIC citation pattern, matched on SHAPE alone. A published decision
+# is cited "Kremerman v. White (2021) 71 Cal.App.5th 358", its short form
+# "Kremerman, supra, 71 Cal.App.5th at p. 362", and the estate/marriage form
+# "In re Marriage of Hartwell (2008) 167 Cal.App.4th 562". The parser reads
+# these when it can; the LEAK scans were masking only what it READ, so a cite
+# it could not — wrapped over a page banner, an OCR'd reporter, a supra whose
+# full cite sits in another document — left the PLAINTIFF standing for every
+# name-shaped review tier to report. The plaintiff, because the shape guard
+# `_in_authority_context` looked for a " v. " to the LEFT of a candidate and
+# so covered the defendant only. These spans are what the mask blanks in
+# addition to the parser's, and the shape is deliberately the STRICT one — a
+# " v. " (or supra, or an In re lead) AND a year-in-parens or a volume+reporter
+# run hard after the name — so ordinary prose, a caption ("RASHO, Plaintiff,
+# v. QUILLMARK") and this case's own docket never qualify.
+_PN_CITE_NAME_WORD = r"(?:[A-Z][\w&'’.-]*|of|the|and|de|la|&|\d+[A-Za-z]\w*)"
+_PN_CITE_NAME_RUN = (_PN_CITE_NAME_WORD + r"(?:,?[ \t]+" + _PN_CITE_NAME_WORD
+                     + r"){0,7}")
+# "(2021)", and the federal "(9th Cir. 2021)" / "(Cal. Ct. App. 2021)" forms.
+_PN_CITE_YEAR = r"\((?:[A-Z][\w.]*[ \t]+){0,4}(?:1[7-9]|20)\d\d\)"
+_PN_CITE_TAIL = (r"[ \t]*,?[ \t]*(?:" + _PN_CITE_YEAR
+                 + r"|\d{1,4}[ \t]+(?:" + REPORTER_PATTERN + r")|supra\b)")
+_PN_CITE_SHAPE_RE = re.compile(
+    r"(?<![\w'’])(?:"
+    r"(?P<full>" + _PN_CITE_NAME_RUN + r"[ \t]+vs?\.?[ \t]+"
+    + _PN_CITE_NAME_RUN + r")(?=" + _PN_CITE_TAIL + r")"
+    r"|(?P<inre>In[ \t]+(?:re|the[ \t]+Matter[ \t]+of)[ \t]+"
+    + _PN_CITE_NAME_RUN + r")(?=" + _PN_CITE_TAIL + r")"
+    r"|(?P<short>[A-Z][\w&'’.-]*(?:[ \t]+[A-Z][\w&'’.-]*){0,3})"
+    r"(?=,[ \t]*supra\b)"
+    r")")
+# A word that CLOSES the sentence before a cite and opens its signal — "See",
+# "Cf.", "Accord" — is not part of a plaintiff's name, whatever its capital.
+_PN_CITE_SIGNAL_WORDS = frozenset({
+    "see", "cf", "accord", "but", "compare", "citing", "contra", "also",
+    "generally", "in", "quoting", "e.g", "id", "ibid", "and", "or", "the",
+})
+
+
+def _pn_cite_run_start(run):
+    """Offset inside `run` where the case name really begins. A run captured
+    from the left can open in the sentence BEFORE the cite ("the rule.
+    Kremerman, supra"; "Quillmark. See Smith v. Jones"), so the words up to
+    the last citation signal, or the last full stop that closes an ordinary
+    word rather than an abbreviation of the name ("Assn.", "Inc.", "Servs."),
+    are not the name. Returns None when nothing is left."""
+    toks = [(mm.group(0), mm.start()) for mm in re.finditer(r"\S+", run)]
+    cut = 0
+    for i, (w, _off) in enumerate(toks[:-1]):
+        base = _pn_word_base(w)
+        if base.lower() in _PN_CITE_SIGNAL_WORDS:
+            cut = i + 1
+        elif (w.endswith(".") and len(base) > 1
+              and not _pn_is_entity_keep(base.lower())
+              and _pn_review_word_is_vocabulary(base)):
+            cut = i + 1
+    if cut >= len(toks):
+        return None
+    return toks[cut][1] if toks else None
+
+
+def _pn_cite_shape_spans(text):
+    """[(s, e)] of every case NAME standing in the classic citation pattern,
+    whether or not the citation parser could read the cite (see
+    `_PN_CITE_SHAPE_RE`). The name only — the year, reporter and pin are not
+    party names and are left for the identifier scans."""
+    spans = []
+    for m in _PN_CITE_SHAPE_RE.finditer(text):
+        s, e = m.start(), m.end()
+        if m.group("inre"):
+            spans.append((s, e))
+            continue
+        run = m.group("full") or m.group("short") or ""
+        head = run
+        if m.group("full"):
+            vm = re.search(r"[ \t]+vs?\.?[ \t]+", run)
+            head = run[:vm.start()] if vm else run
+        at = _pn_cite_run_start(head)
+        if at is None:
+            continue
+        spans.append((s + at, e))
+    return spans
+
+
+def _pn_before_v(text, e):
+    """The " v. " that FOLLOWS a candidate ending at `e`, with nothing but
+    more party name between — the plaintiff's half of a case name. Returns
+    the match over `text[e:]` or None.
+
+    A citation signal ("See", "Cf.", "Accord") standing between the candidate
+    and the " v. " means the candidate closed the sentence BEFORE the cite and
+    is no part of its plaintiff, whatever its capital."""
+    m = _PN_BEFORE_V_RE.match(text, e)
+    if not m:
+        return None
+    for w in m.group("between").replace(",", " ").split():
+        if w.lower().rstrip(".") in _PN_CITE_SIGNAL_WORDS:
+            return None
+    return m
+
+
+_PN_BEFORE_V_RE = re.compile(
+    r"(?P<between>(?:,?[ \t]+" + _PN_CITE_NAME_WORD + r"){0,6})"
+    r"[ \t]+vs?\.?\s")
+
+
+def _pn_in_case_name(text, s, e=None):
+    """True when [s,e) stands inside the NAME OF A CITED CASE — after a " v. "
+    with nothing but more party name between, BEFORE one with nothing but
+    more party name between (the plaintiff's half, asked only when `e` is
+    given), or after an "In re" lead.
 
     The " v. " half is the LEFT half of `_in_authority_context`, asked on its
     own.
@@ -12732,7 +12843,9 @@ def _pn_in_case_name(text, s):
     v = None
     for v in _PN_AUTHORITY_V_RE.finditer(left):
         pass                          # the nearest " v. " to the candidate
-    return v is not None and not _PN_AUTHORITY_BREAK_RE.search(left[v.end():])
+    if v is not None and not _PN_AUTHORITY_BREAK_RE.search(left[v.end():]):
+        return True
+    return e is not None and _pn_before_v(text, e) is not None
 # Only a NAME-shaped candidate can rename an authority. A detector hit (an SSN,
 # a phone number) inside a citation is not a thing, and refusing one would be
 # pure leak.
@@ -16392,6 +16505,40 @@ class Pseudonymizer:
         is applied anyway, for the inline recital ("this action, Rasho v.
         General Motors, LLC (2025)") where a year does follow — both sides
         trusted means the parties are ours and the run is not an authority."""
+        return (self._after_v_context(text, s, e)
+                or self._before_v_context(text, s, e))
+
+    def _before_v_context(self, text, s, e):
+        """The PLAINTIFF's half of `_in_authority_context`: the candidate
+        stands BEFORE a " v. " with nothing but more party name between, and
+        a year-in-parens or a volume+reporter run follows the defendant's
+        name with no break in between. Both anchors, for the reason the
+        other half needs both — a caption's plaintiff is followed by a
+        " v. " too, and by a docket and a role word rather than a year. The
+        guard covered the defendant alone for as long as it existed, so a
+        cite the parser could not read had its plaintiff renamed and its
+        defendant kept, and the leak tier — which mirrors this guard —
+        reported the one it kept."""
+        bv = _pn_before_v(text, e)
+        if bv is None:
+            return False
+        after = text[bv.end():bv.end() + _PN_AUTHORITY_WINDOW]
+        anchors = [m for m in (_PN_AUTHORITY_YEAR_RE.search(after),
+                               _PN_AUTHORITY_REPORTER_RE.search(after)) if m]
+        if not anchors:
+            return False
+        anchor = min(anchors, key=lambda m: m.start())
+        defendant = after[:anchor.start()]
+        if (_PN_AUTHORITY_BREAK_RE.search(defendant)
+                or _PN_AUTHORITY_V_RE.search(defendant)):
+            return False
+        plaintiff = text[s:e] + bv.group("between")
+        if self._side_is_trusted(plaintiff) and self._side_is_trusted(defendant):
+            return False              # this case's own caption, recited inline
+        return True
+
+    def _after_v_context(self, text, s, e):
+        """The DEFENDANT's half of `_in_authority_context` — see there."""
         left = text[max(0, s - _PN_AUTHORITY_WINDOW):s]
         v = None
         for v in _PN_AUTHORITY_V_RE.finditer(left):
@@ -16781,7 +16928,12 @@ class Pseudonymizer:
         return masked
 
     def _mask_uncached(self, text):
-        spans = self._protected_citation_spans(text)
+        # The parser's spans, and the classic citation SHAPE beside them —
+        # a cite the parser could not read is a cite all the same, and the
+        # plaintiff it names is no leak (`_pn_cite_shape_spans`).
+        spans = list(self._protected_citation_spans(text))
+        if _PN_AUTHORITY_V_RE.search(text) or "supra" in text or "In re" in text:
+            spans += _pn_cite_shape_spans(text)
         if not spans:
             return text
         chars = list(text)
@@ -18052,7 +18204,7 @@ class Pseudonymizer:
             # case had failed to scrub. The doctrine `_in_authority_context`
             # states for the rewrite path, applied to the report: protection
             # must not DEPEND on a parser succeeding.
-            if _pn_in_case_name(src, start):
+            if _pn_in_case_name(src, start, m.end("run")):
                 continue
             if cite_spans is None:
                 cite_spans = _PnSpanIndex(self._protected_citation_spans(src))
