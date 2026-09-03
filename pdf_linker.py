@@ -10375,6 +10375,68 @@ def _pn_edit_distance_le1(a, b, min_len=8):
     return _pn_edit_distance_within(a, b, 1, min_len)
 
 
+def _pn_ocr_distance(word, tracked, ends=True):
+    """The edit distance from a survivor `word` to the `tracked` spelling,
+    weighted by WHERE the edits fall — the shape of a scan's mistakes rather
+    than a count of them.
+
+    A wrong LETTER in the middle of a name is what OCR does (a c for an e, a
+    slash for an l); a wrong letter at the first or last position is far
+    more often a different name, so a substitution at either END of the
+    tracked word costs 1.5 against 1 in the middle. A MISSING letter runs
+    the other way: a scan clips the lead or the tail of a word, and a
+    letter lost from the middle is the rarer slip, so a deletion or an
+    insertion in the untouched prefix or suffix of the alignment costs 0.5
+    against 1 in the middle. Hence "thanisl" is Nathaniel (two letters
+    clipped off the front, one middle letter wrong: 2.0) and not Daniel (a
+    wrong first letter, an extra letter, a wrong middle one: 3.0), where a
+    plain count calls the two equally close at 3. An adjacent transposition
+    stays 1. `ends=False` drops the end-letter penalty — asked where the
+    document has already shown several spellings of the word, so the scan
+    is known to be mangling it and any position goes. The minting fold is
+    NOT this — it binds a fake and moves delivered keys, and it keeps the
+    plain count."""
+    n, m = len(tracked), len(word)
+    if n == 0 or m == 0:
+        return (n + m) * 0.5
+    INF = float("inf")
+    # d[i][j]: cost to turn tracked[:i] into word[:j].
+    d = [[INF] * (m + 1) for _ in range(n + 1)]
+    d[0][0] = 0.0
+    for i in range(1, n + 1):
+        d[i][0] = i * 0.5                  # the tracked word's lead, clipped
+    for j in range(1, m + 1):
+        d[0][j] = j * 0.5                  # debris before the word begins
+    for i in range(1, n + 1):
+        for j in range(1, m + 1):
+            same = tracked[i - 1] == word[j - 1]
+            sub = 0.0 if same else (1.5 if ends and i in (1, n) else 1.0)
+            dele = 0.5 if j == m else 1.0
+            ins = 0.5 if i == n else 1.0
+            best = min(d[i - 1][j - 1] + sub, d[i - 1][j] + dele,
+                       d[i][j - 1] + ins)
+            if (i > 1 and j > 1 and tracked[i - 1] == word[j - 2]
+                    and tracked[i - 2] == word[j - 1]):
+                best = min(best, d[i - 2][j - 2] + 1.0)
+            d[i][j] = best
+    return d[n][m]
+
+
+def _pn_ocr_distance_within(word, tracked, k, min_len=8, ends=True):
+    """True when `word` is within weighted distance `k` of `tracked` (see
+    `_pn_ocr_distance`), under the same length floor
+    `_pn_edit_distance_within` applies. The length-gap short-circuit is at
+    half price, since a clipped lead or tail is exactly what the weighting
+    makes cheap."""
+    if word == tracked:
+        return True
+    if min(len(word), len(tracked)) < min_len:
+        return False
+    if abs(len(word) - len(tracked)) * 0.5 > k:
+        return False
+    return _pn_ocr_distance(word, tracked, ends) <= k
+
+
 def _pn_name_fold_dist(a, b):
     """The edit distance at which two NAME tokens still fold onto one fake, by
     length: the longer a token, the more independent typos it plausibly carries,
@@ -10555,7 +10617,11 @@ def _pn_degraded_spans(text):
 # map, so unlike `_PN_CONFUSABLES` it need not be an involution — several
 # digits legitimately read as one letter.
 _PN_DIGIT_LETTERS = {"0": "o", "1": "l", "2": "z", "3": "e", "4": "a",
-                     "5": "s", "6": "b", "7": "t", "8": "b", "9": "g"}
+                     "5": "s", "6": "b", "7": "t", "8": "b", "9": "g",
+                     # A scan renders a thin upright stroke — an l, an i, a
+                     # 1 — as a slash or a bar ("Wi/son", "Da|ey"), on a clean
+                     # page as readily as a degraded one.
+                     "/": "l", "|": "l"}
 _PN_SCAN_FOLD_BUMP = 1
 _PN_SCAN_FOLD_BUMP_DEGRADED = 2
 # A capitalised token that may carry debris (digits, an interior mark), for
@@ -10567,8 +10633,13 @@ _PN_SCAN_FOLD_BUMP_DEGRADED = 2
 # observed debris spelling carries a digit or a speck period too
 # ("Va-iq11ez", "Dca.ler", "Weatla.ko").
 _PN_DEBRIS_CAND_RE = re.compile(
-    r"(?<![\w'’])[A-Z][A-Za-z0-9'’.\-]*[A-Za-z0-9](?![\w'’])")
-_PN_DEBRIS_MARK_RE = re.compile(r"[0-9]|(?<=[A-Za-z0-9])\.(?=[A-Za-z0-9])")
+    r"(?<![\w'’])[A-Z][A-Za-z0-9'’.\-/|]*[A-Za-z0-9](?![\w'’])")
+_PN_DEBRIS_MARK_RE = re.compile(
+    r"[0-9]|(?<=[A-Za-z0-9])[./|](?=[A-Za-z0-9])")
+# The slash or bar alone, letters hard against it on both sides: the one
+# debris shape admitted on a CLEAN page, since "Wi/son" is a word nowhere
+# and a digit inside a word is ("COVID19", "A1").
+_PN_SLASH_DEBRIS_RE = re.compile(r"(?<=[A-Za-z])[/|](?=[A-Za-z])")
 # A contact label on a form or letterhead line, tolerating the garbling the
 # label itself picks up ("Addresii:", "ADDRBSS:", "Dca.ler Address:"). The
 # value taken is the run from the first digit-bearing token to the end of the
@@ -15680,7 +15751,7 @@ class Pseudonymizer:
             # marks dropped ("va2que1" -> "vazquel", "Vazqu~z" -> "vazquz").
             base = "".join(c.lower() if c.isalpha()
                            else _PN_DIGIT_LETTERS.get(c, "")
-                           for c in core if c.isalnum())
+                           for c in core if c.isalnum() or c in "/|")
             if not base:
                 return ""
             if base in spell and base in bound:
@@ -19099,15 +19170,34 @@ class Pseudonymizer:
         party = self._party_token_bases()
         person_toks = self._tracked_person_tokens()
         lower_words = None          # built lazily, for the first near-miss
-        for m in re.finditer(r"(?<![\w'’])[A-Za-z][A-Za-z'’-]+(?![\w'’])", src):
-            word = m.group(0)
-            base = _pn_word_base(word)
-            if (len(base) < _PN_NAME_FOLD_MIN or not base.isalpha()
+        spell = self._tracked_word_spellings()   # the canonical words
+        cand_re = re.compile(r"(?<![\w'’])[A-Za-z][A-Za-z'’-]+(?![\w'’])")
+
+        def _screened(word, base):
+            return (len(base) < _PN_NAME_FOLD_MIN or not base.isalpha()
                     or base in toks          # exact: the other scan's finding
                     or base in seen
                     or base in known or _pn_word_is_own_fake(word, known)
                     or _pn_review_is_neutral(word, known)
-                    or _pn_is_never_fake(word)):
+                    or _pn_is_never_fake(word))
+
+        # Collected first and decided after, because the decision depends on
+        # how many DISTINCT spellings of one tracked word the document
+        # carries. One near-miss, however often it recurs, is as likely a
+        # different name as a slip, so it must be a CLOSE match — the plain
+        # scan reach, with none of the degraded or named-party bumps. Several
+        # distinct near-misses of one word are the signature of a scan that
+        # keeps mangling that name, and that is where the real name becomes
+        # obvious: there the full reach applies, and one degree further —
+        # a spelling within the fold of one of the identified variants is a
+        # variant too. Distances are `_pn_ocr_distance`, weighted by where
+        # the edit fell, so a clipped lead is cheap and a wrong first letter
+        # dear. All at the owner's direction.
+        found = []
+        for m in cand_re.finditer(src):
+            word = m.group(0)
+            base = _pn_word_base(word)
+            if _screened(word, base):
                 continue
             near = set()
             for i in range(len(base) - 2):
@@ -19120,13 +19210,23 @@ class Pseudonymizer:
                 bgs = _pn_bigrams(base)
                 near |= {t for t in party if bgs & _pn_bigrams(t)}
             deg = degraded.overlaps(m.start(), m.end())
+            # The WIDE reach, with no end-letter penalty: the net a word the
+            # scan keeps mangling is caught in, decided below once the
+            # document's other spellings of it are known.
             hits = [t for t in sorted(near)
-                    if _pn_edit_distance_within(
+                    if _pn_ocr_distance_within(
                         base, t, _pn_scan_fold_dist(base, t, deg,
                                                     party=t in party),
-                        min_len=_PN_NAME_FOLD_MIN)]
+                        min_len=_PN_NAME_FOLD_MIN, ends=False)]
             if not hits:
                 continue
+            # What a LONE variant has to meet: the scan reach on a clean page
+            # for an ordinary token, no bump, and a wrong first or last
+            # letter counted against it.
+            close = [t for t in hits
+                     if _pn_ocr_distance_within(base, t,
+                                                _pn_scan_fold_dist(base, t),
+                                                min_len=_PN_NAME_FOLD_MIN)]
             # Asked LAST of the cheap screens and only of a word that is
             # already a near-miss: the corroboration walks its line, and the
             # widened pattern hands this loop ten times the candidates
@@ -19162,8 +19262,44 @@ class Pseudonymizer:
             if not self._finding_is_in_original(raw):
                 continue
             seen.add(base)
+            found.append((word, base, raw, hits, close))
+        # The distinct spellings the document offers for each tracked word,
+        # grouped on the CANONICAL spelling — the tool's own derived
+        # near-spellings sit in the index beside it and are not variants.
+        variants = {}
+        for _w, base, _r, hits, _c in found:
+            canon = [t for t in hits if t in spell] or hits
+            for t in canon:
+                variants.setdefault(t, set()).add(base)
+        multi = {t for t, bs in variants.items() if len(bs) >= 2}
+        reported = set()
+        for _w, base, raw, hits, close in found:
+            if not close and not any(t in multi for t in hits):
+                continue            # a lone variant, and not a close one
+            reported.add(base)
             self.review.append(("misspelled name?", raw))
             out.append(("misspelled name?", raw))
+        # One degree further out from the variants of a word the scan keeps
+        # mangling: a spelling within the fold of an identified variant.
+        if multi:
+            targets = sorted({b for t in multi for b in variants[t]})
+            for m in cand_re.finditer(src):
+                word = m.group(0)
+                base = _pn_word_base(word)
+                if (base in reported or base in targets or word[:1].islower()
+                        or _screened(word, base)):
+                    continue
+                if not any(_pn_ocr_distance_within(
+                        base, v, _pn_name_fold_dist(base, v),
+                        min_len=_PN_NAME_FOLD_MIN, ends=False)
+                           for v in targets):
+                    continue
+                if not self._finding_is_in_original(word):
+                    continue
+                seen.add(base)
+                reported.add(base)
+                self.review.append(("misspelled name?", word))
+                out.append(("misspelled name?", word))
         # ── The candidate carrying the scanner's own DEBRIS ─────────────────
         # The tier above wants a clean Title-case word, and a degraded scan
         # does not produce those: it renders "Vasquez" as "Va-iq11ez" and
@@ -19187,28 +19323,43 @@ class Pseudonymizer:
         # fakes exactly what is there. Measured on the export that reported
         # this: eleven rows, among them the signatory ("Va-iq11ez"), the
         # dealership ("Pre1tlge") and the guarantor's street ("Whorto1t").
-        if degraded:
+        # …and a SLASH or bar with letters hard against it on both sides is
+        # admitted on ANY page: "Wi/son" is a word nowhere, so unlike a digit
+        # it needs no degraded region to license it — at the clean reach,
+        # through the 3-gram index, exactly as a clean candidate is compared.
+        slash_page = bool(_PN_SLASH_DEBRIS_RE.search(src))
+        if degraded or slash_page:
             ordered = sorted(toks)
             for m in _PN_DEBRIS_CAND_RE.finditer(src):
                 raw = m.group(0)
                 core = raw.strip(".,:;()[]'\"-")
                 if not _PN_DEBRIS_MARK_RE.search(core):
                     continue
-                if not degraded.overlaps(m.start(), m.end()):
+                in_deg = bool(degraded) and degraded.overlaps(m.start(), m.end())
+                if not in_deg and not _PN_SLASH_DEBRIS_RE.search(core):
                     continue
                 base = "".join(c.lower() if c.isalpha()
                                else _PN_DIGIT_LETTERS.get(c, "")
-                               for c in core if c.isalnum())
+                               for c in core if c.isalnum() or c in "/|")
                 if len(base) < _PN_NAME_FOLD_MIN or raw.lower() in seen:
                     continue
                 if (base in known or _pn_word_is_own_fake(core, known)
                         or _pn_review_is_neutral(base, known)):
                     continue
-                bump = _PN_SCAN_FOLD_BUMP_DEGRADED
-                hit = next((t for t in ordered
-                            if _pn_edit_distance_within(
-                                base, t, _pn_name_fold_dist(base, t) + bump,
-                                min_len=_PN_NAME_FOLD_MIN)), None)
+                if in_deg:
+                    bump = _PN_SCAN_FOLD_BUMP_DEGRADED
+                    hit = next((t for t in ordered
+                                if _pn_ocr_distance_within(
+                                    base, t, _pn_name_fold_dist(base, t) + bump,
+                                    min_len=_PN_NAME_FOLD_MIN)), None)
+                else:
+                    near = set()
+                    for i in range(len(base) - 2):
+                        near |= idx.get(base[i:i + 3], set())
+                    hit = next((t for t in sorted(near)
+                                if _pn_ocr_distance_within(
+                                    base, t, _pn_scan_fold_dist(base, t),
+                                    min_len=_PN_NAME_FOLD_MIN)), None)
                 if hit is None or not self._finding_is_in_original(raw):
                     continue
                 seen.add(raw.lower())

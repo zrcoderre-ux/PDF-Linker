@@ -114,11 +114,20 @@ def test_the_tracked_value_itself_is_never_an_alias():
 
 def test_the_wide_net_reaches_the_sweep_too():
     """The report casts the same net: a named party's token is asked about
-    at the degraded reach on a clean page."""
+    at the degraded reach on a clean page — once the document has shown a
+    SECOND spelling of it. A lone three-slip spelling, however often it
+    recurs, is as likely a different name and must be a close match
+    (`test_variant_reach.py`); the pre-fill by value is unchanged."""
     z = _pz("Manuel Vazquez")
-    out = z.apply("Name: Manuel Vazquez. Print Name: Manuel Vatqual, loan")
-    assert "Vatqual" in [s for _c, s in z.fuzzy_survivor_scan(out)]   # 3 slips
+    out = z.apply("Name: Manuel Vazquez. Print Name: Manuel Vatqual, loan. "
+                  "Vatqual again. Guarantor: Manuel Vazqoez.")
+    got = [s for _c, s in z.fuzzy_survivor_scan(out)]
+    assert "Vatqual" in got and "Vazqoez" in got            # 3 slips, 1 slip
     assert z.alias_suggestion("Vatqual") == "Vazquez"
+    lone = _pz("Manuel Vazquez")
+    out = lone.apply("Name: Manuel Vazquez. Print Name: Manuel Vatqual, loan. "
+                     "Vatqual again.")
+    assert "Vatqual" not in [s for _c, s in lone.fuzzy_survivor_scan(out)]
 
 
 def test_an_unusual_letter_pair_is_what_licenses_the_wide_reach():
