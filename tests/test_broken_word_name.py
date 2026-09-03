@@ -227,15 +227,20 @@ def test_the_break_is_between_letters():
     ("person-token", "document", False),
     ("person-token", "declarant", False),
     ("person-token", "judge", False),
-    ("person", "spreadsheet", False),
-    ("entity-token", "spreadsheet", False),
+    ("person", "spreadsheet", True),
+    ("entity-token", "spreadsheet", True),
+    ("entity", "spreadsheet", True),
+    ("entity", "document", False),
+    ("short-name", "spreadsheet", False),
     ("case_number", "spreadsheet", False),
+    ("display-name", "spreadsheet", False),
 ])
-def test_only_an_authoritative_person_token_is_breakable(category, source,
-                                                         expected):
+def test_only_an_authoritative_name_term_is_breakable(category, source,
+                                                      expected):
     """A break spelling is a guess about how a printed word came apart.
     Stacking it on a guess about who the party IS doubles the ways it can be
-    wrong; and an entity's words are ordinary vocabulary, so its halves are."""
+    wrong, so only the operator's own list qualifies — every NAME term on it,
+    entity included (see `test_broken_entity_name.py` for why)."""
     assert P._pn_term_is_breakable(category, source) is expected
 
 

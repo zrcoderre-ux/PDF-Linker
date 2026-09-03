@@ -149,14 +149,31 @@ def test_the_minting_fold_itself_is_unmoved():
 
 
 def test_the_wider_reach_is_spent_only_where_the_text_is_degraded():
-    """The three-slip spellings must NOT be reachable in clean prose: that
-    tolerance was measured as a worksheet nobody reads."""
-    z = _pz("Westlake Services, LLC")
+    """The three-slip spellings must NOT be reachable in clean prose for a
+    name the run merely HARVESTED: that tolerance was measured as a
+    worksheet nobody reads. (A party the operator NAMED is the exception,
+    below — the net is cast wide for those at the owner's direction.)"""
+    reg = P._PnFakeRegistry()
+    terms = P._pn_build_terms(["Weishi Yang"], [], [], registry=reg)
+    P._pn_append_name_terms(terms, "Westlake Services, LLC", "document", reg)
+    z = P.Pseudonymizer(terms, DET, registry=reg)
     clean_with_survivor = CLEAN.replace(
         "condition precedent", "Wcstlah precedent")
     out = z.apply(clean_with_survivor)
     assert not P._pn_degraded_spans(out)
     assert "Wcstlah" not in _scan(z, out)
+
+
+def test_a_named_party_takes_the_wider_reach_on_a_clean_page():
+    """The operator's own template party is the spelling the run is surest
+    of, so its three-slip spellings are asked about everywhere
+    (`_pn_scan_fold_dist(party=True)`)."""
+    z = _pz("Westlake Services, LLC")
+    clean_with_survivor = CLEAN.replace(
+        "condition precedent", "Wcstlah precedent")
+    out = z.apply(clean_with_survivor)
+    assert not P._pn_degraded_spans(out)
+    assert "Wcstlah" in _scan(z, out)
 
 
 # ── the degradation measure ─────────────────────────────────────────────────
