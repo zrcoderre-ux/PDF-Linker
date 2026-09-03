@@ -12722,20 +12722,39 @@ _PN_IN_RE_RE = re.compile(
 # run hard after the name — so ordinary prose, a caption ("RASHO, Plaintiff,
 # v. QUILLMARK") and this case's own docket never qualify.
 _PN_CITE_NAME_WORD = r"(?:[A-Z][\w&'’.-]*|of|the|and|de|la|&|\d+[A-Za-z]\w*)"
-_PN_CITE_NAME_RUN = (_PN_CITE_NAME_WORD + r"(?:,?[ \t]+" + _PN_CITE_NAME_WORD
-                     + r"){0,7}")
+# The whitespace INSIDE a cite as the EXPORT prints it. A citation on
+# pleading paper wraps wherever the margin falls — inside the plaintiff's
+# name, around the " v. ", between the defendant and the year — and the
+# export keeps the gutter number of the line it wraps onto, so the gap is
+# "\n13  " and not a space. At the foot of a page it is a blank line, the
+# "====== Page N ======" header and the first gutter number of the next page.
+# A guard joined on horizontal whitespace alone saw none of those cites, and
+# every review tier that reads through the mask then took the plaintiff for
+# an unscrubbed name — "Martine v. Chippewa Enterprises" reported as a slip
+# of a party named Martinez, "Gavina v. Smith (1944) 25 Cal.2d 501" as one
+# of a party named Gavin. Each hop is bounded: one page header at most, the
+# gutter number one or two digits followed by the writer's own two spaces.
+_PN_CITE_WS = (r"(?:[ \t]+|[ \t]*\n(?:[ \t]*\n)*"
+               r"(?:[ \t]*={6}[ \t]+Page[^\n]*\n(?:[ \t]*\n)*)?"
+               r"[ \t]*(?:\d{1,2}[ \t]{2,})?[ \t]*)")
+_PN_CITE_NAME_RUN = (_PN_CITE_NAME_WORD + r"(?:,?" + _PN_CITE_WS
+                     + _PN_CITE_NAME_WORD + r"){0,7}")
 # "(2021)", and the federal "(9th Cir. 2021)" / "(Cal. Ct. App. 2021)" forms.
 _PN_CITE_YEAR = r"\((?:[A-Z][\w.]*[ \t]+){0,4}(?:1[7-9]|20)\d\d\)"
-_PN_CITE_TAIL = (r"[ \t]*,?[ \t]*(?:" + _PN_CITE_YEAR
-                 + r"|\d{1,4}[ \t]+(?:" + REPORTER_PATTERN + r")|supra\b)")
+_PN_CITE_TAIL = (r"(?:,?" + _PN_CITE_WS + r"|,?[ \t]*)(?:" + _PN_CITE_YEAR
+                 + r"|\d{1,4}" + _PN_CITE_WS + r"(?:" + REPORTER_PATTERN
+                 + r")|supra\b)")
+_PN_CITE_V = _PN_CITE_WS + r"vs?\.?" + _PN_CITE_WS
 _PN_CITE_SHAPE_RE = re.compile(
     r"(?<![\w'’])(?:"
-    r"(?P<full>" + _PN_CITE_NAME_RUN + r"[ \t]+vs?\.?[ \t]+"
+    r"(?P<full>" + _PN_CITE_NAME_RUN + _PN_CITE_V
     + _PN_CITE_NAME_RUN + r")(?=" + _PN_CITE_TAIL + r")"
-    r"|(?P<inre>In[ \t]+(?:re|the[ \t]+Matter[ \t]+of)[ \t]+"
+    r"|(?P<inre>In" + _PN_CITE_WS + r"(?:re|the" + _PN_CITE_WS + r"Matter"
+    + _PN_CITE_WS + r"of)" + _PN_CITE_WS
     + _PN_CITE_NAME_RUN + r")(?=" + _PN_CITE_TAIL + r")"
-    r"|(?P<short>[A-Z][\w&'’.-]*(?:[ \t]+[A-Z][\w&'’.-]*){0,3})"
-    r"(?=,[ \t]*supra\b)"
+    r"|(?P<short>[A-Z][\w&'’.-]*(?:" + _PN_CITE_WS
+    + r"[A-Z][\w&'’.-]*){0,3})"
+    r"(?=,(?:" + _PN_CITE_WS + r")?supra\b)"
     r")")
 # A word that CLOSES the sentence before a cite and opens its signal — "See",
 # "Cf.", "Accord" — is not part of a plaintiff's name, whatever its capital.
@@ -12781,7 +12800,7 @@ def _pn_cite_shape_spans(text):
         run = m.group("full") or m.group("short") or ""
         head = run
         if m.group("full"):
-            vm = re.search(r"[ \t]+vs?\.?[ \t]+", run)
+            vm = re.search(_PN_CITE_V, run)
             head = run[:vm.start()] if vm else run
         at = _pn_cite_run_start(head)
         if at is None:
@@ -12808,8 +12827,8 @@ def _pn_before_v(text, e):
 
 
 _PN_BEFORE_V_RE = re.compile(
-    r"(?P<between>(?:,?[ \t]+" + _PN_CITE_NAME_WORD + r"){0,6})"
-    r"[ \t]+vs?\.?\s")
+    r"(?P<between>(?:,?" + _PN_CITE_WS + _PN_CITE_NAME_WORD + r"){0,6})"
+    + _PN_CITE_WS + r"vs?\.?\s")
 
 
 def _pn_in_case_name(text, s, e=None):
@@ -17130,12 +17149,47 @@ class Pseudonymizer:
                     chars[i] = " "
         return "".join(chars)
 
+    # How much of a NEIGHBOURING page the authority guard may read — more
+    # than `_PN_AUTHORITY_WINDOW`, since the window is measured from the
+    # candidate and the page break can fall anywhere inside the cite.
+    _PAGE_CTX = 240
+
+    def set_page_context(self, before="", after=""):
+        """Hand the write guard the text that stands BEFORE and AFTER the
+        page about to be scrubbed — the tail of the previous page and the
+        head of the next, unscrubbed.
+
+        A page is scrubbed on its own, and a citation does not know that: it
+        straddles the foot of one page and the head of the next as readily
+        as it wraps a line. "[Berryman v. Merit Prop. Mgmt., Inc." closed
+        page 3 and "(2007) 152 Cal.App.4th 1544" opened page 4, so on page 3
+        the defendant had a " v. " to its left and no year or reporter in
+        sight, `_in_authority_context` refused it nothing, and the cited
+        decision shipped as "Merit Ravenwood. Kaldor., Inc." — the invented
+        authority the whole method is built to refuse. The guard reads the
+        page with its neighbours around it; nothing else does, so the page's
+        own text and offsets are untouched. Reset with no arguments."""
+        # A page break is a line break: the seam is a newline, so a " v." that
+        # closes the previous page still reads as " v. " and the first word
+        # of the next page keeps its boundary.
+        before, after = (before or "")[-self._PAGE_CTX:], (after or "")[:self._PAGE_CTX]
+        self._ctx_before = before + "\n" if before else ""
+        self._ctx_after = "\n" + after if after else ""
+
     def _substitute(self, text, cands, reflow=False, count=True, protected=None):
         # Biggest / most-specific first; skip anything overlapping a chosen span.
         cands.sort(key=lambda c: (-c[0], -(c[2] - c[1])))
+        # The authority guard reads the page WITH its neighbours around it
+        # (`set_page_context`), so a cite the page break cut in two still
+        # carries both its anchors; the offsets it is asked about shift by the
+        # prefix and nothing about the page itself moves.
+        ctx_b = getattr(self, "_ctx_before", "")
+        ctx_a = getattr(self, "_ctx_after", "")
+        gtext = (ctx_b + text + ctx_a) if (ctx_b or ctx_a) else text
+        goff = len(ctx_b)
         # Fail-closed authority guard, run only where the text has a "v." at all
         # so an ordinary page pays one search.
-        guard = bool(_PN_AUTHORITY_V_RE.search(text))
+        guard = bool(_PN_AUTHORITY_V_RE.search(gtext))
         # Indexed, not walked: `scrub_survivors` hands this pass the whole export
         # and a candidate per surviving match, so the per-candidate scan over the
         # protected spans was a product of two numbers that both grow with the
@@ -17154,7 +17208,7 @@ class Pseudonymizer:
             # …and never in a citation-SHAPED context either, whether or not a
             # citation parsed there.
             if (guard and rec["category"] in _PN_AUTHORITY_GUARD_CATS
-                    and self._in_authority_context(text, s, e)):
+                    and self._in_authority_context(gtext, s + goff, e + goff)):
                 continue
             occ.append((s, e))
             chosen.append((s, e, rec))
@@ -24539,6 +24593,7 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
     detect_pages = []  # column-ordered page text, for name detection / leak check
     page_blocks = []  # (header, rows_or_text) before pseudonymization; rows is
                       # a list of (line_num, segments) for pleading pages, else a str
+    block_pages = []  # for each block, the index of its `detect_pages` entry
     has_fields = _doc_has_form_fields(doc)
     forms_seen, ink_seen, tables_seen = [], [], []
     for i, page in enumerate(doc):
@@ -24632,6 +24687,7 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
                      f"text is LOW CONFIDENCE" if low_dpi else "")
                   + " ======")
         page_blocks.append((header, rows if rows is not None else display))
+        block_pages.append(len(detect_pages) - 1)   # its detection text
 
     def _pages(nums):
         return (", ".join(str(p) for p in nums[:12])
@@ -24690,7 +24746,15 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         authorities list counts each document once however many bodies are
         built from it."""
         parts = []
-        for header, content in page_blocks:
+        for k, (header, content) in enumerate(page_blocks):
+            if pz is not None:
+                # A cite can straddle the page break; the write guard reads
+                # this page with the unscrubbed tail of the previous one and
+                # head of the next around it (`set_page_context`).
+                dp = block_pages[k]
+                pz.set_page_context(
+                    detect_pages[dp - 1] if dp > 0 else "",
+                    detect_pages[dp + 1] if dp + 1 < len(detect_pages) else "")
             if isinstance(content, list):   # pleading page: (line_num, segments)
                 nums = [num for num, _ in content]
                 if pz is not None:
@@ -24710,6 +24774,8 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
             else:                           # flowing text
                 display = pz.apply(content) if pz is not None else content
             parts.append(f"{header}\n{display}")
+        if pz is not None:
+            pz.set_page_context()
         out = "\n\n".join(parts) + "\n"
         # Append a list of every cited authority with a free public
         # verification link — the text copy points somewhere anyone can open.
