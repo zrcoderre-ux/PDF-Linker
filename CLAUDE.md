@@ -3158,6 +3158,38 @@ before a cite with no signal word between ("…against Quillmark, Inc. Smith
 v. Jones (2020)…") reads as that cite's plaintiff and is left unfaked at
 that one spot, the trade the guard has always made.
 
+**A cite STRUNG behind another has its SEAM for an anchor, a `supra` short
+name is masked wherever the brief uses it BARE, and a word inside a URL is
+never a candidate** (`_pn_string_cite_seam`, `_PN_STRING_CITE_SEAM_RE`, the
+`strung` branch of `_PN_CITE_SHAPE_RE`, `_PN_CITE_PAGE_FURNITURE`,
+`_pn_cite_short_names`, `_PN_URL_SPAN_RE`). Three rows from one batch, one
+rule under them: a word inside a CASE NAME is a party of a published
+decision, not of this case, unless the operator's own template names it —
+at the owner's direction. "…71 Cal.App.5th 358, 373-374; Krongos v. Pacific
+Gas & Electric Co." closed a page and its "(1992) 7 Cal.App.4th 387" opened
+the next behind the firm's letterhead, so no tail was in reach and the
+plaintiff was reported. The semicolon after a citation is how a string cite
+is written, and a capitalised " v. " run after it is the next authority: the
+seam (a year, a volume+reporter run or a `supra`, a pin at most, then ";",
+one wrap allowed) is the anchor the tail would have been, for the mask and
+for both halves of the write guard alike — still never both sides of this
+case's own caption. A few short UNNUMBERED lines after a page header are
+stepped over too, since the export prints a letterhead block that way, and
+only there; the tail is still required, so the hop admits nothing alone.
+"(Sanders, supra, 119 Cal.App.2d at p. 365.)" declares "Sanders" the short
+name and "Sanders is instructive" two lines down was reported as a slip of
+a tracked party: the bare short name is masked throughout, EXCEPT a word of
+a value this case tracks, because `_surviving_records` reads through the
+mask and a real party sharing a cited decision's name must stay reportable
+where it survives (`_tracked_real_words`); a space before the `supra` comma
+is tolerated. And the authorities appendix this tool writes spells every
+cite out again in its verification link ("scholar?q=Angle%20M.%20v."), where
+the plaintiff blanked in the cite stood as a word between "=" and "%" — the
+fuzzy sweep skips every tier's candidate inside a URL token. The shape's
+names now also feed `_pn_authority_cite_index`, so `prune_authority_party_terms`
+drops a harvested bare "Sanders" as it drops Angela White, the fake pool
+avoids the word, and a row that survives names the decision in Notes.
+
 **…and a cite WRAPS wherever the margin falls, and the guards read it as the
 EXPORT prints it** (`_PN_CITE_WS`, `_PN_CITE_V`, `set_page_context`). On
 pleading paper a citation breaks inside the plaintiff's name, around the
