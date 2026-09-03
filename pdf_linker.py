@@ -25046,7 +25046,7 @@ def _is_tool_txt_artifact(p):
     scrubbed and never tracked."""
     leak_txts = {f"{_PN_LEAK_STEM}.txt"} | {
         f"{stem}.txt" for stem in _PN_LEAK_LEGACY_STEMS}
-    if p.name in leak_txts:
+    if p.name in leak_txts or p.name == _COMBINED_TEXT_NAME:
         return True
     if (p.name.startswith(_ETA_MARKER_PREFIX + " ")
             or p.name.startswith(_DONE_MARKER_PREFIX + " ")):
@@ -25091,6 +25091,155 @@ def _drop_superseded_combined_exports(folder, text_subdir, log):
                      f"its own export in this folder again.")
         except OSError as e:
             log.warning(f"  Could not remove {pth.name}: {e}")
+
+
+# ── One combined text file, on request ───────────────────────────────────────
+# `combined_text = on` in the config: EVERY export in the text subfolder is
+# also written into one file in the CASE FOLDER, each document in full behind
+# its own DOCUMENT banner — the shape the older consolidation used, so the
+# same reader (`_combined_sections`, `_pn_locate_export`) reads it. Not the
+# same feature: that one REPLACED exports to fit an upload cap and is gone;
+# this one is opt-in and ADDS a file, the individual exports staying exactly
+# as they are. It sits in the case folder and not in `Text Files` because
+# that folder is the set of per-document exports, and a file holding all of
+# them again beside them would ship twice over.
+#
+# Built from the exports AS DELIVERED, on disk, after the leak gate has had
+# its say: a quarantined `*.txt.LEAK` is never a member, and while one is
+# held the file is not written at all (a stale one is removed), for the
+# reason the copy waits — a combined file missing a document reads as
+# complete, and one carrying the leak would be a second copy of it outside
+# the quarantine. `--fix-leaks` writes it when the last leak is released.
+# Byte-stable, like everything else derived from the exports: no timestamp,
+# no count of anything but its own members, and rewritten only when its
+# content changes.
+_COMBINED_TEXT_NAME = "Combined Text.txt"
+_COMBINE_RULE = "#" * 78
+
+
+def _combine_doc_banner(i, n, name):
+    return f"{'#' * 8} DOCUMENT {i} OF {n} IN THIS COMBINED FILE: {name} {'#' * 8}"
+
+
+def _combined_text_body(members, text_subdir):
+    """The combined file: a header naming every member, then each member's
+    text behind its own DOCUMENT banner. `members` is `[(name, text), ...]`."""
+    n = len(members)
+    head = [_COMBINE_RULE,
+            f"# {_COMBINE_MARK} — {n} document{'' if n == 1 else 's'} in one "
+            f"file",
+            "#",
+            f"# Every text export in this case folder's \"{text_subdir}\" "
+            f"folder, in one file",
+            "# for uploading as a single document. NOTHING was dropped or "
+            "shortened: each",
+            "# one appears in full, in the order listed, behind its own "
+            "DOCUMENT banner.",
+            "# The individual exports are still in that folder and carry the "
+            "same text.",
+            "#",
+            "# Documents in this file:"]
+    head += [f"#   {i}. {name}" for i, (name, _t) in enumerate(members, 1)]
+    head += ["#",
+             "# Page numbering restarts at every DOCUMENT banner: a 'p.3:7' "
+             "cite means",
+             "# page 3 of the document it sits under, not page 3 of this file.",
+             _COMBINE_RULE]
+    out = ["\n".join(head) + "\n"]
+    for i, (name, text) in enumerate(members, 1):
+        out.append(f"\n{_combine_doc_banner(i, n, name)}\n\n"
+                   f"{text.strip(chr(10))}\n")
+    return "".join(out)
+
+
+def _combined_text_is_ours(path):
+    """True if `path` is a combined file THIS tool wrote (its header carries
+    the mark), so removing it can never cost the operator a file of theirs."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            return _COMBINE_MARK in fh.read(4000)
+    except OSError:
+        return False
+
+
+def _remove_combined_text(folder, log, why):
+    path = folder / _COMBINED_TEXT_NAME
+    if not path.is_file() or not _combined_text_is_ours(path):
+        return
+    try:
+        path.unlink()
+        log.info(f"  Removed {path.name}: {why}")
+    except OSError as e:
+        log.warning(f"  Could not remove {path.name}: {e}")
+
+
+def _combined_text_after_run(folder, text_subdir, enabled, log, hold=None):
+    """What a finishing run does about `Combined Text.txt`, in one place so
+    the full run and `--fix-leaks` cannot answer differently: with the
+    setting ON it is written (or withheld, with `hold` saying why); with it
+    OFF a file an earlier run wrote is removed, so a stale one never ships
+    beside exports that have moved on."""
+    if enabled:
+        return _write_combined_text(folder, text_subdir, log, hold=hold)
+    _remove_combined_text(folder, log, "combined_text is off in "
+                          "pdf_linker.config")
+    return None
+
+
+def _write_combined_text(folder, text_subdir, log, hold=None):
+    """Write `Combined Text.txt` into `folder` from the `.txt` exports in its
+    `text_subdir`, or — with `hold` naming why the folder is not deliverable,
+    or with nothing to combine — make sure no stale one is left. Returns the
+    path written, else None.
+
+    Members are the delivered exports and nothing else: the tool's own
+    `.txt` artifacts and a quarantined `*.txt.LEAK` are never read, and a
+    leftover COMBINED file an older version wrote is skipped (its banners
+    would nest inside this file's and confuse every reader of it). Name
+    order, case-folded, so a re-run of an unchanged folder reproduces the
+    file byte for byte; and it is rewritten only when the content differs,
+    so a synced folder is not touched for nothing."""
+    path = folder / _COMBINED_TEXT_NAME
+    if hold:
+        _remove_combined_text(folder, log, f"not written while {hold}")
+        return None
+    text_dir = folder / text_subdir
+    if not text_dir.is_dir():
+        text_dir = folder            # older single-folder layout
+    members = []
+    for pth in sorted(text_dir.glob("*.txt"), key=lambda q: q.name.lower()):
+        if not pth.is_file() or _is_tool_txt_artifact(pth):
+            continue
+        try:
+            body = pth.read_text(encoding="utf-8", errors="replace")
+        except OSError as e:
+            log.warning(f"  Combined text: could not read {pth.name}: {e}")
+            continue
+        if _combined_sections(body):
+            log.info(f"  Combined text: {pth.name} is itself a combined file "
+                     f"left by an older version — not folded in again.")
+            continue
+        members.append((pth.name, body))
+    if not members:
+        _remove_combined_text(folder, log, "there are no text exports to "
+                              "combine")
+        return None
+    content = _combined_text_body(members, text_subdir)
+    try:
+        if path.is_file() and path.read_text(encoding="utf-8") == content:
+            log.info(f"  {path.name} is unchanged ({len(members)} "
+                     f"document(s)).")
+            return path
+    except (OSError, UnicodeDecodeError):
+        pass
+    try:
+        path.write_text(content, encoding="utf-8")
+    except OSError as e:
+        log.warning(f"  Could not write {path.name}: {e}")
+        return None
+    log.info(f"  Wrote {path.name}: {len(members)} text export(s) in one "
+             f"file, in the case folder beside the {text_subdir!r} folder.")
+    return path
 
 
 # ── Word-document bulk conversion ────────────────────────────────────────────
@@ -26051,6 +26200,18 @@ _CONFIG_BLOCKS = (
      "# Subfolder (inside each case folder) that the .txt exports are written to.\n"
      "# Default: Text Files.\n"
      "text_subfolder = Text Files\n"
+     "\n"
+     ),
+    ("combined_text",
+     "# ALSO write every .txt export into ONE file? on/off (default: off).\n"
+     "# The individual exports are written exactly as before; this adds a\n"
+     "# \"Combined Text.txt\" in the CASE FOLDER (not the text subfolder) that\n"
+     "# holds each of them in full, in name order, behind a DOCUMENT banner --\n"
+     "# one file to upload where a folder of them is awkward. It is built from\n"
+     "# the exports as delivered, so it is never written while an export is\n"
+     "# quarantined for a leak (Apply Leak Fixes writes it once the last one is\n"
+     "# released), and it is removed again when this is turned off.\n"
+     "combined_text = off\n"
      "\n"
      ),
     ("keep_original_text",
@@ -27679,9 +27840,13 @@ def _fix_leaks_mode(folder, args, cfg, log):
         log.warning("--fix-leaks: nothing applied — correct the Fix? cell(s) "
                     "for " + ", ".join(rejected[:6]) + " and click again. The "
                     "export(s) stay quarantined until a fix actually applies.")
-        # Nothing moved, so the folder is exactly as held as it was: the copy
-        # waits here for the same reason it waits below, and says so rather
-        # than being silently skipped by an early return.
+        # Nothing moved, so the folder is exactly as held as it was: the
+        # combined file and the copy wait here for the same reason they wait
+        # below, and say so rather than being silently skipped by an early
+        # return.
+        _combined_text_after_run(
+            folder, text_subdir, _config_bool(cfg, "combined_text", False), log,
+            hold="the export(s) are still quarantined — nothing was applied")
         _copy_folder_after_run(
             folder, _copy_dest_root(cfg, args, log), log,
             provider=getattr(args, "provider", "lexis"),
@@ -27998,6 +28163,13 @@ def _fix_leaks_mode(folder, args, cfg, log):
              f"file(s); {unq} export(s) un-quarantined (*.LEAK -> .txt)"
              + (f"; {still} file(s) still carry a party-name leak — review "
                 f"LEAKS.xlsx." if still else "."))
+
+    # The combined file the full run held back for the same triage: rebuilt
+    # from the exports as they now stand, or still withheld while one is held.
+    _combined_text_after_run(
+        folder, text_subdir, _config_bool(cfg, "combined_text", False), log,
+        hold=(f"{still} export(s) still carry a party-name leak" if still
+              else None))
 
     # The copy the full run held back for triage. This pass is the moment the
     # folder finally becomes what the run promised, so it is the moment the
@@ -28341,6 +28513,9 @@ def main():
 
     # Subfolder (within each case folder) that the .txt exports are written to.
     text_subdir = cfg.get("text_subfolder", "").strip() or "Text Files"
+    # One file holding every export as well, in the case folder (opt-in).
+    combined_text = (args.extract_text
+                     and _config_bool(cfg, "combined_text", False))
 
     # Optional second folder holding the UNSCRUBBED text, for QA/reference. Off
     # by default so the tool's default output is only the shareable artifact.
@@ -28949,6 +29124,10 @@ def main():
               f"cannot be restored to the real values. Re-run after adding the "
               f"value(s) with --term, or clear the KEEP decision that dropped "
               f"the row.")
+        _combined_text_after_run(
+            folder, text_subdir, combined_text, log,
+            hold=(f"{len(pseudonymizer.unreversible)} replacement(s) in these "
+                  f"exports cannot be reversed; fix the key and re-run"))
         _copy_folder_after_run(
             folder, copy_root, log, provider=args.provider,
             hold=(f"{len(pseudonymizer.unreversible)} replacement(s) in these "
@@ -29007,6 +29186,11 @@ def main():
                   f"*.LEAK and NOT delivered ({delivered} clean export(s) "
                   f"delivered).{extra} Add the survivor(s) with --term and "
                   f"re-run.")
+            _combined_text_after_run(
+                folder, text_subdir, combined_text, log,
+                hold=(f"{len(quarantined)} export(s) are quarantined for "
+                      f"triage; Apply Leak Fixes writes it once the last one "
+                      f"is released"))
             _copy_folder_after_run(
                 folder, copy_root, log, provider=args.provider,
                 hold=(f"{len(quarantined)} export(s) are quarantined for "
@@ -29019,6 +29203,12 @@ def main():
               f"survived ({shown}) — no party name is recognizable, so the "
               f"exports are delivered. Add any that matter with --term and "
               f"re-run.")
+
+    # The one-file copy of every export, from the exports as they now stand:
+    # after the gate, so a quarantined one is never in it. Before the copy,
+    # so the copy carries it.
+    if pdfs or word_texts:
+        _combined_text_after_run(folder, text_subdir, combined_text, log)
 
     # LAST, deliberately: the copy is of a finished folder, so it carries the
     # exports, the key, the worksheet, the launchers and the DONE stamp — the

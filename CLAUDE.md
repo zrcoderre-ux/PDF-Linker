@@ -3308,6 +3308,28 @@ ordinary export, untouched. `_combined_sections` (the banner reader) and
 superseded it is a real export, and a leak found in one still has to be located
 by its member document, since every document in it numbers its pages from 1.
 
+**A combined file is back, OPT-IN and ADDITIVE, and it is not that feature**
+(`combined_text` in the config, `_write_combined_text`,
+`_combined_text_after_run`, `_COMBINED_TEXT_NAME`). The consolidation
+REPLACED exports to fit a cap; this writes ONE more file, `Combined Text.txt`,
+holding every export in the text subfolder in full behind the same DOCUMENT
+banners (so `_combined_sections` and `_pn_locate_export` read it unchanged),
+and the individual exports stay exactly as they were. It lives in the CASE
+FOLDER and not in `Text Files`, at the owner's direction and for the reason
+`Authorities Cited.txt` does: that folder is the set of per-document exports,
+and a file holding all of them again beside them would upload the batch twice.
+It is built from the exports AS DELIVERED, on disk, after the leak gate — a
+`*.txt.LEAK` is never a member, and while one is held the file is withheld and
+a stale one removed, for the reason the copy waits: a combined file missing a
+document reads as complete, and one carrying the leak is a second copy of it
+outside the quarantine. `--fix-leaks` writes it when the last leak is released,
+the unreversible-fakes gate holds it the same way, and turning the setting OFF
+removes a file an earlier run wrote (recognised by its own header mark, so a
+file of the operator's is never touched). Byte-stable — no timestamp, name
+order case-folded, rewritten only when the content differs — and
+`_is_tool_txt_artifact` knows its name, so under the older single-folder
+layout `--fix-leaks` never scrubs it as an export or folds it into itself.
+
 ## Performance notes
 
 - Term/record regex patterns are **compiled once** per run via a
