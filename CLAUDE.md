@@ -199,6 +199,15 @@ a by-NAME check that a Replacement column exists, and a key from any older
 version still reads as ours. (A test that indexes a
 key row by number is making the same mistake — a batch did, and now take the
 index from `_PN_KEY_HEADERS`.)
+**A key row is quoted only where its value stands as a WHOLE WORD**
+(`_pn_context_hit(bounded_only=True)`, from `note_key_context`). The search
+falls back to a bare substring for the worksheet, because a welded finding
+has no bounded occurrence by construction — and the same fallback on a KEY
+row quoted a `--term` "Ken" out of "DECLARATION OF KENNETH W. BOSWORTH": the
+row had matched nothing (count 0), and the cell read as the tool having taken
+"Ken" from that sentence while the full name's own row was faked beside it. A
+term matches whole words, so where its value never stands as one it matched
+nowhere and the honest cell is empty; the worksheet keeps the fallback.
 **And the quote SAYS which document it came from, and where** (`File` at **E**,
 `Where (page:line)` at **F**, `_pn_site_where`). Evidence the operator cannot go
 and check is worth much less than it looks: a folder is a dozen filings, the
@@ -1418,6 +1427,32 @@ the party), so its row stays reversible.
   for word is still refused (the delivered key's "MR. KOOL'S COLLISION,LLC" lost
   the space before its suffix, so its four words cannot be matched to the fake's
   three).
+- **A NICKNAME is the front of the name it shortens, and its fake is the
+  front of that name's fake** (`_PnFakeRegistry._nickname_fake`,
+  `nickname_swaps`, `_pn_key_longer_first`). "Ken" and "Kenneth" each drew
+  an unrelated pool word — "Windlesham" beside "Cranston" — so one person
+  read as two, exactly the confusion the compound-surname and possessive
+  rules exist to prevent, arrived at from a third direction. At the owner's
+  direction the LONGER takes precedence and the shorter is left nothing of
+  its own: "Ken" is "Cranston" with the same four letters dropped, "Cran",
+  which reads as the nickname of the fake the way "Ken" reads as the
+  nickname of the real. Either may be drawn first. The build pre-binds
+  shortest-first, so a nickname on the template is bound before its full
+  name and is REBOUND when the full name is drawn (`_draw`, factored out of
+  `token` for it); a nickname harvested later takes the front of a fake
+  already bound. PERSONS only — "Sun" is not a nickname of "Sunlight" — the
+  shorter at least three letters and at least two shorter, the tail the
+  full name adds at most six letters and not itself a bound name (or the
+  pair is a WELD — "adler" in front of "adlermichael" — which is the weld
+  fold's business and reaches it untouched), and a binding a
+  reused key pinned never moves, the `_pool` test `avoid()` already uses
+  (a loaded or composed fake was not this pool's to give). Reversal is the
+  care in it: the short fake is a SUBSTRING of the long one, and a reader of
+  the key that searches substrings in row order would turn "Cranston" into
+  "Kenston" on meeting the short row first — so `write_key` puts a row
+  whose Replacement is the front of another's AFTER it, and every other row
+  keeps its place. `DeAnonymize.bas` should reverse longest-first
+  regardless.
 - **A POSSESSIVE that lost its apostrophe is the same word.** `KOOL'S` and
   `Kool’s` both reduce to the core "kool" (`_pn_word_affixes` strips either
   mark), but an all-caps caption printing `MR. KOOLS COLLISION, LLC` — the

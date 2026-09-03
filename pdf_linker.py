@@ -7591,6 +7591,7 @@ class _PnFakeRegistry:
 
     def __init__(self):
         self._memo = {}     # (memo_tag, real_lower) -> fake
+        self.nickname_swaps = []   # (nickname, old fake, new fake) — see token()
         self._pool = {}     # (memo_tag, real_lower) -> (words, seed_tag) it was
                             # DRAWN from, so a fake can be re-minted later; only
                             # a straight pool draw is recorded (a composed or
@@ -7727,6 +7728,22 @@ class _PnFakeRegistry:
             stem = self._memo.get((tag, low[:-1]))
             if stem and (stem + "s").lower() not in self._used:
                 return self._take(key, stem + "s")
+        # A NICKNAME is the front of the name it shortens, and its fake is
+        # the front of that name's fake. "Ken" and "Kenneth" each drew an
+        # unrelated pool word ("Windlesham" beside "Cranston"), so one person
+        # read as two — and the longer is the name the operator listed, so it
+        # takes precedence and the shorter is left nothing of its own: "Ken"
+        # is "Cranston" with the same four letters dropped, "Cran". Persons
+        # only ("Sun" is not a nickname of "Sunlight"), and only where the
+        # shorter is at least three letters and at least two shorter. Either
+        # may be drawn first: a nickname bound before its full name (the
+        # build pre-binds shortest-first) is REBOUND when the full name is
+        # drawn, unless it was pinned by a reused key — a delivered fake never
+        # moves. `nickname_swaps` records each move for the caller.
+        if seed_tag == "nametok" and low.isalpha():
+            cand = self._nickname_fake(low, real, words, seed_tag, key)
+            if cand is not None:
+                return cand
         # Fold an OCR/typo near-variant (edit distance 1) onto a TYPO of the
         # base token's fake, so "Palladina"/"Pallading" read as typos of the
         # same "Keswick" the canonical "Palladino" got, instead of three
@@ -7802,6 +7819,83 @@ class _PnFakeRegistry:
                 if cand.lower() not in self._used:
                     return self._take(key, cand)
                 break     # a weld was found but the joined fake was taken
+        return self._draw(real, words, seed_tag, key)
+
+    _NICK_MIN = 3          # the shortest nickname: "Ken", "Sam", "Dan"
+    _NICK_GAP = 2          # how much longer the full name must be
+
+    @staticmethod
+    def _nick_cut(long_fake, dropped, short_len):
+        """The front of `long_fake` with `dropped` letters cut off the tail —
+        the shape "Ken" has to "Kenneth" — or, where that leaves fewer than
+        two letters, the first `short_len`."""
+        cut = long_fake[:max(len(long_fake) - dropped, 0)]
+        return cut if len(cut) >= 2 else long_fake[:max(short_len, 2)]
+
+    _NICK_REST_MAX = 6     # what a full name adds to its nickname, at most
+
+    def _nick_rest_ok(self, tag, short, full):
+        """The letters a full name adds to its nickname must be a SHORT tail
+        that is not itself a bound name — or the pair is a WELD ("adler" in
+        front of "adlermichael"), which is the weld fold's business and
+        must reach it untouched — and the two must not sit within the typo
+        fold's distance of each other, or "sunderlandxx" is a nickname's
+        full name rather than the two-letter insertion the length-tracking
+        fold exists for. A nickname is a truncation, never a slip."""
+        rest = full[len(short):]
+        return (0 < len(rest) <= self._NICK_REST_MAX
+                and (tag, rest) not in self._memo
+                and not (len(full) >= 2 * _PN_NAME_FOLD_MIN
+                         and len(rest) >= _PN_NAME_FOLD_MIN)
+                and not _pn_edit_distance_within(
+                    short, full, _pn_name_fold_dist(short, full),
+                    min_len=_PN_NAME_FOLD_MIN))
+
+    def _nickname_fake(self, low, real, words, seed_tag, key):
+        """A stand-in for `low` derived from a bound name it is the front of,
+        or that is the front of it; None where neither is bound."""
+        tag = self._memo_tag(seed_tag)
+        n = len(low)
+        # (a) The full name is already bound: the nickname takes its front.
+        for (t, prev), prev_fake in self._memo.items():
+            if (t != tag or len(prev) < n + self._NICK_GAP
+                    or n < self._NICK_MIN or not prev.startswith(low)
+                    or not prev.isalpha()
+                    or not self._nick_rest_ok(tag, low, prev)):
+                continue
+            cand = self._nick_cut(prev_fake, len(prev) - n, n)
+            if cand.lower() not in self._used and not self.avoided(cand):
+                return self._take(key, cand)
+            return None
+        # (b) A nickname is already bound and this is its full name: draw the
+        # full name's fake the ordinary way, then rebind the nickname to its
+        # front — unless the nickname's fake was not this pool's to give (a
+        # reused key pinned it, or it was composed), in which case nothing
+        # moves.
+        for (t, prev), prev_fake in list(self._memo.items()):
+            if (t != tag or len(prev) < self._NICK_MIN
+                    or n < len(prev) + self._NICK_GAP or not low.startswith(prev)
+                    or not prev.isalpha()
+                    or not self._nick_rest_ok(tag, prev, low)):
+                continue
+            if self._pool.get((t, prev)) is None:
+                continue          # pinned or composed: it follows nothing
+            full = self._draw(real, words, seed_tag, key)
+            cand = self._nick_cut(full, n - len(prev), len(prev))
+            if (cand.lower() != full.lower() and cand.lower() not in self._used
+                    and not self.avoided(cand)):
+                del self._memo[(t, prev)]
+                self._used.discard(prev_fake.lower())
+                self._pool.pop((t, prev), None)
+                self._take((t, prev), cand)
+                self.nickname_swaps.append((prev, prev_fake, cand))
+            return full
+        return None
+
+    def _draw(self, real, words, seed_tag, key):
+        """The ordinary pool draw for `real`: a per-value deterministic order
+        over `words`, skipping any taken, a numbered stand-in when the pool is
+        spent."""
         rng = _pn_rng(seed_tag, real.lower())
         order = list(words)
         rng.shuffle(order)
@@ -12943,6 +13037,24 @@ def _pn_in_case_name(text, s, e=None):
 _PN_AUTHORITY_GUARD_CATS = frozenset({
     "person", "entity", "person-token", "entity-token", "short-name",
 })
+
+
+def _pn_key_longer_first(rows):
+    """Reorder `rows` in place so a row whose Replacement is the FRONT of
+    another row's Replacement comes after it. Stable for everything else."""
+    fakes = [str(r.get("fake", "")).lower() for r in rows]
+    i = 0
+    while i < len(rows):
+        moved = False
+        for j in range(i + 1, len(rows)):
+            if (len(fakes[j]) > len(fakes[i]) and fakes[i]
+                    and fakes[j].startswith(fakes[i])):
+                rows.insert(i, rows.pop(j))
+                fakes.insert(i, fakes.pop(j))
+                moved = True
+                break
+        if not moved:
+            i += 1
 
 
 def _pn_key_main_sheet(wb):
@@ -19890,7 +20002,7 @@ class Pseudonymizer:
             rl = real.lower()
             if not rl or self._key_context.get(rl):
                 continue
-            quote, site = _pn_context_hit(parsed, real)
+            quote, site = _pn_context_hit(parsed, real, bounded_only=True)
             if not quote:
                 continue
             self._key_context[rl] = quote
@@ -20111,6 +20223,12 @@ class Pseudonymizer:
                 "short-name": 3, "entity": 4, "entity-token": 5}
         keyrows.sort(key=lambda r: (rank.get(r["category"], 50),
                                     r["category"], str(r["real"]).lower()))
+        # A nickname's fake is the FRONT of its full name's ("Cran" of
+        # "Cranston"), and a reader of this sheet that searches substrings in
+        # row order would turn "Cranston" into "Kenston" if it met the short
+        # row first. The longer row goes first wherever one Replacement is
+        # the front of another; every other row keeps its place.
+        _pn_key_longer_first(keyrows)
         headers = list(_PN_KEY_HEADERS)
         # A quote this run could not re-derive is preserved from the key already
         # on disk: a folder whose documents have moved on still keeps what the
@@ -22318,7 +22436,8 @@ def _pn_site_where(parsed, site):
     return f"{first}-{_pn_where_label(*b)}"
 
 
-def _pn_context_hit(parsed, needle, width=_PN_CONTEXT_MAX, within=None):
+def _pn_context_hit(parsed, needle, width=_PN_CONTEXT_MAX, within=None,
+                    bounded_only=False):
     """(quote, site) — the sentence `needle` stands in, plus WHERE and HOW FAR
     it was quoted, so the same passage can be quoted from a second body.
 
@@ -22357,6 +22476,14 @@ def _pn_context_hit(parsed, needle, width=_PN_CONTEXT_MAX, within=None):
     sentence is not. The line range is meaningful only between bodies that
     share line numbering (a document's original and its own export) — see
     `_pn_quote_shape` for the caller that cannot promise that."""
+    # `bounded_only` withholds the substring fallback below. A KEY row's
+    # value is a term, and a term matches whole words: where it never stands
+    # as one, it matched nowhere, and the fallback quotes the sentence some
+    # LONGER word happens to contain it — a `--term` "Ken" was quoted out of
+    # "DECLARATION OF KENNETH W. BOSWORTH", which read as the tool having
+    # taken "Ken" from that sentence when the row had matched nothing at
+    # all. An empty cell is the honest answer there; the fallback stays for
+    # the worksheet, whose welded findings have no bounded occurrence.
     nl = str(needle).lower()
     if not nl:
         return "", None
@@ -22401,7 +22528,7 @@ def _pn_context_hit(parsed, needle, width=_PN_CONTEXT_MAX, within=None):
         return first
 
     hit = _scan(True)
-    if hit is None:
+    if hit is None and not bounded_only:
         hit = _scan(False)
     if hit is None:
         return "", None
