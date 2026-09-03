@@ -168,7 +168,8 @@ def test_a_named_party_takes_the_wider_reach_on_a_clean_page():
     """The operator's own template party is the spelling the run is surest
     of, so its three-slip spellings are asked about everywhere
     (`_pn_scan_fold_dist(party=True)`) — once the page has shown a SECOND
-    spelling of it. A lone far variant must be a close match instead
+    spelling of it, or while the lone spelling is BARE. A lone far variant
+    standing beside a given name nothing tracks is somebody else
     (`test_variant_reach.py`)."""
     z = _pz("Westlake Services, LLC")
     clean_with_survivor = CLEAN.replace(
@@ -178,7 +179,8 @@ def test_a_named_party_takes_the_wider_reach_on_a_clean_page():
     assert not P._pn_degraded_spans(out)
     assert "Wcstlah" in _scan(z, out)
     lone = _pz("Westlake Services, LLC")
-    out = lone.apply(CLEAN.replace("condition precedent", "Wcstlah precedent"))
+    out = lone.apply(CLEAN.replace("condition precedent",
+                                   "Robert Wcstlah precedent"))
     assert "Wcstlah" not in _scan(lone, out)
 
 

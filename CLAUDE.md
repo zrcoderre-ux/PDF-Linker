@@ -2233,7 +2233,21 @@ the party), so its row stays reversible.
   end-letter penalty is dropped (`ends=False`) for the WIDE reach and the
   second degree, since there the document has already shown the scan
   mangling the word and any position goes; it is kept for the lone
-  variant's close match. The MINTING fold is untouched — it binds a fake
+  variant's close match. **Two more clues, both about COMPANY.** A lone
+  far variant that NEVER stands beside a name word nothing tracks
+  (`_pn_has_name_companion`: in front of it or behind it, across
+  whitespace alone; a tracked given name and one of our stand-ins do not
+  count, an honorific does not) is a BARE survivor, which is what a mangled
+  party name looks like, and it is reported at the wide reach after all —
+  "Vatqual" alone, or behind "Manuel", is the defendant; "Robert Vatqual"
+  is somebody else. And two adjacent words each too far to flag alone are
+  flagged as a PAIR when each is near the corresponding word of one tracked
+  full person name (`_tracked_name_pairs`: consecutive words and
+  first-plus-last; either order, since a table writes surname first; no
+  length floor and no end penalty, because the pair supplies what those
+  stand in for): "Ionn Smleh" for John Smith, reported whole and AHEAD of
+  the single words, since a `yes` on the pair fakes both where a `yes` on
+  "Smleh" leaves "Ionn" standing. The MINTING fold is untouched — it binds a fake
   and moves delivered keys — and so is the pre-fill by value, which has no
   document to count spellings in. And a SLASH or bar with letters hard
   against it on both sides is a corrupted l (`_PN_DIGIT_LETTERS`,
