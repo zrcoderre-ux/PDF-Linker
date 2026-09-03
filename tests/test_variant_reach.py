@@ -188,3 +188,23 @@ def test_a_trailing_slash_is_a_corrupted_last_letter():
     got = _scan(["Nathaniel Brooks"],
                 "Nathaniel Brooks signed. Nathanie/ Brooks called.")
     assert got == ["Nathanie/"]
+
+
+def test_a_lower_case_word_beside_a_stand_in_is_held_to_the_close_reach():
+    # "forward" is two edits from a tracked Howard at the wide reach and 2.5
+    # at the close one; standing two words from one of this run's own
+    # stand-ins it is admitted as a candidate on its site — and the bare-
+    # survivor clue, which reports a lone far variant that never carries a
+    # name companion, would then report it, since vocabulary never has one.
+    # A lower-case word is held to the close reach alone.
+    text = ("Howard Ashdown and Maria Yardley were walking. During the fall, "
+            "YARDLEY flew a few feet forward, out from ASHDOWN's arms. "
+            "Later ASHDOWN fell forward onto the ground.")
+    assert P._pn_ocr_distance("forward", "howard") == 2.5
+    assert P._pn_ocr_distance("forward", "howard", ends=False) == 2.0
+    assert _scan(["Howard Ashdown", "Maria Yardley"], text) == []
+    # …while the shape the site rule exists for — a scan's lower-cased
+    # spelling of the surname beside the faked given name — is a CLOSE
+    # match and is still reported.
+    assert _scan(["Manuel Vazquez"],
+                 "Manuel Vazquez signed. Name: Manuel vazqvez") == ["vazqvez"]

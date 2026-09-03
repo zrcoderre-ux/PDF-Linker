@@ -19409,10 +19409,17 @@ class Pseudonymizer:
             # What a LONE variant has to meet: the scan reach on a clean page
             # for an ordinary token, no bump, and a wrong first or last
             # letter counted against it.
+            # Measured against the CANONICAL spelling only: the tool's own
+            # derived near-spellings sit in the index one edit off the real
+            # word, so a match against one of them hands the survivor a free
+            # edit — "forward" is 2.5 from Howard and 1.5 from the tool's
+            # "ohward" — which is the second-degree reach, reserved for a
+            # word the document has already shown the scan mangling.
             close = [t for t in hits
-                     if _pn_ocr_distance_within(base, t,
-                                                _pn_scan_fold_dist(base, t),
-                                                min_len=_PN_NAME_FOLD_MIN)]
+                     if (t in spell or not spell)
+                     and _pn_ocr_distance_within(base, t,
+                                                 _pn_scan_fold_dist(base, t),
+                                                 min_len=_PN_NAME_FOLD_MIN)]
             # Asked LAST of the cheap screens and only of a word that is
             # already a near-miss: the corroboration walks its line, and the
             # widened pattern hands this loop ten times the candidates
@@ -19524,7 +19531,16 @@ class Pseudonymizer:
                 # A lone variant, and not a close one: reported only where
                 # it NEVER stands beside a name word nothing tracks — a bare
                 # survivor is what a mangled party name looks like, while
-                # "Robert Vatqual" is somebody else.
+                # "Robert Vatqual" is somebody else. CAPITALISED words only:
+                # a lower-case candidate is here on its SITE alone (a stand-in
+                # two words off, a label, a narrative verb), and ordinary
+                # vocabulary never has a name companion — "YARDLEY flew a few
+                # feet forward" put "forward" two edits from a tracked Howard
+                # with nothing to refuse it, so the bare clue said nothing
+                # and the close reach, which a lone variant has to meet, is
+                # the only screen a lower-case word can be held to.
+                if not word[:1].isupper():
+                    continue
                 if lower_words is None:
                     lower_words = {w for w in _PN_RUN_WORD_RE.findall(src)
                                    if w[:1].islower()}
