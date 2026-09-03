@@ -124,9 +124,12 @@ def test_the_wide_net_reaches_the_sweep_too():
     got = [s for _c, s in z.fuzzy_survivor_scan(out)]
     assert "Vatqual" in got and "Vazqoez" in got            # 3 slips, 1 slip
     assert z.alias_suggestion("Vatqual") == "Vazquez"
+    # A lone "Vatqual" is reported only while it is BARE — never beside a
+    # name word nothing tracks. Behind a stranger's given name it is
+    # somebody else.
     lone = _pz("Manuel Vazquez")
-    out = lone.apply("Name: Manuel Vazquez. Print Name: Manuel Vatqual, loan. "
-                     "Vatqual again.")
+    out = lone.apply("Name: Manuel Vazquez. Print Name: Robert Vatqual, loan. "
+                     "Robert Vatqual again.")
     assert "Vatqual" not in [s for _c, s in lone.fuzzy_survivor_scan(out)]
 
 

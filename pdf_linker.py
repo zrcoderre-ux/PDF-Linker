@@ -10633,13 +10633,14 @@ _PN_SCAN_FOLD_BUMP_DEGRADED = 2
 # observed debris spelling carries a digit or a speck period too
 # ("Va-iq11ez", "Dca.ler", "Weatla.ko").
 _PN_DEBRIS_CAND_RE = re.compile(
-    r"(?<![\w'’])[A-Z][A-Za-z0-9'’.\-/|]*[A-Za-z0-9](?![\w'’])")
+    r"(?<![\w'’])[A-Z][A-Za-z0-9'’.\-/|]*[A-Za-z0-9/|](?![\w'’])")
 _PN_DEBRIS_MARK_RE = re.compile(
-    r"[0-9]|(?<=[A-Za-z0-9])[./|](?=[A-Za-z0-9])")
-# The slash or bar alone, letters hard against it on both sides: the one
-# debris shape admitted on a CLEAN page, since "Wi/son" is a word nowhere
-# and a digit inside a word is ("COVID19", "A1").
-_PN_SLASH_DEBRIS_RE = re.compile(r"(?<=[A-Za-z])[/|](?=[A-Za-z])")
+    r"[0-9]|(?<=[A-Za-z0-9])\.(?=[A-Za-z0-9])|(?<=[A-Za-z0-9])[/|](?![0-9_])")
+# The slash or bar alone, a letter hard against it on the left and a letter
+# or the word's end on the right: the one debris shape admitted on a CLEAN
+# page, since "Wi/son" and "Nathanie/" are words nowhere and a digit inside
+# a word is ("COVID19", "A1").
+_PN_SLASH_DEBRIS_RE = re.compile(r"(?<=[A-Za-z])[/|](?![0-9_])")
 # A contact label on a form or letterhead line, tolerating the garbling the
 # label itself picks up ("Addresii:", "ADDRBSS:", "Dca.ler Address:"). The
 # value taken is the run from the first digit-bearing token to the end of the
@@ -14336,6 +14337,54 @@ _PN_INTRO_FOLLOW_RE = re.compile(
     r"(?P<f>[A-Z][A-Za-z'’-]+)(?![\w'’])")
 
 
+# The capitalised word that PRECEDES a candidate across whitespace alone —
+# the given name in front of a surname — anchored at the end of the slice it
+# is searched in.
+_PN_INTRO_PRECEDE_RE = re.compile(
+    r"(?<![\w'’])(?P<p>[A-Z][A-Za-z'’-]+)"
+    r"(?:[ \t]+|[ \t]*\n[ \t]*(?:\d{1,2}[ \t]{2,})?[ \t]*)$")
+
+
+def _pn_name_companion_ok(comp, tracked, known, lower_words):
+    """True when `comp`, standing beside a candidate, says "name" on its own:
+    capitalised and name-shaped, not a value this case tracks, not one of
+    this run's stand-ins, never written lower-case in the document, and
+    not an honorific (which stands in front of a surname and is not a
+    given name)."""
+    base = _pn_word_base(comp)
+    return not (len(base) < _PN_HARVEST_TOKEN_MIN or base in tracked
+                or base in known or _pn_word_is_own_fake(comp, known)
+                or base in lower_words
+                or comp.lower().rstrip(".") in _PN_CRED_HONORIFICS
+                or not _pn_is_name_word(comp)
+                or _pn_review_is_neutral(comp, known)
+                or _pn_is_protected_locality(comp))
+
+
+def _pn_has_name_companion(text, word, tracked, known, lower_words):
+    """True when `word` stands, at ANY occurrence, beside a capitalised name
+    word nothing tracks — in front of it or behind it, across whitespace
+    alone. The other half of the full-name-introduction rule: a near-miss
+    that NEVER shows a given name or a surname beside it is a bare survivor,
+    which is what a mangled party name looks like, and that bareness is
+    evidence a lone far spelling is a misspelling after all. "Vatqual" is
+    three slips from Vazquez, and a "Vatqual" that appears only alone or
+    behind the tracked given name ("Manuel Vatqual") is the defendant; a
+    "Robert Vatqual" is somebody else."""
+    rx = re.compile(r"(?<![\w'’])" + re.escape(word) + r"(?![\w'’])",
+                    re.IGNORECASE)
+    for m in rx.finditer(text):
+        f = _PN_INTRO_FOLLOW_RE.match(text, m.end())
+        if f and _pn_name_companion_ok(f.group("f"), tracked, known,
+                                       lower_words):
+            return True
+        pm = _PN_INTRO_PRECEDE_RE.search(text[max(0, m.start() - 48):m.start()])
+        if pm and _pn_name_companion_ok(pm.group("p"), tracked, known,
+                                        lower_words):
+            return True
+    return False
+
+
 def _pn_full_name_intro(text, word, tracked, known, lower_words):
     """The capitalised NAME word that follows `word` across whitespace alone,
     somewhere in `text`, or "" — the marker that `word` is a different
@@ -15285,7 +15334,7 @@ class Pseudonymizer:
             # overlap resolution.
             self.terms.sort(key=lambda t: (-t.priority, -len(t.real)))
             self._trusted_tok_cache = None   # recompute over the new term set
-            self._fuzzy_idx = None; self._fuzzy_person_toks = None
+            self._fuzzy_idx = None; self._fuzzy_person_toks = None; self._fuzzy_pairs = None
         return added
 
     def _is_court_code_term(self, term):
@@ -15433,7 +15482,7 @@ class Pseudonymizer:
             self._pruned_reals.add(t.real.lower())
         if doomed:
             self._trusted_tok_cache = None
-            self._fuzzy_idx = None; self._fuzzy_person_toks = None
+            self._fuzzy_idx = None; self._fuzzy_person_toks = None; self._fuzzy_pairs = None
         return [t.real for t in doomed]
 
     def _multiword_covered_words(self):
@@ -15536,7 +15585,7 @@ class Pseudonymizer:
             self._pruned_reals.add(t.real.lower())
         if doomed:
             self._trusted_tok_cache = None
-            self._fuzzy_idx = None; self._fuzzy_person_toks = None
+            self._fuzzy_idx = None; self._fuzzy_person_toks = None; self._fuzzy_pairs = None
         return [t.real for t in doomed]
 
     def prune_heading_only_terms(self, text):
@@ -15616,7 +15665,7 @@ class Pseudonymizer:
             self._pruned_reals.add(t.real.lower())
         if doomed:
             self._trusted_tok_cache = None
-            self._fuzzy_idx = None; self._fuzzy_person_toks = None
+            self._fuzzy_idx = None; self._fuzzy_person_toks = None; self._fuzzy_pairs = None
         return [t.real for t in doomed]
 
     def note_authority_cites(self, text):
@@ -15911,7 +15960,7 @@ class Pseudonymizer:
             self._pruned_reals.add(t.real.lower())
         if doomed:
             self._trusted_tok_cache = None
-            self._fuzzy_idx = None; self._fuzzy_person_toks = None
+            self._fuzzy_idx = None; self._fuzzy_person_toks = None; self._fuzzy_pairs = None
         return [t.real for t in doomed]
 
     def prune_fragment_terms(self, text):
@@ -15946,7 +15995,7 @@ class Pseudonymizer:
             self._pruned_reals.add(t.real.lower())
         if doomed:
             self._trusted_tok_cache = None
-            self._fuzzy_idx = None; self._fuzzy_person_toks = None
+            self._fuzzy_idx = None; self._fuzzy_person_toks = None; self._fuzzy_pairs = None
         return [t.real for t in doomed]
 
     def register_entity_acronyms(self, text):
@@ -19048,6 +19097,27 @@ class Pseudonymizer:
         self._fuzzy_person_toks = out
         return out
 
+    def _tracked_name_pairs(self):
+        """{(given, surname), …} — the word pairs of every tracked PERSON
+        name: each consecutive pair of its alphabetic words of three or more
+        letters, plus its first and last, so "Steven Wayne Burt" yields
+        (steven, wayne), (wayne, burt) and (steven, burt). Cached; the index
+        drop in `_add_terms` clears it."""
+        if getattr(self, "_fuzzy_pairs", None) is not None:
+            return self._fuzzy_pairs
+        out = set()
+        for (cat, _rl), rec in self.records.items():
+            if cat != "person":
+                continue
+            words = [_pn_word_base(w) for w in str(rec["real"]).split()]
+            words = [w for w in words if len(w) >= 3 and w.isalpha()]
+            if len(words) < 2:
+                continue
+            out.update(zip(words, words[1:]))
+            out.add((words[0], words[-1]))
+        self._fuzzy_pairs = out
+        return out
+
     def _party_token_bases(self):
         """The word bases of every NAME term from an AUTHORITATIVE source —
         the operator's template and `--term` — the spellings the run is
@@ -19171,7 +19241,11 @@ class Pseudonymizer:
         person_toks = self._tracked_person_tokens()
         lower_words = None          # built lazily, for the first near-miss
         spell = self._tracked_word_spellings()   # the canonical words
-        cand_re = re.compile(r"(?<![\w'’])[A-Za-z][A-Za-z'’-]+(?![\w'’])")
+        # A word glued to a slash or a bar is the debris tier's, whole: read
+        # here, "Natha/iel" is two halves and the front one reports as a
+        # clipped spelling of the name it is really the whole of.
+        cand_re = re.compile(
+            r"(?<![\w'’/|])[A-Za-z][A-Za-z'’-]+(?![\w'’/|])")
 
         def _screened(word, base):
             return (len(base) < _PN_NAME_FOLD_MIN or not base.isalpha()
@@ -19271,11 +19345,79 @@ class Pseudonymizer:
             canon = [t for t in hits if t in spell] or hits
             for t in canon:
                 variants.setdefault(t, set()).add(base)
+        # ── Two words too far to flag alone, close enough together ─────────
+        # "Ionn Smleh" beside a tracked "John Smith": each word is past what
+        # the sweep asks about on its own (a four-letter given name is under
+        # the length floor, and each is two edits out), and the PAIR is the
+        # corroboration — two adjacent words each near the two words of one
+        # tracked full name is not a coincidence. Matched in either order,
+        # since a table writes a person surname first, with no end-letter
+        # penalty and no length floor, because the pair supplies what the
+        # floor and the penalty stand in for. Reported as the pair, whole.
+        pair_taken = set()
+        pairs = self._tracked_name_pairs()
+        if pairs:
+            by_first = {}
+            for t1, t2 in pairs:
+                by_first.setdefault(t1, set()).add(t2)
+            pair_re = re.compile(
+                r"(?<![\w'’])(?P<a>[A-Z][A-Za-z'’-]{2,})"
+                r"(?=(?P<gap>[ \t]+|[ \t]*\n[ \t]*(?:\d{1,2}[ \t]{2,})?[ \t]*)"
+                r"(?P<b>[A-Z][A-Za-z'’-]{2,})(?![\w'’]))")
+            for m in pair_re.finditer(src):
+                a, b = m.group("a"), m.group("b")
+                ba, bb = _pn_word_base(a), _pn_word_base(b)
+                if (not ba.isalpha() or not bb.isalpha()
+                        or (ba in toks and bb in toks)
+                        or ba in known or bb in known
+                        or _pn_word_is_own_fake(a, known)
+                        or _pn_word_is_own_fake(b, known)
+                        or _pn_review_is_neutral(a, known)
+                        or _pn_review_is_neutral(b, known)
+                        or _pn_is_never_fake(a) or _pn_is_never_fake(b)):
+                    continue
+                raw = a + " " + b            # a wrapped pair, on one line
+                if raw.lower() in seen:
+                    continue
+                hit = None
+                for x, y in ((ba, bb), (bb, ba)):
+                    for t1 in by_first:
+                        if not _pn_ocr_distance_within(
+                                x, t1, _pn_scan_fold_dist(x, t1, party=t1 in party),
+                                min_len=3, ends=False):
+                            continue
+                        for t2 in by_first[t1]:
+                            if (x, y) != (t1, t2) and _pn_ocr_distance_within(
+                                    y, t2, _pn_scan_fold_dist(y, t2,
+                                                              party=t2 in party),
+                                    min_len=3, ends=False):
+                                hit = (t1, t2)
+                                break
+                        if hit:
+                            break
+                    if hit:
+                        break
+                if hit is None or not self._finding_is_in_original(raw):
+                    continue
+                seen.add(raw.lower())
+                pair_taken.update((ba, bb))
+                self.review.append(("misspelled name?", raw))
+                out.append(("misspelled name?", raw))
         multi = {t for t, bs in variants.items() if len(bs) >= 2}
         reported = set()
-        for _w, base, raw, hits, close in found:
+        for word, base, raw, hits, close in found:
+            if base in pair_taken:
+                continue            # reported as the half of a pair
             if not close and not any(t in multi for t in hits):
-                continue            # a lone variant, and not a close one
+                # A lone variant, and not a close one: reported only where
+                # it NEVER stands beside a name word nothing tracks — a bare
+                # survivor is what a mangled party name looks like, while
+                # "Robert Vatqual" is somebody else.
+                if lower_words is None:
+                    lower_words = {w for w in _PN_RUN_WORD_RE.findall(src)
+                                   if w[:1].islower()}
+                if _pn_has_name_companion(src, word, toks, known, lower_words):
+                    continue
             reported.add(base)
             self.review.append(("misspelled name?", raw))
             out.append(("misspelled name?", raw))
@@ -19286,8 +19428,8 @@ class Pseudonymizer:
             for m in cand_re.finditer(src):
                 word = m.group(0)
                 base = _pn_word_base(word)
-                if (base in reported or base in targets or word[:1].islower()
-                        or _screened(word, base)):
+                if (base in reported or base in pair_taken or base in targets
+                        or word[:1].islower() or _screened(word, base)):
                     continue
                 if not any(_pn_ocr_distance_within(
                         base, v, _pn_name_fold_dist(base, v),
