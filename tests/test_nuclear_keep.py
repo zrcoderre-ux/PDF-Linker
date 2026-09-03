@@ -66,9 +66,16 @@ def test_a_brace_is_a_nuclear_keep_a_bracket_is_not():
     assert P._pn_keep_values(whole)[1] == set()
 
 
-def test_nuclear_words_are_per_word():
+def test_a_multi_word_brace_is_a_phrase_not_its_words():
+    """A nuclear keep is a verbatim quote of what it contains: a one-word
+    brace keeps the word anywhere, a multi-word brace keeps the PHRASE as a
+    unit and its words nowhere else (`_pn_nuclear_split`)."""
     d = _decision("Mulliken Medical Center", "{Medical Center}")
-    assert P._pn_nuclear_words(d) == frozenset({"medical", "center"})
+    assert P._pn_nuclear_words(d) == frozenset()
+    assert P._pn_nuclear_phrases(d) == frozenset({("medical", "center")})
+    one = _decision("Alder Law, P.C.", "{Law}")
+    assert P._pn_nuclear_words(one) == frozenset({"law"})
+    assert P._pn_nuclear_phrases(one) == frozenset()
 
 
 # ── the promise ─────────────────────────────────────────────────────────────

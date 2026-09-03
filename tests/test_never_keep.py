@@ -91,7 +91,10 @@ def test_a_never_value_is_nuclear_not_a_soft_no():
     strict, soft, nuclear = P._pn_keep_values(d)
     assert nuclear == {"Mulliken Medical Center"}
     assert soft == set() and strict == set()
-    assert P._pn_nuclear_words(d) == frozenset({"mulliken", "medical", "center"})
+    # A multi-word value is kept as a PHRASE, not word by word.
+    assert P._pn_nuclear_words(d) == frozenset()
+    assert P._pn_nuclear_phrases(d) == frozenset(
+        {("mulliken", "medical", "center")})
 
 
 # ── the promise ─────────────────────────────────────────────────────────────
@@ -146,13 +149,15 @@ def test_a_brace_still_works_on_a_single_word():
     assert "Law, P.C." in out and "Alder" not in out
 
 
-def test_a_never_word_is_never_a_bare_token():
+def test_a_never_phrase_is_verbatim_and_its_words_are_ordinary_elsewhere():
+    """`never` is a verbatim quote of the VALUE: the phrase survives wherever
+    it stands, and a word of it standing alone is an ordinary word — faked
+    where it is a party's bare token, as "Mulliken" is."""
     d = _decision("Mulliken Medical Center", "never")
-    reg = P._PnFakeRegistry()
-    P._pn_set_keep_words(reg, d)
-    terms = P._pn_build_terms(["Mulliken Medical Center"], [], [], registry=reg)
-    bare = {t.real.lower() for t in terms if len(t.real.split()) == 1}
-    assert not ({"mulliken", "medical", "center"} & bare)
+    pz = _pz(["Mulliken Medical Center"], d)
+    out = pz.apply("Mulliken Medical Center answered. Mulliken alone moved.")
+    assert "Mulliken Medical Center answered" in out
+    assert "Mulliken alone" not in out, out
 
 
 def test_no_key_row_promises_a_fake_that_was_never_applied(tmp_path):
@@ -177,9 +182,9 @@ def test_never_typed_into_the_key_is_a_nuclear_keep(tmp_path):
     d = decisions["mulliken medical center"]
     assert d["type"] == P._PN_KEEP_NUCLEAR_TYPE
     assert P._pn_decision_nuclear_parts(d) == ["Mulliken Medical Center"]
-    # …and the words reached the registry as the rows were read, so no fake
-    # composed from this key can carry them.
-    assert {"mulliken", "medical", "center"} <= set(reg.keep_words)
+    # …and the PHRASE reached the registry as the rows were read, so no fake
+    # composed from this key can cut through it.
+    assert ("mulliken", "medical", "center") in reg.keep_phrases
 
 
 def test_a_never_row_keeps_the_word_out_of_every_OTHER_rows_fake(tmp_path):
@@ -300,7 +305,8 @@ def test_an_opaque_value_is_never_cut_up():
     """The nuclear set really does hold words like "com", "www", "no" and "n",
     harvested from braced URLs and addresses in a master KEEP sheet."""
     pz = _pz_with_keeps([("www.acme.com/path", "{www.acme.com/path}")])
-    assert "com" in pz.registry.keep_words
+    assert ("www", "acme", "com", "path") in pz.registry.keep_phrases
+    assert "com" not in pz.registry.keep_words      # a phrase, not its words
     assert _triage(pz, ["553.com", "Tol. No.", "vrv.rtxpension.com"]) == [
         "553.com", "Tol. No.", "vrv.rtxpension.com"]
 

@@ -1,14 +1,19 @@
-"""A re-run off the key scrubs a bare ENTITY word exactly as the first run did.
+"""A bare ENTITY word is scrubbed, by the first run and the re-run alike — and
+a multi-word nuclear keep is a PHRASE, not a licence for its words.
 
-`_pn_entity_bare` registers an entity's suffix-stripped short form only as a
-MULTI-word phrase; a single leftover word is skipped on purpose, to keep
-unrelated prose intact. `write_key` still harvests a row per word of the
-composed name, and `_pn_load_key` read every such row back as a live term — so
-a re-run scrubbed a bare "Midland" the first run left standing, and would have
-faked "States" inside "United States" wherever a page capitalised it (the
-corpus prunes that screen a bare business token never reach a value a key
-pinned). The two ends now ask the builder's question, the rule the generic
-`*-token` row already follows. The row stays for the reversal macro.
+The suffix-stripped short form (`_pn_entity_bare`) skipped a single leftover
+word on purpose, while `write_key` harvested a row per word of the composed
+name and `_pn_load_key` read each back as a term — so a re-run scrubbed a bare
+"Midland" the first run had left standing. At the owner's direction the two
+ends now agree on the WIDER answer: each distinctive word of a party is its
+own token (`_pn_append_entity_terms`), behind the screens every bare business
+token takes.
+
+What that costs is a word like "States" off "Midland States Bank" faked
+wherever the corpus never writes it lower-case — and the operator's answer is
+a phrase keep. `{United States}` keeps "United States" as a unit; it used to
+put "States" itself on the keep list, so the bank shipped as "THORNFIELD
+STATES BANK", half-scrubbed by a keep nobody typed.
 
 Run:  cd PDF-Linker && python3 -m pytest tests/test_entity_word_rows.py -v
 """
@@ -25,19 +30,48 @@ TEXT = ("Midland States Bank sued. The Midland loan closed. Midland States "
         "Marcus Delacroix signed.")
 
 
-def _first(tmp_path):
+def _decision(value, cell):
+    return {value.lower(): {"value": value, "fixcell": cell, "fix": "no",
+                            "fake_values": None, "alias": None,
+                            "replacement": None, "type": "", "notes": ""}}
+
+
+def _first(tmp_path, decisions=None):
     reg = P._PnFakeRegistry()
+    if decisions:
+        P._pn_set_keep_words(reg, decisions, log)
     z = P.Pseudonymizer(P._pn_build_terms(PARTIES, [], [], registry=reg),
                         {}, registry=reg)
+    if decisions:
+        z.keep_strict, z.keep_soft, z.keep_nuclear = P._pn_keep_values(decisions)
     out = z.apply(TEXT)
     z.write_key(tmp_path / "pseudonym_key.xlsx", log)
     return z, out
 
 
-def _rerun(tmp_path):
+def _rerun(tmp_path, decisions=None):
     reg = P._PnFakeRegistry()
+    if decisions:
+        P._pn_set_keep_words(reg, decisions, log)
     terms, *_ = P._pn_load_key(tmp_path / "pseudonym_key.xlsx", reg, log)
-    return P.Pseudonymizer(terms, {}, registry=reg)
+    z = P.Pseudonymizer(terms, {}, registry=reg)
+    if decisions:
+        z.keep_strict, z.keep_soft, z.keep_nuclear = P._pn_keep_values(decisions)
+    return z
+
+
+# ── the bare word ───────────────────────────────────────────────────────────
+
+def test_a_bare_entity_word_is_scrubbed_by_the_first_run():
+    reg = P._PnFakeRegistry()
+    z = P.Pseudonymizer(P._pn_build_terms(PARTIES, [], [], registry=reg),
+                        {}, registry=reg)
+    out = z.apply(TEXT)
+    assert "Midland" not in out, out
+    tok = next(t for t in z.terms
+               if t.category == "entity-token" and t.real == "Midland")
+    full = next(t for t in z.terms if t.category == "entity")
+    assert tok.fake == str(full.fake).split()[0]     # the composed word itself
 
 
 def test_the_first_run_and_the_rerun_scrub_alike(tmp_path):
@@ -45,43 +79,72 @@ def test_the_first_run_and_the_rerun_scrub_alike(tmp_path):
     assert _rerun(tmp_path).apply(TEXT) == first
 
 
-def test_a_bare_entity_word_is_left_alone_by_both_runs(tmp_path):
-    _z, first = _first(tmp_path)
-    assert "The Midland loan" in first
-    assert "United States Bankruptcy Court" in first
-    again = _rerun(tmp_path).apply(TEXT)
-    assert "The Midland loan" in again
-    assert "United States Bankruptcy Court" in again
+def test_a_generic_or_suffix_word_is_never_a_token():
+    reg = P._PnFakeRegistry()
+    z = P.Pseudonymizer(P._pn_build_terms(["General Motors, LLC", "Lenis Industries, Inc."],
+                                          [], [], registry=reg), {}, registry=reg)
+    bare = {t.real.lower() for t in z.terms if t.category == "entity-token"
+            and len(t.real.split()) == 1}
+    assert "general" not in bare and "motors" not in bare      # generic words
+    assert "llc" not in bare and "inc" not in bare              # suffixes
+    assert "lenis" in bare
 
 
-def test_the_multi_word_bare_form_is_scrubbed_by_both_runs(tmp_path):
-    _z, first = _first(tmp_path)
-    assert "Midland States moved" not in first
-    assert "Midland States moved" not in _rerun(tmp_path).apply(TEXT)
-
-
-def test_the_word_rows_stay_in_the_key_for_the_reversal(tmp_path):
-    z, _first_out = _first(tmp_path)
-    rp = P._PN_KEY_HEADERS.index("Replacement")
-    rows = {(str(r[0]), str(r[1])): str(r[rp]) for ws in
-            openpyxl.load_workbook(tmp_path / "pseudonym_key.xlsx").worksheets
-            for r in ws.iter_rows(min_row=2, values_only=True) if r[1]}
-    assert ("entity-token", "Midland") in rows
-    fake_full = next(str(r["fake"]) for (c, _rl), r in z.records.items()
-                     if c == "entity")
-    assert rows[("entity-token", "Midland")] in fake_full.split()
-
-
-def test_a_defined_short_form_is_scrubbed_by_both_runs(tmp_path):
-    """The short form the document itself defines is a `short-name` row of
-    its own, built by `register_short_names` on the first run and read back
-    as a term on the re-run — unaffected by the per-word rule."""
-    defined = 'Midland States Bank ("Midland") sued. Midland moved to dismiss.'
+def test_a_bare_token_is_cap_only():
     reg = P._PnFakeRegistry()
     z = P.Pseudonymizer(P._pn_build_terms(PARTIES, [], [], registry=reg),
                         {}, registry=reg)
-    z.register_short_names(defined)
-    first = z.apply(defined)
-    assert "Midland moved" not in first and "Midland" not in first
-    z.write_key(tmp_path / "pseudonym_key.xlsx", log)
-    assert _rerun(tmp_path).apply(defined) == first
+    assert z.apply("the midland of the county") == "the midland of the county"
+
+
+# ── the phrase keep ─────────────────────────────────────────────────────────
+
+def test_a_braced_phrase_keeps_the_phrase_and_nothing_else(tmp_path):
+    keep = _decision("United States", "never")
+    z, out = _first(tmp_path, keep)
+    assert "United States Bankruptcy Court" in out
+    assert "Midland States Bank" not in out and "Midland" not in out, out
+    assert "States Bank sued" not in out, out       # the bank is faked WHOLE
+    assert _rerun(tmp_path, keep).apply(TEXT) == out
+
+
+def test_the_phrase_is_verbatim_inside_a_party_name():
+    keep = _decision("Medical Center", "{Medical Center}")
+    reg = P._PnFakeRegistry()
+    P._pn_set_keep_words(reg, keep, log)
+    z = P.Pseudonymizer(P._pn_build_terms(["Mulliken Medical Center",
+                                           "Center Street Holdings LLC"],
+                                          [], [], registry=reg), {}, registry=reg)
+    z.keep_strict, z.keep_soft, z.keep_nuclear = P._pn_keep_values(keep)
+    out = z.apply("Mulliken Medical Center sued Center Street Holdings LLC.")
+    assert "Medical Center" in out and "Mulliken" not in out
+    # "Center" standing OUTSIDE the phrase is an ordinary word of a party and
+    # is faked with it.
+    assert "Center Street" not in out, out
+
+
+def test_a_phrase_kept_binding_is_repaired_on_load(tmp_path):
+    key = tmp_path / "pseudonym_key.xlsx"
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Category", "Real Value", "Replacement", "Status", "Source",
+               "Occurrences"])
+    ws.append(["person", "Mulliken Medical Center", "Wildmere Ashcroft Center",
+               "replaced", "spreadsheet", 4])
+    wb.save(key)
+    reg = P._PnFakeRegistry()
+    P._pn_set_keep_words(reg, _decision("Medical Center", "{Medical Center}"))
+    terms, _dec = P._pn_load_key(key, reg, log)
+    full = next(t for t in terms if t.category == "person")
+    assert full.fake == "Wildmere Medical Center"
+
+
+def test_a_finding_made_of_a_kept_phrase_is_dropped_whole():
+    keep = _decision("United States", "never")
+    reg = P._PnFakeRegistry()
+    P._pn_set_keep_words(reg, keep)
+    z = P.Pseudonymizer(P._pn_build_terms(PARTIES, [], [], registry=reg),
+                        {}, registry=reg)
+    assert z._all_words_kept("United States")
+    assert not z._all_words_kept("States")
+    assert not z._all_words_kept("United States Steel")

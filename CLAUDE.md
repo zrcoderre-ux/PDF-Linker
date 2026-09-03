@@ -341,10 +341,25 @@ time.** `{Law}` must survive inside "Alder Law, P.C." — but protecting the spa
 outright would drop the party candidate that overlaps it and leave the firm
 standing in full, the exact failure the party override exists to prevent. So a
 brace does not fight the override; it removes the need for one.
-`_pn_nuclear_words` puts each braced WORD on `registry.keep_words`, and
+`_pn_nuclear_words` puts a ONE-word brace on `registry.keep_words`, and
 `registry.keeps_word` is what `_pn_fake_person` / `_pn_fake_entity_parts` /
 `_pn_person_token_map` consult — the same hook `_PN_FIRM_WORDS` uses, which a
-brace only ever ADDS to. The party's fake is therefore composed with the word
+brace only ever ADDS to.
+**A MULTI-word brace is a PHRASE, and a phrase is a verbatim quote of what it
+contains** (`_pn_nuclear_split`, `registry.keep_phrases`,
+`registry.kept_positions`). It shipped the other way — every word of a brace
+went on the keep list, "since composition is per word" — so `{United States}`
+on the master sheet kept "States" verbatim inside "Midland States Bank" (a
+delivered export reads "THORNFIELD STATES BANK", half-scrubbed by a keep
+nobody typed) and would have kept a bare "States" standing anywhere. Now the
+phrase is protected as a SPAN (`keep_nuclear`, unchanged) and left verbatim
+by the composing fakers only where the phrase itself stands inside a party
+name (`kept_positions`, consulted beside `keeps_word` in all three composers,
+in `_pn_restore_furniture`, in `name_fake_words` and in `_all_words_kept`);
+its words are ordinary words everywhere else, so "Center" in "Center Street
+Holdings" is faked with its party while "Medical Center" survives inside
+"Mulliken Medical Center". `never` on a multi-word value is the same phrase
+keep. `_pn_load_key`'s pre-scan splits the same way. The party's fake is therefore composed with the word
 left verbatim ("Kaldor Law, P.C."), the word is never a bare token, never
 harvested into a key row (`write_key`), never re-instated as one
 (`_pn_load_key`), and `_pn_restore_furniture` repairs the binding an older key
@@ -1406,20 +1421,24 @@ the party), so its row stays reversible.
   owner chose: a re-run now scrubs a little LESS than it used to, so a folder
   already delivered under the old behaviour can come back with a bare
   common-word surname standing where the previous re-run had faked it.
-  **…and the builder's answer for a single ENTITY word is always no.**
-  `_pn_entity_bare` registers an entity's suffix-stripped short form only as
-  a MULTI-word phrase ("Midland States" off "Midland States Bank"), a single
-  leftover word ("Redwood", "Tutors") being skipped to keep unrelated prose
-  intact — while `write_key` harvests a row per WORD of the composed name and
-  `_pn_load_key` read each back as a live term. So a re-run scrubbed a bare
-  "Midland" the first run left standing, and would have faked "States" inside
-  "United States" wherever a page capitalised it: the corpus prunes that
-  screen a bare business token on the first run never reach a value a key
-  pinned. `_pn_load_key` now builds no term for a one-word `entity-token` row
-  whatever the word (memo seeded, row kept, so a composed fake still reverses
-  word by word). A short form the document DEFINES (`("Midland")`) is a
-  `short-name` row of its own, built by `register_short_names` and read back
-  as a term, and is unaffected (`test_entity_word_rows.py`).
+  **…and a single ENTITY word IS a bare token, on both ends.**
+  `_pn_entity_bare` registers the suffix-stripped short form only as a
+  MULTI-word phrase ("Midland States" off "Midland States Bank") and skipped a
+  single leftover word ("Redwood", "Tutors") to keep unrelated prose intact —
+  while `write_key` harvested a row per WORD of the composed name and
+  `_pn_load_key` read each back as a live term, so a re-run scrubbed a bare
+  "Midland" the first run had left standing. Resolved toward the WIDER
+  answer at the owner's direction (over-pseudonymize rather than under):
+  `_pn_append_entity_terms` now registers each distinctive word of a party as
+  its own `entity-token`, behind the screens every bare business token takes
+  — name-shaped and not generic (`_pn_is_name_token`,
+  `_pn_is_generic_token`), at least `_PN_HARVEST_TOKEN_MIN` letters, never a
+  corporate suffix or a state, never a brace-kept word, cap-only, and
+  corpus-prunable (`_corpus_prunable`) — and the loader applies the same
+  floor to a one-word row (`test_entity_word_rows.py`). What that leaves is a
+  word like "States" faked wherever the corpus never writes it lower-case,
+  and the operator's remedy is a PHRASE keep: `{United States}` keeps that
+  phrase as a unit and nothing else (below).
 - **A POSSESSIVE is the party's own fake, not a second party.** The registry
   memoizes on the string it is handed, so `_pn_fake_name_token` drawing on the
   RAW token made "RASHO'S" a different real value from "Rasho" and it drew an

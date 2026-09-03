@@ -99,11 +99,8 @@ def test_every_keyed_fake_is_reused_exactly(folder):
         # A bare token the BUILDER refuses a term ("Roe" is an ordinary word) is
         # exempt: its row stays in the key because the macro reverses a composed
         # fake word by word off it, but it builds no forward term — see
-        # `test_a_withheld_token_is_reversible_but_matches_nothing`. So is a
-        # single ENTITY word ("Ford" off "Ford Motor Co."): the builder never
-        # makes a one-word entity token (`test_entity_word_rows.py`).
-        if len(real.split()) == 1 and (not P._pn_is_name_token(real)
-                                       or cat == "entity-token"):
+        # `test_a_withheld_token_is_reversible_but_matches_nothing`.
+        if len(real.split()) == 1 and not P._pn_is_name_token(real):
             continue
         assert z2.apply(real) == fake, f"{real!r} moved: {z2.apply(real)!r}"
 
