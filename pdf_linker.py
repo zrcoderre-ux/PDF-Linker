@@ -10345,14 +10345,51 @@ _PN_CONTACT_TRIM_RE = re.compile(
 _PN_SCAN_DEGRADED_MIN = 8
 
 
-def _pn_scan_fold_dist(word, tracked, degraded=False):
+# A NAMED PARTY's token — from the operator's own template — takes the wide
+# reach on every page: the degraded-region reach at the same eight-letter
+# floor, and that same reach down to this length where the survivor shares an
+# unusual combination of letters with it (below). A party the operator named
+# is the spelling the run is surest of, and a seven-letter defendant
+# ("Vazquez") spelled twenty ways across a scanned guaranty is exactly the
+# net the owner asked to be cast wide.
+_PN_SCAN_PARTY_MIN = 6
+# …and an UNUSUAL combination of letters shared with that party's token is
+# worth one more edit of reach. "Vazquez" carries "zq" and "qu"; twenty
+# scanned spellings of it — "Vazq~~1", "vazqvez", "Vazqoe", "Vatquel" — carry
+# one or both, and almost nothing else in an English filing does. A letter
+# this rare is a fingerprint, so a survivor sharing a two-letter window that
+# holds one is far likelier a slip of the party than a word of its own.
+_PN_RARE_LETTERS = frozenset("qxzj")
+
+
+def _pn_bigrams(word):
+    return {word[i:i + 2] for i in range(len(word) - 1)}
+
+
+def _pn_shares_rare_bigram(word, tracked):
+    """True when `word` carries a two-letter window of `tracked` that holds
+    one of the rare letters — see `_PN_RARE_LETTERS`."""
+    return any(bg in word for bg in _pn_bigrams(tracked)
+               if _PN_RARE_LETTERS & set(bg))
+
+
+def _pn_scan_fold_dist(word, tracked, degraded=False, party=False):
     """The edit distance at which the REVIEW sweep will ask about `word` being
     a mangled spelling of the tracked value `tracked` — the minting fold
     (`_pn_name_fold_dist`) plus what a report can afford and a substitution
     cannot. NOT symmetric: `tracked` is the spelling the run is sure of, and
-    it alone licenses the wider reach inside a degraded region."""
+    it alone licenses the wider reach — inside a degraded region, or on any
+    page at all where `tracked` is a NAMED PARTY's own token (`party`)."""
     bump = _PN_SCAN_FOLD_BUMP
-    if degraded and len(tracked) >= _PN_SCAN_DEGRADED_MIN:
+    if (degraded or party) and len(tracked) >= _PN_SCAN_DEGRADED_MIN:
+        bump = _PN_SCAN_FOLD_BUMP_DEGRADED
+    # The rare-letter fingerprint is what licenses the wide reach on a
+    # SHORTER party token. Measured without it, a six-letter given name at
+    # three edits reached "handle", "Model" and "Carmel" for Manuel in 224 KB
+    # of one batch's exports — a worksheet nobody reads, and a pre-fill that
+    # would have merged three ordinary words into the defendant.
+    if (party and len(tracked) >= _PN_SCAN_PARTY_MIN
+            and _pn_shares_rare_bigram(word, tracked)):
         bump = _PN_SCAN_FOLD_BUMP_DEGRADED
     return _pn_name_fold_dist(word, tracked) + bump
 
@@ -11753,11 +11790,27 @@ def _pn_build_pattern(term, *, whole_word, follow=None, breakable=False):
     intact word always matches as itself. Deliberately not a term per spelling:
     a real value carrying a phantom space makes half a word look like a word to
     every pass that decomposes one (see `_pn_word_breaks`)."""
-    body = r"\s+".join(re.escape(p) for p in _NFKC(term).split())
+    words = _NFKC(term).split()
     if breakable:
-        broken = [re.escape(left) + brk + re.escape(right)
-                  for left, right, brk in _pn_word_breaks(_NFKC(term))]
-        body = "(?:" + "|".join([body] + broken) + ")"
+        # PER WORD, so a multi-word term ("Midland States Bank") tolerates a
+        # break inside any one of its words and the whitespace BETWEEN words
+        # keeps matching any run. Built as a single alternation over the
+        # whole value, the earlier shape escaped the term's own spaces into
+        # literal single spaces and screened a multi-word "left half" as if
+        # it were one word — it was only ever asked about a bare token. The
+        # word's own affixes (a trailing comma, a possessive) stay outside
+        # the break, which is between two letters of the core.
+        parts = []
+        for w in words:
+            pre, core, post = _pn_word_affixes(w)
+            alts = [re.escape(w)]
+            alts += [re.escape(pre + left) + brk + re.escape(right + post)
+                     for left, right, brk in _pn_word_breaks(core)]
+            parts.append(alts[0] if len(alts) == 1
+                         else "(?:" + "|".join(alts) + ")")
+        body = r"\s+".join(parts)
+    else:
+        body = r"\s+".join(re.escape(p) for p in words)
     body = _PN_APOS_RE.sub(_PN_APOS_CLASS, body)
     if whole_word:
         right = rf"(?:(?!\w)|(?={follow}))" if follow else r"(?!\w)"
@@ -11835,21 +11888,40 @@ def _pn_term_is_cap_only(category):
     return category in _PN_TOKEN_CATS
 
 
+# The categories whose pattern tolerates a printed-word break — every NAME
+# term, full and bare, person and entity. Never a short-name, a case number, an
+# address or a display name: those are a document's own inference or a shape
+# with its own tolerance.
+_PN_BREAKABLE_CATS = frozenset({"person", "person-token", "entity",
+                                "entity-token"})
+
+
 def _pn_term_is_breakable(category, source):
     """True for a term whose pattern also matches the value written with ONE
     stray break inside a printed word — see `_pn_word_breaks`.
 
-    A bare PERSON token, from an AUTHORITATIVE source only. A split spelling is
-    a guess about how a printed word came apart, and stacking it on a guess
-    about who the party is doubles the ways it can be wrong; the operator's own
-    party list is the one place the name itself is not in question. Entity
-    tokens are excluded for the reason they are excluded everywhere else — a
-    company's words are ordinary vocabulary, so its halves are too.
+    A NAME term — person or entity, the full name or a bare token — from an
+    AUTHORITATIVE source only. A split spelling is a guess about how a printed
+    word came apart, and stacking it on a guess about who the party is doubles
+    the ways it can be wrong; the operator's own party list is the one place
+    the name itself is not in question.
+
+    ENTITY terms were excluded at first, on the ground that a company's words
+    are ordinary vocabulary and so its halves are too. The screen in
+    `_pn_word_breaks` already refuses a branch whose halves are BOTH ordinary
+    words, and that exclusion cost a delivered folder its own plaintiff: the
+    bank's name was on the template, the born-digital export carried it as
+    "M idland States Bank" on every page (the same kerned pair, so the defined
+    short form went out as "M idland" too), no term could match it, and the
+    only thing the run said was a half-scrub row for "idland" — read by the
+    operator as the tool having cut the first letter off. Measured before the
+    exclusion was lifted: 222 business-name words, 1,555 break branches, over
+    3 MB of real filings and this repo's own prose — zero false matches.
 
     Asked by `_PnTerm` itself, so the term BUILDER and `_pn_load_key` cannot
     answer it differently: a first run and a re-run off the key alone must
     scrub alike."""
-    return (category == "person-token"
+    return (category in _PN_BREAKABLE_CATS
             and source in _PN_KEY_UNMATCHED_SOURCES)
 
 
@@ -13617,6 +13689,28 @@ _PN_LOWER_VERB_RE = re.compile(
     r"[ \t]*(?:\n[ \t]*(?:\d{1,2}[ \t]+)?)?[ \t]*(?P<verb>[a-z]{3,})(?![\w'’])")
 
 
+def _pn_broken_lead(text, s, frag, tracked):
+    """The broken spelling standing at [s-k-1, s+len(frag)) — "M idland" — when
+    the lower-case fragment `frag` at `s` is one of the `tracked` tokens with
+    its leading one or two letters printed just before it, separated by ONE
+    break character (`_PN_WORD_BREAK`) and preceded by a word boundary. ""
+    otherwise, so the caller reports the fragment as it found it."""
+    low = frag.lower()
+    for t in tracked:
+        k = len(t) - len(low)
+        if not (1 <= k <= 2 and t.endswith(low)):
+            continue
+        start = s - k - 1
+        if start < 0:
+            continue
+        lead, gap = text[start:s - 1], text[s - 1]
+        if (lead.lower() == t[:k] and lead.isalpha()
+                and re.fullmatch(_PN_WORD_BREAK, gap)
+                and (start == 0 or not re.match(r"[\w'’]", text[start - 1]))):
+            return text[start:s] + frag
+    return ""
+
+
 def _pn_lower_name_site(text, s, e, person_fakes):
     """Why the lower-case word at [s,e) may be somebody's name anyway — the
     corroboration that stands in for the capital it does not have. "" when the
@@ -14103,12 +14197,22 @@ _PN_FIRM_RE = re.compile(
 # came out half-real — "SCHILLECI & HALLORAN, P.C." — which fingerprints the firm
 # more precisely than leaving it alone would have. The suffix is captured with
 # the name so `_pn_looks_like_entity` routes it down the entity path.
+# …and a company named by ANY comma-led corporate suffix, not only a law
+# firm's. "Lenis Industries, Inc." — the primary debtor a guaranty answer names
+# three times, on no template and behind no role word — reached no pass at all:
+# this anchor knew LLC, LLP, P.C. and APC and nothing else, so the commonest
+# corporate suffix there is was not an anchor. The comma is the corroboration
+# that makes the wider set safe ("Denver, CO" is refused because "Co" needs its
+# period here; "Smith, Jr." is not a suffix at all), and the harvest still goes
+# through every screen a document guess takes.
 _PN_FIRM_WORD = r"[A-Z][\w.'’-]*"
 _PN_FIRM_SUFFIX_RE = re.compile(
     r"\b(?P<name>" + _PN_FIRM_WORD +
-    r"(?:[ \t]+(?:&|and)?[ \t]*" + _PN_FIRM_WORD + r"){0,3}"
+    r"(?:[ \t]+(?:(?:&|and|of|the)[ \t]+)?" + _PN_FIRM_WORD + r"){0,3}"
     r"[ \t]*,[ \t]*(?i:A[ \t]*P[ \t]*L[ \t]*C|P\.?\s?C\.?|L\.?L\.?P\.?|"
-    r"L\.?L\.?C\.?|P\.?L\.?L\.?C\.?))(?![\w])")
+    r"L\.?L\.?C\.?|P\.?L\.?L\.?C\.?|"
+    r"Inc\.?|Incorporated|Corp\.?|Corporation|Ltd\.?|L\.?P\.?|N\.?A\.?|"
+    r"Co\.))(?![\w])")
 _PN_FIRM_REJECT = frozenset({"the", "los", "california", "record", "counsel"})
 
 
@@ -14129,9 +14233,20 @@ def _pn_firm_names(text):
             out.append(name)
     for m in _PN_FIRM_SUFFIX_RE.finditer(text):
         name = re.sub(r"\s+", " ", m.group("name")).strip()
-        head = name.split(",")[0]
-        words = [w for w in head.split() if w not in ("&", "and")]
-        if not words:
+        head, comma, suffix = name.partition(",")
+        # A LEADING role word is trimmed, never fatal — "Defendant General
+        # Motors, LLC made an oral motion" is how a brief names its own party,
+        # and refusing the whole run left the defendant to other anchors. The
+        # same rule `_pn_label_names` follows; a role word standing INSIDE the
+        # name is still the different thing the screen below catches.
+        lead = head.split()
+        while len(lead) > 1 and _pn_is_role_token(lead[0]):
+            lead.pop(0)
+        head = " ".join(lead)
+        name = head + comma + suffix
+        words = [w for w in head.split()
+                 if w.lower() not in ("&", "and", "of", "the")]
+        if not words or _pn_is_protected_locality(head):
             continue
         if any(_pn_word_base(w) in _PN_FIRM_REJECT or _pn_is_role_token(w)
                or _pn_word_base(w) in _PN_NON_NAME_WORDS for w in words):
@@ -14146,6 +14261,64 @@ def _pn_firm_names(text):
 # character sets — it walks the neighbours by index rather than slicing the rest
 # of the export out on every call. Kept together so the two spellings of the one
 # rule ("[A-Za-z][A-Za-z.'’&\-]*", after a run of spaces or tabs) cannot drift.
+# ── Is this name a party of THIS case? ──────────────────────────────────────
+# The positions a filing states its OWN parties in, and a cited decision's
+# party never stands in: the attorney line ("Attorneys for Defendant, X"), the
+# caption roster closed by the Doe defendants ("X; and DOES 1 through 10"),
+# the caption descriptor ("X, an individual" / "X, a Delaware corporation")
+# and the possessive filing title ("X'S OPPOSITION TO…"). A brief discussing
+# the facts of the case it cites names that decision's party in PROSE, which
+# is why `prune_authority_party_terms` drops a harvested name on the strength
+# of a citation alone — Angela White, the defendant of *Kremerman v. White*,
+# was "named throughout" — and why none of these anchors is a bare role
+# prefix: "Defendant White" is exactly how such a discussion is written.
+# The name is asked for through the term's own pattern, in the CITATION-MASKED
+# corpus, so a party of the authority's case name can never corroborate
+# itself.
+_PN_CASE_PARTY_ROLE = (r"(?:(?:the\s+)?(?:cross[- ]?)?(?:plaintiff|defendant|"
+                       r"petitioner|respondent|movant|appellant|claimant|"
+                       r"complainant)s?[\s,]*)?")
+_PN_CASE_PARTY_SITES = (
+    ("the attorney line",
+     r"(?i:attorneys?\s+(?:of\s+record\s+)?for)\s+(?i:" + _PN_CASE_PARTY_ROLE
+     + r")(?P<n>{term})"),
+    ("the caption roster",
+     r"(?P<n>{term})[\s,;]*(?:and\s+)?(?i:does|roes)\s+\d"),
+    ("the caption descriptor",
+     r"(?P<n>{term})\s*,\s*(?i:an?\s+(?:individual|[a-z]+\s+(?:corporation|"
+     r"limited\s+liability|limited\s+partnership|general\s+partnership|"
+     r"banking\s+(?:corporation|association)|company|trust|bank|association|"
+     r"nonprofit|non-profit|professional)))(?![\w])"),
+    ("the filing title",
+     r"(?P<n>{term})['’]s\s+(?i:opposition|motion|reply|memorandum|notice|"
+     r"declaration|separate\s+statement|request|ex\s+parte|answer|demurrer|"
+     r"petition|response|objections?|brief|complaint|cross-complaint|"
+     r"supplemental)(?![\w])"),
+)
+
+
+def _pn_case_party_evidence(masked, term):
+    """Why `term` (a `_PnTerm`) is a party of THIS case according to the
+    citation-masked corpus `masked` — the name of the site that says so — or
+    "" when no such site carries it. See `_PN_CASE_PARTY_SITES`."""
+    for label, shape in _PN_CASE_PARTY_SITES:
+        try:
+            rx = re.compile(shape.format(term="(?:" + term.pattern + ")"),
+                            term.flags)
+        except re.error:
+            continue          # a term pattern that cannot compile matches nothing
+        if rx.search(masked):
+            return label
+    return ""
+
+
+# Every site shape must compile on its own: a broken one would be swallowed
+# above and spare nothing, silently.
+for _label, _shape in _PN_CASE_PARTY_SITES:
+    re.compile(_shape.format(term="X"))
+del _label, _shape
+
+
 _PN_NAME_RUN_RIGHT_RE = re.compile(r"[ \t]+([A-Za-z][A-Za-z.'’&\-]*)")
 _PN_NAME_RUN_ALPHA = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZ"
                                "abcdefghijklmnopqrstuvwxyz")
@@ -14248,6 +14421,10 @@ class Pseudonymizer:
         # `confirm_findings`.
         self._orig_reduced = []  # alnum-reduced originals, for a welded value
         self._orig_words = set() # every word base the originals contain
+        # …and the bases the originals write in LOWER CASE somewhere: the
+        # corpus's own answer to "is this word vocabulary?", which no list is
+        # ever complete enough to give (`alias_suggestion`).
+        self._orig_lower_words = set()
         # {party word base: {citation key}} for the authorities this batch
         # CITES — what lets a triage row name the decision it came from.
         self.authority_cites = {}
@@ -14835,6 +15012,145 @@ class Pseudonymizer:
                              self.variant_note(value)) if n]
         return " | ".join(parts)
 
+    def _tracked_word_spellings(self):
+        """{word base: the word as a tracked real value spells it} — so a
+        suggested alias is written the way the key writes the name, not
+        lower-cased. A bare token row's spelling wins over a word cut out of a
+        full name, since that is the row the alias will be mirrored from."""
+        out = {}
+        for (cat, _rl), rec in sorted(
+                self.records.items(),
+                key=lambda kv: kv[0][0] not in _PN_TOKEN_CATS):
+            # A DERIVED spelling — the near-miss variants `_pn_name_variants`
+            # mints ("Micchael", "Mihcael") — is this tool's own guess at a
+            # misspelling and never the value an alias should name: it
+            # competes with the canonical at the same distance, and naming it
+            # would make one party read as two rows deep.
+            if cat not in _PN_FUZZY_TARGET_CATS or rec.get("derived"):
+                continue
+            for w in str(rec["real"]).split():
+                core = _pn_word_affixes(w)[1]
+                base = core.lower()
+                if base and base not in out:
+                    out[base] = core
+        return out
+
+    def alias_suggestion(self, value):
+        """The `*CANONICAL` a worksheet row for `value` is PRE-FILLED with when
+        the value reads as a MISSPELLING or scan corruption of a real value
+        this case already tracks — "Miachael" beside a bound "Michael",
+        "idland" beside a bound "Midland" — or "" when it does not.
+
+        A row the operator has to type the same answer into every time is a
+        row the tool should have answered: the fuzzy sweep already knows which
+        tracked token the survivor is a slip of, and the alias control word
+        (`_pn_alias_target`) is exactly the answer, so the cell arrives holding
+        it. Leaving it stands; clearing or overtyping it is one keystroke.
+
+        The reach is the fuzzy sweep's OWN (`_pn_scan_fold_dist` on a clean
+        page — the minting fold plus one), and a word is read the way that
+        sweep's debris tier reads it, digits back to the letters a scan
+        renders them from and marks dropped (`_PN_DIGIT_LETTERS`), so
+        "va2que1", "Vazqu~z" and "vauiuez" all resolve to Vazquez. It first
+        shipped at the minting fold alone, and the worksheet the operator
+        then filled by hand aliased twenty spellings of one defendant's name
+        — "Vaiquel", "Vatquel", "Vazqoe", "vauiuez" among them — every one of
+        which that rule left empty and the sweep had already named. The row
+        exists because the sweep called the word a misspelling of a specific
+        token; the cell only says which. Every word must still resolve — a
+        word already tracked, or a slip of exactly ONE tracked token; two
+        tokens EQUALLY near is ambiguity, and ambiguity gets an empty cell —
+        the nearest wins otherwise, since the wide net below puts a party's
+        own given name in reach of a slip of its surname. The canonical word
+        must be BOUND (`registry.tokens_for("nametok")`),
+        or `_pn_apply_aliases` would have nothing to mirror. A value that IS a
+        tracked real gets nothing: that row is the survivor scan's, not a
+        misspelling; so does a word the lists call vocabulary or the ORIGINAL
+        writes in lower case somewhere. The degraded-region bump the sweep
+        also spends is not taken for a HARVESTED name (the worksheet is
+        written without the page in hand) — but a NAMED PARTY's token takes
+        it on every page, in the sweep and here alike
+        (`_pn_scan_fold_dist(party=True)`), one edit further where the two
+        share an unusual pair of letters, and admits a clipped lead carrying
+        one slip ("zquei"): the net is cast wide for the parties the operator
+        named, at the owner's direction. What that costs, stated: a DIFFERENT
+        person two letters from a party's given name ("Samuel" beside a
+        defendant Manuel) arrives pre-filled as that party's misspelling, and
+        the cell has to be cleared."""
+        idx, toks = self._tracked_name_token_index()
+        if not toks:
+            return ""
+        val = _NFKC(str(value)).strip()
+        if not val:
+            return ""
+        low = val.lower()
+        if any(str(r["real"]).lower() == low for r in self.records.values()):
+            return ""
+        bound = self.registry.tokens_for("nametok")
+        spell = self._tracked_word_spellings()     # canonical words only
+        party = self._party_token_bases()
+        out, moved = [], False
+        for w in val.split():
+            pre, core, post = _pn_word_affixes(w)
+            if core.lower() in toks:
+                out.append(w)
+                continue
+            # A word the lists call vocabulary, or one the ORIGINAL writes in
+            # lower case somewhere, is a word and not a slip of anybody's
+            # name — "Status" for States, "Model" for Manuel. The corpus is
+            # the screen of last resort, for the reason `prune_prose_word_terms`
+            # states: no list is ever complete.
+            if (_pn_review_word_is_vocabulary(core)
+                    or _pn_is_generic_token(core.lower())
+                    or core.lower() in self._orig_lower_words):
+                return ""
+            # The debris tier's reading of the word: digits back to letters,
+            # marks dropped ("va2que1" -> "vazquel", "Vazqu~z" -> "vazquz").
+            base = "".join(c.lower() if c.isalpha()
+                           else _PN_DIGIT_LETTERS.get(c, "")
+                           for c in core if c.isalnum())
+            if not base:
+                return ""
+            if base in spell and base in bound:
+                cands = {base}          # only the debris differed
+            else:
+                near = set()
+                for i in range(len(base) - 2):
+                    near |= idx.get(base[i:i + 3], set())
+                bgs = _pn_bigrams(base)
+                near |= {t for t in party if bgs & _pn_bigrams(t)}
+                cands = {t for t in near
+                         if t in spell and _pn_edit_distance_within(
+                             base, t, _pn_scan_fold_dist(base, t,
+                                                         party=t in party),
+                             min_len=_PN_NAME_FOLD_MIN)}
+                if len(base) >= 4:
+                    cands |= {t for t in spell
+                              if t.endswith(base)
+                              and 1 <= len(t) - len(base) <= 2}
+                    # …and for a NAMED PARTY, a clipped lead that ALSO carries
+                    # a slip ("zquei" for Vazquez) — two failures a fax
+                    # generation makes together.
+                    cands |= {t for t in spell if t in party
+                              and any(_pn_edit_distance_within(
+                                  base, t[k:], 1, min_len=4)
+                                      for k in (1, 2) if len(t) - k >= 4)}
+            # The NEAREST token, and it must win outright: the wide net puts a
+            # party's own given name in reach of a slip of its surname
+            # ("Vaiquel" is three from Manuel and two from Vazquez), and a
+            # dead heat is the one thing that is really ambiguous.
+            ranked = sorted(cands, key=lambda t: _pn_osa_distance(base, t))
+            if not ranked or (len(ranked) > 1
+                              and _pn_osa_distance(base, ranked[0])
+                              == _pn_osa_distance(base, ranked[1])):
+                return ""
+            t = ranked[0]
+            if t not in bound:
+                return ""
+            out.append(pre + spell.get(t, t) + post)
+            moved = True
+        return " ".join(out) if moved else ""
+
     def note_docket_codes(self, text):
         """Learn the case-type codes this folder's well-formed docket numbers
         are built on, so a broken spelling elsewhere can be recognised.
@@ -14897,12 +15213,14 @@ class Pseudonymizer:
         an authority is worse than leaving a name in.
 
         Call with the FULL corpus text, beside `prune_citation_only_terms`."""
-        tokens = _pn_authority_tokens(_NFKC(text))
+        text = _NFKC(text)
+        tokens = _pn_authority_tokens(text)
         if not tokens:
             return []
         self._pruned_reals = getattr(self, "_pruned_reals", set())
         loaded = getattr(self, "_loaded_reals", ())
-        doomed = []
+        doomed, masked = [], None
+        spared, spared_words = [], set()
         for t in list(self.terms):
             if (t.source != "document"
                     or t.real.lower() in loaded
@@ -14911,6 +15229,39 @@ class Pseudonymizer:
                 continue
             if any(_pn_word_base(w) in tokens for w in _pn_name_words(t.real)):
                 doomed.append(t)
+        # …unless the corpus names the value as a party of THIS case, in a
+        # position no cited decision's party ever stands in. See
+        # `_pn_case_party_evidence`: General Motors was the defendant of one
+        # batch AND the defendant of *Lukather v. General Motors LLC* (2010)
+        # 181 Cal.App.4th 1041, which the fee motion cited — so every
+        # harvested spelling of the party was dropped here, and the name
+        # shipped in every caption, attorney line and billing entry of four
+        # exports with no LEAK reported, since a term never built is invisible
+        # to the survivor scan too. The cited decision is still protected by
+        # its span; what the spare buys is the name scrubbed EVERYWHERE ELSE.
+        # Decided on the FULL name and inherited by its tokens: a bare
+        # "Motors" is never itself found beside "; and DOES 1".
+        for t in list(doomed):
+            if t.category not in ("person", "entity"):
+                continue
+            if masked is None:
+                masked = self._mask_uncached(text)
+            why = _pn_case_party_evidence(masked, t)
+            if why:
+                doomed.remove(t)
+                spared.append((t.real, why))
+                spared_words.update(_pn_word_base(w) for w in t.real.split())
+        if spared_words:
+            for t in list(doomed):
+                words = [_pn_word_base(w) for w in t.real.split()]
+                if words and all(w in spared_words for w in words):
+                    doomed.remove(t)
+        if spared and log:
+            shown = "; ".join(f"{r!r} ({why})" for r, why in spared[:4])
+            log.info(f"  Pseudonymize: kept {len(spared)} harvested name(s) "
+                     f"that share a cited authority's party but stand as a "
+                     f"party of THIS case — faked everywhere but inside the "
+                     f"citation ({shown})")
         for t in doomed:
             self.terms.remove(t)
             self.records.pop((t.category, t.real.lower()), None)
@@ -16840,9 +17191,10 @@ class Pseudonymizer:
             return
         text = _NFKC(str(text))
         self._orig_reduced.append(_pn_alnum_core(text).lower())
-        self._orig_words |= {b for b in
-                             (_pn_word_base(w) for w in _PN_WORD_RE.findall(text))
-                             if b}
+        words = _PN_WORD_RE.findall(text)
+        self._orig_words |= {b for b in (_pn_word_base(w) for w in words) if b}
+        self._orig_lower_words |= {b for b in (_pn_word_base(w) for w in words
+                                               if w[:1].islower()) if b}
 
     def _finding_is_in_original(self, value):
         """True when `value` could be REAL information — i.e. some part of it
@@ -17957,6 +18309,22 @@ class Pseudonymizer:
         self._fuzzy_idx = (idx, toks)
         return self._fuzzy_idx
 
+    def _party_token_bases(self):
+        """The word bases of every NAME term from an AUTHORITATIVE source —
+        the operator's template and `--term` — the spellings the run is
+        surest of, and the ones the sweep and the alias pre-fill cast the
+        wide net for (`_PN_SCAN_PARTY_MIN`)."""
+        out = set()
+        for t in self.terms:
+            if (t.category in _PN_FUZZY_TARGET_CATS
+                    and t.source in _PN_KEY_UNMATCHED_SOURCES
+                    and not getattr(t, "derived", False)):
+                for w in str(t.real).split():
+                    base = _pn_word_base(w)
+                    if base and not _pn_is_generic_token(base):
+                        out.add(base)
+        return out
+
     def _degraded_spans(self, text):
         """`_pn_degraded_spans` memoized the way `_mask_protected_citations`
         is, and for the same reason: two consumers ask about the same body
@@ -18060,6 +18428,7 @@ class Pseudonymizer:
         # asking for a capital first was blind to its own defendant's name.
         # See `_pn_lower_name_site` for the measurement.
         person_fakes = {w.lower() for w in self.name_fake_words()}
+        party = self._party_token_bases()
         for m in re.finditer(r"(?<![\w'’])[A-Za-z][A-Za-z'’-]+(?![\w'’])", src):
             word = m.group(0)
             base = _pn_word_base(word)
@@ -18073,12 +18442,20 @@ class Pseudonymizer:
             near = set()
             for i in range(len(base) - 2):
                 near |= idx.get(base[i:i + 3], set())
+            # A named party is reached through a shared TWO-letter window:
+            # three slips inside a seven-letter surname can leave no trigram
+            # standing ("Vatqual" shares none with "vazquez"), and the wide
+            # reach below is worth nothing to a comparison never made.
+            if party:
+                bgs = _pn_bigrams(base)
+                near |= {t for t in party if bgs & _pn_bigrams(t)}
             deg = degraded.overlaps(m.start(), m.end())
-            hit = next((t for t in sorted(near)
-                        if _pn_edit_distance_within(
-                            base, t, _pn_scan_fold_dist(base, t, deg),
-                            min_len=_PN_NAME_FOLD_MIN)), None)
-            if hit is None:
+            hits = [t for t in sorted(near)
+                    if _pn_edit_distance_within(
+                        base, t, _pn_scan_fold_dist(base, t, deg,
+                                                    party=t in party),
+                        min_len=_PN_NAME_FOLD_MIN)]
+            if not hits:
                 continue
             # Asked LAST of the cheap screens and only of a word that is
             # already a near-miss: the corroboration walks its line, and the
@@ -18088,13 +18465,22 @@ class Pseudonymizer:
             if word[:1].islower() and not _pn_lower_name_site(
                     src, m.start(), m.end(), person_fakes):
                 continue
+            # A near-miss whose missing lead stands one break before it is the
+            # KERNED spelling of the tracked word — "M idland" for Midland,
+            # "VA ZQUEZ" for Vazquez, the caption's own defendant reported as
+            # "ZQUEZ": reported whole, for the reason the half-scrub tier
+            # states (`_pn_broken_lead`).
+            # Every near token is offered, not the first: the tracked word's
+            # own near-spelling variants sit in the index beside it and sort
+            # ahead of it ("vaazquez" before "vazquez").
+            raw = _pn_broken_lead(src, m.start(), word, hits) or word
             # The ORIGINAL text is EVIDENCE where the run has it: a word that
             # is not in the source cannot have survived from it.
-            if not self._finding_is_in_original(word):
+            if not self._finding_is_in_original(raw):
                 continue
             seen.add(base)
-            self.review.append(("misspelled name?", word))
-            out.append(("misspelled name?", word))
+            self.review.append(("misspelled name?", raw))
+            out.append(("misspelled name?", raw))
         # ── The candidate carrying the scanner's own DEBRIS ─────────────────
         # The tier above wants a clean Title-case word, and a degraded scan
         # does not produce those: it renders "Vasquez" as "Va-iq11ez" and
@@ -18224,24 +18610,40 @@ class Pseudonymizer:
                 frag = m.group(0)
                 if frag in seen:
                     continue
-                if not any(t.endswith(frag) and 1 <= len(t) - len(frag) <= 2
-                           for t in toks):
+                lost = [t for t in toks
+                        if t.endswith(frag) and 1 <= len(t) - len(frag) <= 2]
+                if not lost:
                     continue
+                # The "missing" lead may be standing RIGHT THERE, one break
+                # away: a born-digital pleading kerns a capital pair tightly
+                # and extraction reads the gap as a space, so the export
+                # carries "M idland" and this tier saw "idland". The row then
+                # read as the tool having cut the first letter off a word.
+                # Report the whole broken spelling instead — it is what stands
+                # in the export, it is locatable, and it shows the operator
+                # the word (`_pn_broken_lead`).
+                raw = _pn_broken_lead(src, m.start(), frag, lost) or frag
+                if raw != frag and raw.lower() in seen:
+                    continue
+                start = m.end() - len(raw)
                 # The fake must stand in the same NAME RUN — within the next
                 # few words, an initial allowed between ("avid W. Bancroft"),
                 # or immediately before. A fake further away is ordinary
-                # prose distance and proves nothing about this word.
+                # prose distance and proves nothing about this word. Measured
+                # from the LEAD where there is one, or the lead letter itself
+                # is the capitalised word the window finds.
                 tail = src[m.end():m.end() + 40]
-                head = src[max(0, m.start() - 25):m.start()]
+                head = src[max(0, start - 25):start]
                 nearby = re.findall(r"[A-Z][A-Za-z'’.-]*", tail)[:3] \
                     + re.findall(r"[A-Z][A-Za-z'’.-]*", head)[-1:]
                 if not any(_pn_word_base(w) in fakes for w in nearby):
                     continue
-                if not self._finding_is_in_original(frag):
+                if not self._finding_is_in_original(raw):
                     continue
                 seen.add(frag)
-                self.review.append(("half-scrubbed name?", frag))
-                out.append(("half-scrubbed name?", frag))
+                seen.add(raw.lower())
+                self.review.append(("half-scrubbed name?", raw))
+                out.append(("half-scrubbed name?", raw))
         # Every ADJACENT pair inside a capitalised run, which `finditer` over a
         # two-word pattern cannot give: the pairs overlap, so a leading role
         # word ("Plaintiff Xiaoxia Ingersoll") consumed the survivor and the
@@ -23122,9 +23524,16 @@ def _pn_update_master_keep(cfg, record_map, case_name, today, log,
     return len(rows)
 
 
+# The Notes text beside a PRE-FILLED alias, so the operator can tell the
+# tool's guess from an answer they typed. `{canon}` is the tracked value.
+_PN_PREFILL_NOTE = ("pre-filled: reads as a misspelling of {canon!r} — leave "
+                    "it to accept, clear it to decide later, or type another "
+                    "answer")
+
+
 def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
                           bound=(), note_for=None, case_name=None,
-                          case_aliases=()):
+                          case_aliases=(), suggest_for=None):
     """Write/refresh the leak-triage worksheet 'LEAKS.xlsx'. Each DISTINCT
     flagged value is ONE row with a 'Fix?' column — the files and page:line
     locations it was found in are aggregated into that row, so a name that
@@ -23204,9 +23613,25 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
     # durable no/bracket KEEP decisions are excluded here (they are preserved
     # cross-folder in the master KEEP sheet) so this file can be cleaned up
     # freely without ever dropping a keep.
-    rows = []
+    rows, prefilled = [], 0
     for vl, g in grouped.items():
         d = decisions.get(vl, {})
+        # An UNDECIDED row whose value reads as a misspelling of a value the
+        # case already tracks arrives with its answer typed in — the
+        # `*CANONICAL` alias (`Pseudonymizer.alias_suggestion`), at the
+        # operator's direction: leave it if it is right, change it if not.
+        # `fix` stays "" so the row still sorts to the top as one to look at;
+        # the NEXT reader takes the cell as an ordinary alias decision, which
+        # is the point. Never on a LEAK row — that value is the tracked real
+        # itself, not a spelling of one.
+        cell, prefill_note = "", ""
+        if (not d and suggest_for is not None
+                and g["type"] != _PN_LEAK_TYPE):
+            canon = suggest_for(g["value"])
+            if canon:
+                cell = _PN_ALIAS_MARKS[0] + canon
+                prefill_note = _PN_PREFILL_NOTE.format(canon=canon)
+                prefilled += 1
         # …unless the value will still GATE delivery, in which case the
         # operator has to be able to answer it. A `no`/`never` keep is in the
         # gate's `suppressed` set, so it blocks nothing and rightly keeps no row
@@ -23226,14 +23651,17 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
         # `fixcell` is what the Fix? cell shows: an operator-typed replacement is
         # carried back verbatim (NOT collapsed to "yes"), so a re-run re-reads
         # the exact instruction instead of re-deriving an auto fake.
+        notes = _notes(g["value"], d.get("notes", ""))
+        if prefill_note:
+            notes = f"{notes} | {prefill_note}" if notes else prefill_note
         rows.append({"file": file_cell, "type": g["type"], "value": g["value"],
                      "where": _pn_merge_where(g["wheres"]),
                      "context": g.get("context", ""),
                      "scrubbed_context": g.get("scrubbed_context", ""),
                      "fix": d.get("fix", ""),
                      "fixcell": (d.get("fixcell") or d.get("replacement")
-                                 or d.get("fix", "")),
-                     "notes": _notes(g["value"], d.get("notes", "")),
+                                 or d.get("fix", "") or cell),
+                     "notes": notes,
                      "present": True})
     # Persist a Fix?=yes/explicit decision whose value didn't recur this run, so
     # the fix keeps applying — but ONLY while nothing else already holds it.
@@ -23294,6 +23722,8 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
                  "faked)", ""]
         for r in rows:
             mark = {"yes": "[x]", "no": "[-]"}.get(r["fix"], "[ ]")
+            if r["fix"] == "" and r.get("fixcell"):
+                mark = f"[{r['fixcell']}]"          # a pre-filled alias
             lines.append(f"{mark} {r['type']}: {r['value']}  "
                          f"({r['file']} — {r['where']})")
             if r.get("context"):
@@ -23357,6 +23787,11 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
                     f"'no' leaves it here, 'never' leaves it in every folder, "
                     f"'*OTHER VALUE' says this is a misspelling of that one, "
                     f"or type the exact replacement to use).")
+        if prefilled:
+            log.info(f"  {prefilled} row(s) arrive with a '*OTHER VALUE' "
+                     f"alias already typed in — each reads as a misspelling "
+                     f"of a value this case tracks; leave it to accept, clear "
+                     f"or overtype it if not (Notes says which).")
     except OSError as ex:
         log.warning(f"  Could not write leak-review worksheet: {ex}")
 
@@ -27081,7 +27516,8 @@ def _fix_leaks_mode(folder, args, cfg, log):
                               cfg=cfg,
                               bound=[r["real"] for r in pz.records.values()],
                               note_for=pz.triage_note,
-                              case_name=case_label, case_aliases=case_aliases)
+                              case_name=case_label, case_aliases=case_aliases,
+                              suggest_for=pz.alias_suggestion)
     else:
         # Every LEAK file is fixed: the worksheet and the Apply-Leak-Fixes
         # launcher have done their job — remove them instead of leaving stale
@@ -27938,7 +28374,8 @@ def main():
                               bound=[r["real"] for r in
                                      pseudonymizer.records.values()],
                               note_for=pseudonymizer.triage_note,
-                              case_name=case_label, case_aliases=case_aliases)
+                              case_name=case_label, case_aliases=case_aliases,
+                              suggest_for=pseudonymizer.alias_suggestion)
         # Record this run's KEEP decisions into the single cross-folder master
         # KEEP sheet: every LOCAL keep (made in this folder), plus any GLOBAL
         # keep that actually protected text here (a real hit) — so Times Seen /

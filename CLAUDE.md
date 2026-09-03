@@ -445,6 +445,64 @@ belt, and outlives the syntax that needed it: a cell reading `#NAME?` is
 refused as a typed replacement at BOTH readers, because writing Excel's error
 text into an export as somebody's name is the one outcome worse than not
 reading the alias.
+**A worksheet row that is a MISSPELLING of a tracked value arrives ANSWERED**
+(`Pseudonymizer.alias_suggestion`, `suggest_for` in `_pn_write_leak_report`,
+`_PN_PREFILL_NOTE`). The fuzzy sweep already knows which tracked token a
+survivor is a slip of, and the `*CANONICAL` control word is exactly the
+answer, so an UNDECIDED row's Fix? cell is written holding it — at the
+owner's direction: leave it if it is right, change it if not. The next reader
+takes the cell as an ordinary alias decision, which is the point, and it is
+also the cost: a pre-filled cell nobody opens is applied on the next pass
+exactly as if it had been typed, and `_pn_triage_pending` reads such a row as
+decided. The reach is the fuzzy sweep's OWN on a clean page
+(`_pn_scan_fold_dist`, the minting fold plus one), and a word is read the way
+that sweep's debris tier reads it — digits back to letters, marks dropped
+(`_PN_DIGIT_LETTERS`) — so "va2que1", "Vazqu~z" and "vauiuez" all resolve to
+Vazquez; the clipped-lead shape `half_scrubbed_scan` reads ("avid" for David)
+is admitted too. It first shipped at the MINTING fold alone, and the worksheet
+the operator then filled by hand aliased twenty spellings of one defendant's
+name — "Vaiquel", "Vatquel", "Vazqoe", "vauiuez" among them — every one of
+which that rule left empty and the sweep had already named: the row exists
+because the sweep called the word a misspelling of a specific token, and the
+cell only says which. The degraded-region bump the sweep also spends is not
+taken for a HARVESTED name, the worksheet being written without the page in
+hand — but a NAMED PARTY's token (`_party_token_bases`: the template's and
+`--term`'s own words) takes it on EVERY page, in the sweep and the pre-fill
+alike (`_pn_scan_fold_dist(party=True)`), and a clipped lead carrying one slip
+("zquei") is admitted for it too: the net is cast wide for the parties the
+operator named, at the owner's direction. Two more things make that net
+reach. A party's token is found through a shared TWO-letter window
+(`_pn_bigrams`) and not only the trigram index — three slips inside a
+seven-letter surname can leave no trigram standing ("Vatqual" shares none
+with "vazquez"), and a reach is worth nothing to a comparison never made. And
+an UNUSUAL combination of letters shared with the party's token is what
+licenses that reach on a token SHORTER than the degraded floor — down to
+`_PN_SCAN_PARTY_MIN` six letters (`_pn_shares_rare_bigram`,
+`_PN_RARE_LETTERS` q/x/z/j): "Vazquez" carries "zq", twenty scanned spellings
+of it carry "zq" or "qu", and almost nothing else in an English filing does —
+a letter that rare is a fingerprint, which is the owner's own observation.
+Measured without that gate, a six-letter given name at three edits reached
+"handle", "Model" and "Carmel" for Manuel in 224 KB of one batch, each of
+them a pre-fill that would have merged an ordinary word into the defendant.
+The pre-fill also refuses a word the lists call vocabulary or that the
+ORIGINAL writes in lower case anywhere (`_orig_lower_words` — "Status" one
+slip from a party token "States"), the corpus being the screen of last
+resort for the reason `prune_prose_word_terms` states. What that costs, stated: a
+DIFFERENT person two letters from a party's given name ("Samuel" beside a
+defendant Manuel) arrives pre-filled as that party's misspelling, and the
+cell has to be cleared — the Notes column says it was pre-filled, and the row
+sorts with the undecided ones. Every word must
+resolve, to a word already tracked or to a slip of exactly ONE tracked token
+(two equally near is ambiguity, and ambiguity gets an empty cell); the
+canonical word must be BOUND, or `_pn_apply_aliases` would have nothing to
+mirror; a DERIVED spelling (`_pn_name_variants`' own near-misses, which sit
+exactly as close as the real word) is never a candidate; and a value that IS a
+tracked real, or a LEAK row, or a row carrying any decision already, gets
+nothing. A BROKEN spelling ("M idland", "VA ZQUEZ") gets nothing either — its
+lead piece resolves to no token, and the alias machinery pairs word for word.
+The Notes cell says the cell was pre-filled and of what, so the tool's guess
+is never mistaken for an answer the operator typed, and the row keeps `fix`
+empty so it still sorts to the top as one to look at.
 **`--fix-leaks` applies a WORKSHEET alias and refuses a KEY one.** A worksheet
 row names a LEAK — unscrubbed text still standing in the export — so faking it
 is exactly what that pass is for. A key row names a binding the exports ALREADY
@@ -709,6 +767,34 @@ the party), so its row stays reversible.
   is the fuzzy scan's business — reported for review, never repaired, which is
   the trade `fuzzy_survivor_scan` states; and a surname whose true break falls
   between two ordinary words is refused by the screen above.
+  **…and an ENTITY comes apart the same way, so the tolerance covers every
+  authoritative NAME term** (`_PN_BREAKABLE_CATS`: person and entity, full
+  name and bare token — never a short-name, a case number or an address). It
+  shipped as `person-token` only, on the ground that a company's words are
+  ordinary vocabulary and so its halves are; the generic-halves screen already
+  carries that worry, and the exclusion cost a delivered folder its own
+  PLAINTIFF: the bank was on the template, the born-digital export carried it
+  as `M idland States Bank` on every page (one kerned pair, so the defined
+  short form went out as `("M idland")` too), no term could match it, the
+  survivor scan — same pattern — saw nothing, and the only thing the run said
+  was a half-scrub row for `idland`, which the operator read as the tool
+  having cut the first letter off a word. Measured before lifting it: 222
+  business-name words, 1,555 break branches, 3 MB of real filings and this
+  repo's prose, zero false matches. A multi-word term gets one alternation PER
+  WORD (`_pn_build_pattern`), the whitespace between words still matching any
+  run and a word's own affixes staying outside the break; the single
+  alternation over the whole value it first shipped as escaped the term's
+  spaces into literal ones and was only ever asked about a bare token.
+  Where the tolerance does not reach — a HARVESTED name is still a guess on a
+  guess, and "MANUEL VAZQUEZ, an individual" read off a caption is one — the
+  two review tiers that can see a fragment (`half_scrubbed_scan`'s
+  clipped-lead shape, `fuzzy_survivor_scan`'s near-miss) now report the
+  broken spelling WHOLE (`_pn_broken_lead`: the missing one or two letters
+  standing right before the fragment, one break character between, on a word
+  boundary of their own), so the row says `M idland` or `VA ZQUEZ` — what
+  stands in the export, locatable, the word visible — instead of `idland` or
+  `ZQUEZ`. The corroboration window is measured from the lead, or the lead
+  letter is the capitalised word it finds.
 - **Registry** (`_PnFakeRegistry`): injective, deterministic real→fake fakes,
   seeded on the real value (same input → same fake across runs, no two reals
   collide onto one fake). Draw every fake through it so the used-pool stays
@@ -1008,6 +1094,52 @@ the party), so its row stays reversible.
   citation spans for every LABEL-ANCHORED class, so a bar number or a
   production stamp inside a cite is not read as this case's. The DOCKET is the
   one exception, and it now runs the other way — see the next bullet.
+- **A party of THIS case is scrubbed even when a cited decision shares it**
+  (`_pn_case_party_evidence`, `_PN_CASE_PARTY_SITES`, read by
+  `prune_authority_party_terms`). That prune drops a HARVESTED name that is a
+  party of an authority the corpus cites — right for Angela White, the
+  defendant of *Kremerman v. White*, named throughout a motion DISCUSSING that
+  decision — and it dropped General Motors, the defendant of a Song-Beverly
+  fee batch, because the fee motion cited *Lukather v. General Motors LLC*
+  (2010) 181 Cal.App.4th 1041. The party was on no template, so every
+  harvested spelling went, and the name shipped in the caption, the attorney
+  line and every billing entry of four exports with NO LEAK reported: a term
+  never built is invisible to the survivor scan too. (The short form the
+  brief defined, "GM", HAD been bound off the parent before the prune ran, so
+  the exports read `counsel to General Motors LLC ("HQ")` — half of one
+  party.) What separates the two is POSITION: a filing states its OWN parties
+  in the attorney line (`Attorneys for Defendant, X`), the Doe-closed caption
+  roster (`X; and DOES 1 through 10`), the caption descriptor (`X, an
+  individual` / `X, a Delaware corporation`) and the possessive filing title
+  (`X'S OPPOSITION TO…`), and a cited decision's party stands in none of
+  them. Deliberately NOT a bare role prefix — "Defendant White" is exactly how
+  the discussion of a cited case is written. Asked through the term's own
+  pattern of the CITATION-MASKED corpus, so a party of the authority's case
+  name can never corroborate itself; decided on the FULL name and inherited by
+  every term composed from its words (the comma-less spelling, a bare token),
+  since a bare "Motors" is never itself found beside "; and DOES 1". The
+  citation keeps its span protection either way — what the spare buys is the
+  name faked everywhere ELSE, which is the operator's rule: intact inside the
+  appellate case name, scrubbed the rest of the time. Logged by name and
+  site. Residual, and stated: a bare "X v. Y" heading with no year or
+  reporter beside it is protected only by `_in_authority_context`'s two
+  anchors, exactly as it is for a template party that shares a cited name.
+- **A company named by ANY comma-led corporate suffix is harvested**
+  (`_PN_FIRM_SUFFIX_RE`). `Lenis Industries, Inc.` — the primary debtor a
+  guaranty answer named three times, on no template, behind no role word and
+  defined by no parenthetical — reached no pass at all: the suffix-anchored
+  harvester knew a law firm's suffixes (LLC, LLP, P.C., APC) and nothing
+  else, so the commonest corporate suffix there is was not an anchor. Inc.,
+  Corp., Ltd., L.P., N.A. and a dotted Co. join it, and a connector inside
+  the name is walked over ("Bank of America, N.A.", not "America, N.A."). The
+  COMMA is the corroboration that keeps the wider set safe: "Denver, CO" is
+  refused because Co needs its period here, "Smith, Jr." is no suffix at all,
+  and the harvest still goes through every screen a document guess takes —
+  including the authority prune above, so "Ford Motor Co." out of a cite is
+  dropped as it always was. A LEADING role word is trimmed rather than fatal
+  ("Defendant General Motors, LLC made an oral motion"), the rule
+  `_pn_label_names` follows; a role word standing INSIDE the run is still
+  refused.
 - **A SCHEMELESS domain match is a guess about SHAPE, and inside a degraded
   region the shape evidence is worthless.** The bare-domain branch of the url
   detector is anchored on nothing but "a word that ends in .org", and a fax
