@@ -2211,6 +2211,36 @@ the party), so its row stays reversible.
   PERSON's — a company is not introduced this way, so "Wcstlake Village" is
   still a slip of the entity plaintiff. The minting fold is untouched: it
   binds tokens with no context to read, and moving it moves delivered keys.
+  **The sweep reads HOW MANY spellings the document offers, and WHERE an
+  edit fell** (`_pn_ocr_distance`, the collect-then-decide pass in
+  `fuzzy_survivor_scan`, `test_variant_reach.py`; all at the owner's
+  direction). A lone near-miss of a tracked word — however often it recurs,
+  since repetition is not a second spelling — is as likely a different name
+  as a slip, so it must be a CLOSE match: the plain scan reach, none of the
+  degraded or named-party bumps. Several DISTINCT near-misses of one word
+  (grouped on the canonical spelling; the tool's own `_pn_name_variants`
+  are not variants) are the signature of a scan that keeps mangling that
+  name, and that is where the real name becomes obvious: there the full
+  reach applies, and one degree further — a spelling within the fold of an
+  identified variant is a variant too ("Wcstlelce", four slips from
+  Westlake and one from "Wcstlalce"). The distance is weighted by POSITION.
+  A wrong letter in the middle is what OCR does; a wrong first or last
+  letter is more often a different name and costs 1.5, while a letter
+  clipped off the front or the back — what a scan does to a word's edges —
+  costs 0.5 against 1 for one lost from the middle. So "thanisl" is
+  Nathaniel (two clipped off the front, one middle letter wrong: 2.0) and
+  not Daniel (3.0), where the plain count calls them equal at 3. The
+  end-letter penalty is dropped (`ends=False`) for the WIDE reach and the
+  second degree, since there the document has already shown the scan
+  mangling the word and any position goes; it is kept for the lone
+  variant's close match. The MINTING fold is untouched — it binds a fake
+  and moves delivered keys — and so is the pre-fill by value, which has no
+  document to count spellings in. And a SLASH or bar with letters hard
+  against it on both sides is a corrupted l (`_PN_DIGIT_LETTERS`,
+  `_PN_SLASH_DEBRIS_RE`), admitted by the debris tier on ANY page at the
+  clean reach through the 3-gram index: "Wi/son" is a word nowhere, where a
+  digit inside a word is ("COVID19"), so unlike a digit it needs no degraded
+  region to license it.
   **A CONTACT LABEL survives garbling far better than the value beside it**
   (`degraded_contact_scan`). "TEL: rAX: _,.___._ (228) 424-3-575" and
   "ADDRESS: l440S Whorto1t I..n" shipped a real phone number and the
