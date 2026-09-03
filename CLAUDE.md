@@ -1864,6 +1864,48 @@ the party), so its row stays reversible.
   ("Labor Rasho" -> "Labor Yeardley"). NUCLEAR only: a soft `no` keep is
   released inside a name run precisely because the word may be part of a party
   there, so a phrase carrying one can still be a real leak.
+  **A REVIEW row never names a value the KEY already binds**
+  (`_finding_already_bound`, `bound_reals`, asked from `confirm_findings`). A
+  worksheet row is a QUESTION — "is this a name, and should I fake it?" — and
+  for a value already in `pseudonym_key.xlsx` the tool has ANSWERED it: the
+  fake is minted, the binding is written, and every occurrence the scrub was
+  allowed to reach carries the stand-in. The row is unanswerable in both
+  directions (`yes` mints a term for a value that already has one, `no` says
+  leave verbatim a value the exports are full of the stand-in for), and
+  `--fix-leaks` cannot clear it either, because that pass runs the same
+  `_substitute` that refused the site to begin with — so it came back on every
+  pass, forever.
+  What puts one there is the DELIBERATE SILENCE of `_surviving_records`. That
+  scan is the MIRROR of `_substitute` — it reports a tracked value only where
+  the write side was allowed to replace it — so it says nothing about a real
+  standing inside a protected citation, inside an operator KEEP, inside a
+  whitelisted verification link, or as the lower-case occurrence of a cap-only
+  bare token: four sites the scrub refuses ON PURPOSE. The REVIEW tiers that
+  read the output RAW have no such mirror, so each of those sites came back as
+  a row. A delivered folder's `State Bar No. 214785`, faked on the attorney
+  line and kept byte-for-byte inside `Roe v. Bell (State Bar No. 214785)
+  (2019) 33 Cal.App.5th 1`, was reported as `REID bar number` under the very
+  value the key shows `replaced`.
+  The rule is the two-tier design read back: a bound value really standing
+  where the scrub could have reached it is `surviving_reals`' finding, reported
+  as a LEAK, which GATES delivery — and a LEAK row is never screened here, or
+  the gate would empty (every value it reports is bound by construction). Asked
+  WHATEVER the record's count, because zero is not the opposite case: a term
+  whose only occurrences were line-wrapped matches nothing and is still a
+  binding the key carries. Four scans (`defined_name_scan`,
+  `narrative_name_scan`, `honorific_name_scan`, `mail_header_name_scan`)
+  already carried this screen by hand, written one at a time as each tier met
+  it; six did not (`review_scan`, `review_definition_survivors`,
+  `degraded_contact_scan`, `form_rule_name_scan`, `reid_scan`,
+  `unknown_name_scan`, `half_scrubbed_scan`). It is asked at the single choke
+  point every finding passes through on its way to the worksheet, so the next
+  tier cannot be added without it — the four hand-written copies stay as cheap
+  early exits and are subsumed. The identity is case- and whitespace-
+  insensitive (`_finding_key`), since a run crossing a pleading wrap carries
+  the gutter's own spacing. The PER-FILE log still names what each scan saw,
+  which is the run narrating its own work; the folder-level line says how many
+  findings were dropped for this reason and why, so the difference between the
+  log and the worksheet is stated rather than left to be noticed.
   **A word the composing faker KEPT is not one of our fakes**
   (`name_fake_words`). The furniture of a party name is preserved verbatim
   ("The Lovelace" -> "The Flintham") and a `{braced}` keep is too, but the
