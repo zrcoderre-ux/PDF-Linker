@@ -962,6 +962,36 @@ the party), so its row stays reversible.
   in California, so the shape yielded nothing at all. Trimming is for the
   LEADING word only; a role word standing INSIDE a name run is the different
   thing that screen exists to catch.
+- **A CREDENTIAL trails a person and nothing else, and nothing read it**
+  (`_pn_credential_kind`, `_pn_cred_component_ok`, the last `_PN_LABEL_RES`
+  anchor). "Joe Smith, M.D.", "Mary Sue, ED/UCC", "Jane Cole, RN, BSN": a
+  medical record, an expert report and a signature line name their people
+  this way — no role, no label, no "Declaration of" — and the composing
+  faker has always KEPT a degree verbatim (`_PN_SUFFIX_TOKENS`), so the
+  shape was understood on the way out and read by nothing on the way in.
+  The comma plus the credential is the corroboration, the reason the
+  caption's "X, an individual" is safe, and the tail is a LOOKAHEAD so two
+  people on one line are both read. Two tiers, by how much the credential
+  says. A KNOWN degree or professional suffix corroborates on its own,
+  wherever it stands ("M.D., testified that"), and a name of up to four
+  words behind it. An UNKNOWN one — the unit codes and specialties no list
+  is complete for — is a run of short ALL-CAPS tokens and needs more: a
+  compound (slash, hyphen, dots) or a second credential after the next
+  comma corroborates itself, while a SINGLE bare token counts only where it
+  CLOSES the line, the signature and roster shape and never prose, and the
+  name in front of it must be name words throughout and at most three.
+  Every component is screened against what else trails a Title-case run
+  after a comma: a state code ("Silver Spring, MD" — so a BARE "MD"/"PA" is
+  never read as a degree, and only the dotted form is, the residual stated
+  in the test), a corporate suffix ("Alder Law, P.C."), "et al.", a role, a
+  calendar word, a bare Roman numeral ("Article II, IV") and, for a lone
+  token, the caps-written vocabulary of a caption ("AN INDIVIDUAL"). Only
+  the NAME is harvested — the credential is left standing, which is what
+  the faker does anyway — and an honorific is dropped from the lead, or
+  "Dr. Joe Smith" would be a term narrower than the name the document uses.
+  Measured over this repo's own prose and tests: zero rows. The declarant
+  anchor (`_PN_DECL_NAME`, `_pn_is_personlike_declarant`) now admits every
+  suffix `_PN_SUFFIX_TOKENS` knows, where it listed six of them by hand.
 - **The people a SERVICE document names carry no party role, and a DOCKET names
   its parties role-LAST.** Every harvest anchor was a role PREFIX ("Defendant
   Travelers", "Attorneys for X"), so two whole populations reached no pass at
