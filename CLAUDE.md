@@ -2900,6 +2900,27 @@ like bold on both heading paths, and centering alone carries an
 outline-label heading only when the label has its own text ("I.
 INTRODUCTION" yes; the caption's bare centered "V." no).
 
+**An OCR'd slip sheet spells its quotes as APOSTROPHES, and a quote is a
+RUN** (`_EXHIBIT_QUOTE_CHAR` / `_EXHIBIT_QUOTE_RUN`). A scanned exhibit
+set came back as `EXHIBIT ''1''` and `EXHIBIT ' ' 2 ''` — OCR reads a
+big straight double quote as two apostrophes, sometimes with a space
+between them, or as a backtick pair or a prime — and `_EXHIBIT_COVER_RE`
+allowed exactly one quote character on each side of the identifier, so
+the whole set earned no cover, no bookmark and no body link. The quote on
+either side is now a run of quote-shaped glyphs with horizontal
+whitespace allowed between them and before the identifier, and ONE class
+serves both sides, since OCR keeps no distinction between an opener and
+a closer. The run can only stand where a quote could — the identifier is
+still one to three digits or one or two capitals and the letter branch
+still demands a separator before a descriptor — so a comma, a possessive
+and a wrapped sentence are refused exactly as before. The strictness
+strip on a lone numeric cover (`_EXHIBIT_QUOTE_LEAD_RE`) removes the
+same run, or an OCR'd lone cover read as loose; `_LABEL_JUST_EXHIBIT_RE`
+tolerates it so a footer repeating the slip sheet's spelling is still
+just the id; and the body-reference search adds the unspaced `''5''`
+form only, since it searches fixed phrases and a spaced spelling is
+unbounded.
+
 **A pleading GUTTER NUMBER blinds the parser, and the authority gets renamed.**
 The text export keeps the printed line number (`f"{num:>2}  "` + body), so a
 citation that WRAPS carries one between its volume and its reporter — and the
