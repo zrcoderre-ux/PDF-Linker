@@ -2921,6 +2921,33 @@ just the id; and the body-reference search adds the unspaced `''5''`
 form only, since it searches fixed phrases and a spaced spelling is
 unbounded.
 
+**…and an OCR'd IDENTIFIER is read against the SERIES**
+(`_exhibit_ident_readings`, `_exhibit_series_numeric`,
+`_exhibit_resolve_ident`). The quotes are not all OCR mangles: it reads
+the label's own 1 as a capital I or a lower-case l and its 0 as a capital
+O, so the set that arrived as `''1''` also arrives as `''I''`, `l` and
+`lO`. `EXHIBIT I` is a perfectly good cover in a LETTERED set and exhibit
+1 in a NUMBERED one, and the line itself cannot say which, so the reading
+is decided ONCE per document from context: the unambiguous covers first
+("2" and "3" beside it, or "A" and "B"), the body's own references only
+where those tie ("attached hereto as Exhibit 1" is born-digital far more
+often than the slip sheet is, and the page walk is paid only when a cover
+needs it), and the letter where nothing decides — what an `EXHIBIT I`
+cover always meant before. Ambiguity is narrow by construction: the
+number reading stands only with no leading zero, so a lone "O" is only
+ever the letter, and the letters reading stands only for the shapes a
+lettered set uses (one capital, or the same one doubled), so "IO", "I2"
+and "lO" are numbers and nothing else, and "I"/"II" are the only cases
+the series settles. A third regex branch admits the shapes the letter
+branch cannot (`l`, `|`, a mixed run) at the letter branch's strictness;
+a pure capital run still takes the letter branch, so `EXHIBIT A` reads
+exactly as it did. Downstream follows the resolved number:
+`_label_is_just_exhibit_id` reads a footer's `EXHIBIT I` as exhibit 1's
+own id once the cover map says the exhibit is numbered, and the
+body-reference search adds a number's OCR spellings
+(`_exhibit_ocr_spellings`) — only where the covers are ALL numeric, since
+in a set that also has a lettered exhibit I that reference is its own.
+
 **A pleading GUTTER NUMBER blinds the parser, and the authority gets renamed.**
 The text export keeps the printed line number (`f"{num:>2}  "` + body), so a
 citation that WRAPS carries one between its volume and its reporter — and the

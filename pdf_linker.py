@@ -5353,6 +5353,28 @@ _EXHIBIT_QUOTE_RUN = _EXHIBIT_QUOTE_CHAR + r"(?:[ \t]*" + _EXHIBIT_QUOTE_CHAR + 
 # before asking whether the cover is strict.
 _EXHIBIT_QUOTE_LEAD_RE = re.compile(r"^[ \t]*" + _EXHIBIT_QUOTE_RUN)
 
+# OCR does not only mangle the quotes: it reads the identifier's own 1 as
+# a capital I or a lower-case l, and its 0 as a capital O. "EXHIBIT I" is
+# a perfectly good cover in a LETTERED set and exhibit 1 in a NUMBERED
+# one, so the reading is settled by the document's other covers and, if
+# those tie, by its body references (_exhibit_series_numeric). The regex
+# admits the shapes the letter branch cannot — a lone "l", a mixed "I2",
+# "lO" — through a third branch held to the letter branch's strictness;
+# a pure capital run still takes the letter branch, so an unambiguous
+# "EXHIBIT A" reads exactly as it always did.
+_EXHIBIT_OCR_DIGITS = {"I": "1", "l": "1", "O": "0"}
+_EXHIBIT_OCR_LETTERS = {"1": ("I", "l"), "0": ("O",)}
+_EXHIBIT_OCR_DIGIT_RUN = r"[0-9IlO]{1,3}"
+_EXHIBIT_OCR_DIGIT_RE = re.compile(_EXHIBIT_OCR_DIGIT_RUN)
+_EXHIBIT_LETTERS_RE = re.compile(r"[A-Z]{1,2}")
+# A body reference, for the series tiebreak: the same prefixes and quote
+# run the cover regex takes, the identifier bounded on its right.
+_EXHIBIT_BODY_REF_RE = re.compile(
+    r"\b(?:EXHIBIT|Exhibit|EX\.|Ex\.|EXH\.|Exh\.)\s+"
+    r"(?:" + _EXHIBIT_QUOTE_RUN + r"[ \t]*)?"
+    r"(?P<id>\d{1,3}|[A-Z]{1,2})\b"
+)
+
 _EXHIBIT_COVER_RE = re.compile(
     r"""
     ^\s*
@@ -5367,11 +5389,117 @@ _EXHIBIT_COVER_RE = re.compile(
         (?P<letter>[A-Z]{1,2}) \b
         (?:[ \t]*""" + _EXHIBIT_QUOTE_RUN + r""")?     # optional closing quote run
         (?:\s*[\u2014\u2013\-:]\s*.{1,40})?            # letter: optional separator + descriptor
+      |
+        (?P<mixed>""" + _EXHIBIT_OCR_DIGIT_RUN + r""") \b  # OCR digit run: "l", "I2", "lO"
+        (?:[ \t]*""" + _EXHIBIT_QUOTE_RUN + r""")?     # optional closing quote run
+        (?:\s*[\u2014\u2013\-:]\s*.{1,40})?            # held to the letter branch's strictness
     )
     \s*$
     """,
     re.VERBOSE,
 )
+
+
+def _exhibit_match_raw(m) -> str:
+    """The identifier text a cover match carries, whichever branch took it."""
+    return m.group("num") or m.group("letter") or m.group("mixed") or ""
+
+
+def _exhibit_ident_readings(raw: str):
+    """Return (number, letters) — the two things an OCR'd identifier may
+    be, either None when that reading is not available.
+
+    OCR reads a 1 as I or l, a 0 as O, and an ambiguous cover ('EXHIBIT
+    "I"') is the letter I in a lettered set and exhibit 1 in a numbered
+    one. The NUMBER reading maps the confusables through
+    _EXHIBIT_OCR_DIGITS and stands only when the result is a real exhibit
+    number — no leading zero, so a lone "O" is only ever the letter. The
+    LETTERS reading is any one or two capitals, the shape the cover regex
+    has always accepted (a long set runs A–Z, then AA, AB …). Which of
+    two readings a cover takes is _exhibit_resolve_ident's question.
+    """
+    number = None
+    if _EXHIBIT_OCR_DIGIT_RE.fullmatch(raw):
+        mapped = "".join(_EXHIBIT_OCR_DIGITS.get(ch, ch) for ch in raw)
+        if mapped.isdigit() and not mapped.startswith("0"):
+            number = mapped
+    letters = raw if _EXHIBIT_LETTERS_RE.fullmatch(raw) else None
+    return number, letters
+
+
+def _exhibit_ident_ambiguous(raw: str) -> bool:
+    """True where the SERIES has to decide: both readings stand and the
+    letters are a shape a lettered set really uses early — one capital
+    or the same one doubled ("I", "II"). A mixed pair like "IO" is the
+    249th exhibit under the AA/AB convention and 10 under OCR's; that is
+    not a contest, and the number takes it outright."""
+    number, letters = _exhibit_ident_readings(raw)
+    return bool(number and letters
+                and (len(letters) == 1 or letters[0] == letters[1]))
+
+
+def _exhibit_series_numeric(raws, doc=None) -> bool:
+    """Decide whether this document's exhibits are NUMBERED — the context
+    an ambiguous cover ("I", "II") is read against.
+
+    The unambiguous covers decide first: a set that also carries "2" and
+    "3" is numbered, one that carries "A" and "B" is lettered. Where they
+    tie (typically: no other cover at all) the BODY's own references break
+    it — a declaration attaching exhibits says "attached hereto as Exhibit
+    1" or "as Exhibit A", and that spelling is born-digital far more often
+    than the slip sheet is. Still tied, the letter wins, which is what an
+    "EXHIBIT I" cover always meant before this existed.
+    """
+    numeric = lettered = 0
+    for raw in raws:
+        if _exhibit_ident_ambiguous(raw):
+            continue
+        number, letters = _exhibit_ident_readings(raw)
+        if number:
+            numeric += 1
+        elif letters:
+            lettered += 1
+    if numeric != lettered:
+        return numeric > lettered
+    if doc is None:
+        return False
+    numeric = lettered = 0
+    for page in doc:
+        try:
+            text = page.get_text("text")
+        except Exception:
+            continue
+        for m in _EXHIBIT_BODY_REF_RE.finditer(text):
+            raw = m.group("id")
+            if _exhibit_ident_ambiguous(raw):
+                continue
+            number, letters = _exhibit_ident_readings(raw)
+            if number:
+                numeric += 1
+            elif letters:
+                lettered += 1
+    return numeric > lettered
+
+
+def _exhibit_resolve_ident(raw: str, numeric_series: bool):
+    """The exhibit identifier a cover's raw text names, or None when it
+    names nothing an exhibit can be called ("OOO")."""
+    number, letters = _exhibit_ident_readings(raw)
+    if _exhibit_ident_ambiguous(raw):
+        return number if numeric_series else letters
+    return number or letters
+
+
+def _exhibit_ocr_spellings(ident: str):
+    """Every way OCR may have spelled a NUMERIC identifier in body text
+    ("1" -> I, l; "10" -> IO, lO, 1O, I0, l0), the bare form excluded."""
+    if not ident.isdigit():
+        return ()
+    forms = [""]
+    for ch in ident:
+        forms = [f + alt for f in forms
+                 for alt in _EXHIBIT_OCR_LETTERS.get(ch, ()) + (ch,)]
+    return tuple(f for f in forms if f != ident)
 
 def _exhibit_cover_match(line_text: str):
     """Match a row against _EXHIBIT_COVER_RE, tolerating a text layer
@@ -5426,9 +5554,7 @@ def _find_exhibit_cover_pages(doc):
     (one big "EXHIBIT 5" on an otherwise blank page) and content pages
     whose top banner reads "Exhibit 5" or "Exhibit 5 — Description".
     """
-    found: dict = {}
-    label_pages: set = set()
-    strict_idents: set = set()
+    hits = []  # (page_idx, raw identifier text, strict)
     for i, page in enumerate(doc):
         # Drop pleading-paper gutter line-numbers: on a pleading-paper
         # exhibit cover the centered "EXHIBIT C" can share a baseline with a
@@ -5439,27 +5565,42 @@ def _find_exhibit_cover_pages(doc):
             m = _exhibit_cover_match(line_text)
             if not m:
                 continue
-            # Exactly one of `num` or `letter` matches; normalize both to
-            # strings so the cover map can mix numbered and lettered IDs.
-            ident = m.group("num") or m.group("letter")
-            if not ident:
+            raw = _exhibit_match_raw(m)
+            if not raw:
                 continue
-            found.setdefault(ident, []).append(i)
             # A STRICT cover is the label alone, or with a separator before
-            # its descriptor — the letter branch requires that by regex,
-            # while the numeric branch tolerates any short trailing text
-            # ("Exhibit 3 hereto is a true and correct copy" matches). The
-            # distinction only matters when it is the document's ONLY
-            # exhibit; see the single-cover gate below.
-            if m.group("letter") is not None:
-                strict_idents.add(ident)
+            # its descriptor — the letter and OCR-digit branches require
+            # that by regex, while the numeric branch tolerates any short
+            # trailing text ("Exhibit 3 hereto is a true and correct copy"
+            # matches). The distinction only matters when it is the
+            # document's ONLY exhibit; see the single-cover gate below.
+            if m.group("num") is None:
+                strict = True
             else:
                 rest = m.string[m.end("num"):].strip()
                 rest = _EXHIBIT_QUOTE_LEAD_RE.sub("", rest).strip()
-                if not rest or rest[0] in "—–-:":
-                    strict_idents.add(ident)
-            label_pages.add(i)
+                strict = not rest or rest[0] in "—–-:"
+            hits.append((i, raw, strict))
             break  # one label-row per page is enough to register the page
+    # An OCR'd identifier is read against the SERIES: "I" is exhibit 1
+    # among "2" and "3" and the letter I among "A" and "B". Decided once
+    # for the document, from the unambiguous covers first and the body's
+    # own references only where those tie — the body walk reads every
+    # page and is paid only when a cover actually needs it.
+    numeric_series = False
+    if any(_exhibit_ident_ambiguous(raw) for _i, raw, _s in hits):
+        numeric_series = _exhibit_series_numeric([r for _i, r, _s in hits], doc)
+    found: dict = {}
+    label_pages: set = set()
+    strict_idents: set = set()
+    for i, raw, strict in hits:
+        ident = _exhibit_resolve_ident(raw, numeric_series)
+        if not ident:
+            continue
+        found.setdefault(ident, []).append(i)
+        if strict:
+            strict_idents.add(ident)
+        label_pages.add(i)
     # A SINGLE detected exhibit now feeds the bookmark tree (the 2+ gate
     # lives in _link_exhibit_references and gates only the body-reference
     # linking) — a petition with one clean 'EXHIBIT "A"' slip sheet earns
@@ -5603,11 +5744,18 @@ def _link_exhibit_references(doc, log: logging.Logger):
             # counterpart and searches fixed phrases, so it takes only
             # the unspaced form — a spaced one is unbounded and rare in
             # running text.
-            ident_forms = (
-                ident,
-                f"\"{ident}\"",
-                f"\u201c{ident}\u201d",
-                f"''{ident}''",
+            # A NUMBERED set's body may spell a number the way OCR read it
+            # ("Exhibit I" for exhibit 1), so those spellings are searched
+            # too — but only where the covers are ALL numeric: in a set
+            # that also has a lettered exhibit I, "Exhibit I" is that
+            # exhibit's own reference and belongs to it.
+            spellings = (ident,)
+            if all(k.isdigit() for k in cover_map):
+                spellings += _exhibit_ocr_spellings(ident)
+            ident_forms = tuple(
+                form
+                for sp in spellings
+                for form in (sp, f"\"{sp}\"", f"\u201c{sp}\u201d", f"''{sp}''")
             )
             for prefix in _EXHIBIT_PREFIXES:
                 for ident_form in ident_forms:
@@ -6670,8 +6818,12 @@ def _label_is_just_exhibit_id(label: str, ident: str) -> bool:
     if not m:
         return False
     label_id = m.group(1)
-    if ident.isdigit() and label_id.isdigit():
-        return int(label_id) == int(ident)
+    if ident.isdigit():
+        # The cover map already settled that this exhibit is NUMBERED, so
+        # a footer reading "EXHIBIT I" under exhibit 1 is OCR's spelling
+        # of the same number.
+        number, _letters = _exhibit_ident_readings(label_id)
+        return number is not None and int(number) == int(ident)
     return label_id.upper() == ident.upper()
 
 
