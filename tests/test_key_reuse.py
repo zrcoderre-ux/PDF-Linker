@@ -112,3 +112,48 @@ def test_reused_key_loaded_party_survives_citation_only_prune(tmp_path):
         "Only as authority: Donlen v. Ford Motor Co., 217 Cal.App.4th 138 (2013).")
     assert not any("Ford" in p for p in pruned)
     assert ("entity", "ford motor company") in zs.records
+
+
+def _load(key_path):
+    import logging
+    reg = P._PnFakeRegistry()
+    terms, _ = P._pn_load_key(key_path, reg, logging.getLogger("test"))
+    return sorted((t.category, t.real, t.fake) for t in terms)
+
+
+def test_key_is_read_by_sheet_name_not_by_the_tab_excel_left_selected(tmp_path):
+    # `wb.active` is the tab selected at the last save, not a property of the
+    # key. With the pinned tab selected the loader read the pinned sheet as
+    # the main one and lost every applied binding.
+    import openpyxl
+    key = tmp_path / "pseudonym_key.xlsx"
+    pz = _batch()
+    pz.apply(SAMPLE)
+    pz.write_key(key, log)
+    wb = openpyxl.load_workbook(key)
+    assert P._PN_KEY_PINNED_SHEET in wb.sheetnames
+    expected = _load(key)
+    assert any(cat == "entity" for cat, _r, _f in expected)
+
+    wb.active = wb.sheetnames.index(P._PN_KEY_PINNED_SHEET)
+    wb.save(key)
+    assert openpyxl.load_workbook(key).active.title == P._PN_KEY_PINNED_SHEET
+    assert P._pn_key_looks_like_ours(key)
+    assert _load(key) == expected
+
+
+def test_a_key_whose_main_sheet_carries_an_older_title_still_resolves(tmp_path):
+    # No sheet named "Pseudonym Key": the one that is not the pinned sheet is
+    # the main one, whichever tab is active.
+    import openpyxl
+    key = tmp_path / "pseudonym_key.xlsx"
+    pz = _batch()
+    pz.apply(SAMPLE)
+    pz.write_key(key, log)
+    expected = _load(key)
+    wb = openpyxl.load_workbook(key)
+    wb[P._PN_KEY_MAIN_SHEET].title = "Sheet1"
+    wb.active = wb.sheetnames.index(P._PN_KEY_PINNED_SHEET)
+    wb.save(key)
+    assert P._pn_key_looks_like_ours(key)
+    assert _load(key) == expected

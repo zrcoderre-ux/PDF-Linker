@@ -12155,6 +12155,21 @@ _PN_KEY_LOST_MSG = (
 # earns its way onto the main sheet by being APPLIED — this run or any earlier
 # one, since a loaded row carries its occurrence count forward.
 _PN_KEY_PINNED_SHEET = "Pinned (never in text)"
+# The sheet the APPLIED bindings sit on, named so a reader can ask for it.
+#
+# Every reader of the key used to take `wb.active` as the main sheet — and the
+# active sheet is not a property of what the tool wrote, it is whichever TAB was
+# selected when the file was last saved. Excel stores that. So an operator who
+# opened the key, clicked across to the pinned sheet to see what it held, and
+# saved, handed the next run a workbook whose active sheet was the PINNED one:
+# `_pn_load_key` read it as the main sheet (a handful of "no match" rows), the
+# pinned sheet again as the pinned sheet, and never saw the applied bindings at
+# all. `--fix-leaks` then rewrote the key with only the leak fixes it had just
+# minted — every real binding gone from the one file that reverses the exports.
+# `_pn_key_looks_like_ours` could not catch it, because both sheets carry the
+# same header. Resolved by NAME through `_pn_key_main_sheet` now, at every
+# reader, and never by `wb.active` again.
+_PN_KEY_MAIN_SHEET = "Pseudonym Key"
 _PN_KEY_TOKEN_CATS = frozenset({"person-token", "entity-token", "short-name",
                                 "address_fragment"})
 
@@ -12410,6 +12425,26 @@ _PN_AUTHORITY_GUARD_CATS = frozenset({
 })
 
 
+def _pn_key_main_sheet(wb):
+    """The worksheet of key workbook `wb` that holds the APPLIED bindings —
+    `_PN_KEY_MAIN_SHEET` by name, else the first sheet that is not the pinned
+    one, else whatever is active.
+
+    NEVER `wb.active` first: the active sheet is the tab that was selected when
+    the file was last saved, which Excel records, so a key the operator looked
+    at with the pinned tab open comes back with the pinned sheet active. Read
+    that way, the main sheet's rows were never loaded and the next rewrite
+    dropped them (see `_PN_KEY_MAIN_SHEET`). The by-name fallback covers a key
+    an older version titled differently: it wrote one sheet, so "the sheet that
+    is not the pinned one" is it."""
+    if _PN_KEY_MAIN_SHEET in wb.sheetnames:
+        return wb[_PN_KEY_MAIN_SHEET]
+    for ws in wb.worksheets:
+        if ws.title != _PN_KEY_PINNED_SHEET:
+            return ws
+    return wb.active
+
+
 def _pn_key_looks_like_ours(path):
     """True when `path` is a key THIS tool wrote (header row = _PN_KEY_HEADERS),
     as opposed to an E-Court "Order Template Input" name list."""
@@ -12419,7 +12454,7 @@ def _pn_key_looks_like_ours(path):
         return False
     try:
         wb = openpyxl.load_workbook(path, read_only=True)
-        ws = wb.active
+        ws = _pn_key_main_sheet(wb)
         header = next(ws.iter_rows(values_only=True), ())
         wb.close()
     except Exception:
@@ -12531,14 +12566,24 @@ def _pn_load_key(path, registry, log, remint_recycled=False):
     # whole reason the star replaced the equals sign.
     typed = _pn_xl_typed_text(path)
     wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
-    ws = wb.active
+    # By NAME, never `wb.active`: the active sheet is the tab selected when the
+    # file was last saved, and with the pinned tab active this read the pinned
+    # sheet as the main one and lost every applied binding on the next rewrite
+    # (see `_PN_KEY_MAIN_SHEET`). Said in the log when the two differ, since
+    # the operator will see the tabs the other way round from what was read.
+    ws = _pn_key_main_sheet(wb)
+    if wb.active is not None and ws.title != wb.active.title:
+        log.info(f"  Pseudonym key: {Path(path).name} was saved with the "
+                 f"{wb.active.title!r} tab selected — reading the bindings "
+                 f"from the {ws.title!r} sheet regardless.")
     rows = _pn_typed_rows(ws, typed.get(ws.title))
     # A binding no export has ever carried sits on its own sheet, where the
     # reversal macro cannot reach it (see `_PN_KEY_PINNED_SHEET`). It is still
     # AUTHORITATIVE going forward — pinning it is the whole reason it was
     # written — so it is read back here exactly like any other row. Both sheets
     # share the header, so the body rows simply concatenate.
-    if _PN_KEY_PINNED_SHEET in wb.sheetnames:
+    if (_PN_KEY_PINNED_SHEET in wb.sheetnames
+            and ws.title != _PN_KEY_PINNED_SHEET):
         rows += _pn_typed_rows(wb[_PN_KEY_PINNED_SHEET],
                                typed.get(_PN_KEY_PINNED_SHEET))[1:]
     header = [(_pn_norm_header(h)) for h in (rows[0] if rows else ())]
@@ -18775,7 +18820,7 @@ class Pseudonymizer:
         pinned = [r for r in keyrows if not in_play(r)]
         wb = openpyxl.Workbook()
         ws = wb.active
-        ws.title = "Pseudonym Key"
+        ws.title = _PN_KEY_MAIN_SHEET
         ws.append(headers)
         def _sheet_row(r):
             # Column order follows _PN_KEY_HEADERS: the binding first (Real
@@ -22174,7 +22219,14 @@ def _pn_read_leak_decisions(folder):
         # ordinary text and needs none of it.
         typed = _pn_xl_typed_text(xlsx)
         wb = openpyxl.load_workbook(xlsx, data_only=True, read_only=True)
-        rows = _pn_typed_rows(wb.active, typed.get(wb.active.title))
+        # By NAME where the tab is ours, for the reason `_pn_key_main_sheet`
+        # states: `wb.active` is the tab selected at the last save. The
+        # worksheet is written with one sheet, so this only matters once an
+        # operator has added another and left it in front — but a decision
+        # silently read as absent is a leak delivered, so it is not left to
+        # chance. An older worksheet titled differently still reads as before.
+        ws = wb[_PN_LEAK_SHEET] if _PN_LEAK_SHEET in wb.sheetnames else wb.active
+        rows = _pn_typed_rows(ws, typed.get(ws.title))
         wb.close()
     except Exception:
         return {}
