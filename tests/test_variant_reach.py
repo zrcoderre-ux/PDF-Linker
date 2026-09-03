@@ -208,3 +208,36 @@ def test_a_lower_case_word_beside_a_stand_in_is_held_to_the_close_reach():
     # match and is still reported.
     assert _scan(["Manuel Vazquez"],
                  "Manuel Vazquez signed. Name: Manuel vazqvez") == ["vazqvez"]
+
+
+def test_a_lower_case_word_must_be_corroborated_at_every_occurrence():
+    # "giving" is 1.5 from a tracked Irving; "Yardley, giving notice" puts a
+    # stand-in two words off, and "the activities giving rise to" is the
+    # document writing the word as prose. One prose occurrence settles it.
+    text = ("12  the activities giving rise to the action are pleaded as a tort.\n"
+            "13  Ana Yardley, giving notice, left. Tom Irving paid.\n")
+    assert _scan(["Tom Irving", "Ana Yardley"], text) == []
+    # …while a mangled surname stands at a name site every time.
+    assert _scan(["Manuel Vazquez"],
+                 "Manuel Vazquez signed. Name: Manuel vazqvez. "
+                 "Print Name: Manuel vazqvez") == ["vazqvez"]
+
+
+def test_the_stand_in_site_needs_the_stand_in_hard_against_the_word():
+    # "Charleen tomorrow moring": a word between the stand-in and the
+    # near-miss is not the half-scrubbed pair; the pair is a given name's
+    # stand-in printed hard against the surname, an initial allowed.
+    text = ("From: Charleen Paz\nSee you @ Charleen tomorrow moring. "
+            "nice long Done Sorry for the last weekend, Jason.\n")
+    assert _scan(["Jason Loring", "Charleen Paz"], text) == []
+    assert _scan(["Manuel Vazquez"],
+                 "Manuel Vazquez signed. Print Name: MANUEL S. vazqvez") == ["vazqvez"]
+
+
+def test_a_capitalised_candidate_the_document_writes_lower_case_is_vocabulary():
+    # "Paving" heads a contract's name and "paving around the pool" is the
+    # same word in prose; a name is capitalised wherever it stands.
+    text = ("13  they signed the Second Contract, extending the ResinGem paving "
+            "around the pool.\n14  The Paving Contract was signed by Rita Pavia. "
+            "Rita Pavia Paving fees.\n")
+    assert _scan(["Rita Pavia"], text) == []

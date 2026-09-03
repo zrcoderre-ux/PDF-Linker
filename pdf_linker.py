@@ -14469,6 +14469,12 @@ def _pn_broken_lead(text, s, frag, tracked):
     return ""
 
 
+_PN_LOWER_ADJ_LEFT_RE = re.compile(
+    r"(?<![\w'’])(?P<w>[A-Za-z][\w'’-]*)[ \t]+(?:[A-Z]\.?[ \t]+)?$")
+_PN_LOWER_ADJ_RIGHT_RE = re.compile(
+    r"[ \t]+(?:[A-Z]\.?[ \t]+)?(?P<w>[A-Za-z][\w'’-]*)(?![\w'’])")
+
+
 def _pn_lower_name_site(text, s, e, person_fakes):
     """Why the lower-case word at [s,e) may be somebody's name anyway — the
     corroboration that stands in for the capital it does not have. "" when the
@@ -14508,9 +14514,17 @@ def _pn_lower_name_site(text, s, e, person_fakes):
         return "on a name label's own line"
     le = text.find("\n", e)
     le = len(text) if le < 0 else le
-    left = _PN_RUN_WORD_RE.findall(text[max(ls, s - _PN_LOWER_RUN_SPAN):s])
-    right = _PN_RUN_WORD_RE.findall(text[e:min(le, e + _PN_LOWER_RUN_SPAN)])
-    if any(w.lower() in person_fakes for w in left[-2:] + right[:2]):
+    # The stand-in must stand HARD against the word, across whitespace
+    # alone, an initial allowed between — the half-scrubbed pair is a given
+    # name's stand-in and the surname it was printed with ("Name: MANUEL
+    # vazqvez"). Two words either way admitted "Yardley, giving notice" (a
+    # comma: a list, not a name) and "Charleen tomorrow moring" (a word
+    # between), and in a brief full of stand-ins some occurrence of any
+    # common word will stand that near one.
+    lm = _PN_LOWER_ADJ_LEFT_RE.search(text, ls, s)
+    rm = _PN_LOWER_ADJ_RIGHT_RE.match(text, e, le)
+    if ((lm and _pn_word_base(lm.group("w")).lower() in person_fakes)
+            or (rm and _pn_word_base(rm.group("w")).lower() in person_fakes)):
         return "in a name run with one of our own stand-ins"
     v = _PN_LOWER_VERB_RE.match(text, e)
     if (v and v.group("verb") in _PN_NARRATIVE_VERBS
@@ -19493,6 +19507,19 @@ class Pseudonymizer:
         urls = _PnSpanIndex([(m.start(), m.end()) for m in
                              _PN_URL_SPAN_RE.finditer(src)])
 
+        every_site = {}
+
+        def _lower_every_site(word):
+            hit = every_site.get(word)
+            if hit is None:
+                pat = re.compile(r"(?<![\w'’])" + re.escape(word)
+                                 + r"(?![\w'’])")
+                hit = all(_pn_lower_name_site(src, o.start(), o.end(),
+                                              person_fakes)
+                          for o in pat.finditer(src))
+                every_site[word] = hit
+            return hit
+
         def _screened(word, base):
             return (len(base) < _PN_NAME_FOLD_MIN or not base.isalpha()
                     or base in toks          # exact: the other scan's finding
@@ -19562,6 +19589,28 @@ class Pseudonymizer:
             if word[:1].islower() and not _pn_lower_name_site(
                     src, m.start(), m.end(), person_fakes):
                 continue
+            # …and EVERY occurrence must be corroborated, not the one in
+            # hand. A name is a name wherever it stands, so a mangled surname
+            # sits at a name site each time the page prints it — while a
+            # vocabulary word is common enough that SOME occurrence will
+            # stand two words from a stand-in ("Yardley, giving notice"),
+            # and every other occurrence ("the activities giving rise to")
+            # says what it is. The corpus is the screen of last resort, the
+            # `prune_prose_word_terms` doctrine: one uncorroborated
+            # occurrence is the document writing the word as prose.
+            if word[:1].islower() and not _lower_every_site(word):
+                continue
+            # A CAPITALISED candidate the document also writes lower-case is
+            # vocabulary: a name is capitalised wherever it stands, and
+            # "Paving" at the head of a heading is the "paving around the
+            # pool" of the next paragraph — the pre-fill's `_orig_lower_words`
+            # screen, asked here of the sweep that puts the row there.
+            if word[:1].isupper():
+                if lower_words is None:
+                    lower_words = {w for w in _PN_RUN_WORD_RE.findall(src)
+                                   if w[:1].islower()}
+                if base in lower_words:
+                    continue
             # A near-miss of a PERSON's token that stands where a full name
             # is INTRODUCED — followed, across whitespace alone, by a
             # capitalised name word nothing tracks — is a different person,

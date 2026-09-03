@@ -1095,6 +1095,24 @@ the party), so its row stays reversible.
   already found to be a near-miss: the widened pattern hands the loop ten times
   the candidates (3,584 -> 37,453 on a 249 KB body), so asking every one would
   spend 0.2 s a file to answer about a few dozen.
+  **…and EVERY occurrence of the word must be corroborated, not the one in
+  hand.** "giving" is 1.5 from a tracked Irving, and in a brief full of
+  stand-ins some occurrence of a common word will stand two words from one
+  ("Yardley, giving notice") — so it was reported off that occurrence while
+  "the activities giving rise to the action" said what it is. A name is a
+  name wherever it stands, so a mangled surname sits at a name site each
+  time the page prints it; one uncorroborated occurrence is the document
+  writing the word as prose, the `prune_prose_word_terms` doctrine with the
+  corpus as the screen of last resort. Asked only of a lower-case word that
+  is already a corroborated near-miss, and memoised per word. The stand-in
+  site itself is ADJACENCY, not a two-word window: the half-scrubbed pair
+  is a given name's stand-in printed hard against the surname ("Name:
+  MANUEL vazqvez", an initial allowed between), and the window admitted
+  "Yardley, giving notice" (a comma is a list) and "Charleen tomorrow
+  moring" (a word between). And a CAPITALISED candidate the document also
+  writes lower-case is vocabulary — "Paving" heading a contract's name
+  beside "paving around the pool" — the pre-fill's `_orig_lower_words`
+  screen, asked of the sweep that puts the row there.
 - **A TABLE writes a person SURNAME-FIRST, and one class of surname had no
   coverage there.** The docket-roster rule above — word order costs nothing
   because every token registers — has exactly one exception: a surname that
