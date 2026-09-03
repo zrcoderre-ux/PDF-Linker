@@ -13673,7 +13673,8 @@ _PN_DECL_NAME_WORD = (rf"(?:[{_PN_LAT_UPPER}]\.|"
                       rf"[{_PN_LAT_UPPER}][{_PN_LAT}'’-]*)")
 _PN_DECL_NAME = (
     rf"{_PN_DECL_NAME_WORD}(?:\s+{_PN_DECL_NAME_WORD}){{0,3}}"
-    r"(?:,\s*(?i:esq|jr|sr|ii|iii|iv|m\.?d|ph\.?d|c\.?p\.?a|r\.?n|d\.?d\.?s)\.?)?"
+    r"(?:,\s*(?i:esq|jr|sr|ii|iii|iv|m\.?d|ph\.?d|c\.?p\.?a|r\.?n|d\.?d\.?s|"
+    r"d\.?o|j\.?d|ll\.?m|n\.?p|p\.?a|d\.?v\.?m|psy\.?d)\.?)?"
 )
 # DEPOSITION is the sibling of DECLARATION and was reaching no pass at all.
 # "Declaration of X" and the short cite "X Decl. ¶ 4" are both harvested — the
@@ -13855,8 +13856,10 @@ def _pn_is_personlike_declarant(name):
     if not words or words[0].lower().strip(".") in _PN_DECL_STOPWORDS:
         return False
     # Two-plus name words, or a single surname with a professional suffix.
+    tail = re.search(r",\s*([A-Za-z.]+)", name)
     return len(words) >= 2 or bool(
-        re.search(r",\s*(?i:esq|jr|sr|m\.?d|ph\.?d|c\.?p\.?a)", name))
+        tail and _pn_is_suffix_token(tail.group(1), bare_ambiguous=False)
+        and tail.group(1).lower().rstrip(".") not in _PN_CRED_ROMAN)
 
 
 # Words that end a declarant's name and begin the description of what the
@@ -13996,7 +13999,113 @@ _PN_LABEL_RES = (
     re.compile(r"(?i:person[ \t]+who[ \t]+served[ \t]+papers)[ \t]*:?[ \t]*\n?"
                r"[ \t]*(?:[a-z]\.[ \t]*)?(?i:name)[ \t]*:?" + _PN_LABEL_GAP +
                r"(?P<n>" + _PN_LABEL_NAME + r")"),
+    # A CREDENTIAL trails a person and nothing else: "Joe Smith, M.D.", "Mary
+    # Sue, ED/UCC", "Jane Doe, RN, BSN". A medical record, a report and a
+    # signature line name their people this way, with no role, no label and
+    # no "Declaration of" — and the composing faker has always KEPT a degree
+    # verbatim ("<fake> <fake>, M.D."), so the shape was understood on the
+    # way out and read by nothing on the way in. The comma-plus-credential is
+    # the corroboration, the reason a caption's "X, an individual" is safe:
+    # `_pn_credential_kind` decides whether what follows the comma is one,
+    # and the tail is a LOOKAHEAD so a second name on the same line is not
+    # consumed by the first match. Only the NAME is harvested — the
+    # credential is left standing, which is what the faker does anyway.
+    re.compile(r"(?P<n>" + _PN_LABEL_NAME + r")[ \t]*,[ \t]*"
+               r"(?=(?P<cred>[^\n]{1,48}))"),
 )
+
+# What may follow "Name, " and count as a credential. A known professional
+# or degree suffix (`_PN_SUFFIX_TOKENS`, less the bare Roman numerals a brief
+# is full of — "Article II, IV") corroborates on its own, wherever it stands:
+# nothing but a person is followed by ", M.D." or ", Esq.". An UNKNOWN
+# credential — the specialties and unit codes no list is complete for
+# ("ED/UCC", "LCSW", "FNP-C", "BSN") — is a run of short ALL-CAPS tokens, and
+# takes more: a compound (a slash, a hyphen, a dotted form, or a second
+# credential after a comma) corroborates itself, while a SINGLE bare token
+# counts only where it CLOSES the line, which is the signature and roster
+# shape and never prose. Every component is screened against the two-letter
+# tokens that trail a Title-case run for other reasons — a state code
+# ("Los Angeles, CA"), a corporate suffix ("Alder Law, P.C."), "et al.", a
+# party role, a calendar word, and the caps-written vocabulary of a caption
+# ("HELEN RASHO, AN INDIVIDUAL" — "AN" is two capitals after a comma).
+_PN_CRED_PART = r"[A-Za-z](?:\.?[A-Za-z]){0,7}\.?(?:-[A-Za-z]{1,2})?"
+_PN_CRED_GROUP_RE = re.compile(
+    rf"^(?P<g>{_PN_CRED_PART}(?:[ \t]*/[ \t]*{_PN_CRED_PART})*)"
+    r"(?P<rest>[^\n]*)$")
+_PN_CRED_ROMAN = frozenset({"ii", "iii", "iv", "v"})
+_PN_CRED_HONORIFICS = frozenset(str(h).lower().rstrip(".") for h in _PN_HONORIFICS)
+_PN_STATE_CODES = frozenset("""
+al ak az ar ca co ct de fl ga hi id il in ia ks ky la me md ma mi mn ms mo mt
+ne nv nh nj nm ny nc nd oh ok or pa ri sc sd tn tx ut vt va wa wv wi wy dc pr
+""".split())
+_PN_CRED_STOP = (_PN_STATE_CODES | _PN_ENTITY_SUFFIXES_NORM | _PN_CALENDAR_WORDS
+                 | frozenset({"et", "al", "aka", "dba", "fka", "fbo", "nka",
+                              "esqs", "no", "nos", "vs", "id", "us", "usa",
+                              "po", "ste", "apt", "dob", "ssn", "tel", "fax",
+                              "ext", "am", "pm", "dept", "div", "rm",
+                              # An identifier LABEL closes a line when the
+                              # value wraps: "a 2023 Jeep Wrangler, VIN".
+                              "vin", "ein", "tin", "itin", "sbn", "lic",
+                              "acct", "ref", "inv", "dl", "ph"}))
+
+
+def _pn_cred_component_ok(comp, *, single):
+    """One credential component: a known suffix in any punctuation (dotted, or
+    all-caps when bare — "md" in lower case is a word), or an unknown one
+    that is 2-6 letters, ALL CAPS, and not a token that trails a name for
+    some other reason. A SINGLE bare unknown token is held to the common-word
+    list too, since a caption writes its vocabulary in capitals."""
+    letters = re.sub(r"[.\-]", "", comp)
+    low = letters.lower()
+    if not letters or _pn_is_role_token(comp):
+        return None
+    if low in _PN_SUFFIX_NODOT and low not in _PN_CRED_ROMAN:
+        # Dotted, it is a degree wherever it stands. Bare, it must be shouted
+        # ("MD", not "md") and must not ALSO be a state: "Silver Spring, MD"
+        # is Maryland, and a two-word city before a comma is exactly this
+        # shape, so a bare MD/PA is left to the generic screen below (which
+        # refuses a state code) rather than read as a degree.
+        if "." in comp or low in ("esq", "jr", "sr") or (
+                comp.isupper() and low not in _PN_STATE_CODES):
+            return "known"
+    if low in _PN_CRED_STOP:
+        return None
+    if not (2 <= len(letters) <= 6 and letters.isupper()):
+        return None
+    if single and low in _PN_COMMON_WORDS:
+        return None
+    return "generic"
+
+
+def _pn_credential_kind(tail):
+    """'known', 'generic' or None for the text after "Name, ".
+
+    The first comma-group is what decides: "M.D., testified" is a credential
+    followed by prose, and "AN INDIVIDUAL" is not one at all. A generic group
+    needs corroboration beyond its shape — a compound, a dotted form, another
+    credential-shaped group after the next comma, or the end of the line."""
+    m = _PN_CRED_GROUP_RE.match(tail)
+    if not m:
+        return None
+    group, rest = m.group("g"), m.group("rest")
+    comps = [c.strip() for c in group.split("/")]
+    single = len(comps) == 1 and "." not in group and "-" not in group
+    kinds = [_pn_cred_component_ok(c, single=single) for c in comps]
+    if not all(kinds):
+        return None
+    if "known" in kinds:
+        return "known"
+    if not single:
+        return "generic"
+    # A lone bare token: at the end of its line, or followed by another
+    # credential ("RN, BSN"). Anything else after it is prose.
+    after = rest.strip()
+    if not after:
+        return "generic"
+    m2 = re.match(r",[ \t]*(?P<t>[^\n]{1,48})", rest)
+    if m2 and _pn_credential_kind(m2.group("t")):
+        return "generic"
+    return None
 
 # A word in the VALUE of a name label, as a SCAN renders it. Every anchor above
 # reads its value through `_PN_LABEL_NAME`, which requires each word to be
@@ -14152,6 +14261,16 @@ def _pn_label_names(text):
         # only, and only past its lead word, which the pattern still requires.
         cased = rx is not _PN_SIGBLOCK_NAME_RE
         for m in rx.finditer(text):
+            # The credential anchor decides on what FOLLOWS the comma, and a
+            # generic credential ("ED/UCC") corroborates less than a known
+            # degree does: the name in front of it must then be name words
+            # throughout, and no longer than a person's name is.
+            strict_words = False
+            if "cred" in m.groupdict():
+                kind = _pn_credential_kind(m.group("cred"))
+                if not kind:
+                    continue
+                strict_words = kind == "generic"
             raw = re.sub(r"\s+", " ", m.group("n")).strip()
             pieces = [p.strip() for p in re.split(r"\s+(?:and|&)\s+", raw) if p.strip()]
             # "Roxanne and Thomas Purscelley" -> give the bare first name the
@@ -14172,6 +14291,22 @@ def _pn_label_names(text):
                 # is there to catch.
                 while len(words) > 1 and _pn_is_role_token(words[0]):
                     words = words[1:]
+                if "cred" in m.groupdict():
+                    # "Signed By Mary Sue, ED/UCC": the run reaches back over
+                    # capitalised prose, so the lead is trimmed to name words,
+                    # an honorific is dropped (the faker keeps it verbatim,
+                    # and "Dr. Joe Smith" would be a term narrower than the
+                    # name the document uses), and a person is at most three
+                    # words behind a generic credential — four behind a known
+                    # degree, which corroborates a longer name.
+                    words = words[-3:] if strict_words else words[-4:]
+                    while len(words) > 2 and (
+                            not _pn_is_name_word(words[0])
+                            or words[0].lower().rstrip(".") in _PN_CRED_HONORIFICS):
+                        words = words[1:]
+                    if strict_words and not all(_pn_is_name_word(w)
+                                                for w in words):
+                        continue
                 piece = " ".join(words)
                 if len(words) < 2 or _pn_is_party_role(piece):
                     continue
