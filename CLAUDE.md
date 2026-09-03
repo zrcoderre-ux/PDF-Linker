@@ -2275,7 +2275,17 @@ the party), so its row stays reversible.
   count, an honorific does not) is a BARE survivor, which is what a mangled
   party name looks like, and it is reported at the wide reach after all —
   "Vatqual" alone, or behind "Manuel", is the defendant; "Robert Vatqual"
-  is somebody else. And two adjacent words each too far to flag alone are
+  is somebody else. CAPITALISED words only: a lower-case candidate is in
+  the sweep on its SITE alone (a stand-in two words off, a name label, a
+  narrative verb), and ordinary vocabulary never has a name companion, so
+  the clue said nothing and "YARDLEY flew a few feet forward" reported
+  "forward" as a misspelling of a tracked Howard — a lower-case word is
+  held to the close reach and nothing else. And the CLOSE reach is measured
+  against the CANONICAL spelling: the tool's own derived near-spellings sit
+  in the index one edit off the real word, so a match against one of them
+  hands the survivor a free edit ("forward" is 2.5 from Howard and 1.5 from
+  the tool's "ohward"), which is the second degree, reserved for a word the
+  document has shown the scan mangling. And two adjacent words each too far to flag alone are
   flagged as a PAIR when each is near the corresponding word of one tracked
   full person name (`_tracked_name_pairs`: consecutive words and
   first-plus-last; either order, since a table writes surname first; no
