@@ -3069,6 +3069,40 @@ before a cite with no signal word between ("…against Quillmark, Inc. Smith
 v. Jones (2020)…") reads as that cite's plaintiff and is left unfaked at
 that one spot, the trade the guard has always made.
 
+**…and a cite WRAPS wherever the margin falls, and the guards read it as the
+EXPORT prints it** (`_PN_CITE_WS`, `_PN_CITE_V`, `set_page_context`). On
+pleading paper a citation breaks inside the plaintiff's name, around the
+" v. ", between the defendant and the year — and the export keeps the gutter
+number of the line it wraps onto, so the gap is "\n13  " and not a space; at
+the foot of a page it is a blank line, the "====== Page N ======" header and
+the next page's first gutter number. The shape guard joined name words on
+HORIZONTAL whitespace alone, so it saw none of those cites, and every review
+tier that reads through the mask took the plaintiff for an unscrubbed name:
+"Martine v. Chippewa Enterprises, Ina (2004) 121 Ca1.App.4th" — the parser
+blinded by the OCR'd reporter — was reported as a slip of a party named
+Martinez, and "Gavina v. Smith (1944) 25 Cal.2d 501", which the parser reads
+perfectly on one line, as a slip of a party named Gavin. Measured by wrapping
+each of those cites at EVERY word gap, onto a numbered line and across a page
+break: unmasked at every gap inside the name and before the year, now at
+none. Each hop is bounded — one page header at most, a one- or two-digit
+gutter number followed by the writer's own two spaces — so the relaxation
+admits a wrap and not a new shape. `_PN_BEFORE_V_RE` takes the same
+separator, so the plaintiff's half of the write guard survives the wrap too.
+**And a page is scrubbed on its own, which a cite does not know.**
+"[Berryman v. Merit Prop. Mgmt., Inc." closed page 3 and "(2007) 152
+Cal.App.4th 1544" opened page 4, so on page 3 the defendant had a " v. " to
+its left and no year or reporter in sight, `_in_authority_context` refused
+it nothing, and the cited decision shipped as "Merit Ravenwood. Kaldor.,
+Inc." — the invented authority the whole method is built to refuse, and
+then the half-scrub tier reported the plaintiff standing beside our own
+stand-ins. `build_body` now hands each page the unscrubbed tail of the
+previous page and head of the next (`detect_pages`, indexed by
+`block_pages` rather than by position), and `_substitute` asks the guard
+about the page with its neighbours around it — the page's own text and
+offsets untouched, a newline at each seam so a " v." closing one page still
+reads as " v. ". `_surviving_records` needs nothing: it reads the whole
+export, where both pages are one text.
+
 **A page must be APPENDABLE before anything is inserted into it**
 (`_repair_page_annots`, called once after the already-linked fast path so a
 document we would not have touched is never dirtied). `/Annots 175 0 R` is legal
