@@ -2186,6 +2186,31 @@ the party), so its row stays reversible.
   compare against), stay out of reach by this route. What covers those is the
   degraded-region line below, which needs no per-word guess at all, and the
   labelled-contact sweep beside it.
+  **A near-miss standing where a FULL NAME is INTRODUCED is a different
+  person, not a slip** (`_pn_full_name_intro`, `_PN_INTRO_FOLLOW_RE`,
+  `_tracked_person_tokens`). "Davis Smith" is one edit from a tracked
+  "David", and the sweep reported it as a misspelling of David Thomas — and
+  the alias pre-fill would then have answered the row with `*David`, merging
+  a different person into the party on the next pass. A name in a filing is
+  written given name first, so the SURNAME beside the slip is the evidence: a
+  capitalised name word, across WHITESPACE ALONE (a run of blanks, or one
+  pleading wrap with its gutter number), that nothing tracks, that is not one
+  of this run's stand-ins, and that the document never writes lower-case.
+  Each screen closes a shape the scan exists for: a tracked surname beside
+  the slip is the ordinary misspelling ("Michale Rodgers"), a stand-in
+  beside it is the half-scrubbed pair, and the lower-case screen is what
+  catches an all-caps caption's "DAVIS TESTIFIED" where no list would. A
+  COMMA or any punctuation between the two words gives no marker — "Davis,
+  Smith and Jones" is a list, "met Davis. Wilson" a sentence end — at the
+  owner's direction. FOLLOWER only, deliberately: a person is introduced
+  given name first, so a misspelled SURNAME behind an unknown given name or
+  a nickname ("Mike Rodgerz") still has nothing after it and is still
+  reported; a preceder rule would have muted exactly that. Asked of EVERY
+  occurrence of the word, since evidence anywhere that it names a different
+  person settles it for the document, and only where every near token is a
+  PERSON's — a company is not introduced this way, so "Wcstlake Village" is
+  still a slip of the entity plaintiff. The minting fold is untouched: it
+  binds tokens with no context to read, and moving it moves delivered keys.
   **A CONTACT LABEL survives garbling far better than the value beside it**
   (`degraded_contact_scan`). "TEL: rAX: _,.___._ (228) 424-3-575" and
   "ADDRESS: l440S Whorto1t I..n" shipped a real phone number and the
