@@ -14236,6 +14236,58 @@ def _pn_lower_name_site(text, s, e, person_fakes):
     return ""
 
 
+# The word that follows a candidate across WHITESPACE ALONE — a run of blanks,
+# or one line wrap with the pleading gutter number the export keeps ("Davis\n
+# 12  Smith"). Nothing else may stand between: a comma is a LIST ("Davis, Smith
+# and Jones"), a period a sentence end, and either says the next word is not
+# this one's surname.
+_PN_INTRO_FOLLOW_RE = re.compile(
+    r"(?:[ \t]+|[ \t]*\n[ \t]*(?:\d{1,2}[ \t]{2,})?[ \t]*)"
+    r"(?P<f>[A-Z][A-Za-z'’-]+)(?![\w'’])")
+
+
+def _pn_full_name_intro(text, word, tracked, known, lower_words):
+    """The capitalised NAME word that follows `word` across whitespace alone,
+    somewhere in `text`, or "" — the marker that `word` is a different
+    person's GIVEN NAME and not a slip of a tracked one.
+
+    "Davis Smith" is one edit from a tracked "David", and the sweep reported
+    it as a misspelling of the defendant — and the alias pre-fill would then
+    have answered the row with `*David`, merging a different person into
+    the party on the next pass. A near-miss standing where a full name is
+    INTRODUCED is more likely a different person than a slip: a name in a
+    filing is written given name first, so the surname beside it is the
+    evidence. The follower must say "name" on its own — capitalised,
+    name-shaped by the term builder's own test, not a value this case
+    tracks (a tracked surname beside the slip is the ordinary misspelling,
+    "Michale Rodgers"), not one of this run's stand-ins (that is the
+    half-scrubbed pair, the shape the scans exist for), and never written
+    LOWER-CASE anywhere in the document, the `prune_prose_word_terms`
+    screen that catches an all-caps caption's "DAVIS TESTIFIED" where no
+    list would. FOLLOWER only, deliberately: a person is introduced given
+    name first, so a misspelled SURNAME behind an unknown given name or a
+    nickname ("Mike Rodgerz") still has nothing after it and is still
+    reported. Asked of EVERY occurrence, since evidence anywhere that the
+    word names a different person settles it for the document."""
+    rx = re.compile(r"(?<![\w'’])" + re.escape(word) + r"(?![\w'’])",
+                    re.IGNORECASE)
+    for m in rx.finditer(text):
+        f = _PN_INTRO_FOLLOW_RE.match(text, m.end())
+        if not f:
+            continue
+        follow = f.group("f")
+        base = _pn_word_base(follow)
+        if (len(base) < _PN_HARVEST_TOKEN_MIN or base in tracked
+                or base in known or _pn_word_is_own_fake(follow, known)
+                or base in lower_words
+                or not _pn_is_name_word(follow)
+                or _pn_review_is_neutral(follow, known)
+                or _pn_is_protected_locality(follow)):
+            continue
+        return follow
+    return ""
+
+
 # A "Name  (312) 555-1212" contact line: a capitalized personal name followed
 # ON THE SAME LINE by a phone number. Contract letterheads and service lists
 # print a roster this way ("CONTRACTORS:\nJose Gomez (323)…\nJuan Olivas (562)…"),
@@ -15143,7 +15195,7 @@ class Pseudonymizer:
             # overlap resolution.
             self.terms.sort(key=lambda t: (-t.priority, -len(t.real)))
             self._trusted_tok_cache = None   # recompute over the new term set
-            self._fuzzy_idx = None
+            self._fuzzy_idx = None; self._fuzzy_person_toks = None
         return added
 
     def _is_court_code_term(self, term):
@@ -15291,7 +15343,7 @@ class Pseudonymizer:
             self._pruned_reals.add(t.real.lower())
         if doomed:
             self._trusted_tok_cache = None
-            self._fuzzy_idx = None
+            self._fuzzy_idx = None; self._fuzzy_person_toks = None
         return [t.real for t in doomed]
 
     def _multiword_covered_words(self):
@@ -15394,7 +15446,7 @@ class Pseudonymizer:
             self._pruned_reals.add(t.real.lower())
         if doomed:
             self._trusted_tok_cache = None
-            self._fuzzy_idx = None
+            self._fuzzy_idx = None; self._fuzzy_person_toks = None
         return [t.real for t in doomed]
 
     def prune_heading_only_terms(self, text):
@@ -15474,7 +15526,7 @@ class Pseudonymizer:
             self._pruned_reals.add(t.real.lower())
         if doomed:
             self._trusted_tok_cache = None
-            self._fuzzy_idx = None
+            self._fuzzy_idx = None; self._fuzzy_person_toks = None
         return [t.real for t in doomed]
 
     def note_authority_cites(self, text):
@@ -15769,7 +15821,7 @@ class Pseudonymizer:
             self._pruned_reals.add(t.real.lower())
         if doomed:
             self._trusted_tok_cache = None
-            self._fuzzy_idx = None
+            self._fuzzy_idx = None; self._fuzzy_person_toks = None
         return [t.real for t in doomed]
 
     def prune_fragment_terms(self, text):
@@ -15804,7 +15856,7 @@ class Pseudonymizer:
             self._pruned_reals.add(t.real.lower())
         if doomed:
             self._trusted_tok_cache = None
-            self._fuzzy_idx = None
+            self._fuzzy_idx = None; self._fuzzy_person_toks = None
         return [t.real for t in doomed]
 
     def register_entity_acronyms(self, text):
@@ -18852,6 +18904,25 @@ class Pseudonymizer:
         self._fuzzy_idx = (idx, toks)
         return self._fuzzy_idx
 
+    def _tracked_person_tokens(self):
+        """The subset of `_tracked_name_token_index`'s tokens that belong to a
+        PERSON. The full-name-introduction rule is about individuals: a
+        company is not introduced given name first, so a near-miss of an
+        entity's word beside an unknown capitalised word ("Wcstlake
+        Village") says nothing about whether it is a slip."""
+        if getattr(self, "_fuzzy_person_toks", None) is not None:
+            return self._fuzzy_person_toks
+        out = set()
+        for (cat, _rl), rec in self.records.items():
+            if cat not in _PN_FUZZY_TARGET_CATS or cat in _PN_FUZZY_ENTITY_CATS:
+                continue
+            for w in str(rec["real"]).split():
+                base = _pn_word_base(w)
+                if len(base) >= _PN_NAME_FOLD_MIN and base.isalpha():
+                    out.add(base)
+        self._fuzzy_person_toks = out
+        return out
+
     def _party_token_bases(self):
         """The word bases of every NAME term from an AUTHORITATIVE source —
         the operator's template and `--term` — the spellings the run is
@@ -18972,6 +19043,8 @@ class Pseudonymizer:
         # See `_pn_lower_name_site` for the measurement.
         person_fakes = {w.lower() for w in self.name_fake_words()}
         party = self._party_token_bases()
+        person_toks = self._tracked_person_tokens()
+        lower_words = None          # built lazily, for the first near-miss
         for m in re.finditer(r"(?<![\w'’])[A-Za-z][A-Za-z'’-]+(?![\w'’])", src):
             word = m.group(0)
             base = _pn_word_base(word)
@@ -19008,6 +19081,19 @@ class Pseudonymizer:
             if word[:1].islower() and not _pn_lower_name_site(
                     src, m.start(), m.end(), person_fakes):
                 continue
+            # A near-miss of a PERSON's token that stands where a full name
+            # is INTRODUCED — followed, across whitespace alone, by a
+            # capitalised name word nothing tracks — is a different person,
+            # not a slip: "Davis Smith" is not a misspelling of David Thomas.
+            # A comma between them is a list and says nothing. Every hit
+            # must be a person's, or the rule does not apply.
+            if word[:1].isupper() and all(t in person_toks for t in hits):
+                if lower_words is None:
+                    lower_words = {w for w in _PN_RUN_WORD_RE.findall(src)
+                                   if w[:1].islower()}
+                if _pn_full_name_intro(src, word, toks, known, lower_words):
+                    seen.add(base)
+                    continue
             # A near-miss whose missing lead stands one break before it is the
             # KERNED spelling of the tracked word — "M idland" for Midland,
             # "VA ZQUEZ" for Vazquez, the caption's own defendant reported as
