@@ -353,3 +353,41 @@ def test_a_yes_on_a_value_that_also_stands_outside_a_cite_still_applies(tmp_path
     out = next(iter(tdir.iterdir())).read_text()
     assert "Angela White" not in out, f"the real occurrence rode out:\n{out}"
     assert "Kremerman v. White (2021)" in out, f"authority renamed:\n{out}"
+
+
+def _save_with_tab_selected(key, title):
+    # What Excel leaves behind when the operator looks at a tab and saves: the
+    # workbook records the SELECTED tab, and `wb.active` then returns it.
+    wb = openpyxl.load_workbook(key)
+    wb.active = wb.sheetnames.index(title)
+    wb.save(key)
+    assert openpyxl.load_workbook(key).active.title == title
+
+
+def test_fix_leaks_keeps_every_binding_when_the_pinned_tab_was_left_active(
+        tmp_path):
+    # The key was saved with the "Pinned (never in text)" tab selected. Every
+    # reader used to take `wb.active` as the main sheet, so the pass loaded the
+    # pinned rows as the bindings, never saw the applied ones, and rewrote the
+    # key with nothing but the leak fixes it had just minted — the one file
+    # that reverses the exports, emptied by a click on a tab.
+    tdir = _setup(tmp_path)
+    key = tmp_path / "pseudonym_key.xlsx"
+    before = openpyxl.load_workbook(key)
+    assert P._PN_KEY_PINNED_SHEET in before.sheetnames     # the case number
+    _save_with_tab_selected(key, P._PN_KEY_PINNED_SHEET)
+
+    args = _Args()
+    args.key = str(key)
+    assert P._fix_leaks_mode(tmp_path, args, {}, log) == 0
+
+    wb = openpyxl.load_workbook(key)
+    main = [r[1] for r in wb[P._PN_KEY_MAIN_SHEET].iter_rows(
+        min_row=2, values_only=True)]
+    pinned = [r[1] for r in wb[P._PN_KEY_PINNED_SHEET].iter_rows(
+        min_row=2, values_only=True)]
+    assert "Ford Motor Company" in main and "Ford" in main   # preserved
+    assert "Gregory Yu" in main                              # and extended
+    assert "24STCV24253" in pinned and "24STCV24253" not in main
+    assert wb.active.title == P._PN_KEY_MAIN_SHEET  # rewritten main-tab first
+    assert "Yu" not in (tdir / "Motion.txt").read_text()

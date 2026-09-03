@@ -115,7 +115,22 @@ mentioned is right forward and a hazard in reverse — `ReAnonymizeTentative` ru
 the map backwards and would replace a Real Value that was never in the document
 (133 of the delivered key's 335 rows were of that kind). `DeAnonymize` reads the
 ACTIVE sheet and cannot reach the second one; `_pn_load_key` reads BOTH, so the
-pin still does its job. "Carried" is REACHABILITY, not the row's own count: the
+pin still does its job.
+**…and every reader of the key finds the main sheet by NAME, never by
+`wb.active`** (`_PN_KEY_MAIN_SHEET`, `_pn_key_main_sheet`). The active sheet
+is not something the tool wrote: it is whichever TAB was selected when the
+file was last saved, and Excel records it. An operator opened the key, clicked
+across to the pinned tab to see what it held, saved, and the next
+`--fix-leaks` read the pinned sheet as the main one (a handful of `no match`
+rows), the pinned sheet again as the pinned sheet, and never saw an applied
+binding — then rewrote the key with nothing but the leak fixes it had just
+minted. `_pn_key_looks_like_ours` could not refuse it, because both sheets
+carry the same header. Resolved by name at every reader now (the loader, the
+fingerprint check, and the LEAKS decision reader by the same rule), falling
+back to the one sheet that is not the pinned one for a key an older version
+titled differently, and the loader logs when the tab it read is not the one
+that was left selected. `DeAnonymize.bas` has the same exposure and should
+select the `Pseudonym Key` sheet by name rather than taking `ActiveSheet`. "Carried" is REACHABILITY, not the row's own count: the
 macro reverses a composed fake word by word, so the token rows of a party whose
 full name is the only form the export used are load-bearing even though they
 matched nothing themselves.
