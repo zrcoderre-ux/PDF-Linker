@@ -12930,6 +12930,21 @@ def _pn_load_key(path, registry, log, remint_recycled=False):
                      or not _pn_is_name_token(real)
                      or _pn_word_base(real) in registry.keep_words)):
             continue
+        # …and the builder's answer for a single ENTITY word is always no:
+        # `_pn_entity_bare` registers the suffix-stripped bare form only as a
+        # MULTI-word phrase, a single leftover word ("Redwood", "Tutors") being
+        # skipped to keep unrelated prose intact. `write_key` still harvests a
+        # row per word of the composed name — "Midland", "States" off "Midland
+        # States Bank" — so a re-run scrubbed a bare "Midland" the first run
+        # left standing, and would have faked "States" inside "United States"
+        # wherever a page capitalised it, with the corpus prunes that screen a
+        # bare business token on the first run never reaching a value a key
+        # pinned. The row stays and the memo is seeded above, so a composed
+        # fake still reverses word by word; only the forward term goes. A
+        # short form the document DEFINES (`("Midland")`) is its own
+        # `short-name` row and is unaffected.
+        if cat == "entity-token" and len(real.split()) == 1:
+            continue
         # The same rule for a single-word HARVESTED person/entity row. A
         # motion-to-quash corpus harvested "Quash", "Proof", "Server" and
         # "Google" as names, and the key then reproduced "Motion to Mabry" /

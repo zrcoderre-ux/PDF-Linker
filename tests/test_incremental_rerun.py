@@ -90,17 +90,20 @@ def test_already_sent_documents_are_byte_identical(folder):
 def test_every_keyed_fake_is_reused_exactly(folder):
     z1, _ = _first_run(folder)
     _rp = P._PN_KEY_HEADERS.index("Replacement")
-    rows = {str(r[1]): str(r[_rp]) for ws in
+    rows = {(str(r[0]), str(r[1])): str(r[_rp]) for ws in
             openpyxl.load_workbook(folder / "pseudonym_key.xlsx").worksheets
             for r in ws.iter_rows(min_row=2, values_only=True) if r[1]}
     z2 = _rerun(folder)
     z2.apply(ADDED)                       # the new document draws its own fakes
-    for real, fake in rows.items():
+    for (cat, real), fake in rows.items():
         # A bare token the BUILDER refuses a term ("Roe" is an ordinary word) is
         # exempt: its row stays in the key because the macro reverses a composed
         # fake word by word off it, but it builds no forward term — see
-        # `test_a_withheld_token_is_reversible_but_matches_nothing`.
-        if len(real.split()) == 1 and not P._pn_is_name_token(real):
+        # `test_a_withheld_token_is_reversible_but_matches_nothing`. So is a
+        # single ENTITY word ("Ford" off "Ford Motor Co."): the builder never
+        # makes a one-word entity token (`test_entity_word_rows.py`).
+        if len(real.split()) == 1 and (not P._pn_is_name_token(real)
+                                       or cat == "entity-token"):
             continue
         assert z2.apply(real) == fake, f"{real!r} moved: {z2.apply(real)!r}"
 
