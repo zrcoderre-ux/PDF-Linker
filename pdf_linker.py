@@ -18305,6 +18305,71 @@ class Pseudonymizer:
         return bool(words) and all(w in keep or i in inside
                                    for i, w in enumerate(words))
 
+    @staticmethod
+    def _finding_key(value):
+        """The case- and whitespace-insensitive identity of a flagged value —
+        what "this row names the same value as that key row" means. A scan
+        reports the run it found, and a run that crossed a pleading wrap
+        carries the gutter's own spacing, so a bare `.lower()` would call two
+        spellings of one value two values."""
+        return re.sub(r"\s+", " ", _NFKC(str(value))).strip().lower()
+
+    def bound_reals(self):
+        """Every real value this run has BOUND — the Real Value column of
+        `pseudonym_key.xlsx`, by its `_finding_key` identity.
+
+        `write_key` writes a row per record, so this is exactly the set of
+        values the key can reverse."""
+        return {self._finding_key(rec["real"]) for rec in self.records.values()}
+
+    def _finding_already_bound(self, value, kind):
+        """True when a REVIEW finding names a value this run already bound —
+        a row the worksheet must not carry.
+
+        A REVIEW row is a QUESTION: "is this a name, and should I fake it?"
+        For a value that is already in the key the tool has ANSWERED it — the
+        fake is minted, the binding is written, and every other occurrence in
+        the folder carries it. So the row is unanswerable in both directions:
+        `yes` mints a term for a value that already has one, and `no` says
+        leave verbatim a value the exports are full of the stand-in for. The
+        operator opened the worksheet to decide something and there is nothing
+        there to decide.
+
+        What puts one there is the deliberate silence of `_surviving_records`.
+        That scan is the MIRROR of `_substitute` — it reports a tracked value
+        only where the write side was allowed to replace it — so it says
+        nothing about a real standing inside a protected citation, inside an
+        operator KEEP, inside a whitelisted verification link, or as the
+        lower-case occurrence of a cap-only bare token. Four sites the scrub
+        refuses ON PURPOSE. The REVIEW tiers that read the output RAW have no
+        such mirror, so each of those sites came back as a row: a delivered
+        folder's `State Bar No. 214785`, faked on the attorney line and kept
+        byte-for-byte inside `Roe v. Bell (State Bar No. 214785) (2019) 33
+        Cal.App.5th 1`, was reported as `REID bar number` under the very value
+        the key shows `replaced`. `--fix-leaks` cannot clear it either: that
+        pass runs the same `_substitute`, which refuses the same span, so the
+        row comes back every time it is answered.
+
+        The rule is therefore the two-tier design read back: if a bound value
+        really is standing where it should not be, `surviving_reals` owns it —
+        as a LEAK, which gates delivery — and the LEAK row is never screened
+        here. Anything else about a bound value is not a triage question.
+
+        Asked WHATEVER the record's count, because a count of zero is not the
+        opposite case: a term whose only occurrences were line-wrapped matches
+        nothing and is still a binding the key carries and `yes` cannot add to.
+        Four scans (`defined_name_scan`, `narrative_name_scan`,
+        `honorific_name_scan`, `mail_header_name_scan`) already carry this
+        screen by hand, written one at a time as each tier met it; six did not
+        (`review_scan`, `review_definition_survivors`, `degraded_contact_scan`,
+        `form_rule_name_scan`, `reid_scan`, `unknown_name_scan`,
+        `half_scrubbed_scan`). Asked here instead — at the single choke point
+        every finding passes through on its way to the worksheet — so the next
+        tier cannot be added without it."""
+        if kind == _PN_LEAK_TYPE:
+            return False
+        return self._finding_key(value) in self.bound_reals()
+
     def _real_remainder(self, value):
         """`value` with this run's OWN STAND-INS removed — the part that is
         actually a question for the operator. "" when nothing real is left.
@@ -18500,9 +18565,19 @@ class Pseudonymizer:
             return rest
 
         dropped, seen = set(), set()
+        # A REVIEW row naming a value the key already binds is not a question
+        # (see `_finding_already_bound`). Counted apart from `dropped`, because
+        # `dropped` feeds the gate re-mapping below and nothing about this
+        # screen changes what leaked: a bound value that really is standing
+        # unprotected is `surviving_reals`' LEAK, and a LEAK row is never
+        # screened here.
+        bound_rows = set()
         keep_rows = []
         for row in self.leak_report:
             value = str(row.get("value", ""))
+            if self._finding_already_bound(value, str(row.get("type"))):
+                bound_rows.add(value)
+                continue
             rest = reduce(value, str(row.get("type")))
             if not rest:
                 dropped.add(value)
@@ -18518,6 +18593,9 @@ class Pseudonymizer:
         self.leak_report = keep_rows
         keep_review, seen_r = [], set()
         for c, s in self.review:
+            if self._finding_already_bound(str(s), c):
+                bound_rows.add(str(s))
+                continue
             rest = reduce(str(s), c)
             if not rest:
                 dropped.add(str(s))
@@ -18550,6 +18628,13 @@ class Pseudonymizer:
         self.leaked = _regate(self.leaked)
         for f, vals in list(self.leaked_by_file.items()):
             self.leaked_by_file[f] = _regate(vals)
+        if bound_rows and log:
+            log.info(f"  Pseudonymize: {len(bound_rows)} review finding(s) "
+                     f"dropped — the value is already bound in the key, so the "
+                     f"fake is minted and the row asks nothing: a bound value "
+                     f"still standing where the scrub was allowed to reach it "
+                     f"is reported as a LEAK instead "
+                     f"({', '.join(sorted(bound_rows)[:6])})")
         if dropped and log:
             log.info(f"  Pseudonymize: {len(dropped)} flagged value(s) reduced to "
                      f"their real part or dropped — a word marked never (or "
