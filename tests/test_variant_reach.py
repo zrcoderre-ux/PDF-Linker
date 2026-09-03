@@ -123,3 +123,17 @@ def test_a_slash_is_a_corrupted_letter_on_a_clean_page():
 def test_the_prefill_reads_the_slash_the_same_way():
     assert _pz("Thomas Wilson").alias_suggestion("Wi/son") == "Wilson"
     assert P._PN_DIGIT_LETTERS["/"] == "l" and P._PN_DIGIT_LETTERS["|"] == "l"
+
+
+def test_a_slash_word_is_reported_whole_not_as_its_halves():
+    # Read by the clean tier, "Natha/iel" is two halves, and the front one
+    # reports as a clipped spelling of the name it is really the whole of.
+    got = _scan(["Nathaniel Brooks"],
+                "Nathaniel Brooks signed. Natha/iel Brooks called.")
+    assert got == ["Natha/iel"]
+
+
+def test_a_trailing_slash_is_a_corrupted_last_letter():
+    got = _scan(["Nathaniel Brooks"],
+                "Nathaniel Brooks signed. Nathanie/ Brooks called.")
+    assert got == ["Nathanie/"]

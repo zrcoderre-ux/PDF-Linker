@@ -10633,13 +10633,14 @@ _PN_SCAN_FOLD_BUMP_DEGRADED = 2
 # observed debris spelling carries a digit or a speck period too
 # ("Va-iq11ez", "Dca.ler", "Weatla.ko").
 _PN_DEBRIS_CAND_RE = re.compile(
-    r"(?<![\w'’])[A-Z][A-Za-z0-9'’.\-/|]*[A-Za-z0-9](?![\w'’])")
+    r"(?<![\w'’])[A-Z][A-Za-z0-9'’.\-/|]*[A-Za-z0-9/|](?![\w'’])")
 _PN_DEBRIS_MARK_RE = re.compile(
-    r"[0-9]|(?<=[A-Za-z0-9])[./|](?=[A-Za-z0-9])")
-# The slash or bar alone, letters hard against it on both sides: the one
-# debris shape admitted on a CLEAN page, since "Wi/son" is a word nowhere
-# and a digit inside a word is ("COVID19", "A1").
-_PN_SLASH_DEBRIS_RE = re.compile(r"(?<=[A-Za-z])[/|](?=[A-Za-z])")
+    r"[0-9]|(?<=[A-Za-z0-9])\.(?=[A-Za-z0-9])|(?<=[A-Za-z0-9])[/|](?![0-9_])")
+# The slash or bar alone, a letter hard against it on the left and a letter
+# or the word's end on the right: the one debris shape admitted on a CLEAN
+# page, since "Wi/son" and "Nathanie/" are words nowhere and a digit inside
+# a word is ("COVID19", "A1").
+_PN_SLASH_DEBRIS_RE = re.compile(r"(?<=[A-Za-z])[/|](?![0-9_])")
 # A contact label on a form or letterhead line, tolerating the garbling the
 # label itself picks up ("Addresii:", "ADDRBSS:", "Dca.ler Address:"). The
 # value taken is the run from the first digit-bearing token to the end of the
@@ -19171,7 +19172,11 @@ class Pseudonymizer:
         person_toks = self._tracked_person_tokens()
         lower_words = None          # built lazily, for the first near-miss
         spell = self._tracked_word_spellings()   # the canonical words
-        cand_re = re.compile(r"(?<![\w'’])[A-Za-z][A-Za-z'’-]+(?![\w'’])")
+        # A word glued to a slash or a bar is the debris tier's, whole: read
+        # here, "Natha/iel" is two halves and the front one reports as a
+        # clipped spelling of the name it is really the whole of.
+        cand_re = re.compile(
+            r"(?<![\w'’/|])[A-Za-z][A-Za-z'’-]+(?![\w'’/|])")
 
         def _screened(word, base):
             return (len(base) < _PN_NAME_FOLD_MIN or not base.isalpha()
