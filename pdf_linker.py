@@ -13410,7 +13410,26 @@ def _pn_load_key(path, registry, log, remint_recycled=False):
                 f"one), re-type it with a STAR, which Excel leaves as plain "
                 f"text; the row is being ignored this run.")
             continue
-        alias = _pn_alias_target(ctrl)
+        pair_frags = (_pn_bracket_keep(real, ctrl)
+                      if _pn_cell_is_alias_keep(ctrl) else None)
+        if pair_frags:
+            # `*David {said}`: both controls in one cell, read the same way the
+            # worksheet reads them — the two ends must never answer one
+            # question differently.
+            key_decisions[real.lower()] = {
+                "value": real, "type": _PN_KEEP_NUCLEAR_TYPE
+                if _pn_keep_spec_parts(ctrl)[1] else "KEEP-PART",
+                "fix": "yes", "replacement": None, "fake_values": pair_frags,
+                "fixcell": ctrl,
+                "alias": _pn_alias_target(_pn_keep_spec_strip(ctrl)),
+                "notes": "pseudonym key"}
+            continue
+        # The alias branch must never claim a cell carrying a keep-spec: it
+        # would read the braces as part of the canonical's own name and fake a
+        # value the operator kept. A spec covering the WHOLE value leaves the
+        # alias nothing to mirror, so the keep is the decision; one naming text
+        # outside the value falls to the keep-spec branch below, which warns.
+        alias = None if _pn_cell_is_alias_keep(ctrl) else _pn_alias_target(ctrl)
         if alias:
             # `*ANTIONIO`: this Real Value is a MISSPELLING of another. The
             # stored fake is gone (the operator typed over it), so the binding
@@ -23370,6 +23389,75 @@ def _pn_alias_target(cell):
     return txt
 
 
+def _pn_keep_spec_strip(cell):
+    """`cell` with its `[bracketed]` and `{braced}` groups removed — what is
+    left of the operator's text once the keep-spec has been read out of it."""
+    txt = _PN_KEEP_BRACE_RE.sub(" ", _PN_KEEP_BRACKET_RE.sub(" ", str(cell or "")))
+    return re.sub(r"\s+", " ", txt).strip()
+
+
+def _pn_cell_is_alias_keep(cell):
+    """True when `cell` carries BOTH controls — a keep-spec, and a
+    `*CANONICAL` alias in what is left once the spec is read out of it.
+
+    Asked BEFORE the value is consulted, so the cell is routed by what the
+    operator typed rather than by whether the spec happens to fit: a spec that
+    covers the whole value keeps all of it, and one naming text outside it is
+    a literal replacement, exactly as those shapes behave without a star. The
+    plain alias branch must never see one of these — it would read the braces
+    as part of the canonical's name and fake a value the operator kept."""
+    brackets, braces = _pn_keep_spec_parts(cell)
+    if not (brackets or braces):
+        return False
+    rest = _pn_keep_spec_strip(cell)
+    return bool(rest and rest[0] in _PN_ALIAS_MARKS and _pn_alias_target(rest))
+
+
+def _pn_alias_keep_spec(value, cell):
+    """(canonical, fragments) for a cell carrying BOTH controls —
+    `*David {said}` on the value "avidsaid" — else (None, None).
+
+    The two answer different halves of one finding and neither alone is
+    enough. A clipped OCR lead welded to the next word ("avidsaid" for "David
+    said") needs the word KEPT and the name FOLDED: `{said}` alone leaves the
+    remainder "avid" to an ordinary pool draw, and the typo fold cannot reach
+    it because `_PN_NAME_FOLD_MIN` is 5 and "avid" is four letters — the exact
+    gap the alias exists to close — so the party comes back under a second,
+    unrelated stand-in and reads as two people. `*David` alone folds correctly
+    and swallows "said" into the surname.
+
+    They never met because the decision readers are if/elif chains that test
+    the alias FIRST, and `{}` is not one of `_PN_ALIAS_FORMULA_CHARS`: the
+    whole cell was taken as the canonical, so the tool went looking for a Real
+    Value literally named "David {said}", found none, warned, and faked the
+    value the ordinary way. Loudly wrong rather than silently, but wrong.
+
+    Read keep-spec FIRST and alias second, which is also the order the two
+    operate in: the spec CUTS the value, and the alias derives the stand-in for
+    what the cut leaves. So `fake_values` carries the fragments exactly as a
+    plain keep-spec does — every keep, weld-follow and master-sheet path is
+    unchanged — and `alias` says how those fragments are faked.
+
+    (None, None) unless BOTH are really there: no keep groups, no leading star
+    once they are stripped, a canonical that is not a value, or a spec naming
+    text outside the value (`_pn_bracket_keep` -> None) or covering all of it
+    (-> [], nothing left to alias) all fall back to the single-control
+    branches, which report their own failures."""
+    brackets, braces = _pn_keep_spec_parts(cell)
+    if not (brackets or braces):
+        return None, None
+    rest = _pn_keep_spec_strip(cell)
+    if not rest or rest[0] not in _PN_ALIAS_MARKS:
+        return None, None
+    canon = _pn_alias_target(rest)
+    if not canon:
+        return None, None
+    frags = _pn_bracket_keep(value, cell)
+    if not frags:
+        return None, None
+    return canon, frags
+
+
 def _pn_alias_word_pairs(value, canonical):
     """[(value_word, canonical_word)] pairing each word of a MISSPELLING with
     the word of the value it misspells.
@@ -23428,8 +23516,12 @@ def _pn_apply_aliases(decisions, terms, registry, log, allow_rebind=True):
     scrubbed: there an alias may bind a value that has no fake yet and must
     never MOVE one, because the stand-in it would move is already standing in an
     export that pass cannot rewrite."""
-    aliases = [(d["value"], d["alias"]) for d in decisions.values()
-               if d.get("alias")]
+    # A cell carrying BOTH controls (`*David {said}`) has already been cut by
+    # its keep-spec, so what the alias mirrors is the FRAGMENT the cut left
+    # ("avid"), never the whole value — the kept text is the document's own
+    # word and is not part of anybody's name.
+    aliases = [(v, d["alias"]) for d in decisions.values() if d.get("alias")
+               for v in (d.get("fake_values") or [d["value"]])]
     if not aliases:
         return terms, []
     tag = _PnFakeRegistry._memo_tag("nametok")
@@ -23541,6 +23633,21 @@ def _pn_parse_decision_rows(rows):
             fix, replacement, fixcell = "no", None, raw
         elif low == "":
             fix, replacement = "", None
+        elif _pn_cell_is_alias_keep(raw):
+            # `*David {said}`: BOTH controls in one cell. The spec cuts the
+            # value and the alias fakes what the cut leaves. The three spec
+            # outcomes are the ones a keep-spec always has — see
+            # `_pn_alias_keep_spec`.
+            frags = _pn_bracket_keep(val, raw)
+            fixcell = raw
+            if frags is None:                    # kept text is not in the value
+                fix, replacement = "yes", raw
+            elif frags:
+                fix = "yes"
+                alias = _pn_alias_target(_pn_keep_spec_strip(raw))
+                fake_values = frags
+            else:
+                fix = "no"                       # whole value kept
         elif _pn_alias_target(raw):
             # `*ANTIONIO`: this value is a MISSPELLING of another real value.
             # An ordinary auto-fake as far as everything downstream is
@@ -28807,9 +28914,13 @@ def _fix_leaks_mode(folder, args, cfg, log):
         # `[is]`) also earns the follow relaxation, or the whole-word term
         # could never land there (see _pn_bracket_welds).
         if d.get("fake_values") is not None:
-            auto_terms.extend(d["fake_values"])
             weld_follows.update(
                 _pn_bracket_welds(d["value"], d.get("fixcell") or ""))
+            # ...unless an ALIAS says how those fragments are faked, in which
+            # case `_pn_apply_aliases` hands them back below. Adding them here
+            # too would build the term twice, once with an ordinary draw.
+            if not d.get("alias"):
+                auto_terms.extend(d["fake_values"])
             continue
         if d.get("alias"):
             # `*ANTIONIO`: an ordinary auto-fake whose stand-in MIRRORS another
@@ -29632,7 +29743,13 @@ def main():
                 # A `*ANTIONIO` alias is faked like any other yes, but its fake
                 # MIRRORS another value's — so its term is built by
                 # `_pn_apply_aliases` below, once that value's own binding
-                # exists to be mirrored.
+                # exists to be mirrored. A cell carrying a keep-spec TOO
+                # (`*David {said}`) still needs its weld-follow registered
+                # here: the fragment is welded to the kept text in the export
+                # whichever way its fake is derived.
+                if d.get("fake_values") is not None:
+                    weld_follows.update(
+                        _pn_bracket_welds(d["value"], d.get("fixcell") or ""))
                 continue
             fv = d.get("fake_values")
             fix_terms.extend(fv if fv is not None else [d["value"]])

@@ -527,6 +527,38 @@ lead piece resolves to no token, and the alias machinery pairs word for word.
 The Notes cell says the cell was pre-filled and of what, so the tool's guess
 is never mistaken for an answer the operator typed, and the row keeps `fix`
 empty so it still sorts to the top as one to look at.
+**A `*` and a `{brace}` COMPOSE in one cell** (`_pn_cell_is_alias_keep`,
+`_pn_alias_keep_spec`, `_pn_keep_spec_strip`). `*David {said}` on the value
+"avidsaid" — a clipped OCR lead welded to the next word, "David said" with the
+D lost and the space gone. The two controls answer different halves of one
+finding and neither alone is enough: `{said}` keeps the word and leaves the
+remainder "avid" to an ordinary pool draw, because the typo fold cannot reach
+it (`avid` is four letters, `_PN_NAME_FOLD_MIN` is 5 — the exact gap the alias
+exists to close), so the party returns under a second unrelated stand-in and
+reads as two people; `*David` folds correctly and swallows "said" into the
+surname. They never met because both readers are if/elif chains testing the
+alias FIRST, and `{}` is not one of `_PN_ALIAS_FORMULA_CHARS`: the whole cell
+was taken as the canonical, so the tool hunted a Real Value named
+`David {said}`, found none, WARNED, and faked the value the ordinary way —
+loudly wrong rather than silently, but wrong. The keep-spec is read FIRST,
+which is also the order the two operate in: the spec CUTS the value and the
+alias derives the stand-in for what the cut leaves, so `fake_values` carries
+the fragments exactly as a plain spec does (every keep, weld-follow and
+master-sheet path unchanged) and `alias` only says how they are faked.
+`_pn_apply_aliases` therefore mirrors the FRAGMENT and never the whole value —
+the kept text is the document's own word and is part of nobody's name.
+Routed on what was TYPED and not on whether the spec fits, so the three
+outcomes a spec always has still hold: a spec covering the whole value is a
+KEEP (the alias has nothing to mirror, and letting the plain alias branch take
+it would fake a value the operator had just kept entire), one naming text
+outside the value is the warned literal replacement, and anything without both
+controls falls to the single-control branches untouched. Read identically by
+`_pn_parse_decision_rows` and `_pn_load_key`, for the reason both ends must
+always ask one question one way. The weld-follow is registered on both callers'
+alias paths too, since the fragment butts against the kept text in the export
+however its fake was derived; the export reads `egecombesaid`, welded as the
+document welded it and reversible word for word.
+
 **`--fix-leaks` applies a WORKSHEET alias and refuses a KEY one.** A worksheet
 row names a LEAK — unscrubbed text still standing in the export — so faking it
 is exactly what that pass is for. A key row names a binding the exports ALREADY
