@@ -23483,6 +23483,80 @@ def _pn_alias_word_pairs(value, canonical):
     return out
 
 
+def _pn_alias_bind_canonical(registry, cword, cbase, vbase, log):
+    """Give the CANONICAL of an alias its first stand-in when this case has not
+    bound it, or "" when it may not have one.
+
+    The shape this exists for: the only spelling of a party ANY document in the
+    folder carries is a misspelling. "Vazqez" is flagged, the operator answers
+    `*Vazquez`, and the correct spelling appears nowhere — so there was nothing
+    to mirror, the alias was refused, and the value took an unrelated pool word.
+    One party under a stand-in that says nothing about the name it replaced, and
+    the next document that spells it RIGHT draws a second unrelated word.
+
+    Binding it costs one pool word and lands where a declared-but-absent value
+    belongs: `write_key` gives a binding no export carried Status `no match` and
+    puts it on `_PN_KEY_PINNED_SHEET`, which `DeAnonymize` cannot reach — so it
+    is FORWARD-only, which is all this needs. `_pn_load_key` reads both sheets,
+    so the pin is waiting on the run where a document finally spells it out.
+
+    What is GIVEN UP, and the three things that hold it. The pair must be near
+    enough to BE one misspelling, on `fold_onto`'s own bound. The refusal was the only
+    screen on what was typed after the star — mistype the canonical and you were
+    told. So: the value must clear the same shape screens a `--term` clears
+    (`_pn_is_name_token`, never form boilerplate, and never one of this run's
+    OWN stand-ins — the `_pn_build_terms` gate, which matters more here because
+    nothing else reads this value), and the binding is ANNOUNCED by name at
+    INFO. A typo stays visible; it is a line to read rather than a refusal to
+    act on."""
+    if not cbase or not cword or not vbase:
+        return ""
+    # The pair must be near enough to BE one misspelling. `fold_onto`'s own
+    # `_PN_FOLD_MAX_REPS` is a LENGTH-delta bound and not a distance one, so it
+    # happily mirrors "ANTIONO" onto a canonical "NOBODY" — fine when the
+    # operator is naming a value this case already holds, and not fine when it
+    # INVENTS one, because a mistyped canonical would then enter the key as a
+    # Real Value no document ever carried.
+    #
+    # The reach is `_pn_scan_fold_dist`, the REPORT tier's own calibration —
+    # "near enough to ask about" — which is the question being asked here too.
+    # Deliberately tighter than the alias itself, which is unrestricted onto a
+    # canonical the case already binds: folding onto a value the folder really
+    # contains is the operator settling which of two spellings is the person,
+    # while this invents a third string on their say-so. Residual, and stated:
+    # a badly scanned spelling several slips out ("Vatqual" for Vazquez) is
+    # past this reach, so binding the correct spelling first — `--term`, the
+    # party template, or a key row — is what reaches it, and the alias is then
+    # unrestricted as before.
+    if _pn_osa_distance(cbase, vbase) > _pn_scan_fold_dist(vbase, cbase):
+        return ""
+    # Asked of the word AS TYPED, not of its lower-cased base: the screen's
+    # first question is whether it is capitalised where it was written, so a
+    # folded base answers False for every name there is.
+    if _pn_is_never_fake(cword) or not _pn_is_name_token(cword):
+        return ""
+    # The tool never takes its own output as a real value — the one gate every
+    # other source passes through, asked here because this value reaches the
+    # term list without being read off any document.
+    if cbase in {str(f).lower() for f in registry.minted_fakes()}:
+        return ""
+    _pn_fake_name_token(cword, registry)
+    # Read the binding back out of the MEMO rather than taking the draw's
+    # return: that is the slot the ordinary path reads
+    # (`registry.tokens_for("nametok")`), so the stand-in handed to `fold_onto`
+    # carries exactly the normalisation and the canonical case it would have
+    # had if a document had spelled the name out.
+    fake = registry.tokens_for("nametok").get(cbase, "")
+    if not fake:
+        return ""
+    log.info(f"  ALIAS: {cword!r} is not spelled that way anywhere in this "
+             f"folder, so it is being BOUND on your say-so and faked {fake!r} "
+             f"— check the spelling after the '*'. The row is written to the "
+             f"key's '{_PN_KEY_PINNED_SHEET}' sheet, since no export carries "
+             f"it.")
+    return fake
+
+
 def _pn_apply_aliases(decisions, terms, registry, log, allow_rebind=True):
     """Honour every `*CANONICAL` alias in `decisions`: a Real Value the operator
     declared a MISSPELLING of another is faked as the SAME misspelling of that
@@ -23525,7 +23599,11 @@ def _pn_apply_aliases(decisions, terms, registry, log, allow_rebind=True):
     if not aliases:
         return terms, []
     tag = _PnFakeRegistry._memo_tag("nametok")
-    moved, values = set(), []
+    # Canonicals this pass BOUND rather than found. They are handed back with
+    # the aliased values so the caller builds a term for each: without one there
+    # is no record, so `write_key` writes no row, and the binding this pass just
+    # made would be gone by the next run — the whole point of it.
+    moved, values, minted = set(), [], set()
     for value, canon in aliases:
         values.append(value)
         if str(value).strip().lower() == str(canon).strip().lower():
@@ -23543,6 +23621,16 @@ def _pn_apply_aliases(decisions, terms, registry, log, allow_rebind=True):
             if not vbase or not cbase or vbase == cbase:
                 continue          # a word the two spellings share needs nothing
             prev_fake = registry.tokens_for("nametok").get(cbase)
+            if not prev_fake:
+                # Nothing to mirror because the canonical is not bound — which
+                # is the ordinary case when the folder's ONLY spelling of the
+                # party is the misspelling being answered. Bind it on the
+                # operator's say-so (see `_pn_alias_bind_canonical`); a value
+                # that cannot be one still falls through to the refusal.
+                prev_fake = _pn_alias_bind_canonical(registry, cword, cbase,
+                                                     vbase, log)
+                if prev_fake:
+                    minted.add(cword)
             if not prev_fake:
                 log.warning(
                     f"  ALIAS: {value!r} names {canon!r}, but {cword!r} has no "
@@ -23567,6 +23655,7 @@ def _pn_apply_aliases(decisions, terms, registry, log, allow_rebind=True):
             moved.add(vbase)
             log.info(f"  ALIAS: {vword!r} is a misspelling of {cword!r}, so it "
                      f"is faked {cand!r} — the same slip of {prev_fake!r}.")
+    values.extend(sorted(minted))
     if not moved:
         return terms, values
     kept, seen = [], {v.lower() for v in values}
