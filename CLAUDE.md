@@ -92,6 +92,40 @@ must also carry the marker back onto the term (`_PnTerm.derived`), or the re-run
 re-picks the owner by hit count, which the wrap-split spelling wins — it is the
 form the text actually carries — and ownership flips on the first re-run. A group
 that is ALL synthetic promotes one row, or the fake reverses to nothing.
+**…and those rows are WRITTEN together, under the row they are spellings of**
+(`_pn_key_party_order`, `_pn_key_binding_blocks`, `_PN_KEY_CATEGORY_RANK`). The
+sheet sorted by category and then alphabetically, so a party's misspellings were
+scattered down the key — and `alt spelling` says a row is another spelling of
+SOME other row and never WHICH, so the one thing that Status word states could
+be acted on only by searching the sheet for the Replacement. The key is ordered
+as PARTY BLOCKS now: the full name, its own alternate spellings, then each of
+its bare tokens with that token's spellings under it, so
+`Sara Ardeshirpour-Zartoshti` is followed by `Sara`/`Sarra` and by
+`Ardeshirpour-Zartoshti`/`Ardeshirpour- Zartoshti`/`Ardeshirpour`/`Zartoshti`
+rather than by whatever party sorts next. A token belongs to a party because a
+composed fake is built WORD FOR WORD from the real, so a block whose Replacement
+is a run of consecutive words of the party's Replacement is a word-level binding
+of that party — the injectivity argument `_check_key_completeness` already makes
+from the other side. A RUN and not a single word, because a token row is not
+always one: `_pn_entity_bare` registers `Midland States` off
+`Midland States Bank`, and a compound surname registers each half beside the
+whole. Taking those in is also what makes the block ORDERABLE — children sort by
+where the run starts and, at one start, longest first, which is the party's own
+word order and puts `Thornfield Quarry` ahead of the `Thornfield` it begins
+with. Left outside, that pair could not be ordered at all: the party's full fake
+must precede both, so the short form would have to be spliced INTO the block and
+the grouping undone. A token is claimed by ONE parent — the first in the sheet's
+own order — so a surname two parties share (`Doe`) is written once, and a block
+nothing claims (a bare harvested surname, an address, a docket) keeps its place
+in the ordinary category run. The nickname rule is unmoved and is now asked of
+BLOCKS (`_pn_key_longer_first_blocks`, which the row-wise
+`_pn_key_longer_first` calls with one row per block): pulling a row out of the
+middle of a party to satisfy it would undo the grouping for no reversal benefit,
+since a party's own longer fake already leads its own tokens. Two blocks CAN
+each hold a fake that is the front of one of the other's, which no ordering
+satisfies, so a pair is moved at most once — the alternative is a loop that
+swaps forever, and the shape does not arise once a short form rides with its
+party.
 **EVERY fake in an export must be reversible, and the run says so out loud.**
 `draft` shipped as "Ainsworth" 72 times and `review` as "Sterling" 84, across
 four documents, with neither mapping anywhere in the key. That is worse than the
@@ -507,7 +541,20 @@ the operator then filled by hand aliased twenty spellings of one defendant's
 name — "Vaiquel", "Vatquel", "Vazqoe", "vauiuez" among them — every one of
 which that rule left empty and the sweep had already named: the row exists
 because the sweep called the word a misspelling of a specific token, and the
-cell only says which. The degraded-region bump the sweep also spends is not
+cell only says which.
+**And the pre-filled rows are GROUPED, on the canonical they name**
+(`_pn_leak_alias_canon`, the sort in `_pn_write_leak_report`). Twenty scanned
+spellings of one defendant are twenty rows that are right together or wrong
+together — that is the whole of what makes a pre-filled cell reviewable — and
+sorted by file and value they were scattered down an alphabet, each asking its
+question alone. Clustered, the family is read, accepted or cleared in one pass.
+The cluster sorts where its strongest member would have sorted, so nothing is
+pulled forward or buried by being grouped, and the ATTENTION tier still leads:
+an undecided row never sinks to sit beside a resolved sibling. The cell is read
+through the same two readers every other consumer uses and in the same order —
+the composed `*David {said}` form asked about first, or the keep-spec's braces
+are taken as part of the canonical's own name. A cell it cannot read groups
+under its own value, since this only ORDERS rows. The degraded-region bump the sweep also spends is not
 taken for a HARVESTED name, the worksheet being written without the page in
 hand — but a NAMED PARTY's token (`_party_token_bases`: the template's and
 `--term`'s own words) takes it on EVERY page, in the sweep and the pre-fill

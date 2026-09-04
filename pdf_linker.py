@@ -13153,22 +13153,177 @@ _PN_AUTHORITY_GUARD_CATS = frozenset({
 })
 
 
-def _pn_key_longer_first(rows):
-    """Reorder `rows` in place so a row whose Replacement is the FRONT of
-    another row's Replacement comes after it. Stable for everything else."""
-    fakes = [str(r.get("fake", "")).lower() for r in rows]
+def _pn_key_longer_first_blocks(blocks):
+    """Reorder `blocks` in place so a block holding a Replacement that is the
+    FRONT of a Replacement in another block comes after it. Stable otherwise.
+
+    The rule is the reversal macro's: a reader that searches substrings in row
+    order would turn "Cranston" into "Kenston" on meeting the nickname's "Cran"
+    row first, so the longer stand-in has to be reached first. It is asked of
+    BLOCKS rather than rows because a block is the unit the sheet is now
+    grouped in — a party, its alternate spellings and its bare tokens, read as
+    one thing — and pulling one row out of the middle of one to satisfy an
+    ordering rule would undo the grouping for no reversal benefit: the party's
+    own longer fake already leads its own tokens.
+
+    A pair is moved at most ONCE. Two blocks can each hold a fake that is the
+    front of one of the other's (block A carrying "ab" and "cdcd", block B
+    "abc" and "cd"), and a rule stated as "move j in front of i" has no
+    ordering that satisfies both — so the loop would swap them forever. The
+    first move settles that pair and the second is declined, which leaves one
+    of the two constraints unmet rather than hanging the run; the shape does
+    not arise in practice, since a party block leads with its own longest
+    fake."""
+    fakes = [sorted({str(r.get("fake", "")).lower() for r in b} - {""})
+             for b in blocks]
+    ids = list(range(len(blocks)))
+    done = set()
     i = 0
-    while i < len(rows):
+    while i < len(blocks):
         moved = False
-        for j in range(i + 1, len(rows)):
-            if (len(fakes[j]) > len(fakes[i]) and fakes[i]
-                    and fakes[j].startswith(fakes[i])):
-                rows.insert(i, rows.pop(j))
-                fakes.insert(i, fakes.pop(j))
+        for j in range(i + 1, len(blocks)):
+            if (ids[j], ids[i]) in done:
+                continue
+            if any(len(f2) > len(f1) and f2.startswith(f1)
+                   for f1 in fakes[i] for f2 in fakes[j]):
+                done.add((ids[j], ids[i]))
+                for seq in (blocks, fakes, ids):
+                    seq.insert(i, seq.pop(j))
                 moved = True
                 break
         if not moved:
             i += 1
+
+
+def _pn_key_longer_first(rows):
+    """Reorder `rows` in place so a row whose Replacement is the FRONT of
+    another row's Replacement comes after it. Stable for everything else."""
+    blocks = [[r] for r in rows]
+    _pn_key_longer_first_blocks(blocks)
+    rows[:] = [r for b in blocks for r in b]
+
+
+# People (and their bare tokens / short forms) sort to the TOP of the key,
+# entities next, every other class after in name order — the reader scans party
+# names first, not an alphabetical run that buries them between "address" and
+# "phone".
+_PN_KEY_CATEGORY_RANK = {"person": 0, "person-token": 1, "display-name": 2,
+                         "short-name": 3, "entity": 4, "entity-token": 5}
+
+
+def _pn_key_rowkey(r):
+    """A key row's identity: (category, Real Value case-folded). The records
+    dict is keyed on it and the harvested token rows are deduped against the
+    same set, so it is this list's own primary key."""
+    return (r["category"], str(r["real"]).lower())
+
+
+def _pn_key_binding_blocks(rows, alt_rows):
+    """`rows` bucketed by Replacement — one BINDING BLOCK per fake, the row
+    that REVERSES it first and every alternate SPELLING of it after.
+
+    Two rows sharing a Replacement are never two parties: the registry is
+    injective, so they are one value written several ways — a wrap-split
+    hyphen ("Ardeshirpour- Zartoshti"), a `_pn_name_variants` near-miss, a
+    surname-first table spelling, an operator `*ANOTHER VALUE` alias. Every one
+    of them is registered against the canonical value's fake precisely so that
+    each spelling scrubs, and `write_key` already marks the non-canonical rows
+    `alt spelling`. What it did not do was PUT them anywhere: the sheet sorted
+    alphabetically, so a party's misspellings were scattered down the key and
+    the one thing the Status word says about them — "this is another spelling
+    of some other row" — could not be acted on without searching the sheet for
+    the Replacement. Grouped, the row they are spellings of is the line above.
+
+    `alt_rows` is `write_key`'s own decision about which rows those are, so the
+    two cannot disagree; the rest of the order is the tiebreak it picked the
+    owner with, and is therefore reproduced by a re-run."""
+    blocks = {}
+    for r in rows:
+        blocks.setdefault(str(r["fake"]).lower(), []).append(r)
+    for group in blocks.values():
+        group.sort(key=lambda r: (_pn_key_rowkey(r) in alt_rows,
+                                  -r["count"], len(str(r["real"])),
+                                  str(r["real"]).lower()))
+    return blocks
+
+
+def _pn_key_party_order(rows, alt_rows):
+    """`rows` ordered as PARTY BLOCKS: a full name, its alternate spellings,
+    then each of its bare tokens with that token's own alternate spellings —
+    the party read as one thing instead of as rows scattered across two
+    category runs and an alphabet.
+
+    A composed fake is built WORD FOR WORD from the real, so a party's token
+    rows are exactly the blocks whose Replacement is a run of consecutive words
+    of the party's own Replacement — the injectivity argument the completeness
+    gate already uses from the other side: a shared fake word is always the
+    same word-level binding and never a coincidence. So
+    "Manuel Vazquez -> Yorke Deverell" leads, and every spelling of Manuel and
+    of Vazquez the run met sits under it.
+
+    A RUN and not a single word, because a token row is not always one:
+    `_pn_entity_bare` registers the suffix-stripped short form of a company
+    ("Midland States" off "Midland States Bank") and a compound surname
+    registers each half beside the whole ("Ardeshirpour-Zartoshti", then
+    "Ardeshirpour" and "Zartoshti"). Those belong to the party as much as its
+    single words do, and taking them in makes the block's own order satisfy the
+    reversal rule for free: children sort by where the run STARTS in the
+    parent's fake and, at one start, longest first — which is the party's own
+    word order, and puts "Thornfield Quarry" ahead of the "Thornfield" it
+    begins with. Left outside the block that pair could not be ordered at all:
+    the party's full fake must precede both, so the short form would have to be
+    spliced INTO the block.
+
+    A token is claimed by ONE parent — the first in the sheet's own order — so
+    a surname two parties share ("Doe") is written once and not duplicated
+    under each. A block nothing claims (a bare harvested surname, an address,
+    a case number) keeps its place in the ordinary category run."""
+    blocks = _pn_key_binding_blocks(rows, alt_rows)
+
+    def block_sort(fake):
+        owner = blocks[fake][0]
+        return (_PN_KEY_CATEGORY_RANK.get(owner["category"], 50),
+                owner["category"], str(owner["real"]).lower(), fake)
+
+    words = {fake: _PN_FAKE_WORD_RE.findall(fake) for fake in blocks}
+    order = sorted(blocks, key=block_sort)
+    children, claimed = {}, set()
+    for fake in order:
+        owner = blocks[fake][0]
+        if owner["category"] not in ("person", "entity"):
+            continue
+        # Only a BARE TOKEN of this party's OWN kind is absorbed. A block led
+        # by anything else is a binding in its own right — a one-word party, a
+        # short form, a display name — and burying it under a name that happens
+        # to contain its fake would hide a row the operator looks for by
+        # category.
+        tokcat = f"{owner['category']}-token"
+        parent = words[fake]
+        kids = []
+        for kf in order:
+            if kf == fake or kf in claimed or blocks[kf][0]["category"] != tokcat:
+                continue
+            kw = words[kf]
+            if not kw or len(kw) >= len(parent):
+                continue
+            start = next((i for i in range(len(parent) - len(kw) + 1)
+                          if parent[i:i + len(kw)] == kw), None)
+            if start is None:
+                continue
+            claimed.add(kf)
+            kids.append((start, -len(kw), kf))
+        children[fake] = [kf for _s, _n, kf in sorted(kids)]
+
+    party = []
+    for fake in order:
+        if fake in claimed:
+            continue
+        block = list(blocks[fake])
+        for kf in children.get(fake, ()):
+            block.extend(blocks[kf])
+        party.append(block)
+    _pn_key_longer_first_blocks(party)
+    return [r for block in party for r in block]
 
 
 def _pn_key_main_sheet(wb):
@@ -20568,9 +20723,10 @@ class Pseudonymizer:
                                              str(r["real"]).lower()))
             # (category, real) is this list's own primary key — the records
             # dict is keyed on it and the derived rows were deduped against the
-            # same set.
-            def rk(r):
-                return (r["category"], str(r["real"]).lower())
+            # same set. Read through `_pn_key_rowkey`, since the grouping pass
+            # matches an owner to its alternate spellings on exactly this
+            # identity and the two must not answer it differently.
+            rk = _pn_key_rowkey
             # Status on the OWNER row answers for the whole group: the fake
             # reached the export however it was spelled, and the owner is the
             # row that reverses it. Otherwise it reads "no match" — a binding
@@ -20588,20 +20744,22 @@ class Pseudonymizer:
                      f"'{_PN_KEY_ALT_STATUS}' (a synthetic spelling of another "
                      f"row's value — forward-only, not reversible)")
 
-        # People (and their bare tokens / short forms) sort to the TOP of the
-        # key, entities next, every other class after in name order — the reader
-        # scans party names first, not an alphabetical run that buries them
-        # between "address" and "phone".
-        rank = {"person": 0, "person-token": 1, "display-name": 2,
-                "short-name": 3, "entity": 4, "entity-token": 5}
-        keyrows.sort(key=lambda r: (rank.get(r["category"], 50),
-                                    r["category"], str(r["real"]).lower()))
-        # A nickname's fake is the FRONT of its full name's ("Cran" of
-        # "Cranston"), and a reader of this sheet that searches substrings in
-        # row order would turn "Cranston" into "Kenston" if it met the short
-        # row first. The longer row goes first wherever one Replacement is
-        # the front of another; every other row keeps its place.
-        _pn_key_longer_first(keyrows)
+        # The sheet is ordered as PARTY BLOCKS, not as a flat alphabet: a full
+        # name, its alternate spellings, then each of its bare tokens with that
+        # token's own spellings under it. People lead, entities next, every
+        # other class after in name order — the reader scans party names first,
+        # not an alphabetical run that buries them between "address" and
+        # "phone" — and `_pn_key_party_order` carries the nickname rule
+        # (a Replacement that is the FRONT of another goes after it) at the
+        # block level, so the grouping and the reversal order hold together.
+        #
+        # Scattering was the cost of the old order. `alt spelling` says a row
+        # is another spelling of SOME other row and never which, so a
+        # misspelling sorted under its own initial was a Status word the
+        # operator could act on only by searching the sheet for its
+        # Replacement — and the token rows of one party sat in a separate
+        # category run from the full name they were harvested out of.
+        keyrows = _pn_key_party_order(keyrows, alt_rows)
         headers = list(_PN_KEY_HEADERS)
         # A quote this run could not re-derive is preserved from the key already
         # on disk: a folder whose documents have moved on still keeps what the
@@ -25260,6 +25418,26 @@ _PN_PREFILL_NOTE = ("pre-filled: reads as a misspelling of {canon!r} — leave "
                     "answer")
 
 
+def _pn_leak_alias_canon(cell):
+    """The Real Value a Fix? cell names with `*ANOTHER REAL VALUE`, case-folded
+    for grouping — "" when the cell is not an alias.
+
+    Read through the SAME two readers every other consumer of the cell uses,
+    and in the same order: the composed `*David {said}` form is asked about
+    first, or the keep-spec's braces would be taken as part of the canonical's
+    own name (the `_pn_alias_keep_spec` failure, arriving one level out). This
+    only ORDERS rows, so a cell it cannot read simply groups under its own
+    value."""
+    txt = str(cell or "").strip()
+    if not txt:
+        return ""
+    if _pn_cell_is_alias_keep(txt):
+        canon = _pn_alias_target(_pn_keep_spec_strip(txt))
+    else:
+        canon = _pn_alias_target(txt)
+    return (canon or "").strip().lower()
+
+
 def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
                           bound=(), note_for=None, case_name=None,
                           case_aliases=(), suggest_for=None):
@@ -25437,8 +25615,46 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
             return 0          # marked to fix but STILL present — the fix missed
         return 2
 
-    rows.sort(key=lambda r: (_attention(r), _leak_sev(r["type"]),
-                             str(r["file"]), r["value"].lower()))
+    # Rows that are ALTERNATE SPELLINGS of one value sit together, under the
+    # value they are spellings of where the sheet also carries it.
+    #
+    # A `*ANOTHER REAL VALUE` cell — pre-filled by `alias_suggestion` or typed
+    # by the operator — says this row's value is a MISSPELLING of that one, and
+    # a badly scanned party name arrives as a dozen of them: one delivered
+    # worksheet carried "Vaiquel", "Vatquel", "Vazqoe" and "vauiuez" among
+    # twenty spellings of one defendant. Sorted by value they were twenty rows
+    # scattered down an alphabet, each asking its question alone, so the
+    # operator could not see that the run had already answered all of them the
+    # same way — which is the one thing that makes a pre-filled cell reviewable
+    # at all: they are right together or wrong together. Grouped, the whole
+    # family is read, accepted or cleared in one pass.
+    #
+    # The cluster sorts where its strongest member would have sorted, so
+    # nothing is pulled forward or buried by being grouped, and the ATTENTION
+    # tier still leads: a row needing a look never sinks to sit beside a
+    # resolved sibling.
+    alias_of, group_of = {}, {}
+    for i, r in enumerate(rows):
+        canon = _pn_leak_alias_canon(r.get("fixcell"))
+        alias_of[i] = canon
+        group_of[i] = canon or r["value"].lower()
+    best = {}
+    for i, r in enumerate(rows):
+        gk = (_attention(r), group_of[i])
+        rank = (_leak_sev(r["type"]), str(r["file"]), r["value"].lower())
+        if gk not in best or rank < best[gk]:
+            best[gk] = rank
+
+    def _order(ir):
+        i, r = ir
+        att = _attention(r)
+        return (att, best[(att, group_of[i])], group_of[i],
+                # The canonical's own row (if the sheet carries one) leads the
+                # family it is the spelling of; the misspellings follow.
+                1 if alias_of[i] else 0,
+                _leak_sev(r["type"]), str(r["file"]), r["value"].lower())
+
+    rows[:] = [r for _, r in sorted(enumerate(rows), key=_order)]
     active = sum(1 for r in rows if _attention(r) == 0)
 
     try:
