@@ -527,6 +527,48 @@ lead piece resolves to no token, and the alias machinery pairs word for word.
 The Notes cell says the cell was pre-filled and of what, so the tool's guess
 is never mistaken for an answer the operator typed, and the row keeps `fix`
 empty so it still sorts to the top as one to look at.
+**…and the `*` BINDS its canonical when this case has not**
+(`_pn_alias_bind_canonical`). The shape: the only spelling of a party ANY
+document in the folder carries is a misspelling. "Vazqez" is flagged, the
+operator answers `*Vazquez`, the correct spelling appears nowhere — so there
+was nothing to mirror, the alias was refused, and the value took an unrelated
+pool word. One party under a stand-in that says nothing about the name it
+replaced, and the next document to spell it RIGHT draws a second unrelated
+word. Binding it costs one pool word and lands where a declared-but-absent
+value already belongs: `write_key` gives a binding no export carried Status
+`no match` and puts it on `_PN_KEY_PINNED_SHEET`, which `DeAnonymize` cannot
+reach — FORWARD-only, which is all this needs, while `_pn_load_key` reads both
+sheets so the pin waits for the run where a document finally spells the name
+out. The misspelling itself, which the export really does carry, stays on the
+main sheet and reverses as always.
+What is GIVEN UP is the refusal, which was the only screen on what was typed
+after the star; three things hold it. The pair must be near enough to BE one
+misspelling — `fold_onto`'s own `_PN_FOLD_MAX_REPS` is a LENGTH-DELTA bound
+and not a distance one, so it happily mirrors "ANTIONO" onto a canonical
+"NOBODY", which is fine when the operator names a value this case already
+holds and not fine when it INVENTS one; the reach is `_pn_scan_fold_dist`, the
+REPORT tier's own calibration ("near enough to ask about"), deliberately
+TIGHTER than the alias itself, because folding onto a value the folder really
+contains is the operator settling which of two spellings is the person while
+this invents a third string on their say-so. The canonical clears the same
+shape screens a `--term` clears (`_pn_is_name_token` — asked of the word AS
+TYPED, since its first question is whether it is capitalised where it was
+written and a folded base answers False for every name there is —
+`_pn_is_never_fake`, and never one of this run's OWN stand-ins, the
+`_pn_build_terms` gate, which matters more here than anywhere because this
+value reaches the term list without being read off any document). And the
+binding is ANNOUNCED by name at INFO, so a mistyped canonical stays visible as
+a line to read rather than a refusal to act on. The stand-in is read back out
+of the registry MEMO rather than taken from the draw's return, so it carries
+exactly the normalisation and canonical case it would have had if a document
+had spelled the name out. The newly-bound value is handed back in
+`_pn_apply_aliases`' `values` beside the aliased one, or no term is built, no
+record exists, `write_key` writes no row and the binding is gone by the next
+run — which is the whole point of it. Residual, and stated: a badly scanned
+spelling several slips out ("Vatqual" for Vazquez) is past the reach, so
+binding the correct spelling first — `--term`, the party template, or a key
+row — is what reaches it, and the alias is then unrestricted as before.
+
 **A `*` and a `{brace}` COMPOSE in one cell** (`_pn_cell_is_alias_keep`,
 `_pn_alias_keep_spec`, `_pn_keep_spec_strip`). `*David {said}` on the value
 "avidsaid" — a clipped OCR lead welded to the next word, "David said" with the
