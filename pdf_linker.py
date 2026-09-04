@@ -17819,7 +17819,25 @@ class Pseudonymizer:
         gave — this decides MEMBERSHIP, and membership is decided by the first
         survivor."""
         raw = text
-        text = self._mask_protected_citations(_NFKC(text))
+        body = _NFKC(text)
+        text = self._mask_protected_citations(body)
+        # The authority guard below must be asked about the text `_substitute`
+        # reads — the UNMASKED body — and not this scan's masked copy. The mask
+        # blanks the NAME RUN of every cite it can see, which is exactly where
+        # the guard's " v. " anchor lives, so the two sides answered the same
+        # question about two different strings and disagreed by construction:
+        # the write side saw the anchor and refused, this side saw a blanked
+        # span and reported. That is the uncurable leak the whole mirror exists
+        # to prevent — the export is quarantined, the operator marks the row
+        # `yes`, and every `--fix-leaks` pass runs that same `_substitute`,
+        # refuses again and re-reports it.
+        #
+        # Offsets carry across because `_mask_uncached` blanks IN PLACE, so the
+        # masked copy is the same length; the check is here rather than assumed
+        # because if that ever stopped holding, every offset below would point
+        # at the wrong characters silently. Unequal lengths fall back to the
+        # masked text, which is what this asked before.
+        guard_body = body if len(body) == len(text) else text
         # Keyed on `_scan_state_key` too: `register_*` grows the terms and
         # records between files, and a keep decision reaching this instance
         # changes the verdict on text that has not moved at all.
@@ -17848,8 +17866,9 @@ class Pseudonymizer:
         # a party name too, so a survivor is the decision working — not a leak.
         nuclear = {str(v).lower() for v in self.keep_nuclear}
         # Cheap gate for the authority mirror below: no "v." on the page, no
-        # citation-shaped context to be in.
-        guard = bool(_PN_AUTHORITY_V_RE.search(text))
+        # citation-shaped context to be in. Asked of the UNMASKED body, since
+        # that is what the guard itself will read.
+        guard = bool(_PN_AUTHORITY_V_RE.search(guard_body))
         # The spans `_substitute` will REFUSE to touch. A value this scan
         # reports but that pass is required to leave alone is a leak nothing can
         # ever clear: the export is quarantined, the operator marks the row
@@ -17897,8 +17916,8 @@ class Pseudonymizer:
                 # clean — the discipline this whole method exists to hold.
                 if rec.get("cap_only") and m.group(0)[:1].islower():
                     continue
-                if in_authority and self._in_authority_context(text, m.start(),
-                                                               m.end()):
+                if in_authority and self._in_authority_context(
+                        guard_body, m.start(), m.end()):
                     continue
                 if keep and keep.overlaps(m.start(), m.end()):
                     continue

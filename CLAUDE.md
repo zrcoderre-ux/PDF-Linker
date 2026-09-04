@@ -2032,6 +2032,31 @@ the party), so its row stays reversible.
   which is the run narrating its own work; the folder-level line says how many
   findings were dropped for this reason and why, so the difference between the
   log and the worksheet is stated rather than left to be noticed.
+  **…and the AUTHORITY half of that mirror was asked about the wrong TEXT**
+  (`guard_body`, in `_surviving_records`). That scan mirrors four refusals by
+  reading `_substitute`'s own spans, and mirrors `_in_authority_context` by
+  asking it the same question — but asked it of its OWN body, the
+  citation-MASKED copy, where `_substitute` asks about the unmasked page. The
+  mask blanks the NAME RUN of every cite it can see, which is exactly where the
+  guard's " v. " anchor lives, so the two sides answered one question about two
+  different strings and disagreed BY CONSTRUCTION: the write side saw the
+  anchor and refused, the read side saw a blanked span and reported. Measured
+  on a reporter-only cite (no parenthetical year, so no bracket for
+  `_PN_AUTHORITY_BREAK_RE` to stop on) with this case's own party in the
+  sentence behind it, `_in_authority_context` answers True unmasked and False
+  masked, the export ships the party in the clear, and `surviving_reals`
+  quarantines the file over it — which no `--fix-leaks` pass can clear, since
+  every pass runs that same `_substitute`, refuses again and re-reports. The
+  READ side is the half that moves: the write side's refusal there is the
+  guard's own documented trade ("a party closing the sentence before a cite
+  with no signal word between … is left unfaked at that one spot"), and a leak
+  the scrub is REQUIRED to leave alone must never be reported. Offsets carry
+  across because `_mask_uncached` blanks IN PLACE, so the masked copy is the
+  same length; the code checks that rather than assuming it, because if it ever
+  stopped holding every offset would point at the wrong characters silently.
+  Residual, and stated: at such a site the value is now silent on the LEAK tier
+  as well as unfaked — which is what the guard has always chosen there, and the
+  alternative was a folder that could never resolve.
   **A word the composing faker KEPT is not one of our fakes**
   (`name_fake_words`). The furniture of a party name is preserved verbatim
   ("The Lovelace" -> "The Flintham") and a `{braced}` keep is too, but the
