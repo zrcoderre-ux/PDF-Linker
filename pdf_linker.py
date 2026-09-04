@@ -12891,6 +12891,15 @@ _PN_AUTHORITY_REPORTER_RE = re.compile(
 # semicolon, bracket or docket label means the "v." belongs to something else
 # (a string cite that already closed, a caption's own service block).
 _PN_AUTHORITY_BREAK_RE = re.compile(r"[;()\[\]]|(?<!\w)No\.", re.IGNORECASE)
+# The export's own page header. A citation crosses one freely — that is what
+# `set_page_context` and `_PN_CITE_WS`' header hop are for — but a cite with
+# NO TAIL in reach may not, for the reason `_PN_CITE_NAME_RUN_SAMEPAGE`
+# states: nothing then says where the name ends, so the run simply continues
+# into the next page's letterhead.
+_PN_PAGE_SEAM_RE = re.compile(r"^[ \t]*={6}[ \t]+Page", re.MULTILINE)
+# What `set_page_context` writes at a page seam, so the guard reads a page
+# break exactly as the finished export prints one.
+_PN_PAGE_SEAM = "====== Page ======"
 
 
 # "In re Marriage of Kelley Hartwell", "In the Matter of the Estate of Bowen" —
@@ -12940,15 +12949,29 @@ _PN_CITE_NAME_WORD = r"(?:[A-Z][\w&'’.-]*|of|the|and|de|la|&|\d+[A-Za-z]\w*)"
 # nothing on its own.
 _PN_CITE_PAGE_FURNITURE = (r"(?:(?![ \t]*(?:\d{1,2}[ \t]{2,}|={6}))"
                            r"[^\n]{1,90}\n(?:[ \t]*\n)*){0,4}")
+# …and that hop belongs to the TAIL ALONE. It was added so a cite whose year
+# sits behind the next page's letterhead could still be READ; put in the
+# separator the NAME RUN is built from, it also let the NAME continue THROUGH
+# that letterhead. A case name does not resume after a page's letterhead —
+# only its year does.
 _PN_CITE_WS = (r"(?:[ \t]+|[ \t]*\n(?:[ \t]*\n)*"
-               r"(?:[ \t]*={6}[ \t]+Page[^\n]*\n(?:[ \t]*\n)*"
-               + _PN_CITE_PAGE_FURNITURE + r")?"
+               r"(?:[ \t]*={6}[ \t]+Page[^\n]*\n(?:[ \t]*\n)*)?"
                r"[ \t]*(?:\d{1,2}[ \t]{2,})?[ \t]*)")
+_PN_CITE_TAIL_WS = (r"(?:[ \t]+|[ \t]*\n(?:[ \t]*\n)*"
+                    r"(?:[ \t]*={6}[ \t]+Page[^\n]*\n(?:[ \t]*\n)*"
+                    + _PN_CITE_PAGE_FURNITURE + r")?"
+                    r"[ \t]*(?:\d{1,2}[ \t]{2,})?[ \t]*)")
+# The SAME-PAGE separator, for a run with no tail to bound it (below).
+_PN_CITE_WS_SAMEPAGE = (r"(?:[ \t]+|[ \t]*\n(?:[ \t]*\n)*"
+                        r"[ \t]*(?:\d{1,2}[ \t]{2,})?[ \t]*)")
 _PN_CITE_NAME_RUN = (_PN_CITE_NAME_WORD + r"(?:,?" + _PN_CITE_WS
                      + _PN_CITE_NAME_WORD + r"){0,7}")
+_PN_CITE_NAME_RUN_SAMEPAGE = (_PN_CITE_NAME_WORD + r"(?:,?"
+                              + _PN_CITE_WS_SAMEPAGE + _PN_CITE_NAME_WORD
+                              + r"){0,7}")
 # "(2021)", and the federal "(9th Cir. 2021)" / "(Cal. Ct. App. 2021)" forms.
 _PN_CITE_YEAR = r"\((?:[A-Z][\w.]*[ \t]+){0,4}(?:1[7-9]|20)\d\d\)"
-_PN_CITE_TAIL = (r"(?:,?" + _PN_CITE_WS + r"|,?[ \t]*)(?:" + _PN_CITE_YEAR
+_PN_CITE_TAIL = (r"(?:,?" + _PN_CITE_TAIL_WS + r"|,?[ \t]*)(?:" + _PN_CITE_YEAR
                  + r"|\d{1,4}" + _PN_CITE_WS + r"(?:" + REPORTER_PATTERN
                  + r")|supra\b)")
 _PN_CITE_V = _PN_CITE_WS + r"vs?\.?" + _PN_CITE_WS
@@ -12963,9 +12986,20 @@ _PN_CITE_SHAPE_RE = re.compile(
     + r"[A-Z][\w&'’.-]*){0,3})"
     r"(?=[ \t]*,(?:" + _PN_CITE_WS + r")?supra\b)"
     # A name run with a " v. " in it and NO tail in reach, admitted only
-    # where `_pn_string_cite_seam` finds it strung behind another cite.
-    r"|(?P<strung>" + _PN_CITE_NAME_RUN + _PN_CITE_V + _PN_CITE_NAME_RUN
-    + r")"
+    # where `_pn_string_cite_seam` finds it strung behind another cite — and
+    # held to ONE PAGE (`_PN_CITE_NAME_RUN_SAMEPAGE`). Every other branch is
+    # bounded by a tail that says where the cite ends; this one is bounded by
+    # a word count, so on a page break it simply ran on into whatever the
+    # export printed next. "Ferrers v. Coastal Gas & Electric Co." closing one
+    # page swallowed "<attorney>, Esq." off the top of the following one and
+    # read the attorney as the cited defendant — and the citation mask blanks
+    # exactly this run, so the leak scan went BLIND to a real name that
+    # `_in_authority_context` was refusing to fake. Stacking a guess about
+    # where a tail-less cite ends on a guess about a page break doubles the
+    # ways it can be wrong; a wrapped strung defendant loses its shape span
+    # at the page seam, which costs a review row and never an authority.
+    r"|(?P<strung>" + _PN_CITE_NAME_RUN_SAMEPAGE + _PN_CITE_V
+    + _PN_CITE_NAME_RUN_SAMEPAGE + r")"
     r")")
 # What stands before a STRUNG cite: the pin or reporter of the cite before
 # it, then a semicolon. "…71 Cal.App.5th 358, 373-374; Krongos v. Pacific Gas
@@ -17081,6 +17115,8 @@ class Pseudonymizer:
             # Pacific Gas & Electric Co.") may have its year on the next
             # page, behind that page's furniture; the seam before the
             # plaintiff is the anchor the tail would have been.
+            if _PN_PAGE_SEAM_RE.search(text[e:bv.end()]):
+                return False      # tail-less AND across a page: see below
             if not _pn_string_cite_seam(text, s):
                 return False
             m = re.match(_PN_CITE_NAME_RUN, after)
@@ -17116,6 +17152,8 @@ class Pseudonymizer:
         if not anchors:
             # No tail in reach: the defendant of a cite STRUNG behind
             # another, whose plaintiff run opens at a string-cite seam.
+            if _PN_PAGE_SEAM_RE.search(left[v.end():]):
+                return False      # tail-less AND across a page: see below
             pm = re.search(r"(?:" + _PN_CITE_NAME_WORD + r",?" + _PN_CITE_WS
                            + r"){1,8}$", left[:v.start()])
             if pm is None or not _pn_string_cite_seam(text, s - len(left)
@@ -17561,12 +17599,21 @@ class Pseudonymizer:
         authority the whole method is built to refuse. The guard reads the
         page with its neighbours around it; nothing else does, so the page's
         own text and offsets are untouched. Reset with no arguments."""
-        # A page break is a line break: the seam is a newline, so a " v." that
-        # closes the previous page still reads as " v. " and the first word
-        # of the next page keeps its boundary.
+        # The seam is the export's OWN page header, not a bare newline. It
+        # used to be a newline, on the reasoning that a page break is a line
+        # break — true of the wrap, and it left the write guard unable to SEE
+        # a page boundary at all, while `_surviving_records`, which reads the
+        # finished export, sees every one of them. Two sides of one mirror
+        # answering the same question about differently-punctuated text is how
+        # a value comes to be refused by one and reported by the other, which
+        # quarantines an export no pass can clean. `_PN_CITE_WS` steps over a
+        # page header, so a cite the break cut in two still carries both its
+        # anchors — that is what the hop is there for — while a rule that must
+        # know where the page ended (`_PN_PAGE_SEAM_RE`) can now ask.
         before, after = (before or "")[-self._PAGE_CTX:], (after or "")[:self._PAGE_CTX]
-        self._ctx_before = before + "\n" if before else ""
-        self._ctx_after = "\n" + after if after else ""
+        seam = f"\n{_PN_PAGE_SEAM}\n"
+        self._ctx_before = before + seam if before else ""
+        self._ctx_after = seam + after if after else ""
 
     def _substitute(self, text, cands, reflow=False, count=True, protected=None):
         # Biggest / most-specific first; skip anything overlapping a chosen span.
