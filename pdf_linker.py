@@ -20540,27 +20540,48 @@ class Pseudonymizer:
         # A quote this run could not re-derive is preserved from the key already
         # on disk: a folder whose documents have moved on still keeps what the
         # last run learned, exactly as the bindings themselves are carried
-        # forward. This run's own quote wins where it has one.
+        # forward. This run's own quote wins where it has one — and it brings
+        # its own export half and its own location with it, or neither, since
+        # the three describe one passage (`row_evidence`).
         carried, carried_scrubbed, carried_where = _pn_key_context_on_disk(path)
 
-        def row_context(r):
-            rl = str(r["real"]).lower()
-            return self._key_context.get(rl) or carried.get(rl, "")
+        def row_evidence(r):
+            """(original quote, export quote, (File, Where)) — chosen as ONE
+            thing, from ONE run.
 
-        def row_context_scrubbed(r):
-            rl = str(r["real"]).lower()
-            return (self._key_context_scrubbed.get(rl)
-                    or carried_scrubbed.get(rl, ""))
+            The three cells are one piece of evidence: a sentence of the
+            document, the sentence the deliverable now carries in its place,
+            and where the first was read. `note_key_context` mints all three in
+            a single statement precisely so they can only ever describe one
+            passage of one document — and then this fallback took them apart
+            again, each half asking its OWN emptiness whether to reach for the
+            key on disk.
 
-        def row_where(r):
-            # (File, Where) for the quote `row_context` just returned, and it
-            # has to follow the same fallback or the row would name a document
-            # the sentence beside it did not come from — this run's pair where
-            # this run quoted the value, the pair the key already held where
-            # the quote itself is the carried one.
+            One shape came of it, and it is the shape the invariant was written
+            against. This run quotes the value fresh, and the row's fake does
+            not stand in that passage — the honest "no second half" case, a
+            value whose occurrence there sat inside a protected citation, or a
+            cap-only token met in lower case. The export half was therefore
+            empty, fell through to the key already on disk, and the cell
+            stacked THIS run's sentence over the sentence a PREVIOUS run had
+            found the fake standing in, in whatever document happened to carry
+            it: an operator reading a garbled fax line above an unrelated
+            paragraph of clean prose, with nothing saying the two are not the
+            same passage.
+
+            So the choice is made once, on the ORIGINAL half — the half every
+            other cell describes. This run's quote brings this run's export
+            half and this run's location, including their absence; a value this
+            run could not re-derive at all carries all three forward together,
+            which is what the carry-forward is for (the key outlives the
+            folder's contents). Never a mixture."""
             rl = str(r["real"]).lower()
-            return (self._key_context_where.get(rl)
-                    or carried_where.get(rl, ("", "")))
+            mine = self._key_context.get(rl)
+            if mine:
+                return (mine, self._key_context_scrubbed.get(rl, ""),
+                        self._key_context_where.get(rl, ("", "")))
+            return (carried.get(rl, ""), carried_scrubbed.get(rl, ""),
+                    carried_where.get(rl, ("", "")))
 
         def row_status(r):
             key = (r["category"], str(r["real"]).lower())
@@ -20591,10 +20612,10 @@ class Pseudonymizer:
             kp.write_text(json.dumps(
                 {"mappings": [{"category": r["category"], "real": r["real"],
                                "replacement": r["fake"],
-                               "context": row_context(r),
-                               "scrubbed_context": row_context_scrubbed(r),
-                               "file": row_where(r)[0],
-                               "where": row_where(r)[1],
+                               "context": row_evidence(r)[0],
+                               "scrubbed_context": row_evidence(r)[1],
+                               "file": row_evidence(r)[2][0],
+                               "where": row_evidence(r)[2][1],
                                "status": row_status(r),
                                "source": r["source"],
                                "occurrences": r["count"]}
@@ -20637,11 +20658,10 @@ class Pseudonymizer:
             # and collapses to the original alone when the two say the same
             # thing; then File and Where, naming the document that sentence was
             # read from and the printed page:line it sits at.
-            where = row_where(r)
+            quote, export, where = row_evidence(r)
             return _pn_xl_row(
                 [r["category"], r["real"], r["fake"],
-                 _pn_context_cell(row_context(r), r["real"],
-                                  row_context_scrubbed(r), r["fake"]),
+                 _pn_context_cell(quote, r["real"], export, r["fake"]),
                  where[0], where[1],
                  row_status(r), r["source"], r["count"]])
 
