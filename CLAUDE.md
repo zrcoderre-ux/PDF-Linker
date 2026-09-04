@@ -280,7 +280,26 @@ the next successful click migrates the folder. FIRST document to use a value own
 its quotes, so a re-run of the same folder reproduces both halves; a quote this
 run cannot re-derive is carried forward from the key on disk
 (`_pn_key_context_on_disk`, both halves — it splits a merged cell back at its
-rule), because the key outlives the folder's contents. Costs ~0.24 s per file on a 130-page filing with ~470 records — and
+rule), because the key outlives the folder's contents.
+**…and that carry-forward is a PAIR, or the `within` restriction is undone at
+the write site** (`row_evidence`, in `write_key`). `note_key_context` mints the
+original quote, the export quote and the location in one statement precisely so
+the three describe one passage of one document — and `write_key` then took them
+apart, each half asking its OWN emptiness whether to reach for the key on disk.
+The export half is empty in a case this design calls HONEST: the row's fake
+does not stand in the passage the original was quoted from. So a fresh quote of
+a garbled fax line ("Effective: T6022 1201AM i | 88hitieveiiaedd tame") was
+stacked over a clean paragraph a PREVIOUS run had found the fake standing in,
+in whatever document happened to carry it — the "unrelated sentence" the
+`within` restriction exists to prevent, arriving one level further out, and
+indistinguishable to a reader from the two halves really being one passage.
+The choice is now made ONCE, on the ORIGINAL half — the half every other cell
+describes: this run's quote brings this run's export half and this run's
+location, INCLUDING their absence, and a value this run could not re-derive at
+all carries all three forward together. Never a mixture. Pinned on the SOURCE
+as well as the output (`test_key_context_one_passage.py`), because the failure
+was three fallbacks able to disagree and a fourth would be added the same way.
+Costs ~0.24 s per file on a 130-page filing with ~470 records — and
 would have cost ~39 s before `_pn_context` was split (see the performance
 notes).
 
