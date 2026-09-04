@@ -26457,8 +26457,30 @@ def _write_word_text_version(src_path, text, log, pseudonymizer=None,
         pseudonymizer.note_original(text)
         _cache_original(src_path.parent, src_path.stem, text)
         body = pseudonymizer.apply(text)
+        # The three CURE passes, in the PDF path's own order. This path ran the
+        # whole scan battery and NONE of them, which inverts the one rule the
+        # two-tier design stands on: detection must never out-run replacement.
+        # Each pass exists because `apply` alone structurally cannot finish the
+        # job — a RECORD IS NOT A TERM, so a display name or a per-file declarant
+        # is substituted only where its own minting pass looked; and `apply`'s
+        # overlap resolution drops a shorter candidate wherever a longer one
+        # claimed the span, even when that longer one is then itself dropped for
+        # overlapping a citation, leaving the span scrubbed by neither. On the
+        # PDF path each of those is cured with the fake the record ALREADY
+        # carries; here the same value was REPORTED instead, so a worksheet row
+        # arrived under a value the key shows `replaced` — a row asking "should I
+        # fake this?" about a binding that already exists, which is not a
+        # decision. Curing mints no fake, draws no pool word and adds no key row.
+        body = pseudonymizer.scrub_emails(body)
+        body = pseudonymizer.scrub_welded(body, spliced=False)
+        body = pseudonymizer.scrub_survivors(body)
 
         survivors = set(pseudonymizer.surviving_reals(body))
+        # ...and the reduced tier's own mirror, which was missing on both sides
+        # here. `spliced=False` is the narrow hard-seam pass — a Word document is
+        # born-digital, so it has no column splice, only a lost space.
+        survivors |= set(pseudonymizer.surviving_reals_reduced(body,
+                                                               spliced=False))
         if survivors:
             pseudonymizer.note_leaks(survivors)
             shown = ", ".join(sorted(survivors)[:8])
