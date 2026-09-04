@@ -1759,6 +1759,39 @@ the party), so its row stays reversible.
   nothing is able to clean. `_substitute` gets the same protected set the main
   pass gets, so a cited authority still stays byte-for-byte and an operator KEEP
   still stays verbatim. ~50 ms an export, early-outing when nothing survived.
+  **…and the WORD path ran the whole scan battery and NONE of the cures.**
+  `_write_text_version` runs `scrub_emails`, `scrub_welded` and
+  `scrub_survivors` before it scans; `_write_word_text_version` ran `apply` and
+  went straight to `surviving_reals`, which inverts the one rule the two-tier
+  design stands on — detection must never out-run replacement. So on a Word
+  folder every value the three cures exist for was REPORTED rather than
+  repaired: a row in `LEAKS.xlsx` under a value the key shows `replaced`,
+  asking "should I fake this?" about a binding that already exists. That is not
+  a decision an operator can make — `yes` mints a term for a value that already
+  has one and `no` says leave verbatim a value the export is full of the
+  stand-in for — and it is the same row the PDF path beside it never writes.
+  The reduced tier was missing from BOTH sides there (no `scrub_welded`, no
+  `surviving_reals_reduced`), so a lost space was neither cured nor reported;
+  `spliced=False`, the narrow hard-seam pass, because a Word document is
+  born-digital and has no column splice. Safe to add for the reason the cures
+  are safe anywhere: they mint no fake, draw no pool word and add no key row —
+  they apply the fake the record already carries — and they return the body
+  unchanged when nothing survived, so an ordinary Word export does not move.
+  Pinned on the SOURCE of both writers (`test_word_path_cures_survivors.py`),
+  because the failure was a pass missing from one of two paths that must agree,
+  and a test of either path alone cannot see that.
+  **Note what this means for `--fix-leaks` on such a row.** That pass reads
+  every key row back as a LIVE TERM and re-applies the whole list to the
+  export, so a leak whose value the key already binds is cured there with NO
+  worksheet decision at all — verified end to end, identically with the Fix?
+  cell empty and with `yes`. Which is why such a row is never PRE-MARKED
+  `yes`: where the value is curable the cell changes nothing while marking the
+  folder's triage answered (`_pn_triage_pending`, which gates the recycled-name
+  re-mint), and where it is NOT curable — the leak stands at a site
+  `_substitute` refuses — the fix pass runs that same `_substitute` and refuses
+  it again, so a pre-filled `yes` would be a row marked for a fix that can
+  never land, re-reported on every pass. The answer to a bound value standing
+  in an export is to CURE it in the run, not to answer for the operator.
 - **The ORIGINAL text is EVIDENCE, and the run uses it when it has it**
   (`note_original` / `confirm_findings`). A leak finding claims "real
   information survived into the export"; the run's OWN output cannot satisfy
