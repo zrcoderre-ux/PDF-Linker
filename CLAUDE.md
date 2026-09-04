@@ -3376,6 +3376,47 @@ names now also feed `_pn_authority_cite_index`, so `prune_authority_party_terms`
 drops a harvested bare "Sanders" as it drops Angela White, the fake pool
 avoids the word, and a row that survives names the decision in Notes.
 
+**…but a cite with NO TAIL in reach may not cross a PAGE BOUNDARY**
+(`_PN_CITE_NAME_RUN_SAMEPAGE`, `_PN_PAGE_SEAM_RE`, `_PN_CITE_TAIL_WS`). Every
+other branch of `_PN_CITE_SHAPE_RE` is bounded by a TAIL — a year or a
+volume+reporter run that says where the cite ends. The `strung` branch has none
+by construction: it exists for the cite whose year sits on the NEXT page behind
+the firm's letterhead, and it is bounded by a word count and nothing else. So
+at a page break it simply ran on into whatever the export printed next, which
+in a delivered folder was the attorney roster at the top of the following page:
+`Ferrers v. Coastal Gas & Electric Co.` closing page 15 swallowed
+`<attorney>, Esq.` off the top of page 16 and read the attorney as the cited
+defendant.
+**Both sides of the mirror then failed, in opposite directions, off that one
+run.** `_in_authority_context` REFUSED to fake the name — a " v. " to its left,
+no year to its right, a string-cite seam behind the " v. ", which is the branch
+that claims a defendant whose tail is out of reach. And the citation MASK
+blanks exactly that run, so `_surviving_records`, which reads the masked body,
+could not see the name at all. A real attorney's name shipped in the clear on
+every page of two exports and no leak was reported — and where the mask's span
+came from the PARSER rather than the shape pattern, the same value was reported
+as a leak that no `--fix-leaks` pass could ever clear, because every pass runs
+that same `_substitute`, refuses it again and re-reports it. The folder can
+never resolve; the operator marks the row `yes` and watches it come back.
+Three things close it. The page-FURNITURE hop moves to the TAIL alone
+(`_PN_CITE_TAIL_WS`) — it was added so a year behind a letterhead could be
+READ, and in the NAME RUN's own separator it let the name continue through that
+letterhead. A tail-less run is held to ONE PAGE, in the pattern and in both
+halves of the write guard: stacking a guess about where a tail-less cite ends
+on a guess about a page break doubles the ways it can be wrong, the discipline
+`_pn_term_is_breakable` already states. And `set_page_context` writes the
+export's OWN page header at the seam instead of a bare newline — it reasoned
+that a page break is a line break, which is true of the wrap and left the write
+guard unable to SEE a page boundary at all while the read side, working on the
+finished export, sees every one of them; two sides of one mirror answering the
+same question about differently-punctuated text is how this class of failure is
+born. A TAILED cite still crosses a page freely (`_PN_CITE_WS` keeps its header
+hop, so `Berryman v. Merit Prop. Mgmt., Inc.` closing page 3 is still protected
+by its `(2007) 152 Cal.App.4th 1544` on page 4), and a strung cite on ONE page
+keeps its defendant. Residual, and stated: a strung defendant whose name is
+itself split by the page break loses its shape span there, which costs a review
+row and never an authority.
+
 **…and a cite WRAPS wherever the margin falls, and the guards read it as the
 EXPORT prints it** (`_PN_CITE_WS`, `_PN_CITE_V`, `set_page_context`). On
 pleading paper a citation breaks inside the plaintiff's name, around the
