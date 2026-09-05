@@ -320,4 +320,14 @@ def test_both_tiers_stay_quiet_on_dense_technical_prose():
     pz = _pz()
     found = {s for _c, s in pz.defined_name_scan(text, text)}
     found |= {s for _c, s in pz.narrative_name_scan(text)}
-    assert len(found) <= 12, sorted(found)
+    # The notes' own worked examples: each is a name the scans are MEANT to
+    # report, quoted in the prose as the shape they exist for. The bound is
+    # on what is left once those are set aside, so growing the notes with
+    # another example never moves it.
+    examples = {
+        "Susan Spellman", "Spellman", "ACME CORPORATION, INC.", "Rasho",
+        "Sarkisyan", "Ashely Langley", "David", "Sunbelt Rentals LLC",
+        "Sunbelt Rentals", "Providence Holy Cross Medical",
+    }
+    noise = found - examples
+    assert len(noise) <= 5, sorted(noise)

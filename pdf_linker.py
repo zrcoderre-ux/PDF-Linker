@@ -12108,6 +12108,7 @@ most other some such no not only own same so than too very can will just may
 shall must might would could should did does do done was were been being is
 are am has have had having he she it they them his her its their this that
 these those which who whom whose what
+nobody somebody anybody everybody nothing something anything everything
 oppose opposes opposed opposition motion motions moving moved move compel
 compels compelling compelled strike stricken dismiss dismissal demurrer
 demurrers reply replies brief briefs briefing hearing hearings trial trials
