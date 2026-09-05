@@ -9,6 +9,7 @@ local part a bound name token had already faked kept its real domain.
 Run:  cd PDF-Linker && python3 -m pytest tests/test_handoff_matching_gaps.py -v
 """
 import logging
+import re
 
 import pdf_linker as P
 
@@ -41,7 +42,10 @@ def test_the_street_alone_takes_the_addresss_own_fake():
     z, out = _run([], text)
     street = {t.real: t.fake for t in z.terms if t.category == "address_street"}
     assert street == {"Riverside Drive": street["Riverside Drive"]}
-    assert "2000 " + street["Riverside Drive"] in out
+    # The house number is faked beside the street now (handoff 2 §9), so
+    # the street's own fake stands behind a different number.
+    assert re.search(r"(?<!2000 )\d{4} " + re.escape(street["Riverside Drive"]),
+                     out), out
 
 
 def test_a_name_glued_behind_a_lower_case_word_is_scrubbed_whole():

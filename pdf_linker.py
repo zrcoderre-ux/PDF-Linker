@@ -7754,6 +7754,15 @@ class _PnFakeRegistry:
                 return self._take(key, cand)
         return None
 
+    @property
+    def name_role_primary(self):
+        """{word: "given" | "surname"} — the role that first drew each name
+        word (`_pn_fake_name_token`)."""
+        d = self.__dict__.get("_name_role_primary")
+        if d is None:
+            d = self.__dict__["_name_role_primary"] = {}
+        return d
+
     def token(self, real, words, seed_tag):
         """A single canonical-case stand-in word for `real`, never reused for a
         different real value. Draws from `words` in a per-value deterministic
@@ -8029,7 +8038,12 @@ class _PnFakeRegistry:
         for attempt in range(10000):
             r = _pn_rng(seed_tag, real if seed is None else seed, attempt)
             cand = head + re.sub(r"\d", lambda m: str(r.randrange(10)), tail)
-            if cand.lower() not in self._used:
+            # Never the real value itself: a one-digit department has one
+            # chance in ten of drawing its own digit, and the self-mapped
+            # term then hit `_pn_guard_distinct_fake`, which re-minted the
+            # WHOLE term — "Department 2" shipped as "Jwgpbnxwtn 2", the
+            # label scrambled and the digit kept.
+            if cand.lower() not in self._used and cand.lower() != src.lower():
                 return self._take(key, cand)
         return self._take(key, cand)  # give up after 10k tries; keep it stable
 
@@ -8109,9 +8123,20 @@ class _PnFakeRegistry:
         return self._take(key, cand)  # give up after 10k tries; keep it stable
 
 
-def _pn_fake_name_token(word, registry):
+def _pn_fake_name_token(word, registry, role=None):
     """The fake for one name word, drawn on the word's CORE — outer punctuation
     and a trailing POSSESSIVE stripped — and reassembled around it.
+
+    `role` is the word's POSITION in the name it is being composed for
+    ("given" or "surname"). The registry memoises on the word, which is right
+    for one person's spellings and wrong for a COINCIDENCE across people:
+    counsel's given name "Kramer" and an unrelated attorney's surname "Kramer"
+    drew one pool word, and "Kramer I. Lowther", "Bradley Kramer" and "Kramer
+    & Partner LLP" read as one person. The first role to draw a word holds
+    its memo (`name_role_primary`); the OTHER role, arriving later, draws
+    under its own slot, so the two people take two words. A bare token of the
+    word carries the fake of whichever role drew it first — the residual, and
+    stated.
 
     The registry memoizes on the string it is handed, so drawing on the raw
     token made "RASHO'S" a different real value from "Rasho" and it drew a
@@ -8129,7 +8154,18 @@ def _pn_fake_name_token(word, registry):
     if not core:
         return word
     return pre + _pn_titlecase_like(
-        registry.token(core, _PN_NAME_WORDS, "nametok"), core) + post
+        registry.token(core, _PN_NAME_WORDS,
+                       _pn_name_token_tag(core, registry, role)), core) + post
+
+
+def _pn_name_token_tag(core, registry, role):
+    """The registry slot a name word draws from: "nametok", or the role's own
+    slot where the OTHER role drew the word first (see `_pn_fake_name_token`).
+    A one-word name has no role and is passed None."""
+    if role is None or len(core) < 3:
+        return "nametok"
+    primary = registry.name_role_primary.setdefault(core.lower(), role)
+    return "nametok" if primary == role else "nametok-" + role
 
 
 # Words that mark a business even with no corporate suffix attached. Without
@@ -8142,6 +8178,14 @@ _PN_ENTITY_HINT_WORDS = {
     "motors", "automotive", "industries", "technologies", "laboratories",
     "medical", "hospital", "university", "church", "credit", "investments",
     "development", "construction", "builders", "realtors", "escrows",
+    # An INSTITUTION named with no corporate suffix — "Verdugo Hills Health
+    # Center", "Crescenta Valley High School" — went down the PERSON path as
+    # a three-word name, and its words ("Health") joined the person fakes
+    # that `half_scrubbed_scan` reads every capitalised neighbour against.
+    "center", "centre", "clinic", "health", "healthcare", "hospice",
+    "pharmacy", "foundation", "institute", "college", "school", "academy",
+    "bank", "district", "dealership", "enterprises", "holdings", "logistics",
+    "manufacturing", "airlines", "rentals",
 }
 
 
@@ -8474,7 +8518,7 @@ def _pn_name_variants(word):
 # A token shorter than this is never treated as breakable: the halves carry too
 # little to make the concatenation evidence of anything, and a 4-letter surname
 # has only two interior positions worth having.
-_PN_WORD_BREAK_MIN = 5
+_PN_WORD_BREAK_MIN = 4
 # ONE character, with a letter hard against it on BOTH sides. A space is the
 # kern the extractor read as one; a period or comma is the speck a scan dropped
 # into the middle of a word. The single-character class is what keeps a real
@@ -8731,9 +8775,12 @@ def _pn_fake_person(name, registry):
         if _keep(w, m.start()) or m.start() == trail_at or m.start() in furniture:
             parts.append(w)
         else:
-            fake = _pn_fake_name_token(w, registry)
-            parts.append(fake)
             is_surname = (m.start() == surname_at)
+            fake = _pn_fake_name_token(
+                w, registry,
+                role=(("surname" if is_surname else "given")
+                      if len(mappable) >= 2 else None))
+            parts.append(fake)
             # A surname as short as two letters (Yu, Ng, Le, Wu, Vo) is real and
             # identifying — the old `len >= 3` floor dropped it, so a bare "Yu"
             # both leaked in the text and had no token row for the reversal
@@ -9154,22 +9201,34 @@ def _pn_person_token_map(name, registry):
         and i not in phrase_idx
         for i, m in enumerate(words))
     out = {}
-    for i, m in enumerate(words):
+    mappable = [m for i, m in enumerate(words)
+                if not (len(m.group(0)) == 1 or _suffix(m)
+                        or m.group(0).strip(".,").lower() in _PN_DOC_ABBREV
+                        or (keep_furniture and (
+                            registry.keeps_word(_pn_word_base(m.group(0)))
+                            or i in phrase_idx)))]
+    # The surname is the last mappable word, or the first before a comma
+    # ("Burt, Steven Wayne") — `_pn_fake_person`'s own rule, so the two
+    # composers agree on which word draws under which role.
+    surname_at = None
+    if mappable:
+        if "," in name:
+            comma = name.index(",")
+            before = [m for m in mappable if m.start() < comma]
+            surname_at = (before[0] if before else mappable[0]).start()
+        else:
+            surname_at = mappable[-1].start()
+    for m in mappable:
         w = m.group(0)
-        # A single letter is an INITIAL and `_pn_fake_person` keeps it verbatim
-        # — minting a whole pool surname for it here burned one pool word per
-        # distinct initial letter in the case and left a live bare-letter
-        # binding ("w" -> a surname) in the registry.
-        if len(w) == 1 or _suffix(m) or w.strip(".,").lower() in _PN_DOC_ABBREV:
-            continue
         base = _pn_word_base(w)
-        if keep_furniture and (registry.keeps_word(base) or i in phrase_idx):
-            continue
         if base:
             # Drawn on the BASE, exactly as `_pn_fake_name_token` does — keyed
             # by base and drawn on the raw token, a possessive ("Rasho's") asked
             # the registry for a second fake under its own name.
-            out[base] = registry.token(base, _PN_NAME_WORDS, "nametok")
+            role = (("surname" if m.start() == surname_at else "given")
+                    if len(mappable) >= 2 else None)
+            out[base] = registry.token(
+                base, _PN_NAME_WORDS, _pn_name_token_tag(base, registry, role))
     return out
 
 
@@ -9397,6 +9456,7 @@ def _pn_append_entity_terms(terms, raw, source, registry, prefer=None):
         if (not fake_tok or base in seen or len(base) < _PN_HARVEST_TOKEN_MIN
                 or not re.search(r"[A-Za-z]", core)
                 or _pn_is_generic_token(base) or _pn_is_entity_keep(base)
+                or _pn_is_name_particle(base)
                 or _pn_is_role_token(core) or not _pn_is_name_token(core)
                 or base in registry.keep_words):
             continue
@@ -9478,7 +9538,8 @@ def _pn_append_person_terms(terms, raw, source, registry):
         # "Long Beach") must never be a free-standing token — it rewrites
         # ordinary prose and the venue everywhere. The full name still scrubs.
         base = _pn_word_base(real_tok)
-        if _pn_is_generic_token(base) or base in registry.keep_words:
+        if (_pn_is_generic_token(base) or base in registry.keep_words
+                or _pn_is_name_particle(base)):
             continue
         # A two-letter surname that spells an ordinary English word ("As", "Of",
         # "In") would rewrite that word throughout the brief; skip it. A short
@@ -10479,6 +10540,22 @@ def _pn_is_generic_token(base):
             or base in _PN_HONORIFICS)
 
 
+# A name PARTICLE — the "de" of "Casa de Valley View", the "van" of "van
+# Beethoven" — carries no identity of its own and stands inside cited case
+# names, street names and ordinary prose constantly. It is faked WITH its
+# party (the composing fakers keep it verbatim, as furniture) and is never a
+# bare token: a delivered key carried `entity-token 'De' -> Tennant`, whose
+# only match was inside a cited decision's name. Asked of the base word at
+# every bare-token emission site and at the loader, so both ends agree.
+_PN_NAME_PARTICLES = frozenset("""
+de da del della di du la le las los van von der den ten ter y e
+""".split())
+
+
+def _pn_is_name_particle(base):
+    return base in _PN_NAME_PARTICLES
+
+
 def _pn_is_protected_locality(city):
     norm = re.sub(r"\s+", " ", city).strip().lower()
     if norm in _PN_NEVER_SCRUB_LOCALITIES:
@@ -10539,6 +10616,65 @@ def _pn_locality_pairs(text):
     return out
 
 
+# The COURTHOUSE is a public venue and its street identifies nobody, so it
+# is kept the way a city is (`_pn_is_protected_locality`) — a delivered
+# export faked the Stanley Mosk courthouse's own address, which only tells a
+# reader the tool did not know where the court sits. Two rules and a list.
+# A number behind a DEPARTMENT label is a courtroom, not a house ("Department
+# 2 Spring Street Courthouse" harvested an address fragment "2 Spring"); a
+# line naming the Courthouse or the Superior Court beside the address is the
+# venue; and the Los Angeles Superior Court's civil courthouses are listed by
+# their street key (`_pn_addr_street_key`'s normal form), since a notice
+# prints the court's address in a caption with no furniture around it at all.
+_PN_COURTHOUSE_STREETS = frozenset({
+    (111, "north hill street"),            # Stanley Mosk
+    (312, "north spring street"),          # Spring Street Courthouse
+    (600, "south commonwealth avenue"),    # Central Civil West
+    (110, "north grand avenue"),           # Clara Shortridge Foltz
+    (210, "west temple street"),
+    (1725, "main street"),                 # Santa Monica
+    (6230, "sylmar avenue"),               # Van Nuys East
+    (14400, "erwin street mall"),          # Van Nuys West
+    (300, "east olive avenue"),            # Burbank
+    (600, "east broadway"),                # Glendale
+    (200, "west compton boulevard"),       # Compton
+    (275, "magnolia avenue"),              # Long Beach
+    (400, "civic center plaza"),           # Pomona
+    (12720, "norwalk boulevard"),          # Norwalk
+    (9425, "penfield avenue"),             # Chatsworth
+    (825, "maple avenue"),                 # Torrance
+    (150, "west commonwealth avenue"),     # Alhambra
+    (300, "east walnut street"),           # Pasadena
+    (1427, "west covina parkway"),         # West Covina
+    (7500, "east imperial highway"),       # Downey
+    (7339, "south painter avenue"),        # Whittier
+    (9355, "burton way"),                  # Beverly Hills
+    (42011, "4th street west"),            # Lancaster (Michael D. Antonovich)
+    (350, "west 1st street"),              # U.S. Courthouse (C.D. Cal.)
+    (255, "east temple street"),           # Roybal Federal Building
+})
+_PN_DEPT_LEAD_RE = re.compile(
+    r"(?i)\b(?:dept|department)\.?[ \t]*(?:no\.?|number|#)?[ \t]*:?[ \t]*$")
+_PN_VENUE_LINE_RE = re.compile(
+    r"(?i)\b(?:courthouse|superior[ \t]+court|district[ \t]+court|"
+    r"court[ \t]+of[ \t]+appeal|justice[ \t]+center)\b")
+
+
+def _pn_addr_is_venue(text, start, end):
+    """True when the address at text[start:end] is the COURT's: a courtroom
+    number read as a house number, a Courthouse named on the same line, or a
+    street on the venue list."""
+    line_s = text.rfind("\n", 0, start) + 1
+    line_e = text.find("\n", end)
+    line_e = len(text) if line_e < 0 else line_e
+    if _PN_DEPT_LEAD_RE.search(text[line_s:start]):
+        return True
+    if _PN_VENUE_LINE_RE.search(text[line_s:line_e]):
+        return True
+    core, nums = _pn_addr_street_key(text[start:end])
+    return any((n, core) in _PN_COURTHOUSE_STREETS for n in nums)
+
+
 def _pn_fake_street(real):
     """Module-level fallback (no registry): a stable but NOT guaranteed-unique
     fake. The Pseudonymizer routes through `_fake_street` for injectivity. Only
@@ -10564,6 +10700,9 @@ _PN_URL_WHITELIST = (
     "leginfo.legislature.ca.gov", "law.cornell.edu", "scholar.google.com",
     "courts.ca.gov", "google.com", "casetext.com", "justia.com",
     "onelegal.com", "uslegalpro.com", "lawhelpcalifornia.org",
+    # The Medicare Benefits Coordination & Recovery Center's contractor
+    # domain, printed on every conditional-payment letter.
+    "gdit.com",
 )
 
 
@@ -11093,6 +11232,11 @@ def _pn_fake_url(real):
 
 
 # Regex PII detectors found in the document body (not the spreadsheet).
+_PN_VANITY_PHONE_RE = re.compile(
+    r"(?<![\w])(?:\+?1[\s.\-]?)?(?:\(\d{3}\)|\d{3})[\s.\-]{0,2}"
+    r"(?P<w>[A-Z]{7}|[A-Z]{3}[\s.\-][A-Z]{4}|[A-Z]{4}[\s.\-][A-Z]{3}"
+    r"|\d{3}[\s.\-]?[A-Z]{4})(?![\w])")
+
 _PN_DETECTORS = {
     # An SSN in its 3-2-4 grouped shape with a dash, dot or SPACE separator. The
     # old dash-only rule let "123 45 6789" ride straight into a shareable export.
@@ -11162,9 +11306,14 @@ _PN_DETECTORS = {
     # that fails Luhn (see `_PN_CARD_RE`). Faked to a Luhn-valid string in the
     # card's own separators.
     "card": (_PN_CARD_RE, _pn_fake_card),
+    # A VANITY number — "(424)-INJURED", "1-800-FLOWERS", "310-555-HELP"
+    # — is a phone number spelled in letters, and the digits-only detector
+    # walked past fourteen of them on one firm's letterhead. The area code
+    # is faked as digits and the WORD as a same-length pool word.
+    "vanity phone": (_PN_VANITY_PHONE_RE, None),
 }
 _PN_DEFAULT_DETECTORS = ["ssn", "email", "phone", "address", "url", "pobox",
-                         "card"]
+                         "card", "vanity phone"]
 
 
 # ── Label-anchored identifiers (auto-faked) ─────────────────────────────────
@@ -11344,6 +11493,42 @@ _PN_ID_RES = {
     # and an apostrophe-free class split the token at the "'", matched only the
     # "WBYSOZ_91084" tail, and left the party prefix "FORD" in cleartext. Both
     # straight (') and curly (’) marks are allowed.
+    # A MEDICARE BENEFICIARY IDENTIFIER is eleven characters in a fixed
+    # shape (digit, letter, letter-or-digit, digit, letter, letter-or-digit,
+    # digit, two letters, two digits; S L O I B Z never appear), which is
+    # distinctive enough to read by SHAPE, label or no label — a conditional
+    # payment demand prints it bare in its ledger, and one delivered export
+    # carried four, one of them glued to the plaintiff's surname. The left
+    # guard refuses a digit only, so the glued form still yields the MBI (the
+    # surname beside it is the weld cure's, letter hard against digit).
+    "medicare beneficiary id": re.compile(
+        r"(?<![0-9])(\d[AC-HJKMNP-RT-Y][AC-HJKMNP-RT-Y0-9]\d[AC-HJKMNP-RT-Y]"
+        r"[AC-HJKMNP-RT-Y0-9]\d[AC-HJKMNP-RT-Y]{2}\d{2})(?![A-Za-z0-9])"),
+    # The BCRC's "Case Identification Number" is fifteen digits printed in
+    # three spaced groups; its unspaced ten-digit tail was faked once, as a
+    # PHONE.
+    "case identification number": re.compile(
+        r"(?i)\bcase[ \t]+identification[ \t]+(?:no\.?|number|#)?[ \t]*:?"
+        r"[ \t]*(\d{5}(?:[ \t]?\d{5}){2})(?!\d)"),
+    # An ICN / Internal Control Number: thirteen to fifteen digits, an
+    # optional letter, behind its label (the label is case-sensitive — "icn"
+    # is inside ordinary words).
+    "icn number": re.compile(
+        r"\b(?:(?-i:ICN)|(?i:internal[ \t]+control[ \t]+(?:no\.?|number)))"
+        r"[ \t]*(?:no\.?|#)?[ \t]*:?[ \t]*(\d{13,15}[A-Z]?)(?![\w])"),
+    # A provider's NPI is a ten-digit number a public registry resolves to a
+    # name; two shipped faked as PHONES. Behind "NPI", "NPI#", "National
+    # Provider Identifier" or "Provider No."; the phone detector steps aside
+    # where this class claimed the value.
+    "npi number": re.compile(
+        r"\b(?:(?-i:NPI)|(?i:national[ \t]+provider[ \t]+id(?:entifier)?)"
+        r"|(?i:provider[ \t]+(?:no\.?|number|id)))[ \t]*(?:no\.?|#)?[ \t]*:?"
+        r"[ \t]*(\d{10})(?!\d)"),
+    # A court reporter's CSR licence number ("CSR 12345", "CSR No. 12345"):
+    # a state registry lookup from the reporter, faked digit for digit.
+    "csr number": re.compile(
+        r"\b(?:(?-i:CSR)|(?i:certified[ \t]+shorthand[ \t]+reporter))"
+        r"[ \t]*(?:no\.?|#|number)?[ \t]*:?[ \t]*(\d{4,6})(?!\d)"),
     "production number": re.compile(
         r"(?<![A-Za-z0-9'’])([A-Z]{2,}[A-Z0-9'’]*(?:_[A-Z0-9'’]+)*_?\d{4,}"
         r"(?:[ \t]*[-–][ \t]*[A-Z0-9_'’]*\d{2,})?)(?![A-Za-z0-9])"),
@@ -11369,8 +11554,31 @@ _PN_REID_CLASSES = frozenset({
     "claim number", "policy number", "bond number", "medical record number",
     "patient id", "employee id", "parcel number", "passport number",
     "medicare number", "instrument number", "charge number",
-    "commission number", "loan number",
+    "commission number", "loan number", "medicare beneficiary id",
+    "case identification number", "icn number", "npi number", "csr number",
 })
+# Identifier classes that are read WITHOUT a word boundary on the left: the
+# MBI is a fixed eleven-character shape that a ledger glues to the surname
+# in front of it ("Rasho1EG4TE5MK72"), so a `(?<!\w)` term could never land.
+_PN_UNBOUNDED_IDS = frozenset({"medicare beneficiary id"})
+# A phone-shaped identifier a LABEL has already claimed: the phone detector
+# steps aside for it (an NPI is ten digits, exactly a bare phone).
+_PN_PHONE_SHAPED_IDS = ("npi_number", "case_identification_number")
+# A medical CODE identifies a diagnosis or a procedure and nobody: an ICD-9
+# / ICD-10 code ("M54.5", "S72.001A", "250.00"), a CPT code (five digits) or
+# a HCPCS code ("J1234") is never a production stamp or an account number.
+_PN_MEDICAL_CODE_RE = re.compile(
+    r"(?:[A-TV-Z]\d{2}(?:\.[A-Z0-9]{1,4})?|\d{3}(?:\.\d{1,2})?|\d{5}|[A-Z]\d{4})")
+# …and only the LETTERED shapes are refused an account-id label: a bare
+# five-digit "DEAL# 23071" is a dealer's stamp, not a CPT code.
+_PN_MEDICAL_CODE_LETTERED_RE = re.compile(
+    r"(?:[A-TV-Z]\d{2}(?:\.[A-Z0-9]{1,4})?|[A-Z]\d{4})")
+# The Medicare BCRC's PUBLIC contact points — the contractor's toll-free
+# lines, its fax and its post office box — are on every conditional-payment
+# letter and identify no one; faking them writes a number that may be
+# somebody's real line into the deliverable.
+_PN_PUBLIC_PHONES = frozenset({"8557982627", "8557972627", "4058693309"})
+_PN_PUBLIC_POBOXES = frozenset({"138832"})
 
 # The NAME-shaped review tiers whose findings take the edge-vocabulary trim in
 # `confirm_findings` — a scan-flagged heading is a sentence around a name, and
@@ -11739,6 +11947,11 @@ def _pn_identifier_values(text):
             if (cls == "registration number"
                     and len(re.sub(r"\D", "", val)) < 4):
                 val = re.sub(r"\s+", " ", m.group(0)).strip()
+            # A diagnosis or procedure code is not a stamp.
+            if ((cls == "production number" and _PN_MEDICAL_CODE_RE.fullmatch(val))
+                    or (cls == "account id"
+                        and _PN_MEDICAL_CODE_LETTERED_RE.fullmatch(val))):
+                continue
             if val.lower() in seen:
                 continue
             seen.add(val.lower())
@@ -12680,6 +12893,19 @@ def _pn_address_adjacency(records):
     return warns
 
 
+# The separator between two words of a term: any whitespace run, OR a line
+# wrap carrying the NEXT LINE'S GUTTER NUMBER — the export prints a pleading
+# line as `f"{num:>2}  "` plus body, so a party wrapped at the margin reads
+# "GLENDALE\n 2  MEMORIAL MEDICAL CENTER" and a `\s+` join could not see it: the
+# hospital's city-word head shipped eight times while its second word was
+# faked beside it. `_pn_reflow` keeps the seam (number and all) when it lays
+# the fake back, so the gutter number survives the substitution.
+_PN_GUTTER_SEAM = r"[ \t]*\n[ \t]*\d{1,2}[ \t]{2,}"
+_PN_TERM_SEP = r"(?:\s+|" + _PN_GUTTER_SEAM + r")"
+_PN_TERM_SEP_RE = re.compile(_PN_GUTTER_SEAM + r"|\s+")
+_PN_GUTTER_SEAM_RE = re.compile(_PN_GUTTER_SEAM)
+
+
 def _pn_build_pattern(term, *, whole_word, follow=None, breakable=False,
                       glue_left=False):
     """Literal-match regex body (NFKC-normalized, escaped), with optional
@@ -12729,9 +12955,9 @@ def _pn_build_pattern(term, *, whole_word, follow=None, breakable=False,
                      for left, right, brk in _pn_word_breaks(core)]
             parts.append(alts[0] if len(alts) == 1
                          else "(?:" + "|".join(alts) + ")")
-        body = r"\s+".join(parts)
+        body = _PN_TERM_SEP.join(parts)
     else:
-        body = r"\s+".join(re.escape(p) for p in words)
+        body = _PN_TERM_SEP.join(re.escape(p) for p in words)
     body = _PN_APOS_RE.sub(_PN_APOS_CLASS, body)
     if whole_word:
         right = rf"(?:(?!\w)|(?={follow}))" if follow else r"(?!\w)"
@@ -13040,12 +13266,52 @@ def _pn_split_cell(value):
     clean = []
     for name, is_short in out:
         p = re.sub(r"\s+", " ", name.strip().strip('"').strip())
+        # The E-Court "Other Names" cell concatenates the parties page's
+        # ROLE columns onto the attorney's name ("Maro Burunsuzyan Lead
+        # Attorney") and writes a credential as its own comma group
+        # ("Bradley I. Kramer, M.D., Esq."). Neither is a name: the role
+        # phrase is trimmed off the tail, and a piece that is nothing but a
+        # credential is dropped — the composing faker keeps a degree verbatim
+        # anyway, so the document's "Kramer, M.D." is still scrubbed through
+        # the bare name and the suffix left standing.
+        p = _PN_CELL_ROLE_TAIL_RE.sub("", p).strip(" ,")
         if len(p) < 2 or _PN_SKIP_PARTY_RE.match(p) or not re.search(r"[A-Za-z0-9]", p):
             continue
         if _pn_is_party_role(p):  # a bare role label ("Plaintiff") is not a name
             continue
+        if _pn_cell_is_credential(p):
+            continue
         clean.append((p, is_short))
     return clean
+
+
+# A parties-page ROLE column that the E-Court export glues onto the name in
+# "Other Names": "<Name> Lead Attorney", "<Name> Former Lead Attorney",
+# "<Name> Associated Attorney", "<Name> Attorney of Record". Trimmed from the
+# TAIL only, where the export puts it; a firm named "Attorney" anywhere else
+# is untouched.
+_PN_CELL_ROLE_TAIL_RE = re.compile(
+    r"(?:^|[ \t]+)(?:(?:(?:former|prior|current)[ \t]+)?(?:lead|associated?|"
+    r"co-?|trial|appellate|managing|supervising)?[ \t]*attorneys?"
+    r"(?:[ \t]+of[ \t]+record)?(?:[ \t]+for[ \t]+\w+)?"
+    r"|(?:in[ \t]+)?pro[ \t]+(?:per|se))[ \t.,]*$", re.IGNORECASE)
+
+
+def _pn_cell_is_credential(piece):
+    """True when a template cell piece is nothing but credentials — "M.D.",
+    "Esq.", "R.N., BSN", "Ph.D." — every comma group a known or generic
+    credential by `_pn_credential_kind`'s own rules. A degree is never a party,
+    and registered as a `person` it was replaced 396 times in one batch: every
+    physician's credential in every caption and signature block."""
+    groups = [g.strip() for g in piece.split(",") if g.strip()]
+    if not groups:
+        return False
+    for g in groups:
+        comps = [c.strip() for c in g.split("/")]
+        single = len(comps) == 1 and "." not in g and "-" not in g
+        if not all(_pn_cred_component_ok(c, single=single) for c in comps if c):
+            return False
+    return True
 
 
 def _pn_folder_casenos(folder, log=None):
@@ -14534,6 +14800,14 @@ def _pn_load_key(path, registry, log, remint_recycled=False):
         # onto the fake this key already carries.
         elif cat == "case_number":
             registry._memo.setdefault(("caseno", real.lower()), fake)
+        elif cat == "department":
+            # The digits are drawn per NUMBER and every label form shares
+            # them; a re-run beside the key that had not seen "Dept 515"
+            # drew fresh digits for it and one department read as two.
+            rm, fm = _PN_DEPT_RE.search(real), _PN_DEPT_RE.search(fake)
+            if rm and fm:
+                registry._memo.setdefault(
+                    ("department", rm.group(1).lower()), fm.group(1))
         elif cat == "address":
             core = _pn_addr_street_key(real)[0]
             # The memo holds the street NAME alone (the only part faked), so a
@@ -14543,6 +14817,16 @@ def _pn_load_key(path, registry, log, remint_recycled=False):
             if core and fake_name:
                 registry._memo.setdefault(("street", core.lower()), fake_name)
                 registry._used.add(fake_name.lower())
+            # …and the HOUSE NUMBER's slot, where the key's fake carries a
+            # faked one, so a second spelling of the parcel in a later
+            # document keeps the number the delivered export has. A key
+            # written when the number was kept verbatim seeds nothing
+            # (a memo of the real number would hand `digits` its own value).
+            rn = re.match(r"\s*(\d+)", real)
+            fn = re.match(r"\s*(\d+)", fake)
+            if rn and fn and rn.group(1) != fn.group(1):
+                registry._memo.setdefault(("housenum", rn.group(1)),
+                                          fn.group(1))
 
         # A person-token row DERIVED from the judge's (or a staff member's)
         # full name exists for the reversal macro only. Loading it as a match
@@ -14575,6 +14859,7 @@ def _pn_load_key(path, registry, log, remint_recycled=False):
         # ways.
         if (cat in ("person-token", "entity-token") and len(real.split()) == 1
                 and (_pn_is_generic_token(_pn_word_base(real))
+                     or _pn_is_name_particle(_pn_word_base(real))
                      or not _pn_is_name_token(real)
                      or _pn_word_base(real) in registry.keep_words
                      # …and the entity path's own floor on a bare word
@@ -14766,6 +15051,8 @@ def _pn_build_terms(names, casenos, extra_terms, registry=None, _prewarm=True):
     for raw in extra_terms or []:
         if _pn_is_never_fake(raw) or _is_our_own(raw):
             continue
+        if _pn_append_split_spelling(terms, raw, "--term"):
+            continue
         if re.search(r"\d", raw) and not re.search(r"[A-Za-z]{2}", raw):
             terms.append(_PnTerm("case_number", raw, _pn_fake_caseno(raw, registry),
                                  whole_word=False, case_sensitive=False,
@@ -14783,6 +15070,38 @@ def _pn_build_terms(names, casenos, extra_terms, registry=None, _prewarm=True):
     # the fake middle name's letter so they still read as one.
     _pn_align_initials(out)
     return out
+
+
+def _pn_append_split_spelling(terms, raw, source):
+    """A `--term` or worksheet value that is an OCR SPLIT of a word already
+    bound — "HEAL TH" for the "Health" of a bound "Verdugo Hills Health
+    Center", "MEDI CAL" for "Medical" — is registered as an ALT SPELLING of
+    that word, carrying its fake, and never tokenised. Tokenised, it minted
+    `HEAL` and `TH` as people: "TH" then matched nothing a reader would call a
+    name, and "MEDI" rewrote "Medical Malpractice" throughout a batch. The
+    corroboration is the CONCATENATION, the rule `_pn_word_breaks` already
+    states: the pieces, run together, spell exactly one bound token, so the
+    value is that token printed with a gap in it. Two or more pieces, letters
+    only, and the target a bare token term already in `terms` — a word that
+    was refused a token (generic, a particle) offers nothing to alias onto and
+    the value falls through to the ordinary path. Returns True when it bound.
+
+    The registered term is DERIVED (an alt-spelling row in the key, marked
+    and grouped under its word) and whole-word, so a `yes` on the worksheet
+    row still scrubs the split spelling wherever the export carries it."""
+    pieces = raw.split()
+    if len(pieces) < 2 or not all(re.fullmatch(r"[A-Za-z]+", p) for p in pieces):
+        return False
+    joined = "".join(pieces).lower()
+    for t in terms:
+        if (t.category in ("person-token", "entity-token") and not t.derived
+                and len(t.real.split()) == 1
+                and _pn_word_base(t.real) == joined):
+            terms.append(_PnTerm(t.category, raw, _pn_titlecase_like(t.fake, raw),
+                                 whole_word=True, case_sensitive=False,
+                                 priority=0, source=source, derived=True))
+            return True
+    return False
 
 
 def _pn_find_folder_key(folder, log):
@@ -15267,7 +15586,9 @@ _PN_LABEL_RES = (
     # a name word, which "Must Be Licensed" is not.
     re.compile(r"(?i:qualifying[ \t]+individual)[ \t]*:?" + _PN_LABEL_GAP +
                r"(?P<n>" + _PN_LABEL_NAME + r")(?P<strict>)"),
-    re.compile(r"/s/[ \t]*(?P<n>" + _PN_LABEL_NAME + r")"),
+    # The name may stand on the line UNDER the "/s/" — a proof of service
+    # signs that way at its foot, and the declarant shipped fourteen times.
+    re.compile(r"/s/[ \t]*\n?[ \t]*(?P<n>" + _PN_LABEL_NAME + r")"),
     re.compile(r"(?i:attn|attention)[ \t]*:?" + _PN_LABEL_GAP +
                r"(?P<n>" + _PN_LABEL_NAME + r")"),
     re.compile(r"(?i:dear)[ \t]+(?i:mr|ms|mrs|dr|messrs)\.?[ \t]+"
@@ -16030,6 +16351,12 @@ _PN_COURT_STAFF_RE = re.compile(
 # box, so it wraps exactly there — "David W. Slayton,\nExecutive Officer/
 # Clerk of Court" — and a same-line-only pattern never saw the Executive
 # Officer at all. Same reasoning and same bound as `_PN_LABEL_GAP`.
+# A register of actions names the reporter with the licence beside the name:
+# "Court Reporter Pro Tempore (Maria Lopez (CSR 12345))". Name-first, the
+# CSR number the anchor; the number itself is an identifier class.
+_PN_COURT_REPORTER_CSR_RE = re.compile(
+    r"(?P<n>" + _PN_LABEL_NAME + r")[ \t]*\(?[ \t]*(?:CSR|C\.S\.R\.)"
+    r"[ \t]*(?:no\.?|#)?[ \t]*\d{4,6}")
 _PN_COURT_STAFF_NAME_FIRST_RE = re.compile(
     r"(?P<n>" + _PN_LABEL_NAME + r")[ \t]*,[ \t]*\n?[ \t]*"
     r"(?i:judicial\s+assistant|courtroom\s+assistant|court(?:room)?\s+clerk|"
@@ -16069,9 +16396,12 @@ _PN_SALUTATION_LEAD = r"(?:Mr|Mrs|Ms|Dr|Miss|Messrs)\.?[ \t]+"
 # A department / courtroom number ("Department 515", "Dept. 515", "Dept 72",
 # "Department No. 515"). Only the LABELED number is faked, keeping the label
 # word — a bare "515" elsewhere (a page, a dollar amount) is left alone.
+# The number may be QUOTED — a minute order writes `Department "515"` — so
+# a quote mark on either side is admitted and kept; the label and the quotes
+# are the furniture, the digits are the value.
 _PN_DEPT_RE = re.compile(
     r"\b(?:dept|department)\.?[ \t]*(?:no\.?|number|#)?[ \t]*:?[ \t]*"
-    r"(\d{1,3}[A-Z]?)(?!\w)", re.IGNORECASE)
+    r"[\"“”'‘’]?(\d{1,3}[A-Z]?)[\"“”'‘’]?(?!\w)", re.IGNORECASE)
 
 # The judge is DISCOVERED from the document via a title ("Hon. Dana Whitaker",
 # "Judge Whitaker") — no name is hard-coded. A title + 2-3 words is a full name
@@ -16080,6 +16410,15 @@ _PN_DEPT_RE = re.compile(
 # of trailing non-name words.
 _PN_JUDGE_CAPTURE_RE = re.compile(
     _PN_JUDICIAL_TITLE + r"[ \t]+(?:[A-Z]\.[ \t]+)?"
+    r"(?P<n>[A-Z][A-Za-z.'’-]+(?:[ \t]+[A-Z][A-Za-z.'’-]+){0,2})")
+# The same capture behind a LABEL — a complaint's caption reads "Judicial
+# Officer: Dana Whitaker", a minute order's heading table "Judge: Dana
+# Whitaker" — which is not a title and reached no anchor, so the judge
+# shipped in the clear on the one page every reader starts from.
+_PN_JUDGE_LABEL_RE = re.compile(
+    r"(?i:judicial[ \t]+officer|judge|commissioner|referee|"
+    r"assigned[ \t]+(?:to|judge)|before)[ \t]*:[ \t]*"
+    r"(?:(?i:hon\.?|honorable)[ \t]+)?(?:[A-Z]\.[ \t]+)?"
     r"(?P<n>[A-Z][A-Za-z.'’-]+(?:[ \t]+[A-Z][A-Za-z.'’-]+){0,2})")
 # Words that follow a title but do not name the judge ("Presiding", "of the
 # Superior Court", "pro tem"), so the capture is CUT at the first one. Includes
@@ -16122,11 +16461,15 @@ def _pn_reflow(original, fake):
     the fake instead — the line count survives even though the wrap moves."""
     if "\n" not in original:
         return fake
-    seps = re.findall(r"\s+", original)
-    otoks, ftoks = original.split(), fake.split()
+    # A separator is a whitespace run, or a wrap carrying the next line's
+    # gutter number (`_PN_GUTTER_SEAM`): both are laid back verbatim, so the
+    # line number a term wrapped across is still in the export.
+    seps = _PN_TERM_SEP_RE.findall(original)
+    otoks = [t for t in _PN_TERM_SEP_RE.split(original) if t]
+    ftoks = fake.split()
     if ftoks and len(otoks) == len(ftoks) == len(seps) + 1:
         return "".join(t + s for t, s in zip(ftoks, seps)) + ftoks[-1]
-    return fake + "\n" * original.count("\n")
+    return fake + "".join(sp for sp in seps if "\n" in sp)
 
 
 # ── "dba" pairs found in the document text ──────────────────────────────────
@@ -17614,7 +17957,10 @@ class Pseudonymizer:
         intact. Idempotent; call before apply()."""
         _DIRS = {"n", "s", "e", "w", "ne", "nw", "se", "sw"}
         new = []
-        for m in _PN_ADDR_RE.finditer(_NFKC(text)):
+        ntext = _NFKC(text)
+        for m in _PN_ADDR_RE.finditer(ntext):
+            if _pn_addr_is_venue(ntext, m.start(), m.end()):
+                continue
             street, _suite, _cz = _pn_addr_parts(m.group(0))
             frag = _pn_addr_strip_suffix(street)
             toks = frag.split()
@@ -17716,7 +18062,8 @@ class Pseudonymizer:
             else:
                 fake = self.registry.digits(val, cat)
             new.append(_PnTerm(cat, val, fake,
-                               whole_word=True, case_sensitive=False,
+                               whole_word=cls not in _PN_UNBOUNDED_IDS,
+                               case_sensitive=False,
                                priority=2, source="document"))
         # A tracked party name INSIDE an alphanumeric token that carries a
         # digit run ("FMC_RAMIREZ_ERNEST_000007", "Ramirez000013"): the word-
@@ -17889,7 +18236,9 @@ class Pseudonymizer:
         # is faked behind a title. Both use the same registry token, so the
         # surname's fake matches across the full name and the titled forms.
         judge_surnames = {}
-        for m in _PN_JUDGE_CAPTURE_RE.finditer(text):
+        judge_matches = list(_PN_JUDGE_CAPTURE_RE.finditer(text))
+        judge_matches += list(_PN_JUDGE_LABEL_RE.finditer(text))
+        for m in judge_matches:
             words = _clean_name(m.group("n"))
             if not words:
                 continue
@@ -17903,6 +18252,20 @@ class Pseudonymizer:
                     new.append(_PnTerm("person", full, fake_full,
                                        whole_word=True, case_sensitive=False,
                                        priority=3, source="judge"))
+                # A judge captured WITH a middle initial or name ("Dana T.
+                # Whitaker" off the register's "Hon.") is written without it
+                # in the caption ("Judicial Officer: Dana Whitaker"), and the
+                # initial-spelling rule only ever ABBREVIATES a middle name —
+                # it never drops one. The two-word form binds beside it, to
+                # the same token fakes, marked derived.
+                if len(words) == 3:
+                    short = words[0] + " " + words[-1]
+                    if ("person", short.lower()) not in self.records:
+                        fake_short, _b = _pn_fake_person(short, self.registry)
+                        new.append(_PnTerm("person", short, fake_short,
+                                           whole_word=True, case_sensitive=False,
+                                           priority=3, source="judge",
+                                           derived=True))
         # Fake "<title> <surname>" wherever it appears, keeping the title and
         # faking only the surname; a bare surname elsewhere is left alone. The
         # trailing lookahead is (?!\w) — NOT (?!['’]) — so a possessive is left
@@ -17981,7 +18344,8 @@ class Pseudonymizer:
         seen_staff = set()
         for rx, cleaner in ((_PN_COURT_STAFF_RE, _clean_name),
                             (_PN_COURT_STAFF_NAME_FIRST_RE, _clean_tail),
-                            (_PN_COURT_STAFF_BY_RE, _clean_tail)):
+                            (_PN_COURT_STAFF_BY_RE, _clean_tail),
+                            (_PN_COURT_REPORTER_CSR_RE, _clean_tail)):
             for m in rx.finditer(text):
                 words = cleaner(_pn_trim_declarant(m.group("n")))
                 raw = " ".join(words)
@@ -18000,8 +18364,13 @@ class Pseudonymizer:
             num, whole = m.group(1), m.group(0)
             if ("department", whole.lower()) in self.records:
                 continue
-            fake = whole[: m.start(1) - m.start()] + self.registry.digits(
-                num, "department")
+            # Keyed on the NUMBER: every label form of one department
+            # ("Department 515", "Dept. 515", `Department "515"`) draws the
+            # same digits, and `_pn_load_key` seeds the same slot from a
+            # reused key so a form the key had not seen does not draw fresh.
+            fake = (whole[: m.start(1) - m.start()]
+                    + self.registry.digits(num, "department")
+                    + whole[m.end(1) - m.start():])
             new.append(_PnTerm("department", whole, fake, whole_word=True,
                                case_sensitive=False, priority=2, source="court"))
         self._add_terms(new)
@@ -18027,6 +18396,8 @@ class Pseudonymizer:
                 fake = self._fake_pobox(real)
             elif cat == "card":
                 fake = self._fake_card(real)
+            elif cat == "vanity phone":
+                fake = self._fake_vanity_phone(real)
             else:
                 fake = faker(real)
             # The record's own pattern is what `_surviving_records` and
@@ -18085,6 +18456,21 @@ class Pseudonymizer:
                 # -> "0610612025") must not be faked as a phone; the date stays.
                 if cat == "phone" and _pn_phone_is_ocr_date(match):
                     continue
+                # A ten-digit value a LABEL has already claimed (an NPI) is
+                # that term's; and the BCRC's public lines and box are kept.
+                if cat == "phone" and (
+                        any((c, match.lower()) in self.records
+                            for c in _PN_PHONE_SHAPED_IDS)
+                        or re.sub(r"\D", "", match).lstrip("1")
+                        in _PN_PUBLIC_PHONES):
+                    continue
+                if cat == "pobox" and re.sub(r"\D", "", match) in _PN_PUBLIC_POBOXES:
+                    continue
+                # The court's own address is a public venue, kept the way a
+                # city is; a courtroom number is not a house number.
+                if cat == "address" and _pn_addr_is_venue(text, m.start(),
+                                                          m.end()):
+                    continue
                 # A card is the 4x4 shape AND the Luhn check: the shape alone
                 # is a sixteen-digit account or stamp one time in ten. And a
                 # card already bound behind an account label is that TERM's
@@ -18110,6 +18496,32 @@ class Pseudonymizer:
         if re.sub(r"\D", "", fake) == digits:
             fake = self.registry.digits(real, "pobox", seed=digits + "'")
         return fake
+
+    def _fake_vanity_phone(self, real):
+        """"(424)-INJURED" -> "(736)-SUNDIAL": the area code faked as digits
+        and the letters as a pool word of the same length, re-split on the
+        real's own separators. The word is drawn through the registry so two
+        firms' vanity words never share a fake."""
+        m = _PN_VANITY_PHONE_RE.match(real)
+        if not m:
+            return real
+        head = real[:m.start("w")]
+        head = re.sub(r"\d{3}(?!\d)", lambda d: self.registry.digits(
+            d.group(0), "areacode"), head, count=1)
+        word = m.group("w")
+        letters = re.sub(r"[^A-Za-z]", "", word)
+        pool = [w for w in _PN_ENTITY_WORDS + _PN_NAME_WORDS
+                if len(w) == len(letters) and w.isalpha()]
+        fake_word = self.registry.token(letters.lower(), pool, "vanity")
+        fake_word = re.sub(r"\d", "", fake_word).upper()
+        fake_word = (fake_word + letters.upper())[:len(letters)]
+        out, i = [], 0
+        for ch in word:
+            if ch.isalpha():
+                out.append(fake_word[i]); i += 1
+            else:
+                out.append(ch)
+        return head + "".join(out)
 
     def _fake_card(self, real):
         """A Luhn-valid card fake in `real`'s own separators, the digits drawn
@@ -18145,9 +18557,31 @@ class Pseudonymizer:
         core, _nums = _pn_addr_street_key(real)
         name = self.registry.unique(
             core, "street", lambda rng: rng.choice(_PN_STREET_NAMES))
-        lead = re.match(r"[\s]*([\d][\d\-\u2013\u2014]*)", street)
-        number = (lead.group(1) + " ") if lead else ""
+        lead = re.match(r"[\s]*([\d][\d\-\u2013\u2014 \t]*\d|\d)", street)
+        number = (self._fake_house_number(lead.group(1)) + " ") if lead else ""
         return f"{number}{name} {suffix}".strip()
+
+    def _fake_house_number(self, run):
+        """The house number faked digit for digit, at the owner's direction:
+        beside a faked street a real number still says which house on the
+        block, and a range ("414-416") keeps its shape with each end faked.
+        Drawn per NUMBER (`digits`, memo on the number), so "414" alone and
+        "414-416" agree on 414's stand-in, and injective for the reason the
+        older rule kept the number — the STREET is what is keyed on the
+        parcel; the number rides beside it and two houses on one street no
+        longer share a fake, since each number draws its own."""
+        return re.sub(r"\d+", lambda m: self.registry.digits(
+            m.group(0), "housenum"), run)
+
+    def _fake_unit(self, suite):
+        """The suite / apartment / unit NUMBER faked, the label kept ("APT 5"
+        -> "APT 8", "Suite 1500" -> "Suite 2714"): with the house number faked
+        the unit is the last thing that says which door."""
+        if not suite:
+            return ""
+        return re.sub(r"(?<=[ \t#])([A-Za-z]?)(\d+)([A-Za-z]?)(?![\w-])",
+                      lambda m: m.group(1) + self.registry.digits(
+                          m.group(2), "unit") + m.group(3), suite)
 
     def _fake_street(self, real):
         """Injective address fake keyed on the STREET IDENTITY (number-stripped
@@ -18160,7 +18594,10 @@ class Pseudonymizer:
         and keeping it verbatim removes the tail-rebuild that had corrupted a
         spelled-out state ("California" -> "ia")."""
         _street, suite, cityzip = _pn_addr_parts(real)
-        return self._fake_street_core(real) + suite + cityzip
+        # The ZIP+4 names a delivery point (a few houses, or one building);
+        # the five-digit ZIP is the locality and stays.
+        cityzip = re.sub(r"(\d{5})-\d{4}$", r"\1", cityzip)
+        return self._fake_street_core(real) + self._fake_unit(suite) + cityzip
 
     def _fake_city(self, city):
         # A protected locality ("Los Angeles") is kept even inside an address
@@ -19095,7 +19532,11 @@ class Pseudonymizer:
             fake = rec["fake"]
             if rec["category"] not in ("email", "url"):
                 fake = _pn_case_like(text[s:e], fake)
-            if reflow:
+            # A match that crossed a gutter seam is laid back over it
+            # whatever the caller asked, or the line number inside the
+            # match would be deleted with the text it numbered.
+            if reflow or ("\n" in text[s:e]
+                          and _PN_GUTTER_SEAM_RE.search(text[s:e])):
                 fake = _pn_reflow(text[s:e], fake)
             tail = text[e:]
             # A fake ending in a period ("Ave.", "Inc.") meeting a following
@@ -21023,7 +21464,16 @@ class Pseudonymizer:
             entity = cat in _PN_FUZZY_ENTITY_CATS
             for w in str(rec["real"]).split():
                 base = _pn_word_base(w)
-                if len(base) < _PN_NAME_FOLD_MIN or not base.isalpha():
+                # A FOUR-letter token is admitted where the operator named
+                # it (a party's given name off the template, or a --term):
+                # "VAHA" for a plaintiff "Vahe" is one slip and was never a
+                # candidate at the general floor, and a named party is
+                # exactly where a lone slip is worth a row. Held to the CLOSE
+                # reach by `_pn_scan_fold_dist`.
+                short_ok = (len(base) == _PN_NAME_FOLD_MIN - 1 and not entity
+                            and rec.get("source") in _PN_KEY_UNMATCHED_SOURCES)
+                if ((len(base) < _PN_NAME_FOLD_MIN and not short_ok)
+                        or not base.isalpha()):
                     continue
                 if entity and _pn_is_generic_token(base):
                     continue
@@ -21227,12 +21677,23 @@ class Pseudonymizer:
                 every_site[word] = hit
             return hit
 
+        short_toks = {t for t in toks if len(t) < _PN_NAME_FOLD_MIN}
+
         def _screened(word, base):
-            return (len(base) < _PN_NAME_FOLD_MIN or not base.isalpha()
+            # An ALL-CAPS four-letter word reads as an acronym to the
+            # neutrality rule ("ASIC", "PDT"); where a four-letter tracked
+            # token exists it is asked about in Title case instead, since
+            # "VAHA" beside the plaintiff's faked surname is her given name
+            # shouted, and the site corroboration below still has to hold.
+            neutral = _pn_review_is_neutral(word, known)
+            if (neutral and short_toks and word.isupper()
+                    and len(base) == _PN_NAME_FOLD_MIN - 1):
+                neutral = _pn_review_is_neutral(word.title(), known)
+            return (len(base) < _PN_NAME_FOLD_MIN - 1 or not base.isalpha()
                     or base in toks          # exact: the other scan's finding
                     or base in seen
                     or base in known or _pn_word_is_own_fake(word, known)
-                    or _pn_review_is_neutral(word, known)
+                    or neutral
                     or _pn_is_never_fake(word))
 
         # Collected first and decided after, because the decision depends on
@@ -21267,11 +21728,16 @@ class Pseudonymizer:
             # The WIDE reach, with no end-letter penalty: the net a word the
             # scan keeps mangling is caught in, decided below once the
             # document's other spellings of it are known.
+            # A FOUR-letter tracked token (an operator-named given name,
+            # `_tracked_name_token_index`) is met at ONE slip and only by a
+            # four-letter word: two edits inside four letters is half the
+            # word, and the general floor is otherwise unmoved.
             hits = [t for t in sorted(near)
                     if _pn_ocr_distance_within(
-                        base, t, _pn_scan_fold_dist(base, t, deg,
-                                                    party=t in party),
-                        min_len=_PN_NAME_FOLD_MIN, ends=False)]
+                        base, t,
+                        (_pn_scan_fold_dist(base, t, deg, party=t in party)
+                         if len(t) >= _PN_NAME_FOLD_MIN else 1),
+                        min_len=min(_PN_NAME_FOLD_MIN, len(t)), ends=False)]
             if not hits:
                 continue
             # What a LONE variant has to meet: the scan reach on a clean page
@@ -21285,9 +21751,21 @@ class Pseudonymizer:
             # word the document has already shown the scan mangling.
             close = [t for t in hits
                      if (t in spell or not spell)
-                     and _pn_ocr_distance_within(base, t,
-                                                 _pn_scan_fold_dist(base, t),
-                                                 min_len=_PN_NAME_FOLD_MIN)]
+                     and _pn_ocr_distance_within(
+                         base, t,
+                         (_pn_scan_fold_dist(base, t)
+                          if len(t) >= _PN_NAME_FOLD_MIN else 1.5),
+                         min_len=min(_PN_NAME_FOLD_MIN, len(t)))]
+            # A word near NOTHING but a four-letter token is asked about
+            # only at a corroborated SITE — a stand-in of this run hard
+            # against it, a name label, a narrative verb — the lower-case
+            # tier's own rule: "VAHA Strangeways" is the plaintiff's given
+            # name beside her faked surname, "Vale of tears" and "Joan Baker"
+            # are one slip from Vahe and John and are nobody.
+            if (hits and all(len(t) < _PN_NAME_FOLD_MIN for t in hits)
+                    and not _pn_lower_name_site(src, m.start(), m.end(),
+                                                person_fakes, positions)):
+                continue
             # Asked LAST of the cheap screens and only of a word that is
             # already a near-miss: the corroboration walks its line, and the
             # widened pattern hands this loop ten times the candidates
@@ -28344,7 +28822,7 @@ def _write_combined_text(folder, text_subdir, log, hold=None, skip=()):
     text_dir = folder / text_subdir
     if not text_dir.is_dir():
         text_dir = folder            # older single-folder layout
-    members = []
+    members, bodies = [], {}
     skipped = {str(n).lower() for n in skip}
     for pth in sorted(text_dir.glob("*.txt"), key=lambda q: q.name.lower()):
         if not pth.is_file() or _is_tool_txt_artifact(pth):
@@ -28362,6 +28840,17 @@ def _write_combined_text(folder, text_subdir, log, hold=None, skip=()):
             log.info(f"  Combined text: {pth.name} is itself a combined file "
                      f"left by an older version — not folded in again.")
             continue
+        # A repeat DOWNLOAD of one filing ("Motion (1).pdf") is the same
+        # document twice, and folding both in hands the drafting model the
+        # text twice. Bodies identical but for the page REVIEW banners (an
+        # OCR pass can differ between two downloads) are one member.
+        norm = re.sub(r"[ \t]*[—–-]+[ \t]*REVIEW:[^\n]*", "", body)
+        norm = re.sub(r"[=\s]+", " ", norm).strip()
+        if norm in bodies:
+            log.info(f"  Combined text: {pth.name} is a duplicate of "
+                     f"{bodies[norm]} — folded in once.")
+            continue
+        bodies[norm] = pth.name
         members.append((pth.name, body))
     if not members:
         _remove_combined_text(folder, log, "there are no text exports to "
