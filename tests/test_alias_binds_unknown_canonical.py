@@ -1,7 +1,7 @@
-"""`*CANONICAL` binds the canonical when this case has not.
+"""`~CANONICAL` binds the canonical when this case has not.
 
 The shape: the only spelling of a party ANY document in the folder carries is a
-misspelling. "Vazqez" is flagged, the operator answers `*Vazquez`, and the
+misspelling. "Vazqez" is flagged, the operator answers `~Vazquez`, and the
 correct spelling appears nowhere — so there was nothing to mirror, the alias
 was refused, and the value took an unrelated pool word. One party under a
 stand-in that says nothing about the name it replaced, and the next document to
@@ -36,7 +36,7 @@ class _Capture(logging.Handler):
 
 
 def _run(canonical, value="Vazqez", already=()):
-    """Apply `*canonical` to `value`; returns (values, log lines, registry)."""
+    """Apply `~canonical` to `value`; returns (values, log lines, registry)."""
     log = logging.getLogger(f"alias-{canonical}-{value}")
     log.handlers[:] = []
     cap = _Capture()
@@ -56,7 +56,7 @@ def _run(canonical, value="Vazqez", already=()):
 # ── the shape it exists for ────────────────────────────────────────────────
 
 def test_an_unbound_canonical_is_bound_and_the_value_mirrors_it():
-    values, lines, reg = _run("*Vazquez")
+    values, lines, reg = _run("~Vazquez")
     assert set(values) == {"Vazqez", "Vazquez"}      # both need terms built
     tok = reg.tokens_for("nametok")
     assert tok["vazquez"] and tok["vazqez"]
@@ -70,7 +70,7 @@ def test_an_unbound_canonical_is_bound_and_the_value_mirrors_it():
 def test_the_binding_is_announced_by_name():
     """The refusal was the only screen on the spelling after the star, so the
     replacement for it has to be readable: a typo stays visible."""
-    _values, lines, _reg = _run("*Vazquez")
+    _values, lines, _reg = _run("~Vazquez")
     said = " ".join(m for _lvl, m in lines)
     assert "'Vazquez'" in said and "BOUND on your say-so" in said
     assert "check the spelling" in said.lower()
@@ -78,7 +78,7 @@ def test_the_binding_is_announced_by_name():
 
 def test_a_canonical_this_case_already_binds_is_never_re_bound():
     """The ordinary path: mirror what is there, mint nothing, say nothing new."""
-    values, lines, reg = _run("*Sarkisyan", already=["Manuel Sarkisyan"])
+    values, lines, reg = _run("~Sarkisyan", already=["Manuel Sarkisyan"])
     assert "Sarkisyan" not in values          # not re-created
     assert not any("BOUND on your say-so" in m for _l, m in lines)
 
@@ -86,10 +86,10 @@ def test_a_canonical_this_case_already_binds_is_never_re_bound():
 # ── the screens that replace the refusal ───────────────────────────────────
 
 @pytest.mark.parametrize("canonical", [
-    "*Doe",        # a common-word surname — `_pn_is_name_token` refuses it
-    "*the",        # not a name at all
-    "*Esq",        # a professional suffix, not a name
-    "*Court",      # a role/procedural word
+    "~Doe",        # a common-word surname — `_pn_is_name_token` refuses it
+    "~the",        # not a name at all
+    "~Esq",        # a professional suffix, not a name
+    "~Court",      # a role/procedural word
 ])
 def test_a_canonical_that_is_not_name_shaped_still_refuses(canonical):
     """The same question the term builder asks before a bare token may exist,
@@ -102,10 +102,10 @@ def test_a_canonical_that_is_not_name_shaped_still_refuses(canonical):
 
 
 @pytest.mark.parametrize("canonical,value,bound", [
-    ("*Vazquez", "Vazqez", True),      # one slip — a misspelling
-    ("*Smythe", "Smyth", True),        # two, at a length that allows it
-    ("*Nobody", "Antiono", False),     # five — not a spelling of anything
-    ("*Vazquez", "Vatqual", False),    # a mangled scan, past the report reach
+    ("~Vazquez", "Vazqez", True),      # one slip — a misspelling
+    ("~Smythe", "Smyth", True),        # two, at a length that allows it
+    ("~Nobody", "Antiono", False),     # five — not a spelling of anything
+    ("~Vazquez", "Vatqual", False),    # a mangled scan, past the report reach
 ])
 def test_the_pair_must_be_near_enough_to_be_ONE_misspelling(canonical, value,
                                                             bound):
@@ -124,7 +124,7 @@ def test_the_reach_is_tighter_than_the_alias_onto_a_BOUND_canonical():
     is the operator settling which of two spellings is the person; inventing a
     third string is a bigger step. So the mangled scan refused above is honoured
     the moment the correct spelling is bound."""
-    values, lines, reg = _run("*Vazquez", value="Vatqual",
+    values, lines, reg = _run("~Vazquez", value="Vatqual",
                               already=["Manuel Vazquez"])
     assert reg.tokens_for("nametok")["vatqual"]        # honoured
     assert not any("BOUND on your say-so" in m for _l, m in lines)
@@ -173,7 +173,7 @@ def test_the_bound_canonical_is_pinned_and_the_misspelling_is_not(tmp_path):
     terms = P._pn_build_terms(["Manuel Sarkisyan"], [], [], registry=reg)
     d = P._pn_parse_decision_rows(
         [["Value", "Fix? (yes/no)", "Type", "Notes"],
-         ["Vazqez", "*Vazquez", "LEAK", ""]])
+         ["Vazqez", "~Vazquez", "LEAK", ""]])
     terms, values = P._pn_apply_aliases(d, terms, reg, log)
     terms = P._pn_build_terms(["Manuel Sarkisyan"], [], values, registry=reg)
     pz = P.Pseudonymizer(terms, [], registry=reg)
@@ -201,7 +201,7 @@ def test_a_fix_leaks_refusal_binds_nothing():
     reg = P._PnFakeRegistry()
     terms = P._pn_build_terms(["Vazqez"], [], [], registry=reg)
     decisions = {"vazqez": {"value": "Vazqez", "fix": "yes",
-                            "fixcell": "*Vazquez", "alias": "Vazquez"}}
+                            "fixcell": "~Vazquez", "alias": "Vazquez"}}
     before = dict(reg.tokens_for("nametok"))
     _terms, values = P._pn_apply_aliases(decisions, terms, reg,
                                          logging.getLogger("x"),
@@ -222,7 +222,7 @@ def test_the_starred_spelling_takes_the_clean_word_from_the_misspelling():
     held = reg.tokens_for("nametok")["vazqez"]
     assert held.lower() in P._PN_POOL_WORDS
     decisions = {"vazqez": {"value": "Vazqez", "fix": "yes",
-                            "fixcell": "*Vazquez", "alias": "Vazquez"}}
+                            "fixcell": "~Vazquez", "alias": "Vazquez"}}
     _terms, values = P._pn_apply_aliases(decisions, terms, reg,
                                          logging.getLogger("x"))
     toks = reg.tokens_for("nametok")

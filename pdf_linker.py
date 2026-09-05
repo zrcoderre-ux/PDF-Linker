@@ -13134,7 +13134,7 @@ def _pn_term_lead(real, category):
 class _PnTerm:
     __slots__ = ("category", "real", "fake", "pattern", "flags", "priority",
                  "source", "whole_word", "count", "loaded", "derived",
-                 "cap_only", "lead")
+                 "cap_only", "lead", "ocr_fix")
 
     def __init__(self, category, real, fake, *, whole_word, case_sensitive,
                  priority, source, derived=False, follow=None):
@@ -13157,6 +13157,10 @@ class _PnTerm:
         # It is a real value only if a document actually contained it, so it
         # earns a reversal-key row by MATCHING and never merely by existing.
         self.derived = derived
+        # An OCR FIX (`*CORRECT TEXT`): a scan error replaced by what the
+        # correct text becomes. Its key row is forward-only (the pinned
+        # sheet), never harvested for tokens, never seeded into the memo.
+        self.ocr_fix = False
         # A bare word split out of a longer name never matches a LOWER-CASE
         # occurrence — see `_pn_term_is_cap_only`.
         self.cap_only = _pn_term_is_cap_only(category)
@@ -14698,9 +14702,23 @@ def _pn_load_key(path, registry, log, remint_recycled=False):
             log.warning(
                 f"  Pseudonym key: the Replacement cell for {real!r} reads "
                 f"{ctrl!r} — Excel could not evaluate what was typed there. If "
-                f"you meant '*{{value}}' (this value is a misspelling of that "
+                f"you meant '{_PN_ALIAS_MARK}{{value}}' (this value is a misspelling of that "
                 f"one), re-type it with a STAR, which Excel leaves as plain "
                 f"text; the row is being ignored this run.")
+            continue
+        if _pn_cell_is_ocr_keep(ctrl) or _pn_ocr_fix_target(ctrl):
+            # `*Smith` / `*David {said}`: this Real Value is a SCAN ERROR of
+            # the text after the star. The stored fake is gone (the operator
+            # typed over it), so the binding is re-derived from the correct
+            # text's own — in `_pn_apply_ocr_fixes`, after every other row
+            # has been read.
+            target, frags = _pn_ocr_keep_spec(real, ctrl)
+            if target is None:
+                target = _pn_ocr_fix_target(ctrl)
+            key_decisions[real.lower()] = {
+                "value": real, "type": "OCR-FIX", "fix": "yes",
+                "replacement": None, "fake_values": frags, "fixcell": ctrl,
+                "alias": None, "ocr_fix": target, "notes": "pseudonym key"}
             continue
         pair_frags = (_pn_bracket_keep(real, ctrl)
                       if _pn_cell_is_alias_keep(ctrl) else None)
@@ -14848,10 +14866,25 @@ def _pn_load_key(path, registry, log, remint_recycled=False):
             occ = int(cell("occurrences") or 0)
         except (TypeError, ValueError):
             occ = 0
+        status = str(cell("status") or "").strip().lower()
+        ocr_row = status == _PN_OCR_STATUS
 
         # Seed the registry so re-derivations and new values stay consistent.
         for w in [fake] + fake.split():
             registry._used.add(w.lower())
+        if ocr_row:
+            # A scan error's Replacement is another value's stand-in (or the
+            # correct word itself): seeding the memo under the garble would
+            # make it a binding of its own. It is a live term and nothing
+            # else — built below, past every screen a name row takes.
+            t = _PnTerm(cat if cat in _PN_KEY_TOKEN_CATS
+                        or cat in ("person", "entity") else cat,
+                        real, fake, whole_word=True, case_sensitive=False,
+                        priority=1 if cat in _PN_KEY_TOKEN_CATS else 2,
+                        source=source, derived=True)
+            t.count, t.loaded, t.ocr_fix = occ, True, True
+            terms.append(t)
+            continue
         if cat in ("person-token", "entity-token"):
             registry._memo.setdefault(("name_or_entity", real.lower()), fake)
         if cat in ("email", "url"):
@@ -14981,8 +15014,7 @@ def _pn_load_key(path, registry, log, remint_recycled=False):
         # the form a line break actually leaves in the text. Ownership would
         # then flip to the synthetic spelling on the first re-run, undoing the
         # whole point of the marker.
-        t.derived = (str(cell("status") or "").strip().lower()
-                     == _PN_KEY_ALT_STATUS)
+        t.derived = status == _PN_KEY_ALT_STATUS
         terms.append(t)
     wb.close()
 
@@ -15021,7 +15053,7 @@ def _pn_load_key(path, registry, log, remint_recycled=False):
         said += ([f"{never} marked 'never' (keep in every folder)"]
                  if never else [])
         said += [f"{part} bracketed keep-spec(s)"] if part else []
-        said += ([f"{aliased} '*' alias(es) (a misspelling of another value)"]
+        said += ([f"{aliased} '{_PN_ALIAS_MARK}' alias(es) (a misspelling of another value)"]
                  if aliased else [])
         log.info("  Pseudonym key: " + ", ".join(said)
                  + " in the Replacement column will be honored.")
@@ -17100,6 +17132,7 @@ class Pseudonymizer:
                 "source": t.source, "count": t.count, "pattern": t.pattern,
                 "flags": t.flags, "loaded": getattr(t, "loaded", False),
                 "derived": getattr(t, "derived", False),
+                "ocr_fix": getattr(t, "ocr_fix", False),
                 "lead": getattr(t, "lead", None),
                 "cap_only": _pn_term_is_cap_only(t.category)}
         # Real values pre-bound from a reused key: authoritative, so the
@@ -17192,6 +17225,7 @@ class Pseudonymizer:
                 "source": t.source, "count": 0, "pattern": t.pattern,
                 "flags": t.flags, "loaded": getattr(t, "loaded", False),
                 "derived": getattr(t, "derived", False),
+                "ocr_fix": getattr(t, "ocr_fix", False),
                 "lead": getattr(t, "lead", None),
                 "cap_only": _pn_term_is_cap_only(t.category)}
             added = True
@@ -22627,8 +22661,8 @@ class Pseudonymizer:
         seen = {(r["category"], str(r["real"]).lower()) for r in keyrows}
         derived = []
         for r in keyrows:
-            if r["category"] not in ("person", "entity"):
-                continue
+            if r["category"] not in ("person", "entity") or r.get("ocr_fix"):
+                continue          # a scan error's words are nobody's tokens
             tokcat = f"{r['category']}-token"
             for rtok, ftok in _pn_name_token_rows(r["real"], r["fake"]):
                 # A GENERIC word never becomes a bare term (`_pn_is_generic_token`),
@@ -22822,6 +22856,8 @@ class Pseudonymizer:
 
         def row_status(r):
             key = (r["category"], str(r["real"]).lower())
+            if r.get("ocr_fix"):
+                return _PN_OCR_STATUS
             if key in alt_rows:
                 return _PN_KEY_ALT_STATUS
             if owner_count.get(key):
@@ -22881,8 +22917,12 @@ class Pseudonymizer:
                     or any(w in live for w in
                            _PN_FAKE_WORD_RE.findall(str(r["fake"]).lower())))
 
-        applied = [r for r in keyrows if in_play(r)]
-        pinned = [r for r in keyrows if not in_play(r)]
+        # An OCR-fix row is pinned WHATEVER it matched: its Replacement is
+        # another row's (or the correct word itself), so in reverse it would
+        # either make that fake ambiguous or un-fix the word — see
+        # `_PN_OCR_MARK`.
+        applied = [r for r in keyrows if in_play(r) and not r.get("ocr_fix")]
+        pinned = [r for r in keyrows if not in_play(r) or r.get("ocr_fix")]
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = _PN_KEY_MAIN_SHEET
@@ -25846,7 +25886,11 @@ def _pn_decision_is_keep(d):
 # there is no error to explain, and a MULTI-WORD canonical needs no quoting —
 # Excel rejects `=ANTIONIO SARKISYAN` as a malformed formula and accepts
 # `*ANTIONIO SARKISYAN` as a string.
-_PN_ALIAS_MARK = "*"
+# …and now a TILDE. The star was reassigned at the owner's direction to the
+# OCR FIX (`_PN_OCR_MARK`, below): `*Smith` says the value is a SCAN ERROR
+# and the correct text is Smith. Everything said above about the star holds
+# of the tilde — ordinary text in every spreadsheet, no formula, no quoting.
+_PN_ALIAS_MARK = "~"
 # `=` is still READ, and deliberately not advertised anywhere: it was this
 # control's first spelling, so a key or worksheet already carrying one must
 # keep meaning what it said rather than fall through as an undecided row (or,
@@ -25860,6 +25904,193 @@ _PN_ALIAS_QUOTES = "\"'\u201c\u201d\u2018\u2019"
 # one is arithmetic or a function call, not a value being named, so it falls
 # through to the ordinary explicit-replacement rule.
 _PN_ALIAS_FORMULA_CHARS = "()!&%*/+;:"
+
+# The OCR FIX: `*Smith` in a Fix? or Replacement cell says "this value is a
+# SCAN ERROR, and the text it garbled is Smith". The alias (`~Smith`) says the
+# opposite thing about the same pair — two spellings of one name, each kept as
+# its own spelling, the second faked as a SLIP of the first's stand-in — and
+# a scan error is not a spelling: nobody wrote "Smlth", the page did, and the
+# export should read as the document does. So the value is REPLACED BY WHAT
+# THE CORRECT TEXT BECOMES: the correct text's own stand-in, word for word,
+# where this case binds it (or binds it now, on the operator's say-so, as the
+# alias binds its canonical), and the correct text itself where it is not a
+# name at all ("cuve!nants" -> "covenants"). Reversal is the care in it: a row
+# `Smlth -> <Smith's fake>` beside `Smith -> <Smith's fake>` is the two-Real-
+# Values-one-Replacement shape `DeAnonymize.bas` retires, and a row
+# `cuve!nants -> covenants` would UN-FIX the word in the tentative. So every
+# OCR-fix row is written to `_PN_KEY_PINNED_SHEET` — forward-only, read back
+# by `_pn_load_key` so the re-run reproduces the export, never applied in
+# reverse — under Status `_PN_OCR_STATUS`, and the fake reverses to the
+# CORRECT spelling through the canonical's own row, which is what a reader
+# wants of a scan error. `--fix-leaks` applies a worksheet `*` (the value is a
+# leak standing in the text) and refuses a key one, for the alias's reason.
+_PN_OCR_MARK = "*"
+_PN_OCR_STATUS = "ocr fix"
+
+
+def _pn_ocr_fix_target(cell):
+    """The CORRECT text a `*TEXT` cell declares its own value a scan error of,
+    or None when the cell is not an OCR fix. Quoted like an alias, refused
+    where nothing alphanumeric follows the star or a keep-spec rides in it
+    (that shape is `_pn_ocr_keep_spec`'s)."""
+    txt = str(cell or "").strip()
+    if not txt or txt[0] != _PN_OCR_MARK:
+        return None
+    txt = txt[1:].strip()
+    if len(txt) > 1 and txt[0] in _PN_ALIAS_QUOTES and txt[-1] in _PN_ALIAS_QUOTES:
+        txt = txt[1:-1].strip()
+    if not txt or not any(c.isalnum() for c in txt):
+        return None
+    if any(c in "{}[]" for c in txt):
+        return None
+    return txt
+
+
+def _pn_ocr_keep_spec(value, cell):
+    """(correct text, fragments) for a cell carrying a keep-spec AND an OCR
+    fix — `*David {said}` on "avidsaid" — else (None, None). The spec cuts
+    the value and the fix says what the cut leaves really reads; the same
+    routing `_pn_alias_keep_spec` applies to `~`."""
+    brackets, braces = _pn_keep_spec_parts(cell)
+    if not (brackets or braces):
+        return None, None
+    rest = _pn_keep_spec_strip(cell)
+    target = _pn_ocr_fix_target(rest)
+    if not target:
+        return None, None
+    frags = _pn_bracket_keep(value, cell)
+    if not frags:
+        return None, None
+    return target, frags
+
+
+def _pn_cell_is_ocr_keep(cell):
+    """True when `cell` carries both a keep-spec and an OCR fix."""
+    brackets, braces = _pn_keep_spec_parts(cell)
+    if not (brackets or braces):
+        return False
+    return bool(_pn_ocr_fix_target(_pn_keep_spec_strip(cell)))
+
+
+def _pn_ocr_target_is_name(target):
+    """Whether the CORRECT text of an OCR fix is a NAME this case may bind —
+    every word capitalised where it is written and at least one of them a
+    name token — or ordinary text to be written verbatim ("covenants", a
+    locality the house style keeps). Screened as `_pn_alias_bind_canonical`
+    screens a canonical: never form boilerplate."""
+    words = [w for w in str(target).split() if _pn_word_affixes(w)[1]]
+    if not words or _pn_is_never_fake(target):
+        return False
+    cores = [_pn_word_affixes(w)[1] for w in words]
+    if not all(c[0].isupper() for c in cores):
+        return False
+    return any(_pn_is_name_token(c) for c in cores)
+
+
+def _pn_apply_ocr_fixes(decisions, terms, registry, log, allow_rebind=True):
+    """Honour every `*CORRECT TEXT` OCR fix in `decisions`: the value is a scan
+    error, so it is replaced by what the correct text becomes — the correct
+    text's own stand-in where this case binds it (bound now where it does
+    not, when it is a name), the correct text itself where it is not a name.
+    Returns the new term list.
+
+    Word for word, as the alias is: a multi-word fix pairs each garbled word
+    with the word it garbles (`_pn_alias_word_pairs`), and a garbled word
+    whose correct word has a bare token of its own gets a token-level fix
+    too, so "Smlth" standing alone reads as Smith's stand-in beside "Jonh
+    Smlth". Every existing term for the garbled value is dropped — it is the
+    key row being corrected, and left standing it would keep applying the
+    unrelated stand-in the garble drew.
+
+    Each term built here is `derived` and `ocr_fix`, which is what routes its
+    key row to the pinned sheet (`write_key`) and skips it at the harvest and
+    the memo (`_pn_load_key`). `allow_rebind=False` for `--fix-leaks`: a value
+    the exports already carry a stand-in for is left alone there, since the
+    stand-in it would move is standing in text that pass cannot re-derive."""
+    fixes = [(v, d["ocr_fix"]) for d in decisions.values() if d.get("ocr_fix")
+             for v in (d.get("fake_values") or [d["value"]])]
+    if not fixes:
+        return terms
+
+    def norm(x):
+        return " ".join(str(x).split()).lower()
+
+    def find(real):
+        n = norm(real)
+        hits = [t for t in terms if norm(t.real) == n]
+        hits.sort(key=lambda t: (t.derived, getattr(t, "ocr_fix", False)))
+        return hits[0] if hits else None
+
+    drop = set()
+    added = []
+    for value, target in fixes:
+        if norm(value) == norm(target):
+            log.warning(f"  OCR FIX: {value!r} names ITSELF as the correct "
+                        f"text — nothing to fix; the row is left as it is.")
+            continue
+        if find(value) is not None and not allow_rebind:
+            log.warning(
+                f"  OCR FIX: {value!r} is already bound and the exports beside "
+                f"this worksheet carry its stand-in, so this pass leaves it "
+                f"alone. Click 'Re-run PDF-Linker' to apply the fix.")
+            continue
+        canon = find(target)
+        if canon is None and _pn_ocr_target_is_name(target):
+            built = [t for t in _pn_build_terms([], [], [target], registry)
+                     if norm(t.real) == norm(target)] or                     _pn_build_terms([], [], [target], registry)
+            for t in built:
+                if find(t.real) is None:
+                    terms.append(t)
+            canon = find(target)
+            if canon is not None:
+                log.info(f"  OCR FIX: {target!r} is not spelled that way "
+                         f"anywhere in this folder, so it is being BOUND on "
+                         f"your say-so and faked {canon.fake!r} — check the "
+                         f"spelling after the '{_PN_OCR_MARK}'. Its row goes "
+                         f"to the key's '{_PN_KEY_PINNED_SHEET}' sheet.")
+        if canon is not None:
+            # A FULL-name category even where the correct text is a bare
+            # token: the value is the operator's own whole answer, and a
+            # keep-spec's weld follow reaches a full name and never a token.
+            cat = canon.category.replace("-token", "")
+            fake, prio = canon.fake, 2
+            log.info(f"  OCR FIX: {value!r} is a scan error of {target!r}, so "
+                     f"it reads {fake!r} — {target!r}'s own stand-in.")
+        else:
+            fake, cat, prio = target, "ocr-fix", 2
+            log.info(f"  OCR FIX: {value!r} is a scan error of {target!r}, "
+                     f"which is not a name this case binds — it is corrected "
+                     f"to {target!r} verbatim.")
+        drop.add(norm(value))
+        if norm(value) in {norm(a.real) for a in added}:
+            continue
+        nt = _PnTerm(cat, value, fake, whole_word=True, case_sensitive=False,
+                     priority=prio, source="ocr-fix", derived=True)
+        nt.ocr_fix = True
+        added.append(nt)
+        # …and word for word, where the correct text is a bound NAME and the
+        # garbled word has a bare token of its own to correct.
+        if canon is not None and cat in ("person", "entity"):
+            tokcat = f"{cat}-token"
+            tokens = {norm(t.real): t for t in terms
+                      if t.category == tokcat and len(str(t.real).split()) == 1}
+            for vword, cword in _pn_alias_word_pairs(value, target):
+                vb, cb = norm(_pn_word_affixes(vword)[1]),                     norm(_pn_word_affixes(cword)[1])
+                if not vb or not cb or vb == cb or cb not in tokens:
+                    continue
+                if vb in tokens:
+                    drop.add(vb)
+                if vb in {norm(a.real) for a in added}:
+                    continue
+                tt = _PnTerm(tokcat, _pn_word_affixes(vword)[1],
+                             tokens[cb].fake, whole_word=True,
+                             case_sensitive=False, priority=1,
+                             source="ocr-fix", derived=True)
+                tt.ocr_fix = True
+                added.append(tt)
+    kept = [t for t in terms if norm(t.real) not in drop
+            or getattr(t, "ocr_fix", False)]
+    return kept + added
 
 
 def _pn_alias_target(cell):
@@ -26054,7 +26285,7 @@ def _pn_alias_bind_canonical(registry, cword, cbase, vbase, log):
         log.info(f"  ALIAS: {cword!r} is not spelled that way anywhere in this "
                  f"folder, so it is being BOUND on your say-so — it takes the "
                  f"stand-in {held!r} that {vbase!r} held, and {vbase!r} is "
-                 f"re-drawn as a slip of it. Check the spelling after the '*'. "
+                 f"re-drawn as a slip of it. Check the spelling after the '~'. "
                  f"The row is written to the key's '{_PN_KEY_PINNED_SHEET}' "
                  f"sheet, since no export carries it.")
         return held
@@ -26069,7 +26300,7 @@ def _pn_alias_bind_canonical(registry, cword, cbase, vbase, log):
         return ""
     log.info(f"  ALIAS: {cword!r} is not spelled that way anywhere in this "
              f"folder, so it is being BOUND on your say-so and faked {fake!r} "
-             f"— check the spelling after the '*'. The row is written to the "
+             f"— check the spelling after the '~'. The row is written to the "
              f"key's '{_PN_KEY_PINNED_SHEET}' sheet, since no export carries "
              f"it.")
     return fake
@@ -26165,7 +26396,7 @@ def _pn_apply_aliases(decisions, terms, registry, log, allow_rebind=True):
                     f"  ALIAS: {value!r} names {canon!r}, but {cword!r} has no "
                     f"stand-in in this case — nothing to mirror, so {vword!r} "
                     f"is faked the ordinary way. (Check the spelling of the "
-                    f"value after the '*'.)")
+                    f"value after the '~'.)")
                 continue
             cand = registry.fold_onto(vbase, cbase, prev_fake, "nametok")
             if cand is None:
@@ -26230,7 +26461,7 @@ def _pn_parse_decision_rows(rows):
         raw = str(cell("fix? (yes/no)") or "").strip()
         low = raw.lower()
         replacement, fake_values, fixcell, alias = None, None, None, None
-        phrase, phrase_parts = False, None
+        phrase, phrase_parts, ocr_fix = False, None, None
         if raw in _PN_XL_ERROR_VALUES:
             # Excel's own error text, not an instruction — see
             # `_PN_XL_ERROR_VALUES`. Left UNDECIDED, so the row comes back for
@@ -26275,8 +26506,25 @@ def _pn_parse_decision_rows(rows):
                 fix, replacement = "yes", raw
             else:
                 fix, phrase, phrase_parts = "yes", True, parts
+        elif _pn_cell_is_ocr_keep(raw):
+            # `*David {said}`: a keep-spec and an OCR fix in one cell — the
+            # spec cuts the value, the fix says what the cut leaves really
+            # reads. Same three outcomes as the alias form.
+            frags = _pn_bracket_keep(val, raw)
+            fixcell = raw
+            if frags is None:
+                fix, replacement = "yes", raw
+            elif frags:
+                fix, fake_values = "yes", frags
+                ocr_fix = _pn_ocr_fix_target(_pn_keep_spec_strip(raw))
+            else:
+                fix = "no"
+        elif _pn_ocr_fix_target(raw):
+            # `*Smith`: this value is a SCAN ERROR of Smith, and reads as
+            # Smith reads — see `_PN_OCR_MARK`. A `yes` to every other pass.
+            fix, ocr_fix, fixcell = "yes", _pn_ocr_fix_target(raw), raw
         elif _pn_cell_is_alias_keep(raw):
-            # `*David {said}`: BOTH controls in one cell. The spec cuts the
+            # `~David {said}`: BOTH controls in one cell. The spec cuts the
             # value and the alias fakes what the cut leaves. The three spec
             # outcomes are the ones a keep-spec always has — see
             # `_pn_alias_keep_spec`.
@@ -26309,7 +26557,7 @@ def _pn_parse_decision_rows(rows):
                             "fix": fix, "replacement": replacement,
                             "fake_values": fake_values, "fixcell": fixcell,
                             "alias": alias, "phrase": phrase,
-                            "phrase_parts": phrase_parts,
+                            "phrase_parts": phrase_parts, "ocr_fix": ocr_fix,
                             "notes": str(cell("notes") or "").strip(),
                             # Master KEEP only: which case folders this decision
                             # came from, so a run can tell its OWN past decision
@@ -27996,7 +28244,7 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
         import openpyxl
     except ImportError:
         lines = ["Potential leaks — set Fix? to yes (auto fake), no (leave it "
-                 "here), never (never fake it, in any folder), *OTHER VALUE "
+                 "here), never (never fake it, in any folder), ~OTHER VALUE "
                  "(this is a misspelling of that one), type the exact "
                  "replacement, or [bracket] the part to KEEP (the rest is "
                  "faked)", ""]
@@ -28050,11 +28298,11 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
         # clause per control word and no room for prose. `_pn_xl_fit_validations`
         # is the belt; keeping the authored text under the limit is what stops
         # the next control word costing the operator the whole explanation.
-        dv.prompt = ("yes = auto fake · no = leave it here · never = never fake "
-                     "it, in any folder · phrase = fake it whole, kept words "
-                     "too · *OTHER VALUE = a misspelling of that value, faked "
-                     "the same way · or type the exact replacement · or "
-                     "[bracket] the part to KEEP; the rest is faked")
+        dv.prompt = ("yes = auto fake · no = leave it · never = never fake it, "
+                     "in any folder · phrase = fake it whole, kept words too · "
+                     "~OTHER VALUE = a misspelling of it · *CORRECT TEXT = a "
+                     "scan error of it · or type the replacement · or [bracket] "
+                     "the part to KEEP")
         ws.add_data_validation(dv)
         dv.add(f"{fix_col}2:{fix_col}{len(rows) + 1}")
     except Exception:
@@ -28066,10 +28314,11 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
                     f"item(s) to triage (Fix?: 'yes' scrubs with an auto fake, "
                     f"'no' leaves it here, 'never' leaves it in every folder, "
                     f"'phrase' fakes it whole with any kept word inside it, "
-                    f"'*OTHER VALUE' says this is a misspelling of that one, "
+                    f"'~OTHER VALUE' says this is a misspelling of that one, "
+                    f"'*CORRECT TEXT' says this is a scan error of that text, "
                     f"or type the exact replacement to use).")
         if prefilled:
-            log.info(f"  {prefilled} row(s) arrive with a '*OTHER VALUE' "
+            log.info(f"  {prefilled} row(s) arrive with a '~OTHER VALUE' "
                      f"alias already typed in — each reads as a misspelling "
                      f"of a value this case tracks; leave it to accept, clear "
                      f"or overtype it if not (Notes says which).")
@@ -31766,10 +32015,13 @@ def _fix_leaks_mode(folder, args, cfg, log):
     # in that text.
     key_aliases = [d["value"] for d in key_decisions.values() if d.get("alias")]
     key_phrases = [d["value"] for d in key_decisions.values() if d.get("phrase")]
-    if key_aliases or key_phrases:
-        moved = key_aliases + key_phrases
-        what = " / ".join(w for w, v in (("a '*' alias", key_aliases),
-                                          ("'phrase'", key_phrases)) if v)
+    key_ocr = [d["value"] for d in key_decisions.values() if d.get("ocr_fix")]
+    if key_aliases or key_phrases or key_ocr:
+        moved = key_aliases + key_phrases + key_ocr
+        what = " / ".join(w for w, v in ((f"a '{_PN_ALIAS_MARK}' alias", key_aliases),
+                                          ("'phrase'", key_phrases),
+                                          (f"a '{_PN_OCR_MARK}' OCR fix", key_ocr))
+                          if v)
         msg = ("--fix-leaks: " + ", ".join(repr(v) for v in moved[:6])
                + (" …" if len(moved) > 6 else "")
                + f" carry {what} in the pseudonym key's Replacement column. "
@@ -31834,13 +32086,14 @@ def _fix_leaks_mode(folder, args, cfg, log):
             # ...unless an ALIAS says how those fragments are faked, in which
             # case `_pn_apply_aliases` hands them back below. Adding them here
             # too would build the term twice, once with an ordinary draw.
-            if not d.get("alias"):
+            if not d.get("alias") and not d.get("ocr_fix"):
                 auto_terms.extend(d["fake_values"])
             continue
-        if d.get("alias"):
-            # `*ANTIONIO`: an ordinary auto-fake whose stand-in MIRRORS another
+        if d.get("alias") or d.get("ocr_fix"):
+            # `~ANTIONIO`: an ordinary auto-fake whose stand-in MIRRORS another
             # value's, so it is derived by `_pn_apply_aliases` below — after
             # `_pn_retire_kept_key_terms`, over the terms this pass will use.
+            # `*Smith`: a scan error, read as Smith by `_pn_apply_ocr_fixes`.
             continue
         repl = (d.get("replacement") or "").strip()
         if repl and repl.lower() != d["value"].strip().lower():
@@ -31865,7 +32118,7 @@ def _fix_leaks_mode(folder, args, cfg, log):
                 rejected.append(d["value"])
                 log.warning(f"  --fix-leaks: {d['value']!r} is marked yes but "
                             f"{why} — not minting it as a name. Type a "
-                            f"replacement, or *CANONICAL if it misspells a "
+                            f"replacement, or ~CANONICAL if it misspells a "
                             f"tracked name, to apply it.")
                 continue
             auto_terms.append(d["value"])
@@ -31885,6 +32138,12 @@ def _fix_leaks_mode(folder, args, cfg, log):
         {vl: d for vl, d in decisions.items() if vl in local_vls},
         terms, registry, log, allow_rebind=False)
     auto_terms += alias_values
+    # A `*CORRECT TEXT` OCR fix in the worksheet: the leak is a scan error and
+    # reads as the correct text reads. A value already bound is left alone
+    # here, for the alias's reason.
+    terms = _pn_apply_ocr_fixes(
+        {vl: d for vl, d in decisions.items() if vl in local_vls},
+        terms, registry, log, allow_rebind=False)
     fix_terms = auto_terms + list(explicit)
     if not fix_terms and rejected:
         # Nothing was applied AND a decision was dropped: the folder is not
@@ -32652,14 +32911,15 @@ def main():
         for vl, d in leak_decisions.items():
             if d["fix"] != "yes" or vl not in ours:
                 continue
-            if d.get("alias"):
-                # A `*ANTIONIO` alias is faked like any other yes, but its fake
+            if d.get("alias") or d.get("ocr_fix"):
+                # A `~ANTIONIO` alias is faked like any other yes, but its fake
                 # MIRRORS another value's — so its term is built by
                 # `_pn_apply_aliases` below, once that value's own binding
-                # exists to be mirrored. A cell carrying a keep-spec TOO
-                # (`*David {said}`) still needs its weld-follow registered
-                # here: the fragment is welded to the kept text in the export
-                # whichever way its fake is derived.
+                # exists to be mirrored; a `*Smith` OCR fix is built by
+                # `_pn_apply_ocr_fixes` for the same reason. A cell carrying a
+                # keep-spec TOO (`~David {said}`) still needs its weld-follow
+                # registered here: the fragment is welded to the kept text in
+                # the export whichever way its fake is derived.
                 if d.get("fake_values") is not None:
                     weld_follows.update(
                         _pn_bracket_welds(d["value"], d.get("fixcell") or ""))
@@ -32797,8 +33057,9 @@ def main():
                          f"({', '.join(key_phrases[:6])}).")
             for vl, d in key_decisions.items():
                 leak_decisions[vl] = d
-                if not d.get("alias") and not d.get("phrase"):
-                    # An alias or a phrase leaves nothing of the value
+                if not d.get("alias") and not d.get("phrase") \
+                        and not d.get("ocr_fix"):
+                    # An alias, a phrase or an OCR fix leaves nothing of the value
                     # standing — it is faked whole — so there is nothing to
                     # suppress, and a spelling that somehow survives should
                     # still gate.
@@ -32818,6 +33079,12 @@ def main():
             terms, registry, log)
         if alias_values:
             terms += _pn_build_terms([], [], alias_values, registry)
+        # A `*CORRECT TEXT` OCR fix: the value is a scan error and reads as the
+        # correct text reads — after the aliases, over the final term list,
+        # since it looks the correct text's own binding up there.
+        terms = _pn_apply_ocr_fixes(
+            {vl: d for vl, d in leak_decisions.items() if vl in local_vls},
+            terms, registry, log)
 
         # Over the FINAL term list, so a loaded key term is widened too: on a
         # re-run the retired bracket row has become an ordinary binding, but

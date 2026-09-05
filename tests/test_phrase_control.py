@@ -297,7 +297,7 @@ def test_fix_leaks_refuses_a_phrase_typed_into_the_key():
     is refused beside the key alias, and the folder is left as it stands."""
     src = inspect.getsource(P._fix_leaks_mode)
     assert 'if d.get("phrase")]' in src
-    assert "if key_aliases or key_phrases:" in src
+    assert "if key_aliases or key_phrases or key_ocr:" in src
     assert "click 'Re-run PDF-Linker' instead" in src
 
 

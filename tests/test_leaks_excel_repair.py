@@ -12,7 +12,7 @@ decisions into and the one statement of what may be typed is gone, with the
 "we found a problem with some content" prompt in front of it.
 
 It arrived the way the others did — nobody added a long string, a feature added
-a clause. Documenting `*OTHER VALUE` (the misspelling alias) took the prompt
+a clause. Documenting `~OTHER VALUE` (the misspelling alias) took the prompt
 from 181 characters to 291, and neither openpyxl nor `_pn_xl_verify` says a
 word: the file is well-formed and reads back perfectly, which is exactly why
 `_pn_xl_audit` exists and exactly where it was blind.
@@ -105,7 +105,7 @@ def test_shortening_it_dropped_no_control_word(tmp_path):
     column accepts is still named in it, because this text is the only place
     the worksheet says what may be typed."""
     prompt = _validations(_leaks(tmp_path))[0].get("prompt")
-    for word in ("yes", "no", "never", "phrase", "*OTHER VALUE", "[bracket]",
+    for word in ("yes", "no", "never", "phrase", "~OTHER VALUE", "*CORRECT TEXT", "[bracket]",
                  "replacement"):
         assert word in prompt, (word, prompt)
 
