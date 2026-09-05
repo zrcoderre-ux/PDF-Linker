@@ -21,3 +21,6 @@ Run PDF-Linker.*
 Apply Leak Fixes.bat
 master_leaks.xlsx
 master_leaks.xlsx.tmp
+
+# Claude Code agent worktrees (runtime, never committed)
+.claude/worktrees/

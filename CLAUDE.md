@@ -2737,6 +2737,35 @@ the party), so its row stays reversible.
   compare against), stay out of reach by this route. What covers those is the
   degraded-region line below, which needs no per-word guess at all, and the
   labelled-contact sweep beside it.
+  **…and the lower-case tier reports names, not prose — four screens, each
+  closing a measured false row** (`_pn_lower_name_site`,
+  `name_fake_positions`, the close-reach rule and the second-degree
+  vocabulary screen in `fuzzy_survivor_scan`). Measured on 1.5 MB of legal
+  and technical prose against 257 tracked names, every false lower-case
+  "misspelled name?" row came through the stand-in-adjacent site: "Rasho's
+  motive" (a POSSESSIVE stand-in is a party's, not a pair), "Rodgers erred"
+  and "Irving firing" (a SURNAME fake on the LEFT of an ordinary word, where
+  the half-scrubbed pair is a given fake hard against the surname),
+  "marker's" (the one possessive occurrence corroborated while fifteen plain
+  "marker" were not), "person's" (admitted at the WIDE reach through the
+  tool's own variant "Iller"). So the adjacent stand-in must be the fake of
+  the OTHER name position — a given-name fake on the left, a surname fake on
+  the right (`name_fake_positions`: the first and last word of each person
+  fake, the `derived` reversed spelling left out or every surname would sit
+  in the given slot) — and never a possessive; the every-occurrence check
+  reads the BASE word, possessive or not; a lower-case word is held to the
+  CLOSE reach and nothing else, since it is in the sweep on its site alone;
+  and the name-label site corroborates at most three words after the label
+  and never past a second one ("Name: X   Title: general manager of the
+  dealership   Date:" corroborated the whole form row). The capital tier's
+  second-degree loop gains the `lower_words` screen the first loop already
+  applied, which is where "Later" (one edit from the variant "Laker") and
+  "Dates" (from "Rates") came from. After: one lower-case row on 324 KB of
+  this repo's notes and one on 385 KB of its docstrings, both the delivered
+  "vizquez"; the delivered true positives ("vazqvez" behind a label, the
+  possessive-free pair, `half_scrubbed_scan`'s "avid") all still report.
+  What remains is the CAPITAL tier — some 90 rows per 350 KB of such prose,
+  most of them dictionary words — which only a word list reaches safely.
   **A near-miss standing where a FULL NAME is INTRODUCED is a different
   person, not a slip** (`_pn_full_name_intro`, `_PN_INTRO_FOLLOW_RE`,
   `_tracked_person_tokens`). "Davis Smith" is one edit from a tracked
