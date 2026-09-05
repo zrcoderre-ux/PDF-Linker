@@ -1306,6 +1306,211 @@ the party), so its row stays reversible.
   writes lower-case is vocabulary — "Paving" heading a contract's name
   beside "paving around the pool" — the pre-fill's `_orig_lower_words`
   screen, asked of the sweep that puts the row there.
+- **An EXHIBIT names its people behind labels the harvester did not know**
+  (`_PN_LABEL_RES`, second anchor). The label set was contractor / owner /
+  client / tenant / landlord / buyer / seller — a construction case's
+  vocabulary — so a medical record's `Patient:`, an insurance form's
+  `Insured:` and `Claimant:`, a loan file's `Borrower:` and `Guarantor:`, a
+  personnel file's `Employee:`, a witness list's `Witness:` and an invoice's
+  `Reserved By :` / `Salesperson :` (the space before the colon is how those
+  forms print it) each shipped the name behind it in the clear — not faked,
+  not gated, no review row. Every one goes through the screens the anchor
+  always had (two words, no role token, no locality, Title case). Two shapes
+  needed more. A licensing-board page names the licensee with NO colon ("The
+  qualifying individual Farhad Ardeshirpour certified that…"), and the phrase
+  is also a heading word, so that anchor is STRICT (`strict` group in
+  `_pn_label_names`): every word of the value must be a name word, which
+  "Must Be Licensed" is not. And a NUMBERED WITNESS LIST (`WITNESSES:` then
+  `1. Rosa Delgado`) carries its corroboration in the heading and its
+  structure (`_pn_numbered_list_names`): only consecutive numbered lines
+  after the heading are read, the name is cut at the first comma, dash or
+  parenthesis, and a blank or unnumbered line ends the list. Measured over
+  this repo's CLAUDE.md and the module's docstrings and comments (1.2 MB of
+  capitalised technical prose — the corpus every anchor below was measured
+  on): zero rows. Residual, and stated: `Dear Brian,` and a one-word
+  `Witness: Delgado` are still refused by the two-word screen.
+- **A caption ENTITY with no comma before its suffix reached no pass**
+  (`_PN_FIRM_BARE_SUFFIX`, `_PN_CAPTION_ENTITY_RE`). "GALPIN MOTORS INC., a
+  California corporation; SUNBELT RENTALS LLC, a Delaware limited liability
+  company" — the comma was the corroboration `_PN_FIRM_SUFFIX_RE` stood on,
+  and a caption routinely omits it. Two anchors close it. A suffix that is
+  unambiguous WITHOUT its comma (LLC, LLP, a dotted Inc./Corp./L.P./N.A./
+  P.C. — never a bare "Co" or "Inc", for the reason the comma mattered:
+  "Denver CO" and "the parties Inc" stay refused) is an anchor on its own.
+  And the DESCRIPTOR — the shape `_PN_CASE_PARTY_SITES` already reads as
+  evidence that a name is a party of THIS case — is read as a SOURCE of one:
+  a two-word-or-longer run, a comma, "a/an", `_PN_DESCRIPTOR_BODY`, and the
+  descriptor must CLOSE (a comma, semicolon, full stop, line end, or the
+  words a caption continues with), so "Owen Blakely, a company employee" is
+  refused. The whole clause is handed to `_pn_append_name_terms`, which
+  strips the descriptor and forces the entity path as it does for a template
+  cell. A leading CALENDAR word is trimmed like a leading role word ("In
+  March Sunbelt Rentals LLC hired her"). The comma-led ROSTER ROW is admitted
+  too: `_PN_DOCKET_ROW_RE` demanded a pipe or two spaces, so `OWEN BLAKELY,
+  Plaintiff,` failed it; `,[ \t]*` is a separator now, the role still
+  closing the line (its own trailing comma allowed), and a cell carrying a
+  descriptor between name and role is left to the descriptor anchor.
+  Measured: 27 no-comma hits on the corpus, every one a worked LLC/LLP/Inc.
+  example of these notes; the descriptor anchor zero.
+- **A DATE OF BIRTH is faked in its DAY and MONTH and keeps its YEAR**
+  (`_PN_ID_RES["date of birth"]`, `_pn_fake_dob`). `DOB: 03/14/1978`, `Date
+  of Birth:`, `born on March 14, 1978`, `(DOB 03/14/1978)` shipped verbatim.
+  Label-anchored, never a bare-date rule — a filing is full of dates and
+  every one is load-bearing. The year is what a record is read by (a minor,
+  an age at death, a limitations period) and identifies nobody; the day and
+  month are what a lookup needs. The printed SHAPE is kept — separators,
+  zero-padding, a month name in the same style — and every spelling of one
+  date draws the SAME day and month (seeded on the canonical date, memoized
+  per spelling, the two-spellings-one-docket rule), so the numeric and the
+  worded form agree and each keeps its own reversible row. In
+  `_PN_REID_CLASSES`, so one left standing is a REID row. An AGE is a
+  REVIEW row (`_PN_REVIEW_RES["age"]`: `age 67`, `67-year-old`, `Rosa
+  Delgado, 67,` hard against a Title-case run; "Page 12" and "Stage 2" are
+  refused by the lookbehind) — a number is not a name and cannot be faked,
+  and beside a name and a city it is not nothing.
+- **A DRIVER LICENCE carries a letter, and the licence class took digits
+  only** (`_PN_ID_RES["driver license"]`, `["license plate"]`). "Driver
+  License No.: D1234567" and "CA DL B7654321" matched nothing. The class is
+  anchored on the spelled-out label or the bare DL/CDL abbreviation
+  (case-SENSITIVE: "dl" is inside ordinary words), steps over a state code,
+  captures `[A-Z]?\d{6,8}`, and is listed FIRST so a digits-only licence
+  behind a driver's label is claimed here and not by the generic class — one
+  value, one category, one fake. A PLATE ("License Plate: 8ABC123") is a DMV
+  lookup from an owner and had no class; five to eight capitals and digits
+  behind the label. Both in `_PN_ALNUM_IDS` (the letter changes with the
+  digits) and `_PN_REID_CLASSES`.
+- **A P.O. BOX is an address with no street, and a STREET with no suffix is
+  still an address where its tail says so** (`_PN_DETECTORS["pobox"]`,
+  `_PN_ADDR_TAIL_CUE_STRICT`). "P.O. Box 1234, Bakersfield, CA 93301"
+  shipped whole: the street detector needs a street type. The box NUMBER is
+  the identifier (one renter per box at one post office) and the only thing
+  faked — drawn through the registry, memoized per spelling and SEEDED on the
+  digits so "P.O. Box 1234" and "PO Box 1234" draw one box — with the label
+  and the locality kept, the house-number-and-tail rule. "1234 Broadway, Los
+  Angeles, CA 90015", "1888 Avenue of the Stars, Suite 1500, …" and "100
+  Camino Real, Suite 200, …" reached nothing either: the close-word branch
+  admitted eight words. A third branch takes ANY `_PN_ADDR_WORD` run (a
+  connector admitted between words for "Avenue of the Stars") where the tail
+  cue follows — the suite or floor token, or the City, ST ZIP — less the bare
+  `#` (a pinpoint "¶ 12 Smith Decl. #3" is a number, two capitalised words
+  and a "#"), and the run must END on a word boundary: with no suffix to
+  close on, the engine otherwise split a word to satisfy the City, ST ZIP cue
+  and read the docket spelling "25 LAMBOURNE 01234" as street "LAMBO", city
+  "UR", state "NE" — measured, and the bound is what made the branch zero
+  rows on the corpus. Real/Via/Broadway/Alameda/Camino/Paseo/Calle join the
+  close words. The fake takes "Street" as its type for a street that had
+  none, which reads as an address; the house number, suite and tail are
+  kept exactly as before.
+- **A LABELLED IDENTIFIER with no class is a number the run walks past**
+  (`_PN_ID_RES`: tax id, routing, claim, policy, bond-with-letters, medical
+  record, patient id, employee id, parcel, passport, medicare, instrument,
+  charge, commission, loan). `Routing No. 122000247`, `EIN 12-3456789`,
+  `Claim No. 22-0004567-01`, `Policy No. HO-1234567-89`, `Bond Number:
+  G131215420779` (an all-digit bond number WAS faked; one with letters was
+  not), `MRN: 00123456`, `Patient ID 55443322`, `Employee ID: 100234`, `APN
+  5555-012-034`, `Passport No. 123456789`, `Medicare No. 1EG4-TE5-MK72`,
+  `Instrument No. 2021-0123456`, `EEOC Charge No. 480-2022-01234`, the
+  notary's `Commission # 2475537` — each verified as shipping in the clear.
+  Every class is label-anchored (an abbreviation that is also a word — EIN,
+  TIN, MRN, APN, EEOC — is matched case-sensitively), the alphanumeric ones
+  in `_PN_ALNUM_IDS`, all but the routing number in `_PN_REID_CLASSES`, and
+  the standing short-number screens hold: `_pn_identifier_values` keeps a
+  3-digit value out, and each class carries its own floor. An accidental
+  partial is worth stating: a bare 10-digit run is faked by the PHONE
+  detector, so a 10-digit loan number came out scrubbed while 8-, 9- and
+  11-digit ones did not; the "loan number" class is what makes that
+  deliberate, and the phone detector is unchanged. Measured: zero rows on the
+  corpus for every class.
+- **A payment CARD was HALF-faked** (`_PN_DETECTORS["card"]`, `_pn_luhn_ok`,
+  `_fake_card`). "Account No. 4111 1111 1111 1111": the account-id capture
+  stopped at the first space and rewrote four digits of sixteen — the
+  half-scrub this tool refuses — and "4111-1111-1111-1111" matched nothing.
+  The account-id capture now extends over three more four-digit groups so
+  the run is ONE value; the card detector reads the 4x4 shape and REFUSES a
+  match that fails Luhn (one sixteen-digit run in ten passes by chance, so
+  the shape alone is not evidence); and the fake is Luhn-valid in the card's
+  own separators, drawn on the digits alone so every spelling of one card
+  shares one fake. One value, one record: a Luhn-valid card behind an
+  account label takes the card faker in `register_identifiers`, and the
+  detector steps aside where that term claimed it. A surviving card is a
+  `REID card number` row in `reid_scan`.
+- **A TITLE the honorific tier did not know is a name it could not see**
+  (`_PN_HONORIFIC_RE`, `_PN_HONORIFICS`). "Detective Ramon Ochoa", "Deputy
+  Luis Carbajal", "Nurse Priya Venkataraman" reached no tier; a police
+  report and a medical record name their people this way and no other. And
+  with the surname bound, "Nurse Marston Goodenough" earned a FALSE
+  half-scrub row for "Nurse". The uniformed and clinical titles join the
+  alternation (Lt./Capt./Cpl. dotted, Deputy Sheriff / Nurse Practitioner /
+  Special Agent as the two-word titles they are), "Deputy" is refused where
+  it heads an OFFICE (Clerk, District Attorney, Sheriff's Department), and
+  the words join `_PN_HONORIFICS`, so the composing faker keeps them
+  verbatim and `_pn_review_is_neutral` reads them as furniture beside a fake.
+  Measured: zero new-title rows on the corpus.
+- **A notary JURAT names the signer, and the notary's name can wrap**
+  (`_PN_LABEL_RES`, the `before me,` and `personally appeared` anchors). The
+  name-first "X, Notary Public" anchor read the notary where her name and
+  title share a line; a recorded lien's jurat is a narrow box that wraps
+  between them, so the "before me," side is anchored too with one newline
+  admitted. The SIGNER is the other half: "personally appeared" is written in
+  front of a name and nothing else, and a jurat is the one place an exhibit
+  names the person who executed it (STRICT, and "and" splits two signers as
+  it does two property owners). The commission number is the identifier
+  class above.
+- **A LETTER names its author under the closing and its addressee after
+  "Dear"** (`_PN_LABEL_RES` closings and `Dear` anchors,
+  `register_salutation_names`, `_PN_MAIL_HEADER_RE`). "Sincerely," / "Very
+  truly yours," / "Respectfully submitted," / "Regards," on its own line,
+  then within three blank lines a line that is NOTHING but a two-to-four-word
+  name (behind "By:" or "/s/" if the letter has one): the scrawl leaves no
+  text, so the typed name under it is the author. STRICT, because a
+  pleading's closing is followed by the firm's caps line, which the word
+  count refuses or the corporate-suffix anchor already takes, and "Attorneys
+  For Plaintiff" must never become a person. `Dear Brian Kowalczyk,` is a
+  harvest (the honorific form was the only one read). `Dear Mr. Kowalczyk:`
+  is a ONE-word value every harvest rightly refuses, so the surname is bound
+  the way a judge's is — faked ONLY behind Mr./Ms./Mrs./Dr./Miss wherever
+  that pair stands (`court-title` terms, source `salutation`), the bare
+  surname left alone, the draw being the registry's own name token so a
+  document that spells the full name out composes onto the same word; the
+  binding round-trips through the key. `Re:` / `RE:` / `Subject:` lines join
+  the mail-header REVIEW set. Residual: `Dear Brian,` is still nothing.
+- **A RELATIONSHIP APPOSITIVE introduces the people around a party, and a
+  CAPACITY word names a person by their full name** (`_PN_LABEL_RES`
+  relationship anchor; `_pn_unknown_name_findings`). "her mother, Rosa
+  Delgado, and her brother, Tomas Delgado,"; "her supervisor, Owen Blakely,
+  terminated her"; "by and through her guardian ad litem, Maria Delgado" —
+  none carries a role, a label or a title. The POSSESSIVE (his/her/their/my/
+  plaintiff's/decedent's) plus the relationship plus TWO commas is the
+  corroboration — "her mother Rosa" (no comma) and "the mother, Rosa," (no
+  possessive) are refused — and the name must CLOSE at a comma, semicolon,
+  full stop or line end, where an appositive ends and a sentence that merely
+  mentions a mother does not. `a minor` joins the caption-descriptor anchor.
+  Decedent / Deponent / Claimant / Guardian / Conservatee / Ward / Insured /
+  Employee join the unknown-name tier's role anchor, held to a TWO-word run:
+  a party role prefixes a short form ("Defendant Travelers") while a capacity
+  word carries a full name, and one word behind it is the thing it heads
+  ("Employee Handbook", "Insured Party"). Measured: zero rows.
+- **The OBJECT of a handful of verbs is an INSTITUTION and nothing else**
+  (`_PN_OBJECT_POSITION_RE`, the object branch of `narrative_name_scan`).
+  "employed by Sunbelt Rentals", "worked at Sunbelt Rentals", "attended
+  Crescenta Valley High School", "treated at Providence Holy Cross Medical
+  Center" — the subject tier cannot see these because the employer and the
+  school never DO anything in the sentence, and they are exactly the
+  institutions that re-identify a plaintiff. The verb phrase is lower-case
+  (prose, not a heading), the article is stepped over, the run is trimmed
+  back to its last name-shaped word unless that word is the kind an
+  institution ENDS in (`_PN_INSTITUTION_TAIL`: School, Center, Motors…), and
+  the row is refused for a role, a public entity, a locality, a tracked
+  party and our own stand-ins. REVIEW only, at the standing of the other
+  name-shaped tiers. Measured: one row ("Lexis") on the corpus.
+- **The lesser shapes** — an IP ADDRESS (an e-signature audit trail prints
+  the signer's; dotted-quad, octets bounded, a "1.2.3.4" section number
+  refused) and an INTERNATIONAL phone (`+44 20 7946 0958`; the domestic
+  shape is 3-3-4 behind "+1", and a foreign grouping cannot be faked into a
+  number of any country) are REVIEW rows in `_PN_REVIEW_RES`; a PARTIAL SSN
+  (`XXX-XX-6789`, `SSN ending in 6789`, "the last four digits of her Social
+  Security number are") is a `REID partial ssn` row in `reid_scan`, since four
+  digits beside a name and a date of birth are a key. Measured: zero rows.
 - **A TABLE writes a person SURNAME-FIRST, and one class of surname had no
   coverage there.** The docket-roster rule above — word order costs nothing
   because every token registers — has exactly one exception: a surname that

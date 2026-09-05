@@ -78,7 +78,11 @@ def test_the_spared_name_is_named_in_the_log(caplog):
     z = _learn(_pz(["Haverford Aylesworth"]), BATCH)
     with caplog.at_level(logging.INFO):
         z.prune_authority_party_terms(BATCH, log)
-    assert any("party of THIS case" in r.message and "General Motors" in r.message
+    # Case-insensitive: the spelling the log names is whichever the harvest
+    # registered first, and the comma-less caps form of the attorney line
+    # ("GENERAL MOTORS LLC") is a harvest of its own now.
+    assert any("party of THIS case" in r.message
+               and "general motors" in r.message.lower()
                for r in caplog.records), [r.message for r in caplog.records]
 
 
