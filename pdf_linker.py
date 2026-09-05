@@ -7754,15 +7754,6 @@ class _PnFakeRegistry:
                 return self._take(key, cand)
         return None
 
-    @property
-    def name_role_primary(self):
-        """{word: "given" | "surname"} — the role that first drew each name
-        word (`_pn_fake_name_token`)."""
-        d = self.__dict__.get("_name_role_primary")
-        if d is None:
-            d = self.__dict__["_name_role_primary"] = {}
-        return d
-
     def token(self, real, words, seed_tag):
         """A single canonical-case stand-in word for `real`, never reused for a
         different real value. Draws from `words` in a per-value deterministic
@@ -8123,20 +8114,18 @@ class _PnFakeRegistry:
         return self._take(key, cand)  # give up after 10k tries; keep it stable
 
 
-def _pn_fake_name_token(word, registry, role=None):
+def _pn_fake_name_token(word, registry):
     """The fake for one name word, drawn on the word's CORE — outer punctuation
     and a trailing POSSESSIVE stripped — and reassembled around it.
 
-    `role` is the word's POSITION in the name it is being composed for
-    ("given" or "surname"). The registry memoises on the word, which is right
-    for one person's spellings and wrong for a COINCIDENCE across people:
-    counsel's given name "Kramer" and an unrelated attorney's surname "Kramer"
-    drew one pool word, and "Kramer I. Lowther", "Bradley Kramer" and "Kramer
-    & Partner LLP" read as one person. The first role to draw a word holds
-    its memo (`name_role_primary`); the OTHER role, arriving later, draws
-    under its own slot, so the two people take two words. A bare token of the
-    word carries the fake of whichever role drew it first — the residual, and
-    stated.
+    ONE WORD, ONE FAKE, whoever carries it — at the owner's direction. Where
+    counsel's given name is also an unrelated attorney's surname, both draw
+    the same pool word, so the export carries the same ambiguity the filing
+    does and a reader can see it: a bare "Kramer" in the source names one of
+    two people, and a bare stand-in in the export names one of two people. A
+    role-split (a second word for the second role) shipped for one release and
+    was reverted: it made a bare surname reference read as a THIRD person,
+    which hides the ambiguity instead of showing it.
 
     The registry memoizes on the string it is handed, so drawing on the raw
     token made "RASHO'S" a different real value from "Rasho" and it drew a
@@ -8154,18 +8143,7 @@ def _pn_fake_name_token(word, registry, role=None):
     if not core:
         return word
     return pre + _pn_titlecase_like(
-        registry.token(core, _PN_NAME_WORDS,
-                       _pn_name_token_tag(core, registry, role)), core) + post
-
-
-def _pn_name_token_tag(core, registry, role):
-    """The registry slot a name word draws from: "nametok", or the role's own
-    slot where the OTHER role drew the word first (see `_pn_fake_name_token`).
-    A one-word name has no role and is passed None."""
-    if role is None or len(core) < 3:
-        return "nametok"
-    primary = registry.name_role_primary.setdefault(core.lower(), role)
-    return "nametok" if primary == role else "nametok-" + role
+        registry.token(core, _PN_NAME_WORDS, "nametok"), core) + post
 
 
 # Words that mark a business even with no corporate suffix attached. Without
@@ -8775,12 +8753,9 @@ def _pn_fake_person(name, registry):
         if _keep(w, m.start()) or m.start() == trail_at or m.start() in furniture:
             parts.append(w)
         else:
-            is_surname = (m.start() == surname_at)
-            fake = _pn_fake_name_token(
-                w, registry,
-                role=(("surname" if is_surname else "given")
-                      if len(mappable) >= 2 else None))
+            fake = _pn_fake_name_token(w, registry)
             parts.append(fake)
+            is_surname = (m.start() == surname_at)
             # A surname as short as two letters (Yu, Ng, Le, Wu, Vo) is real and
             # identifying — the old `len >= 3` floor dropped it, so a bare "Yu"
             # both leaked in the text and had no token row for the reversal
@@ -9201,34 +9176,22 @@ def _pn_person_token_map(name, registry):
         and i not in phrase_idx
         for i, m in enumerate(words))
     out = {}
-    mappable = [m for i, m in enumerate(words)
-                if not (len(m.group(0)) == 1 or _suffix(m)
-                        or m.group(0).strip(".,").lower() in _PN_DOC_ABBREV
-                        or (keep_furniture and (
-                            registry.keeps_word(_pn_word_base(m.group(0)))
-                            or i in phrase_idx)))]
-    # The surname is the last mappable word, or the first before a comma
-    # ("Burt, Steven Wayne") — `_pn_fake_person`'s own rule, so the two
-    # composers agree on which word draws under which role.
-    surname_at = None
-    if mappable:
-        if "," in name:
-            comma = name.index(",")
-            before = [m for m in mappable if m.start() < comma]
-            surname_at = (before[0] if before else mappable[0]).start()
-        else:
-            surname_at = mappable[-1].start()
-    for m in mappable:
+    for i, m in enumerate(words):
         w = m.group(0)
+        # A single letter is an INITIAL and `_pn_fake_person` keeps it verbatim
+        # — minting a whole pool surname for it here burned one pool word per
+        # distinct initial letter in the case and left a live bare-letter
+        # binding ("w" -> a surname) in the registry.
+        if len(w) == 1 or _suffix(m) or w.strip(".,").lower() in _PN_DOC_ABBREV:
+            continue
         base = _pn_word_base(w)
+        if keep_furniture and (registry.keeps_word(base) or i in phrase_idx):
+            continue
         if base:
             # Drawn on the BASE, exactly as `_pn_fake_name_token` does — keyed
             # by base and drawn on the raw token, a possessive ("Rasho's") asked
             # the registry for a second fake under its own name.
-            role = (("surname" if m.start() == surname_at else "given")
-                    if len(mappable) >= 2 else None)
-            out[base] = registry.token(
-                base, _PN_NAME_WORDS, _pn_name_token_tag(base, registry, role))
+            out[base] = registry.token(base, _PN_NAME_WORDS, "nametok")
     return out
 
 
