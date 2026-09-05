@@ -3952,6 +3952,48 @@ layout `--fix-leaks` never scrubs it as an export or folds it into itself.
   the KEY affordable at all — 335 rows went from 28 s to 0.06 s per file, 1,042
   rows from 87 s to 0.19 s — and it repays itself on the LEAKS column that
   already existed.
+- **A term is scanned for only where its first word stands**
+  (`_pn_term_lead`, `Pseudonymizer._lead_words` / `_leads_present`,
+  `_PN_LEAD_CATS`). Four passes each ran every term's regex over every page —
+  the substitution, the keep-span party check, the survivor scan and the
+  key-context quoting — and a case with 210 names is 2,164 terms once the
+  near-miss variants are minted, so a 130-page filing paid 2,164 regex scans
+  a page four times over: profiled at 276 s for one 413 KB export, of which
+  a tenth was the scrub itself. A name term matches WHOLE WORDS joined on
+  whitespace, so wherever its pattern can match, its first word stands in the
+  text as a word — or, for a break-tolerant name, as two adjacent pieces that
+  JOIN to it. The page's words plus every adjacent pair joined is therefore
+  an EXACT prefilter: a term whose lead word is absent cannot match, and the
+  regex still decides every term that passes. Measured at 8 percent of the
+  terms on an ordinary page, 11x faster on the scan, and pinned differential
+  against the unfiltered scan (`test_scan_prefilter_equivalence.py`, which
+  switches it off through `_PN_LEAD_PREFILTER` to obtain the reference).
+  Name categories only (`_PN_LEAD_CATS`); a case number, an address or an
+  identifier keeps the full scan, and a weld-follow term ("SmithDecl.") has
+  no lead, since it may butt against its kept text. Four exact cuts beside
+  it, from the same profile. `_protected_citation_spans` compiled and ran
+  one "P v. D" regex per CITATION rather than per distinct case name, and
+  appended every occurrence that many times: 716 cites of two decisions made
+  257,044 spans where 1,432 were distinct, 8.8 s where 0.15 s was the work,
+  and every downstream span index carried the duplicates; it is now one
+  regex per distinct name, distinct spans, and memoized on (text, scan
+  state) since the full export is asked about half a dozen times per file.
+  `_substitute` walked every chosen span per candidate to find an overlap
+  (41 million comparisons); the chosen spans are disjoint by construction,
+  so it is a bisect. `_pn_word_is_own_fake` walked the whole set of known
+  fakes per word for the welded-fake substring test (17 million walks), and
+  now asks one compiled alternation. And `_pn_ocr_distance_within` refuses
+  a pair on the LETTER-SET floor before building the table: a letter one
+  word has and the other lacks costs at least 0.5, and no edit mends more
+  than two, so half the symmetric difference is a bound on the distance —
+  96 percent of the sweep's pairs stop there, and the randomized
+  differential test pins that the bound never refuses a pair the full
+  distance admits. The Context search runs once over the JOINED lower-cased
+  body with `str.find` and a boundary test instead of a `(?<!\w)` regex per
+  line, because a pattern opening on a lookbehind forfeits the literal-prefix
+  scan (3 ms a row against 0.1 ms). The profiled file went from 276 s to
+  65 s with the same output; what remains is the citation parse per page and
+  the fuzzy sweep, which are the next two.
 - **The long phases NAME themselves before they run** — the same rule the
   pre-scan follows for filenames, and for the same reason. Between "exporting
   text" and the first REVIEW warning the log said nothing for 82 minutes, so a
