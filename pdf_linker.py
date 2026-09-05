@@ -7703,6 +7703,12 @@ class _PnFakeRegistry:
         # phrase inside it. A pattern is built from the text, as a term's is,
         # because the tuple of bases has lost the value's own punctuation.
         self.fake_phrase_texts = frozenset()
+        # …and the OCR FIXES this run READ (`*CORRECT TEXT`), as {normalised
+        # garble: (garble, correct text)} — recorded by `_pn_apply_ocr_fixes`
+        # for the passes that correct the ORIGINAL text and the PDF's own
+        # text layer (`_pn_ocr_corrections`), where the term list corrects
+        # only the export.
+        self.ocr_corrections = {}
 
     def kept_positions(self, bases):
         """Indices of `bases` (word bases, in order) that lie inside an
@@ -25996,8 +26002,8 @@ def _pn_apply_ocr_fixes(decisions, terms, registry, log, allow_rebind=True):
     the memo (`_pn_load_key`). `allow_rebind=False` for `--fix-leaks`: a value
     the exports already carry a stand-in for is left alone there, since the
     stand-in it would move is standing in text that pass cannot re-derive."""
-    fixes = [(v, d["ocr_fix"]) for d in decisions.values() if d.get("ocr_fix")
-             for v in (d.get("fake_values") or [d["value"]])]
+    fixes = [(v, d["ocr_fix"], d) for d in decisions.values()
+             if d.get("ocr_fix") for v in (d.get("fake_values") or [d["value"]])]
     if not fixes:
         return terms
 
@@ -26012,7 +26018,7 @@ def _pn_apply_ocr_fixes(decisions, terms, registry, log, allow_rebind=True):
 
     drop = set()
     added = []
-    for value, target in fixes:
+    for value, target, decision in fixes:
         if norm(value) == norm(target):
             log.warning(f"  OCR FIX: {value!r} names ITSELF as the correct "
                         f"text — nothing to fix; the row is left as it is.")
@@ -26023,6 +26029,13 @@ def _pn_apply_ocr_fixes(decisions, terms, registry, log, allow_rebind=True):
                 f"this worksheet carry its stand-in, so this pass leaves it "
                 f"alone. Click 'Re-run PDF-Linker' to apply the fix.")
             continue
+        # The WHOLE value's correction, for the original text and the PDF —
+        # which carry the garble as the page wrote it, welded kept text and
+        # all — beside the term that corrects the export.
+        whole = _pn_ocr_whole_text(decision)
+        if whole and norm(whole) != norm(decision["value"]):
+            registry.ocr_corrections[norm(decision["value"])] = (
+                str(decision["value"]), whole)
         canon = find(target)
         if canon is not None:
             # A FULL-name category even where the correct text is a bare
@@ -26052,7 +26065,8 @@ def _pn_apply_ocr_fixes(decisions, terms, registry, log, allow_rebind=True):
             tokens = {norm(t.real): t for t in terms
                       if t.category == tokcat and len(str(t.real).split()) == 1}
             for vword, cword in _pn_alias_word_pairs(value, target):
-                vb, cb = norm(_pn_word_affixes(vword)[1]),                     norm(_pn_word_affixes(cword)[1])
+                vb = norm(_pn_word_affixes(vword)[1])
+                cb = norm(_pn_word_affixes(cword)[1])
                 if not vb or not cb or vb == cb or cb not in tokens:
                     continue
                 if vb in tokens:
@@ -26068,6 +26082,388 @@ def _pn_apply_ocr_fixes(decisions, terms, registry, log, allow_rebind=True):
     kept = [t for t in terms if norm(t.real) not in drop
             or getattr(t, "ocr_fix", False)]
     return kept + added
+
+
+def _pn_ocr_whole_text(d):
+    """The CORRECT text of a decision's WHOLE value, or None when the decision
+    is not an OCR fix. `*Smith` on "Smlth" is "Smith"; the keep-spec form
+    `*David {said}` on "avidsaid" is "David said" — the fix and the kept
+    words in the order the cell states them, brackets and braces dropped —
+    because the value the DOCUMENT carries is the welded whole, and that is
+    the text the original copy and the PDF have to be corrected at. (The
+    export is corrected through the fragment's term, which is welded to the
+    kept text by its follow, so the two read the same.)"""
+    target = d.get("ocr_fix")
+    if not target:
+        return None
+    if d.get("fake_values"):
+        cell = str(d.get("fixcell") or "").strip()
+        if cell.startswith(_PN_OCR_MARK):
+            cell = cell[1:]
+        cell = re.sub(r"[\[\]{}]", " ", cell)
+        cell = "".join(c for c in cell if c not in _PN_ALIAS_QUOTES)
+        whole = " ".join(cell.split())
+        return whole or None
+    return " ".join(str(target).split()) or None
+
+
+def _pn_ocr_corrections(terms, registry, loaded=True):
+    """{normalised garble: (garble, correct text)} — every OCR fix this run
+    knows, for correcting the ORIGINAL text and the PDF's text layer, where
+    the term list corrects only the export.
+
+    Two sources. The decisions this run READ (`registry.ocr_corrections`,
+    recorded by `_pn_apply_ocr_fixes`), which carry the correct text as the
+    operator typed it. And, when `loaded`, the OCR-fix rows a reused key
+    handed back as live terms: their correct text was never written — the
+    Replacement is the correct text's own STAND-IN — so it is read back off
+    the term list the way the macro would read it: the real value of the
+    (non-OCR) term holding that stand-in, else the stand-in itself, which
+    for a target this case never bound IS the correct text verbatim. On a
+    re-run the PDF usually carries no garble any more (the earlier run
+    corrected it), and a correction that finds nothing costs nothing.
+    `--fix-leaks` passes `loaded=False`: a pinned row is a fix an earlier run
+    already made, and that pass opens a PDF for a decision typed into THIS
+    worksheet only."""
+    out = dict(getattr(registry, "ocr_corrections", None) or {})
+    if not loaded:
+        return out
+
+    def norm(x):
+        return " ".join(str(x).split()).lower()
+
+    by_fake = {}
+    for t in terms:
+        if not getattr(t, "ocr_fix", False):
+            by_fake.setdefault(norm(t.fake), []).append(t)
+    for t in terms:
+        if not getattr(t, "ocr_fix", False) or norm(t.real) in out:
+            continue
+        owners = sorted(by_fake.get(norm(t.fake), []),
+                        key=lambda o: (bool(o.derived), len(str(o.real))))
+        correct = str(owners[0].real) if owners else str(t.fake)
+        if correct and norm(correct) != norm(t.real):
+            out[norm(t.real)] = (str(t.real), correct)
+    return out
+
+
+def _pn_correct_ocr_text(text, corrections):
+    """`text` with every OCR fix in `corrections` applied: each garble
+    replaced, as a WHOLE WORD and in the garble's own casing, by the correct
+    text. What the ORIGINAL copy, the TEMP evidence cache and a Word body
+    get — a garble is what the page wrote and a correction says what the
+    page meant, so the reference copy of the document reads as corrected.
+    (The export takes the same fix through its term, which yields to a
+    citation and to a keep as every term does.)"""
+    if not text or not corrections:
+        return text
+    for _key, (garble, correct) in corrections.items():
+        if not str(garble).strip() or not str(correct).strip():
+            continue
+        try:
+            pat = re.compile(_pn_build_pattern(garble, whole_word=True),
+                             re.IGNORECASE)
+        except re.error:
+            continue
+        text = pat.sub(lambda m: _pn_case_like(m.group(0), correct), text)
+    return text
+
+
+_PN_OCR_INVISIBLE_FONT = "glyphless"   # Tesseract's invisible OCR font
+
+
+def _pn_pdf_invisible_spans(page):
+    """(invisible spans, visible span rects) of `page`'s text trace, in
+    content-stream order — the OCR layer is the text drawn in render mode 3
+    (or in Tesseract's GlyphLessFont, which some producers draw with a fill
+    nobody sees). (None, None) when the trace cannot be read."""
+    try:
+        trace = page.get_texttrace()
+    except Exception:
+        return None, None
+    invisible, visible = [], []
+    for sp in trace:
+        if not sp.get("chars"):
+            continue
+        font = str(sp.get("font") or "").lower()
+        if sp.get("type") == 3 or _PN_OCR_INVISIBLE_FONT in font:
+            invisible.append(sp)
+        else:
+            visible.append(sp["bbox"])
+    return invisible, visible
+
+
+_PN_OCR_TEXT_ANGLES = {(1, 0): 0, (0, -1): 90, (-1, 0): 180, (0, 1): 270}
+
+
+def _pn_fix_ocr_in_pdf(doc, corrections, log, name=""):
+    """Correct every OCR fix in `corrections` IN THE PDF's own text layer, so
+    the document itself reads as the correction says and every later reading
+    of it — this tool's next run, a viewer's search, another program's
+    extraction — starts from the corrected text. Returns the number of pages
+    changed. Non-destructive to anything a reader can see: nothing visible
+    moves, no image and no line art is touched.
+
+    Only an INVISIBLE layer is corrected — the render-mode-3 text a scanner's
+    OCR (or this tool's) laid over the page image — because that is where a
+    scan error lives: nobody wrote "Smlth", the recogniser did, and the
+    image underneath still says Smith. A garble standing in VISIBLE type is a
+    different thing (an extraction failure, or the document's own spelling)
+    and rewriting visible glyphs would change what the page shows, so such an
+    occurrence is left to the export's term and the text-level correction of
+    the original copy; the page is named in the log.
+
+    The WHOLE invisible layer of a page that carries a garble is redacted
+    (text only — `PDF_REDACT_IMAGE_NONE`, line art kept) and re-drawn word by
+    word at each word's own baseline and width, in the order the stream had
+    it, with the garbled words corrected. The whole layer and not the one
+    word, because a word inserted on its own lands at the END of the page's
+    content and extraction then reads it after everything else — the
+    sentence comes out with a hole where the word was and the word at the
+    foot of the page. Re-drawn in stream order the layer reads as it did.
+    Each word is fitted to the width the garble occupied (`morph`, a
+    horizontal scale about its own origin), so a corrected word neither
+    overlaps the next word nor opens a gap, whatever font the layer used. A
+    page whose visible text INTERSECTS the invisible layer is refused whole
+    rather than half-done: redaction removes every glyph under its rect, and
+    a visible word there would be lost. Links under the layer are put back,
+    since redaction takes those too."""
+    if not corrections:
+        return 0
+    try:
+        import fitz
+    except ImportError:
+        return 0
+
+    def norm(x):
+        return " ".join(str(x).split()).lower()
+
+    fixes = []
+    for garble, correct in corrections.values():
+        gw = [_pn_word_affixes(w)[1].lower() for w in str(garble).split()]
+        gw = [w for w in gw if w]
+        if gw and str(correct).strip() and norm(garble) != norm(correct):
+            fixes.append((gw, str(garble), str(correct)))
+    if not fixes:
+        return 0
+    fixes.sort(key=lambda f: -len(f[0]))     # a longer garble claims first
+    keep_img = getattr(fitz, "PDF_REDACT_IMAGE_NONE", 0)
+    keep_art = getattr(fitz, "PDF_REDACT_LINE_ART_NONE", 0)
+    tag = f"{name}: " if name else ""
+
+    changed = 0
+    for page in doc:
+        try:
+            low = page.get_text("text").lower()
+        except Exception:
+            continue
+        live = [f for f in fixes if all(w in low for w in f[0])]
+        if not live:
+            continue
+        invisible, visible = _pn_pdf_invisible_spans(page)
+        if not invisible:
+            log.info(f"  OCR FIX: {tag}page {page.number + 1} carries a garble "
+                     f"in VISIBLE text, which is left as printed; the export "
+                     f"and the original copy are corrected at the text level.")
+            continue
+        # The layer's WORDS in stream order: (chars, size, angle).
+        words = []
+        refused = None
+        for sp in invisible:
+            d = sp.get("dir") or (1, 0)
+            key = (int(round(d[0])), int(round(d[1])))
+            angle = _PN_OCR_TEXT_ANGLES.get(key)
+            if angle is None:
+                refused = f"text drawn at an angle ({d[0]:.2f}, {d[1]:.2f})"
+                break
+            size = float(sp.get("size") or 0) or 10.0
+            run = []
+            for ch in sp["chars"]:
+                if chr(ch[0]).isspace():
+                    if run:
+                        words.append((run, size, angle))
+                    run = []
+                else:
+                    run.append(ch)
+            if run:
+                words.append((run, size, angle))
+        if refused:
+            log.warning(f"  OCR FIX: {tag}page {page.number + 1} is left as it "
+                        f"is — {refused} — and its garble is corrected in "
+                        f"the export and the original copy only.")
+            continue
+        texts = ["".join(chr(c[0]) for c in run) for run, _s, _a in words]
+        cores = [_pn_word_affixes(t)[1].lower() for t in texts]
+        repl, done = {}, []
+        for gw, garble, correct in live:
+            n, i = len(gw), 0
+            while i + n <= len(words):
+                if (any(k in repl for k in range(i, i + n))
+                        or cores[i:i + n] != gw
+                        or len({words[k][2] for k in range(i, i + n)}) != 1):
+                    i += 1
+                    continue
+                first, last = texts[i], texts[i + n - 1]
+                pre = _pn_word_affixes(first)[0]
+                post = _pn_word_affixes(last)[2]
+                matched = " ".join(texts[i:i + n])
+                core = matched[len(pre):len(matched) - len(post)]
+                fixed = _pn_case_like(core, correct)
+                cw = fixed.split()
+                if len(cw) == n:
+                    for k in range(n):
+                        repl[i + k] = ((pre if k == 0 else "") + cw[k]
+                                       + (post if k == n - 1 else ""))
+                else:
+                    repl[i] = pre + fixed + post
+                    for k in range(1, n):
+                        repl[i + k] = ""
+                done.append((core, fixed))
+                i += n
+        if not repl:
+            log.info(f"  OCR FIX: {tag}page {page.number + 1} carries a garble "
+                     f"in VISIBLE text only, which is left as printed; the "
+                     f"export and the original copy are corrected at the "
+                     f"text level.")
+            continue
+        inv_rects = [fitz.Rect(sp["bbox"]) for sp in invisible]
+        if any(fitz.Rect(v).intersects(r) for v in visible for r in inv_rects):
+            log.warning(f"  OCR FIX: {tag}page {page.number + 1} is left as it "
+                        f"is — visible text lies over its OCR layer, and "
+                        f"redacting the layer would take that text with it. "
+                        f"The garble is corrected in the export and the "
+                        f"original copy only.")
+            continue
+        try:
+            links = page.get_links()
+        except Exception:
+            links = []
+        try:
+            for r in inv_rects:
+                page.add_redact_annot(r, fill=False)
+            try:
+                page.apply_redactions(images=keep_img, graphics=keep_art)
+            except TypeError:
+                page.apply_redactions(images=keep_img)
+        except Exception as e:
+            log.warning(f"  OCR FIX: {tag}could not rewrite the text layer of "
+                        f"page {page.number + 1}: {e}")
+            continue
+        try:
+            shape = page.new_shape()
+            for k, (run, size, angle) in enumerate(words):
+                text = repl.get(k, texts[k])
+                if not text:
+                    continue
+                boxes = [c[3] for c in run]
+                if angle in (0, 180):
+                    width = max(b[2] for b in boxes) - min(b[0] for b in boxes)
+                else:
+                    width = max(b[3] for b in boxes) - min(b[1] for b in boxes)
+                origin = fitz.Point(run[0][2])
+                natural = fitz.get_text_length(text, fontname="helv",
+                                               fontsize=size)
+                sx = width / natural if natural > 0 and width > 0 else 1.0
+                sx = max(0.2, min(sx, 5.0))
+                mat = (fitz.Matrix(sx, 1) if angle in (0, 180)
+                       else fitz.Matrix(1, sx))
+                shape.insert_text(origin, text, fontsize=size, fontname="helv",
+                                  render_mode=3, rotate=angle,
+                                  morph=(origin, mat))
+            shape.commit()
+        except Exception as e:
+            log.warning(f"  OCR FIX: {tag}could not re-draw the text layer of "
+                        f"page {page.number + 1} after correcting it: {e}")
+            continue
+        # Redaction takes the links under the layer with it; put back any
+        # that went.
+        try:
+            after = {(tuple(round(x, 1) for x in l["from"]), l.get("uri"))
+                     for l in page.get_links()}
+            for l in links:
+                if (tuple(round(x, 1) for x in l["from"]), l.get("uri")) \
+                        not in after:
+                    page.insert_link(l)
+        except Exception:
+            pass
+        changed += 1
+        shown = "; ".join(f"{a!r} -> {b!r}" for a, b in done[:4])
+        log.info(f"  OCR FIX: {tag}page {page.number + 1}: corrected "
+                 f"{len(done)} word(s) in the PDF's text layer ({shown})")
+    return changed
+
+
+def _pn_correct_original_files(folder, cfg, corrections, log):
+    """Apply `corrections` (`_pn_correct_ocr_text`) to the ORIGINAL text on
+    disk — the in-folder reference copies, and the TEMP evidence cache — for
+    `--fix-leaks`, which never rebuilds them. Returns the files rewritten."""
+    if not corrections:
+        return 0
+    dirs = [folder / (cfg.get("original_text_subfolder", "").strip()
+                      or "Original Text (real names - do not share)"),
+            _originals_cache_dir(folder)]
+    n = 0
+    for d in dirs:
+        if not d.is_dir():
+            continue
+        for f in sorted(d.glob("*.txt")):
+            try:
+                old = f.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            new = _pn_correct_ocr_text(old, corrections)
+            if new == old:
+                continue
+            try:
+                f.write_text(new, encoding="utf-8", newline="\n")
+                n += 1
+            except OSError as e:
+                log.warning(f"  OCR FIX: could not rewrite {f.name}: {e}")
+    if n:
+        log.info(f"  OCR FIX: corrected {n} original text file(s)")
+    return n
+
+
+def _pn_fix_ocr_in_folder_pdfs(folder, corrections, log):
+    """Correct `corrections` in the text layer of every source PDF in
+    `folder` (`_pn_fix_ocr_in_pdf`), for `--fix-leaks`. The ONE thing that
+    pass does to a PDF, and it is a text-layer patch: no extraction, no OCR,
+    an invisible layer's word rewritten, saved the way the full run saves —
+    to `<name>_temp.pdf`, then moved over the original. Returns the PDFs
+    changed."""
+    if not corrections:
+        return 0
+    try:
+        import fitz
+        import shutil
+    except ImportError:
+        return 0
+    n = 0
+    for pdf in _pdfs_in_folder(folder):
+        try:
+            doc = fitz.open(str(pdf))
+        except Exception as e:
+            log.warning(f"  OCR FIX: could not open {pdf.name}: {e}")
+            continue
+        try:
+            pages = _pn_fix_ocr_in_pdf(doc, corrections, log, name=pdf.name)
+            if not pages:
+                continue
+            temp = pdf.with_name(pdf.stem + "_temp.pdf")
+            doc.save(str(temp), garbage=3, deflate=True)
+        except Exception as e:
+            log.warning(f"  OCR FIX: could not save the corrected {pdf.name}: {e}")
+            continue
+        finally:
+            doc.close()
+        try:
+            shutil.move(str(temp), str(pdf))
+            n += 1
+            log.info(f"  OCR FIX: {pdf.name}: text layer corrected on "
+                     f"{pages} page(s)")
+        except Exception as e:
+            log.warning(f"  OCR FIX: could not replace {pdf.name}: {e}")
+    return n
 
 
 def _pn_alias_target(cell):
@@ -28581,6 +28977,13 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
     # level, so moving this earlier changes nothing it sees.
     if pseudonymizer is not None:
         original = build_body(None)
+        # An OCR fix the PDF patch could not land — the garble stands in
+        # VISIBLE type, or the page was refused — is still made here, at the
+        # text level: the reference copy and the evidence cache read as the
+        # correction says, exactly as the export does through its term.
+        original = _pn_correct_ocr_text(
+            original, _pn_ocr_corrections(pseudonymizer.terms,
+                                          pseudonymizer.registry))
         pseudonymizer.note_original(original)
         # …and cached in TEMP, because `--fix-leaks` never reopens the PDFs and
         # would otherwise have no evidence at all. Never in the case folder:
@@ -29606,6 +30009,12 @@ def _write_word_text_version(src_path, text, log, pseudonymizer=None,
             _note_authority(authorities, _cite, src_path.name)
 
     if pseudonymizer is not None:
+        # A scan error the operator corrected (`*CORRECT TEXT`) is corrected
+        # in the BODY first, as the PDF path corrects the PDF before it
+        # extracts: export, evidence and reference copy then read one text.
+        text = _pn_correct_ocr_text(
+            text, _pn_ocr_corrections(pseudonymizer.terms,
+                                      pseudonymizer.registry))
         # Per-file backstop to the folder pre-scan (mirrors _write_text_version):
         # learn any declarant / dba / firm / locality / identifier stated here.
         _pn_learn_from_text(pseudonymizer, text, src_path.stem)
@@ -29953,6 +30362,20 @@ def process_pdf(pdf_path: Path, log: logging.Logger,
         ocr_changed = bool(_ocr_image_regions(doc, log)) or ocr_changed
     except Exception as e:
         log.warning(f"  Image-region OCR failed (non-fatal): {e}")
+
+    # …and CORRECT the text layer where an operator `*` says a word is a scan
+    # error (`_pn_fix_ocr_in_pdf`), BEFORE the export is extracted from it, so
+    # the PDF, the export and the original copy all read the correction from
+    # one source. Counted as an OCR change: a stamped document must still be
+    # saved below, or the correction lives only in this run's memory.
+    if pseudonymizer is not None:
+        try:
+            _corr = _pn_ocr_corrections(pseudonymizer.terms,
+                                        pseudonymizer.registry)
+            if _corr and _pn_fix_ocr_in_pdf(doc, _corr, log):
+                ocr_changed = True
+        except Exception as e:
+            log.warning(f"  OCR fix in the PDF failed (non-fatal): {e}")
 
     # Export the text version now (after OCR fills any minority scanned pages,
     # before marker injection pollutes the text). Non-fatal and independent of
@@ -32121,6 +32544,16 @@ def _fix_leaks_mode(folder, args, cfg, log):
     terms = _pn_apply_ocr_fixes(
         {vl: d for vl, d in decisions.items() if vl in local_vls},
         terms, registry, log, allow_rebind=False)
+    # A worksheet `*` corrects the ORIGINAL text and the PDF too, not only the
+    # export. THIS worksheet's fixes only (`loaded=False`): a pinned key row
+    # is a fix an earlier run already made. The one thing this pass does to a
+    # PDF, and it is a text-layer patch (`_pn_fix_ocr_in_folder_pdfs`): no
+    # extraction, no OCR, an invisible layer's word rewritten.
+    ocr_corr = _pn_ocr_corrections(terms, registry, loaded=False)
+    if ocr_corr:
+        orig_texts = [_pn_correct_ocr_text(t, ocr_corr) for t in orig_texts]
+        _pn_correct_original_files(folder, cfg, ocr_corr, log)
+        _pn_fix_ocr_in_folder_pdfs(folder, ocr_corr, log)
     fix_terms = auto_terms + list(explicit)
     if not fix_terms and rejected:
         # Nothing was applied AND a decision was dropped: the folder is not

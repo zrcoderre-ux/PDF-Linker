@@ -804,6 +804,46 @@ delivered under the old spelling carries pre-filled `*CANONICAL` cells, which
 the next pass now reads as OCR fixes — the value takes the canonical's exact
 stand-in instead of a slip of it, and its row moves to the pinned sheet; the
 reversal still lands on the correct spelling, so nothing is lost.
+**…and a correction is made in EVERY copy of the document, the PDF first**
+(`_pn_fix_ocr_in_pdf`, `_pn_correct_ocr_text`, `_pn_ocr_corrections`,
+`registry.ocr_corrections`, `_pn_ocr_whole_text`), at the owner's direction.
+The fix shipped as a TERM, which corrects the export and nothing else: the
+PDF went on carrying "Smlth" in its text layer, so a viewer's search, another
+program's extraction and this tool's own next run all started from the
+garble again, and the ORIGINAL copy beside the export — the reference a
+reader checks the export against — still said what the scan said. Now the
+PDF's OWN text layer is corrected before the export is extracted from it,
+so the PDF, the export and the original copy read the correction from one
+source; a re-run beside the corrected PDF finds no garble at all, which is
+the fix made permanent rather than re-applied. Only an INVISIBLE layer is
+touched — the render-mode-3 text a scanner's OCR (or this tool's) laid over
+the page image, which is where a scan error lives: nobody wrote "Smlth",
+the recogniser did, and the image underneath still says Smith. The WHOLE
+layer of a page carrying a garble is redacted (text only, the image and
+line art kept) and re-drawn word by word at each word's own baseline and
+width, in stream order, because a word inserted on its own lands at the END
+of the page's content and extraction reads it after everything else — the
+sentence with a hole in it and the word at the foot of the page. A garble
+in VISIBLE type is a different thing (an extraction failure, or the
+document's own spelling) and rewriting visible glyphs would change what the
+page shows, so the page is named in the log and that occurrence is corrected
+at the TEXT level instead — in the original copy and the evidence cache,
+which take every correction as whole words in the garble's own casing — and
+in the export through the term, which yields to a citation and a keep as
+every term does. A page whose visible text lies OVER its OCR layer is
+refused whole rather than half-done, since redaction takes every glyph under
+its rect. The correct text is carried two ways: as the operator typed it,
+for the decisions this run read (the keep-spec form `*David {said}` on
+"avidsaid" corrects the welded WHOLE to "David said", which is the text the
+document carries), and read BACK off the term list for a row a reused key
+handed back — its Replacement is the correct text's stand-in, so the real
+value that stand-in belongs to is the correct text, else the stand-in
+itself, which for an unbound target IS the text verbatim. A Word body is
+corrected before it is scrubbed, as the PDF is before it is extracted.
+`--fix-leaks` corrects the original files on disk and patches the folder's
+PDFs for a WORKSHEET `*` — the one thing that pass does to a PDF, and it is
+a text-layer patch with no extraction and no OCR, saved as the full run
+saves — and never for a pinned key row, which is a fix an earlier run made.
 
 **A `~` and a `{brace}` COMPOSE in one cell** (`_pn_cell_is_alias_keep`,
 `_pn_alias_keep_spec`, `_pn_keep_spec_strip`). `~David {said}` on the value
