@@ -3094,6 +3094,81 @@ def _undouble_strike_lines(text: str) -> str:
     return "\n".join(_undouble_strike(ln) or ln for ln in text.split("\n"))
 
 
+def _page_text_spans(page):
+    """The non-blank spans of `page.get_text("dict")`, each carrying its
+    line's reading direction under `"_dir"` — what the two span renderers
+    below cluster into rows."""
+    spans = []
+    for blk in page.get_text("dict").get("blocks", []):
+        for ln in blk.get("lines", []):
+            d = ln.get("dir") or (1.0, 0.0)
+            for sp in ln.get("spans", []):
+                if str(sp.get("text", "")).strip():
+                    sp["_dir"] = d
+                    spans.append(sp)
+    return spans
+
+
+def _reading_frame_spans(page, spans):
+    """`spans` re-framed so the page's dominant text direction reads LEFT TO
+    RIGHT and its lines stack TOP TO BOTTOM — the frame `_cluster_rows` and
+    the positional renderer assume. The same list, untouched, on an ordinary
+    page, so the usual export does not move.
+
+    Extraction reports every coordinate in the UNROTATED page space, and a
+    scanned exhibit is routinely a landscape image displayed through /Rotate
+    with an OCR layer laid so it reads upright — which in that space is text
+    running UP the page, one span per word. Clustered on unrotated y, every
+    word of a printed line landed in a row of its own and the words of
+    different lines that sat the same distance along their line shared one:
+    a Living Trust's numbered paragraphs came out as a scatter of single
+    words at wide column offsets, the ends of every line collected on the
+    first row. Two rotations put it right, the same way `_ocr_image_regions`
+    maps a clip: the page's own rotation (`page.rotation_matrix`, so a
+    /Rotate page is read as displayed), then whichever quarter turn brings
+    the DOMINANT direction — weighted by characters, so a rotated margin
+    label never turns the page — to (1, 0). A pure rotation carries the
+    stacking direction with it (the next line lies at the reading direction
+    turned a quarter clockwise, in either frame), so the row order is the
+    reading order without a second decision. A span's `origin` moves with
+    its bbox, since that is the baseline `_cluster_rows` reads."""
+    if not spans:
+        return spans
+    try:
+        import fitz
+    except ImportError:
+        return spans
+    rot = int(getattr(page, "rotation", 0) or 0) % 360
+    weight = {}
+    for sp in spans:
+        d = tuple(sp.get("_dir") or (1.0, 0.0))
+        if rot:
+            d = tuple(fitz.Point(d) * fitz.Matrix(rot))
+        key = (int(round(d[0])), int(round(d[1])))
+        weight[key] = weight.get(key, 0) + len(str(sp.get("text", "")))
+    dom = max(weight, key=weight.get) if weight else (1, 0)
+    if not rot and dom == (1, 0):
+        return spans
+    m = page.rotation_matrix if rot else fitz.Matrix(1, 0, 0, 1, 0, 0)
+    for theta in (0, 90, 180, 270):
+        turned = fitz.Point(dom) * fitz.Matrix(theta)
+        if abs(turned.x - 1) < 0.01 and abs(turned.y) < 0.01:
+            if theta:
+                m = m * fitz.Matrix(theta)
+            break
+    out = []
+    for sp in spans:
+        new = dict(sp)
+        r = fitz.Rect(sp["bbox"]) * m
+        r.normalize()
+        new["bbox"] = (r.x0, r.y0, r.x1, r.y1)
+        if sp.get("origin"):
+            o = fitz.Point(sp["origin"]) * m
+            new["origin"] = (o.x, o.y)
+        out.append(new)
+    return out
+
+
 def _page_flowing_text(page):
     """`page.get_text("text")` with a DOUBLED text layer collapsed.
 
@@ -3124,15 +3199,13 @@ def _page_flowing_text(page):
     per span from `_drop_overdrawn_spans`, so the two renderings agree."""
     text = _undouble_strike_lines(page.get_text("text"))
     try:
-        spans = [sp for blk in page.get_text("dict").get("blocks", [])
-                 for ln in blk.get("lines", [])
-                 for sp in ln.get("spans", []) if str(sp.get("text", "")).strip()]
+        spans = _page_text_spans(page)
     except Exception:
         return text
     kept = _drop_overdrawn_spans(spans)
     if len(kept) == len(spans):
         return text
-    rows = _cluster_rows(kept)
+    rows = _cluster_rows(_reading_frame_spans(page, kept))
     if not rows:
         return text
     return "\n".join(
@@ -23706,11 +23779,12 @@ def _page_visual_text(page):
     parser never meets a space run this pass invented. Returns None when the
     page yields no spans (the caller keeps `_page_flowing_text`)."""
     try:
-        spans = [sp for blk in page.get_text("dict").get("blocks", [])
-                 for ln in blk.get("lines", [])
-                 for sp in ln.get("spans", [])
-                 if str(sp.get("text", "")).strip()]
-        rows = _cluster_rows(_drop_overdrawn_spans(spans))
+        spans = _page_text_spans(page)
+        # In the READING frame (see `_reading_frame_spans`): a rotated scan's
+        # OCR layer runs up the unrotated page, and clustered as it lies
+        # every word became a row of its own.
+        rows = _cluster_rows(_reading_frame_spans(
+            page, _drop_overdrawn_spans(spans)))
     except Exception:
         return None
     if not rows:

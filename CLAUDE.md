@@ -3663,6 +3663,32 @@ pins every binding, only whitespace moves). `--fix-leaks` is indifferent: it
 works on the `.txt` as it stands and never reopens the PDFs, so it neither
 converts an old-format export nor is confused by either format.
 
+**…and a ROTATED page is rendered in its READING frame**
+(`_reading_frame_spans`, `_page_text_spans`, read by `_page_visual_text` and
+the span rebuild in `_page_flowing_text`). Extraction reports every
+coordinate in the UNROTATED page space, and a scanned exhibit is routinely a
+landscape image displayed through /Rotate with an OCR layer laid so it reads
+upright — which in that space is text running UP the page, one span per
+word. Clustered on unrotated y, every word of a printed line landed in a row
+of its own and the words of different lines that sat the same distance along
+their line shared one: a Living Trust's numbered paragraphs, a perfectly
+ordinary layout on the page, came out as a scatter of single words at wide
+column offsets with the ends of every line collected on the first row — the
+export unreadable, and the scrub run over text no term could match. Two
+rotations put it right, the same way `_ocr_image_regions` maps a clip: the
+page's own rotation (`page.rotation_matrix`, so a /Rotate page is read as
+displayed), then whichever quarter turn brings the DOMINANT text direction —
+weighted by characters, so a firm's rotated sidebar never turns the page —
+to left-to-right. A pure rotation carries the stacking direction with it
+(the next line lies at the reading direction turned a quarter clockwise, in
+either frame), so the row order is the reading order without a second
+decision, and a span's `origin` moves with its bbox because that is the
+baseline `_cluster_rows` reads. An ordinary page gets the same list back
+untouched, so the usual export does not move. Residual, and stated: the
+PLEADING-row path (`_detect_line_anchors`) still reads unrotated geometry,
+so a scanned brief that arrives through /Rotate keeps its gutter numbers
+only where the page's own rotation was already undone.
+
 **A SPREADSHEET printed into an exhibit exports as a TABLE** (`_page_table_text`).
 A billing export, a damages schedule, a payment history: the page is a grid, and
 plain extraction reads it a cell at a time, top to bottom. Every value survives
