@@ -2556,6 +2556,13 @@ the party), so its row stays reversible.
   rather than assumed, so the two sides of the mirror ask one question of one
   string. Verified on the delivered export: all three rows go silent, and a
   tracked word standing outside any cite still reports.
+  **…and the LEAK line names each value's CATEGORY and SOURCE**
+  (`Pseudonymizer.describe_reals`, at both export writers' warnings). Those
+  three rows had no key row — a harvested guess is written only when it
+  applied — so nothing in the folder said which pass had built the terms, and
+  tracing them took the exports, the log and the PDF together. The warning
+  reads "Benz (entity-token, from prescan)" now, so a LEAK with nothing behind
+  it in the key is traceable from the log alone.
   **A word the composing faker KEPT is not one of our fakes**
   (`name_fake_words`). The furniture of a party name is preserved verbatim
   ("The Lovelace" -> "The Flintham") and a `{braced}` keep is too, but the
