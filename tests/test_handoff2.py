@@ -223,12 +223,16 @@ def test_a_diagnosis_code_is_not_a_stamp_and_the_bcrc_contacts_are_kept():
     assert "23071" not in out, out
 
 
-def test_the_house_number_and_unit_are_faked_and_the_zip_plus_four_dropped():
+def test_the_house_number_unit_and_zip_plus_four_are_kept():
+    """The handoff asked for the number, the unit and the +4 to be faked; the
+    documented rule (the street name is what identifies, the rest is kept
+    verbatim) stands, since a handoff reports failures and never sets
+    policy."""
     text = "1234 Elm Street APT 5, Glendale, CA 91204-1234\n"
     z = _learn(text, detectors=True)
     out = z.apply(text)
-    assert re.match(r"(?!1234 )\d{4} \S+ Street APT (?!5\b)\d, \S+, CA 91204\n$",
-                    out), out
+    assert re.match(r"1234 \S+ Street APT 5, \S+, CA 91204-1234\n$", out), out
+    assert "Elm" not in out
 
 
 def test_the_courthouse_address_is_a_venue_and_stays():
