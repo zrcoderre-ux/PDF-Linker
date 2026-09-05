@@ -298,6 +298,24 @@ Asked in both modes alike, so the export half of a cell reaches back exactly
 as the original half did and the two still describe one passage; the Where
 range grows with it, since the quote really does come off that line too. The
 document's first word is the one place nothing can precede the value.
+**…and it is never cut INSIDE a cited case name where the value stands
+anywhere else** (`_pn_context_cites`, in `_pn_context_hit`; `_PN_SENT_END_RE`).
+Four rows of one worksheet — "American", "Benz", "Development", "Ford" —
+each quoted a published decision: "American Suzuki Motor Corp. (2008) 160
+Cal.App.4th 53", "Mercedes-Benz USA (2004) 118 Cal.App.4th 1235", "Ford Motor
+Co. (1989) 214 Cal.App.3d 878". The search took the value's first PROSE
+occurrence, and in a brief that is routinely a cite — the one occurrence
+every scan deliberately never reports, since a word of a cited decision's
+name is protected on the write side and masked on the read side. So the
+quote described the site the row was NOT about and hid the site it was (the
+billing entries the narrative tier had actually flagged).
+An occurrence inside a cited case name (`_pn_cite_shape_spans` over the
+joined body, memoized beside the prep) now yields to any other, and is kept
+only as the last resort, for a value that stands nowhere but in cites. And
+" v." is no sentence terminator: read as one it cut every cite in half, so
+the quote opened on the defendant with the plaintiff and the " v." that says
+"this is a citation" left behind it; lower-case only, so an outline heading's
+"IV." still ends its line.
 **A key row is quoted only where its value stands as a WHOLE WORD**
 (`_pn_context_hit(bounded_only=True)`, from `note_key_context`). The search
 falls back to a bare substring for the worksheet, because a welded finding

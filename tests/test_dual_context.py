@@ -264,16 +264,17 @@ class TestOnePassage:
         assert bottom.count(".") == top.count(".")     # the same sentence
 
     def test_an_occurrence_the_scrub_never_touched_has_no_second_half(self):
-        # "Stockton" is a party AND the first word of a cited decision. The
-        # citation is byte-preserved, so nothing in that passage was replaced:
-        # the honest export half is none at all, and the cell shows the
-        # document's sentence alone rather than an unrelated one from later.
+        # "Stockton" is a party AND the first word of a cited decision, and
+        # here stands NOWHERE else. The citation is byte-preserved, so nothing
+        # in that passage was replaced: the honest export half is none at
+        # all, and the cell shows the document's sentence alone rather than
+        # an unrelated one from later.
         z = _key_quotes(["Stockton"],
                         "====== Page 1 ======\n"
                         " 1  The court relied on Stockton Theatres, Inc. v."
                         " Palermo (1956) 47\n"
                         " 2  Cal.2d 469, 476. That case is not on point.\n"
-                        " 3  Defendant Stockton signed the lease in March.\n")
+                        " 3  The lease was signed in March.\n")
         top = z._key_context["stockton"]
         assert "Stockton Theatres" in top
         assert not z._key_context_scrubbed.get("stockton")
@@ -281,6 +282,21 @@ class TestOnePassage:
                                       z._key_context_scrubbed.get("stockton", ""),
                                       "x"))
         assert cell == top and P._PN_CONTEXT_RULE not in cell
+
+    def test_an_occurrence_outside_the_cite_is_the_one_quoted(self):
+        # …and where the party ALSO stands in prose, that is the passage the
+        # cell quotes — the one the scrub replaced — never the citation,
+        # which is the one occurrence every pass leaves alone.
+        z = _key_quotes(["Stockton"],
+                        "====== Page 1 ======\n"
+                        " 1  The court relied on Stockton Theatres, Inc. v."
+                        " Palermo (1956) 47\n"
+                        " 2  Cal.2d 469, 476. That case is not on point.\n"
+                        " 3  Defendant Stockton signed the lease in March.\n")
+        top = z._key_context["stockton"]
+        assert "Defendant Stockton signed" in top
+        assert "Stockton Theatres" not in top
+        assert z._key_context_scrubbed.get("stockton")
 
     def test_the_halves_come_from_one_document(self):
         # Two documents, and only the SECOND has the party in prose the scrub

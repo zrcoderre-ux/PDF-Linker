@@ -25008,7 +25008,12 @@ _PN_CONTEXT_MIN = 60
 _PN_CONTEXT_LEAD = 40
 # Only a real terminator. A semicolon and a colon end a CLAUSE, and a label
 # ("PROCESS SERVER: Michael Rodgers") is exactly the context worth keeping.
-_PN_SENT_END_RE = re.compile(r"[.!?](?=\s|$)")
+# And the " v." of a case name is no terminator at all: read as one it cut
+# every cite in half, so a quote opened on the defendant ("American Suzuki
+# Motor Corp. (2008) 160 Cal.App.4th 53") with the plaintiff and the " v."
+# that would have said "this is a citation" left behind it. Lower-case only,
+# so the "IV." of an outline heading still ends its line.
+_PN_SENT_END_RE = re.compile(r"(?<!\sv)(?<!\svs)[.!?](?=\s|$)")
 # Two-entry memo for `_pn_context_prep`, keyed on the parsed body's identity.
 # TWO, not one, for the reason `_keep_spans` memoizes two: the callers now
 # alternate between a file's ORIGINAL body and its SCRUBBED twin (a LEAKS row
@@ -25080,6 +25085,26 @@ def _pn_context_prep(parsed):
 
 
 _PN_CONTEXT_LOWER = []
+_PN_CONTEXT_CITES = []
+
+
+def _pn_context_cites(text):
+    """A `_PnSpanIndex` over every cited case NAME in a Context body's joined
+    text (`_pn_cite_shape_spans`) — memoized on the text's identity, two
+    entries deep, for the reason `_pn_context_prep` is. What lets the quote
+    prefer an occurrence OUTSIDE a citation: a word of a cited decision's
+    name is the one occurrence every scan ignores, so a quote cut there
+    describes the site the row is NOT about."""
+    for k, v in _PN_CONTEXT_CITES:
+        if k is text:
+            return v
+    try:
+        v = _PnSpanIndex(_pn_cite_shape_spans(text))
+    except Exception:
+        v = _PnSpanIndex([])
+    _PN_CONTEXT_CITES.insert(0, (text, v))
+    del _PN_CONTEXT_CITES[_PN_CONTEXT_PREP_SLOTS:]
+    return v
 
 
 def _pn_context_lower(lowers):
@@ -25216,6 +25241,7 @@ def _pn_context_hit(parsed, needle, width=_PN_CONTEXT_MAX, within=None,
     # occurrence by construction ("HELENRASHO" for "Rasho"), and the nearest
     # readable sentence beats an empty cell.
     ltext, lstarts = _pn_context_lower(lowers)
+    cited = _pn_context_cites(text)
 
     def _scan(bounded):
         # One search over the JOINED lower-cased body instead of one per
@@ -25251,6 +25277,17 @@ def _pn_context_hit(parsed, needle, width=_PN_CONTEXT_MAX, within=None,
                              or not _wordch(ltext[j + len(nl)]))):
                     yield j
                 j = ltext.find(nl, j + 1, hi)
+        # …and an occurrence INSIDE a cited case name yields to any other.
+        # Four rows of one worksheet quoted "American Suzuki Motor Corp.
+        # (2008) 160 Cal.App.4th 53", "Mercedes-Benz USA (2004) 118
+        # Cal.App.4th 1235" and "Ford Motor Co. (1989) 214 Cal.App.3d 878"
+        # — the flagged word's FIRST prose occurrence in each document, and
+        # in every case a word of a published decision's name, which is the
+        # one occurrence the scans deliberately never report. The quote
+        # described a site the row was not about, and hid the site it was.
+        # A cited hit is kept only as the last resort, since a value whose
+        # every occurrence is a citation has nowhere else to be quoted.
+        in_cite = None
         hits = _finds()
         for pos in hits:
             k = bisect.bisect_right(lstarts, pos) - 1
@@ -25259,10 +25296,16 @@ def _pn_context_hit(parsed, needle, width=_PN_CONTEXT_MAX, within=None,
             if lo_want is not None and not (lo_want <= k <= hi_want):
                 continue        # a hit outside the passage is not this pair's
             at = lines[k][0] + (pos - lstarts[k])
+            if cited and cited.overlaps(at, at + len(nl)):
+                if in_cite is None or (lines[k][2] and not in_cite[1]):
+                    in_cite = (at, lines[k][2])
+                continue
             if first is None:
                 first = at
             if lines[k][2]:
                 return at
+        if first is None and in_cite is not None:
+            return in_cite[0]
         return first
 
     hit = _scan(True)
