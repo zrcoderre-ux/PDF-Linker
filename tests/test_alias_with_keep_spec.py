@@ -1,4 +1,4 @@
-"""`*CANONICAL` and a `{braced}`/`[bracketed]` keep-spec compose in one cell.
+"""`~CANONICAL` and a `{braced}`/`[bracketed]` keep-spec compose in one cell.
 
 The two answer different halves of one finding and neither alone is enough. A
 clipped OCR lead welded to the next word — "avidsaid", which is "David said"
@@ -9,7 +9,7 @@ with the D lost and the space gone — needs the WORD kept and the NAME folded:
     letters, `_PN_NAME_FOLD_MIN` is 5) — the exact gap the alias exists to
     close. The party comes back under a second unrelated stand-in and reads as
     two people.
-  * `*David` alone folds correctly and swallows "said" into the surname.
+  * `~David` alone folds correctly and swallows "said" into the surname.
 
 They never met because both decision readers are if/elif chains that test the
 alias FIRST, and `{}` is not one of `_PN_ALIAS_FORMULA_CHARS` — so the whole
@@ -39,7 +39,7 @@ def _decide(cell, value=VALUE):
 
 # ── the parse ───────────────────────────────────────────────────────────────
 
-@pytest.mark.parametrize("cell", ["*David {said}", "*David [said]",
+@pytest.mark.parametrize("cell", ["~David {said}", "~David [said]",
                                   "=David {said}"])
 def test_both_controls_in_one_cell_are_read_as_both(cell):
     d = _decide(cell)
@@ -51,7 +51,7 @@ def test_both_controls_in_one_cell_are_read_as_both(cell):
 
 
 @pytest.mark.parametrize("cell,alias,frags", [
-    ("*David", "David", None),            # alias alone: the whole value
+    ("~David", "David", None),            # alias alone: the whole value
     ("{said}", None, ["avid"]),           # keep-spec alone: an ordinary draw
     ("no", None, None),
     ("yes", None, None),
@@ -74,11 +74,11 @@ def test_a_cell_that_is_not_both_falls_back(cell):
 
 
 def test_a_spec_covering_the_whole_value_is_a_KEEP_and_never_an_alias():
-    """`*David {avidsaid}` leaves the alias nothing to mirror, so the keep is
+    """`~David {avidsaid}` leaves the alias nothing to mirror, so the keep is
     the decision. It must not fall to the plain alias branch, which would read
     the braces as part of the canonical's name and FAKE a value the operator
     had just said to keep entire."""
-    d = _decide("*David {avidsaid}")
+    d = _decide("~David {avidsaid}")
     assert d["fix"] == "no" and d["alias"] is None
     assert d["replacement"] is None
 
@@ -88,7 +88,7 @@ def test_the_alias_mirrors_the_FRAGMENT_and_not_the_whole_value():
     so what the alias mirrors is what the cut left."""
     reg = P._PnFakeRegistry()
     terms = P._pn_build_terms(["David Thomas"], [], [], registry=reg)
-    d = {VALUE: _decide("*David {said}")}
+    d = {VALUE: _decide("~David {said}")}
     _terms, values = P._pn_apply_aliases(d, terms, reg, log)
     assert values == ["avid"]             # not "avidsaid"
 
@@ -97,7 +97,7 @@ def test_the_fragment_takes_the_same_slip_as_the_real_value():
     reg = P._PnFakeRegistry()
     terms = P._pn_build_terms(["David Thomas"], [], [], registry=reg)
     david = next(str(t.fake) for t in terms if str(t.real) == "David")
-    P._pn_apply_aliases({VALUE: _decide("*David {said}")}, terms, reg, log)
+    P._pn_apply_aliases({VALUE: _decide("~David {said}")}, terms, reg, log)
     avid = reg.tokens_for("nametok")["avid"]
     # "avid" is "David" one slip out; so is its stand-in from David's — one
     # person spelled two ways, and two DISTINCT rows for the macro to reverse
@@ -110,12 +110,12 @@ def test_the_weld_follow_still_fires_through_a_star():
     """The fragment butts straight against the kept text, so its whole-word
     term could not otherwise land — `_pn_bracket_welds` reads the pair off the
     cell and must not be confused by the alias mark."""
-    assert P._pn_bracket_welds(VALUE, "*David {said}") == {"avid": "said"}
+    assert P._pn_bracket_welds(VALUE, "~David {said}") == {"avid": "said"}
 
 
 def test_it_is_still_a_KEEP_so_the_braced_word_reaches_the_master_sheet():
-    assert P._pn_decision_is_keep(_decide("*David {said}")) is True
-    assert P._pn_decision_nuclear_parts(_decide("*David {said}")) == ["said"]
+    assert P._pn_decision_is_keep(_decide("~David {said}")) is True
+    assert P._pn_decision_nuclear_parts(_decide("~David {said}")) == ["said"]
 
 
 def test_the_key_reads_the_cell_the_same_way_the_worksheet_does(tmp_path):
@@ -135,7 +135,7 @@ def test_the_key_reads_the_cell_the_same_way_the_worksheet_does(tmp_path):
     row = [None] * len(hdr)
     row[hdr.index("category")] = "person"
     row[hdr.index("real value")] = VALUE
-    row[hdr.index("replacement")] = "*David {said}"
+    row[hdr.index("replacement")] = "~David {said}"
     ws.append(row)
     wb.save(kp)
 

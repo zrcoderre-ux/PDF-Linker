@@ -1,7 +1,7 @@
 """A worksheet row that is a MISSPELLING of a tracked value arrives answered.
 
 The fuzzy sweep already knows which tracked token a survivor is a slip of, and
-the `*CANONICAL` alias control word is exactly the answer, so the Fix? cell is
+the `~CANONICAL` alias control word is exactly the answer, so the Fix? cell is
 PRE-FILLED with it — at the operator's direction: leave it if it is right,
 change it if not. Confident cases only (the MINTING fold distance, or a clipped
 lead), every word resolved, the canonical bound, never a LEAK row and never a
@@ -201,7 +201,7 @@ def test_the_fix_cell_arrives_with_the_alias(tmp_path):
         {"file": "Decl.txt", "type": "unscrubbed name?", "value": "Xiaoxia Deng",
          "where": "p.1:4", "context": "Xiaoxia Deng signed."},
     ])
-    assert rows["Miachael"]["Fix? (yes/no)"] == "*Michael"
+    assert rows["Miachael"]["Fix? (yes/no)"] == "~Michael"
     assert "pre-filled" in rows["Miachael"]["Notes"]
     assert "Michael" in rows["Miachael"]["Notes"]
     assert not rows["Xiaoxia Deng"]["Fix? (yes/no)"]
@@ -243,7 +243,7 @@ def test_leaving_the_cell_reads_back_as_the_alias(tmp_path):
          "where": "p.1:3", "context": "Miachael served it."}])
     d = P._pn_read_leak_decisions(tmp_path)["miachael"]
     assert d["fix"] == "yes" and d["alias"] == "Michael"
-    assert d["fixcell"] == "*Michael"
+    assert d["fixcell"] == "~Michael"
 
 
 def test_a_prefilled_row_still_sorts_as_one_to_look_at(tmp_path):

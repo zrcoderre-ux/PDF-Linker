@@ -2,7 +2,7 @@
 
 "Davis Smith" is one edit from a tracked "David", and the fuzzy sweep reported
 it as a misspelling of David Thomas — and the alias pre-fill would then have
-answered the row with `*David`, merging a different person into the party on
+answered the row with `~David`, merging a different person into the party on
 the next pass. A name in a filing is written given name first, so the surname
 beside the slip is the evidence: a capitalised name word that nothing tracks,
 across whitespace alone, says this is somebody else. A comma between them is a

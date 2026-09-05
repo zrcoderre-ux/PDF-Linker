@@ -143,7 +143,7 @@ words in the other ORDER, and sorted as a `person` row of its own it sorted
 FIRST, claimed the tokens in its own word order and put the reversed spelling
 at the head of the party — `Ashworth Rachel`, `Ashworth`, `Rachel` under
 `Rachel Ashworth`. And a MISSPELLING — the OCR near-miss the registry folds,
-or the one the operator declares with `*` — takes a mirrored SLIP of the
+or the one the operator declares with `~` — takes a mirrored SLIP of the
 canonical's fake and never the fake itself (`fold_onto`: two Real Values on
 one Replacement is what the macro calls ambiguous), so the twenty scanned
 spellings that motivated the LEAKS grouping shared nothing the key's could
@@ -165,7 +165,7 @@ the token it is a slip of, wherever that token was written; one level only,
 or two spellings a slip apart would each claim the other. Which spelling
 holds the pool word is the registry's business for a fold it INFERRED (the
 shortest-first pre-bind drew `Palladina` before `Palladino`), and the one that
-folded onto it is written under it; a `*` settles it, because the starred
+folded onto it is written under it; a `~` settles it, because the starred
 spelling always holds the pool word (the alias rule, below), and where the
 party itself was built from the misspelling the starred spelling takes the
 token's slot in the party and the misspelling is written under it. A nickname's fake is the FRONT of its full name's, which
@@ -415,7 +415,7 @@ of `pseudonym_key.xlsx` accepts the same operator control words the LEAKS `Fix?`
 column does — `no` (keep this Real Value verbatim), `never` (the nuclear keep of
 the WHOLE value), a `[bracketed]` keep-spec
 (keep the bracketed part, auto-fake the rest), a `{braced}` one (same cut,
-stronger promise) and `*ANOTHER REAL VALUE` (this value is a MISSPELLING of that
+stronger promise) and `~ANOTHER REAL VALUE` (this value is a MISSPELLING of that
 one — see below) — so a mistake baked into the key
 that never surfaced as a leak can be fixed where it lives (`_pn_load_key` returns
 these as `key_decisions`). KEEP protection (`Pseudonymizer._keep_spans`, spans
@@ -533,7 +533,7 @@ kept span releases nothing, one that reaches beyond it still does (`never` on
 "Doe" keeps the word and still fakes "John Doe" as "Yorke Doe"). Nothing is left
 in the clear that the operator did not name.
 
-**A MISSPELLING of another value is named with `*`, and gets a misspelling of
+**A MISSPELLING of another value is named with `~`, and gets a misspelling of
 that value's FAKE** (`_pn_alias_target`, `_pn_apply_aliases`,
 `_PnFakeRegistry.fold_onto`). A filing that spells one party two ways —
 "ANTIONO" beside "ANTIONIO" — hands the tool two Real Values, and two unrelated
@@ -543,7 +543,7 @@ and cannot always reach it: it fires only where the two values are near enough
 (`_pn_name_fold_dist`) AND meet in the same draw, so a spelling a REUSED KEY
 already pinned, or one two edits away at a length that allows one, is past it.
 No heuristic closes that — the operator is the one who knows the two are the
-same person — so they say so, by typing `*ANTIONIO` over the fake in the key's
+same person — so they say so, by typing `~ANTIONIO` over the fake in the key's
 Replacement column or into the LEAKS `Fix?` cell.
 **Not the SAME fake, which is the whole difficulty.** Two Real Values sharing
 one Replacement is precisely what `DeAnonymize.bas` calls ambiguous: it retires
@@ -566,17 +566,18 @@ repaired. An alias that cannot be honoured (the canonical is not bound in this
 case, the two are too far apart, every mirrored form is taken) still FAKES the
 value, by an ordinary draw, and says so: the row is usually answering a LEAK,
 and refusing it quietly would leave the real name standing in the export.
-**A STAR and not an EQUALS SIGN, because the marker has to survive the cell it
-is typed into.** This shipped as `=ANTIONIO` for one release, and `=` opens a
+**A TILDE (once a star) and not an EQUALS SIGN, because the marker has to
+survive the cell it is typed into.** This shipped as `=ANTIONIO` for one release, and `=` opens a
 FORMULA to Excel: the cell turned to `#NAME?` the instant the operator finished
 typing — a worksheet that reads as broken while it is still being filled in —
 and a MULTI-WORD canonical had to be quoted (`="ANTIONIO SARKISYAN"`), because
 Excel rejects the bare form as malformed. Reading it back at all meant going
 for the FORMULA behind the cached error (`_pn_xl_typed_text`), since an
 ordinary `data_only` read hands back `#NAME?`, or nothing at all in a workbook
-Excel never recalculated. A star is ordinary text in every reader: the cell
-says what was typed, there is no error to explain, and a multi-word value needs
-no quoting. `=` is still ACCEPTED (`_PN_ALIAS_MARKS`) and advertised nowhere —
+Excel never recalculated. A star or a tilde is ordinary text in every reader: the
+cell says what was typed, there is no error to explain, and a multi-word value
+needs no quoting. (The star was the alias mark for one release and was then
+reassigned to the OCR fix, below; the alias is a tilde now.) `=` is still ACCEPTED (`_PN_ALIAS_MARKS`) and advertised nowhere —
 a workbook already carrying one must keep meaning what it said instead of
 falling through as an undecided row — and that is now the only thing the
 formula reader is for. It stays cheap and stays safe for the same reason it was
@@ -590,7 +591,7 @@ reading the alias.
 **A worksheet row that is a MISSPELLING of a tracked value arrives ANSWERED**
 (`Pseudonymizer.alias_suggestion`, `suggest_for` in `_pn_write_leak_report`,
 `_PN_PREFILL_NOTE`). The fuzzy sweep already knows which tracked token a
-survivor is a slip of, and the `*CANONICAL` control word is exactly the
+survivor is a slip of, and the `~CANONICAL` control word is exactly the
 answer, so an UNDECIDED row's Fix? cell is written holding it — at the
 owner's direction: leave it if it is right, change it if not. The next reader
 takes the cell as an ordinary alias decision, which is the point, and it is
@@ -617,7 +618,7 @@ The cluster sorts where its strongest member would have sorted, so nothing is
 pulled forward or buried by being grouped, and the ATTENTION tier still leads:
 an undecided row never sinks to sit beside a resolved sibling. The cell is read
 through the same two readers every other consumer uses and in the same order —
-the composed `*David {said}` form asked about first, or the keep-spec's braces
+the composed `~David {said}` form asked about first, or the keep-spec's braces
 are taken as part of the canonical's own name. A cell it cannot read groups
 under its own value, since this only ORDERS rows. The degraded-region bump the sweep also spends is not
 taken for a HARVESTED name, the worksheet being written without the page in
@@ -658,10 +659,10 @@ lead piece resolves to no token, and the alias machinery pairs word for word.
 The Notes cell says the cell was pre-filled and of what, so the tool's guess
 is never mistaken for an answer the operator typed, and the row keeps `fix`
 empty so it still sorts to the top as one to look at.
-**…and the `*` BINDS its canonical when this case has not**
+**…and the `~` BINDS its canonical when this case has not**
 (`_pn_alias_bind_canonical`). The shape: the only spelling of a party ANY
 document in the folder carries is a misspelling. "Vazqez" is flagged, the
-operator answers `*Vazquez`, the correct spelling appears nowhere — so there
+operator answers `~Vazquez`, the correct spelling appears nowhere — so there
 was nothing to mirror, the alias was refused, and the value took an unrelated
 pool word. One party under a stand-in that says nothing about the name it
 replaced, and the next document to spell it RIGHT draws a second unrelated
@@ -764,15 +765,50 @@ still covers are kept exactly as before, and the punch sits in the one
 function `_substitute` and `_surviving_records` both read, so replacement
 and detection cannot disagree about it.
 
-**A `*` and a `{brace}` COMPOSE in one cell** (`_pn_cell_is_alias_keep`,
-`_pn_alias_keep_spec`, `_pn_keep_spec_strip`). `*David {said}` on the value
+**A SCAN ERROR is named with `*`, and reads as the CORRECT text reads**
+(`_PN_OCR_MARK`, `_pn_ocr_fix_target`, `_pn_apply_ocr_fixes`, `_PN_OCR_STATUS`;
+the alias moved to `~` to make room, at the owner's direction). `~Smith` says
+"two spellings of one name" and keeps both, the second faked as a SLIP of the
+first's stand-in. A scan error is not a spelling: nobody wrote "Smlth", the
+page did, and the export should read as the document does. So `*Smith` on the
+value replaces it by WHAT THE CORRECT TEXT BECOMES — Smith's own stand-in,
+word for word, where this case binds Smith; bound now on the operator's
+say-so (`_pn_ocr_target_is_name`: every word capitalised, one of them a name
+token, never form boilerplate) where it is a name the case has not met; and
+the correct text ITSELF where it is not a name at all ("cuve!nants" ->
+"covenants", a locality the house style keeps). A multi-word fix pairs its
+words (`_pn_alias_word_pairs`) and corrects each garbled word's bare token
+too, so "Smlth" alone reads as Smith's stand-in beside "Jonh Smlth"; every
+existing term for the garbled value is dropped, since it is the key row being
+corrected. `*David {said}` composes with a keep-spec as the alias does.
+**Reversal is the care in it.** A row `Smlth -> <Smith's fake>` beside
+`Smith -> <Smith's fake>` is the two-Real-Values-one-Replacement shape
+`DeAnonymize.bas` retires, and a row `cuve!nants -> covenants` would UN-FIX
+the word in the tentative. So every OCR-fix row (`_PnTerm.ocr_fix`, carried
+into the record) is written to `_PN_KEY_PINNED_SHEET` WHATEVER it matched,
+under Status `ocr fix`; the fake reverses to the CORRECT spelling through the
+canonical's own row, which is what a reader wants of a scan error. The
+garble's words are never harvested as tokens, and the loader (`ocr_row`)
+builds the row back as a live term past every name screen and never seeds
+the memo under it — it is nobody's binding. Not a KEEP and never persisted
+to the master sheet: a statement about one scan of one document.
+`--fix-leaks` applies a WORKSHEET `*` (the value is a leak standing in the
+text) and refuses a KEY one, for the alias's reason; inside the worksheet
+pass a value already bound is left alone (`allow_rebind=False`). A worksheet
+delivered under the old spelling carries pre-filled `*CANONICAL` cells, which
+the next pass now reads as OCR fixes — the value takes the canonical's exact
+stand-in instead of a slip of it, and its row moves to the pinned sheet; the
+reversal still lands on the correct spelling, so nothing is lost.
+
+**A `~` and a `{brace}` COMPOSE in one cell** (`_pn_cell_is_alias_keep`,
+`_pn_alias_keep_spec`, `_pn_keep_spec_strip`). `~David {said}` on the value
 "avidsaid" — a clipped OCR lead welded to the next word, "David said" with the
 D lost and the space gone. The two controls answer different halves of one
 finding and neither alone is enough: `{said}` keeps the word and leaves the
 remainder "avid" to an ordinary pool draw, because the typo fold cannot reach
 it (`avid` is four letters, `_PN_NAME_FOLD_MIN` is 5 — the exact gap the alias
 exists to close), so the party returns under a second unrelated stand-in and
-reads as two people; `*David` folds correctly and swallows "said" into the
+reads as two people; `~David` folds correctly and swallows "said" into the
 surname. They never met because both readers are if/elif chains testing the
 alias FIRST, and `{}` is not one of `_PN_ALIAS_FORMULA_CHARS`: the whole cell
 was taken as the canonical, so the tool hunted a Real Value named
@@ -2846,7 +2882,7 @@ the party), so its row stays reversible.
   person, not a slip** (`_pn_full_name_intro`, `_PN_INTRO_FOLLOW_RE`,
   `_tracked_person_tokens`). "Davis Smith" is one edit from a tracked
   "David", and the sweep reported it as a misspelling of David Thomas — and
-  the alias pre-fill would then have answered the row with `*David`, merging
+  the alias pre-fill would then have answered the row with `~David`, merging
   a different person into the party on the next pass. A name in a filing is
   written given name first, so the SURNAME beside the slip is the evidence: a
   capitalised name word, across WHITESPACE ALONE (a run of blanks, or one
@@ -3057,7 +3093,7 @@ the party), so its row stays reversible.
   the value. The **Fix?** column round-trips: `yes`=auto-fake, `no`=leave,
   `never`=never fake this value, in this or any folder (the nuclear keep, on the
   dropdown beside yes/no),
-  **`*ANOTHER REAL VALUE` = this value is a MISSPELLING of that one**, so it is
+  **`~ANOTHER REAL VALUE` = this value is a MISSPELLING of that one**, so it is
   faked as the same misspelling of that value's fake (the alias rule above),
   **any other text = an explicit operator-typed replacement**, and
   **`[bracketed]` text naming part of the value = keep that part verbatim and
@@ -3930,7 +3966,7 @@ now and refuses a `yes` whose every word the documents write in lower case at
 least as often as capitalised (`prune_prose_word_terms`' rule, asked of the
 operator's answer), or that is a lone all-caps token of four letters or fewer;
 a refused row is named, stays on the worksheet, and takes a typed replacement
-or a `*CANONICAL`. And a `yes` typed over a PRE-FILLED misspelling row is the
+or a `~CANONICAL`. And a `yes` typed over a PRE-FILLED misspelling row is the
 alias it was pre-filled with: the Notes cell still names the canonical, so the
 row binds as a slip of the tracked name and never as a fresh person. A CLI
 `--term` is untouched — it is the operator's explicit instruction. Residual,
@@ -4944,7 +4980,7 @@ reads as "fully scrubbed".
   32 / `_PN_XL_DV_LIST_MAX` 255). `LEAKS.xlsx` puts a yes/no/never dropdown on
   its Fix? column and hangs the explanation of every control word off it as the
   validation's input message — so that sentence grows by a clause each time a
-  control word is added, and documenting `*OTHER VALUE` took it from 181
+  control word is added, and documenting `~OTHER VALUE` took it from 181
   characters to 291. Excel repairs a workbook whose validation is over the
   limit by DROPPING the validation, so the operator opens the worksheet they
   are meant to type decisions into and the one statement of what may be typed

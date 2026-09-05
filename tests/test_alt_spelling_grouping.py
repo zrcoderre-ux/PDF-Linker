@@ -4,7 +4,7 @@ spellings of.
 Two key rows sharing a Replacement are never two parties — the registry is
 injective, so they are one value written several ways: a wrap-split hyphen
 ("Ardeshirpour- Zartoshti"), a `_pn_name_variants` near-miss ("Sarra"), a
-surname-first table spelling, an operator `*ANOTHER VALUE` alias. `write_key`
+surname-first table spelling, an operator `~ANOTHER VALUE` alias. `write_key`
 already marks the non-canonical ones `alt spelling` — but the sheet sorted
 alphabetically, so they were scattered down the key and the one thing that
 Status word says ("this is another spelling of some OTHER row") could only be
@@ -12,7 +12,7 @@ acted on by searching the sheet for the Replacement.
 
 So the key is ordered as PARTY BLOCKS: the full name, its own alternate
 spellings, then each of its bare tokens with that token's spellings under it.
-And `LEAKS.xlsx` groups the same way, on the `*CANONICAL` cell — a badly
+And `LEAKS.xlsx` groups the same way, on the `~CANONICAL` cell — a badly
 scanned party name arrives as a dozen pre-filled rows that are right together
 or wrong together, and read scattered down an alphabet they cannot be.
 
@@ -199,7 +199,7 @@ def test_the_prefilled_misspellings_of_one_value_are_contiguous(tmp_path, pz):
                              "Vasquez", "Zenith"], pz)
     fix = "Fix? (yes/no)"
     hits = [i for i, r in enumerate(rows)
-            if str(r[fix] or "").lower() == "*vazquez"]
+            if str(r[fix] or "").lower() == "~vazquez"]
     assert len(hits) == 3, [(r["Value"], r[fix]) for r in rows]
     assert hits == list(range(hits[0], hits[0] + len(hits))), (
         [(r["Value"], r[fix]) for r in rows])
@@ -217,7 +217,7 @@ def test_a_typed_alias_groups_with_the_prefilled_ones(tmp_path, pz):
     operator's own answer joins the family rather than sorting away from it."""
     rows = _leaks(tmp_path, ["Aardvark", "Vazqez", "Vazqoe"], pz,
                   decisions={"aardvark": {"value": "Aardvark", "fix": "yes",
-                                          "fixcell": "*Vazquez",
+                                          "fixcell": "~Vazquez",
                                           "alias": "Vazquez"}})
     assert [r["Value"] for r in rows] == ["Aardvark", "Vazqez", "Vazqoe"]
 
@@ -228,17 +228,17 @@ def test_an_undecided_row_never_sinks_to_sit_beside_a_resolved_sibling(
     the top even when a decided row names the same canonical."""
     rows = _leaks(tmp_path, ["Vazqez"], pz,
                   decisions={"vazqoe": {"value": "Vazqoe", "fix": "yes",
-                                        "fixcell": "*Vazquez",
+                                        "fixcell": "~Vazquez",
                                         "alias": "Vazquez"}})
     order = [r["Value"] for r in rows]
     assert order.index("Vazqez") < order.index("Vazqoe"), order
 
 
 @pytest.mark.parametrize("cell,canon", [
-    ("*Vazquez", "vazquez"),
-    ("* Manuel Vazquez", "manuel vazquez"),
+    ("~Vazquez", "vazquez"),
+    ("~ Manuel Vazquez", "manuel vazquez"),
     ("=Vazquez", "vazquez"),                 # the older spelling still reads
-    ("*David {said}", "david"),              # alias composed with a keep-spec
+    ("~David {said}", "david"),              # alias composed with a keep-spec
     ("no", ""),
     ("[Human Resources]", ""),
     ("", ""),
@@ -290,7 +290,7 @@ def test_an_operator_alias_sits_under_the_token_it_misspells(tmp_path):
     reg = P._PnFakeRegistry()
     terms = P._pn_build_terms(["Manuel Vazquez", "Rachel Ashworth"], [], [],
                               registry=reg)
-    decisions = {v.lower(): {"value": v, "fix": "yes", "fixcell": "*Vazquez",
+    decisions = {v.lower(): {"value": v, "fix": "yes", "fixcell": "~Vazquez",
                              "alias": "Vazquez"} for v in ("Vazqez", "Vatquel")}
     terms, vals = P._pn_apply_aliases(decisions, terms, reg, log)
     terms += P._pn_build_terms([], [], vals, reg)
@@ -330,7 +330,7 @@ def test_a_fold_is_read_off_the_values_so_a_rerun_off_the_key_agrees(tmp_path):
     terms = P._pn_build_terms(["Manuel Vazquez", "Marco Palladino",
                                "Marco Palladina"], [], [], registry=reg)
     decisions = {"vatquel": {"value": "Vatquel", "fix": "yes",
-                             "fixcell": "*Vazquez", "alias": "Vazquez"}}
+                             "fixcell": "~Vazquez", "alias": "Vazquez"}}
     terms, vals = P._pn_apply_aliases(decisions, terms, reg, log)
     terms += P._pn_build_terms([], [], vals, reg)
     text = ("MANUEL VAZQUEZ testified. Vazquez Manuel signed. Vatquel left. "
@@ -398,7 +398,7 @@ def _starred(tmp_path, text):
     reg = P._PnFakeRegistry()
     terms = P._pn_build_terms(["Manuel Vazqez"], [], [], registry=reg)
     decisions = {"vazqez": {"value": "Vazqez", "fix": "yes",
-                            "fixcell": "*Vazquez", "alias": "Vazquez"}}
+                            "fixcell": "~Vazquez", "alias": "Vazquez"}}
     terms, vals = P._pn_apply_aliases(decisions, terms, reg, log)
     terms += P._pn_build_terms([], [], vals, reg)
     z = P.Pseudonymizer(terms, {}, registry=reg)

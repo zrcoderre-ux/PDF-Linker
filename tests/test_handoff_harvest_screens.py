@@ -65,7 +65,7 @@ def test_a_yes_over_a_prefilled_row_binds_as_the_alias(tmp_path):
         [list(r) for r in openpyxl.load_workbook(path).active.iter_rows(
             values_only=True)])
     assert rows["vazqez"]["alias"] == "Vazquez"
-    assert rows["vazqez"]["fixcell"] == "*Vazquez"
+    assert rows["vazqez"]["fixcell"] == "~Vazquez"
     assert rows["projection"]["alias"] is None
 
 
