@@ -3893,6 +3893,160 @@ the detector had not matched, so it shipped as `<fake-local>@<real-domain>`;
 `scrub_emails` now rewrites a tracked domain on its own wherever the local
 part beside it is one of this run's fakes.
 
+**The E-Court "Other Names" cell carries CREDENTIALS and ROLE columns, and
+neither is a name** (`_pn_cell_is_credential`, `_PN_CELL_ROLE_TAIL_RE`, in
+`_pn_split_cell`). The export writes a physician's degree as its own comma
+group ("Bradley I. Kramer, M.D., Esq.") and glues the parties page's role
+column onto the attorney ("Maro Burunsuzyan Lead Attorney"), so `M.D.` was a
+`person` row replaced 396 times — every credential in every caption and
+signature block — and `Lead Attorney` a party. A piece that is nothing but
+credentials by `_pn_credential_kind`'s own component rule is dropped (the
+composing faker keeps a degree verbatim anyway, so "Kramer, M.D." is still
+scrubbed through the bare name), and a trailing role phrase is trimmed off
+every piece; a firm that has "Attorney" INSIDE its name is untouched, since
+only the tail is read.
+
+**A name PARTICLE is never a bare token, and an OCR SPLIT of a bound word is
+an ALT SPELLING of it** (`_PN_NAME_PARTICLES`, `_pn_is_name_particle`,
+`_pn_append_split_spelling`). `entity-token 'De' -> Tennant` had one match in
+its own Context cell, inside a cited case name; and a worksheet `yes` on
+"HEAL TH" (the "Health" of a bound hospital, with a kern gap) minted `HEAL`
+and `TH` as people, while "MEDI" rewrote "Medical Malpractice". The particle
+screen is asked at both bare-token emission sites and at the loader, so the
+two ends agree. A `--term` or worksheet value whose pieces run together to
+exactly one bound token is registered as a derived spelling of that token,
+carrying its fake, and never tokenised — the concatenation is the
+corroboration, the rule `_pn_word_breaks` already states. An institution named
+with no corporate suffix ("Verdugo Hills Health Center") now takes the ENTITY
+path (`_PN_ENTITY_HINT_WORDS` gains the institution words); as a three-word
+person its "Health" joined the person fakes every capitalised neighbour is
+read against.
+
+**A DEPARTMENT is keyed on its NUMBER, a one-digit one never draws its own
+digit, and a courtroom number is not a house number** (`_PN_DEPT_RE`,
+`registry.digits`, `_pn_load_key`, `_pn_addr_is_venue`). `Department "515"`
+survived ten times because the regex admitted no quote; "Department 2" shipped
+as "Jwgpbnxwtn 2" because `digits` drew the real digit one time in ten and
+`_pn_guard_distinct_fake` then re-minted the WHOLE term, label included; a
+re-run beside the key drew fresh digits for a label form the key had not seen
+("Dept 515" -> 352 beside "Department 515" -> 718), because the loader seeded
+no department slot; and "Department 2 Spring Street Courthouse" harvested an
+address fragment "2 Spring". Quotes are admitted and kept, a digit fake is
+never the real value (asked of every caller — a self-mapped fake is a no-op
+scrub everywhere), the loader seeds the number's slot, and an address behind a
+department label is refused.
+
+**The COURTHOUSE is a public venue, kept the way a city is**
+(`_PN_COURTHOUSE_STREETS`, `_PN_VENUE_LINE_RE`, `_pn_addr_is_venue`). A
+delivered export faked the Stanley Mosk courthouse's own address, which tells a
+reader only that the tool did not know where the court sits. A line naming the
+Courthouse or the Superior Court beside the address is the venue, and the Los
+Angeles Superior Court's civil courthouses are listed by their street key,
+since a notice prints the court's address in a caption with no furniture
+around it. Asked at the detector and at `register_addresses`, so neither the
+address nor its fragment is minted.
+
+**The judge stands behind a LABEL as often as a title, and a captured middle
+initial is dropped in the caption** (`_PN_JUDGE_LABEL_RE`, the derived short
+form in `register_court_names`). "Judicial Officer: Dana Whitaker" is the
+complaint's caption and "Judge: Dana Whitaker" the minute order's heading
+table; neither is a title, so the judge shipped in the clear on the page every
+reader starts from while "Hon. Dana T. Whitaker" off the register was bound.
+The label anchor feeds the same capture, and a three-word judge name binds its
+"Given Surname" form beside it, marked derived — the initial-spelling rule
+abbreviates a middle name and never drops one.
+
+**A VANITY number is a phone number spelled in letters**
+(`_PN_VANITY_PHONE_RE`, `_fake_vanity_phone`, the `vanity phone` detector).
+"(424)-INJURED" resolves to the firm in one search and shipped fourteen times;
+the digits-only detector cannot see it. The area code is faked as digits and
+the word as a same-length pool word, re-split on the real's own separators.
+
+**A party WRAPPED across a pleading GUTTER NUMBER is one name, and the line
+number survives the substitution** (`_PN_TERM_SEP`, `_PN_GUTTER_SEAM`,
+`_pn_reflow`). The export prints a line as `f"{num:>2}  "` plus body, so a
+hospital wrapped at the margin reads "GLENDALE\n 2  MEMORIAL MEDICAL CENTER"
+and the `\s+` join between a term's words could not cross it: the city-word
+head shipped eight times while its second word was faked beside it — and the
+head was a protected locality, so no bare token could reach it either. The
+separator between a term's words now admits the seam, and `_pn_reflow` lays
+the fake back over it verbatim, number and all, whatever the caller asked —
+or the line the name wrapped onto would be deleted with the text it numbered.
+
+**The register names the REPORTER by the licence beside the name, and a
+proof of service signs UNDER its "/s/"** (`_PN_COURT_REPORTER_CSR_RE`, the
+`csr number` identifier class, the `/s/` anchor). "Court Reporter Pro Tempore
+(Maria Lopez (CSR 12345))" reached no anchor — the staff rules want a role
+label before or after a comma — and the CSR number is a state registry lookup
+from the reporter; both are bound now. The "/s/" anchor admits one newline,
+which is where a proof of service puts the declarant's typed name.
+
+**Medicare and PHI identifiers have their own classes, and the BCRC's public
+contact points are kept** (`medicare beneficiary id`, `case identification
+number`, `icn number`, `npi number` in `_PN_ID_RES`; `_PN_UNBOUNDED_IDS`,
+`_PN_PHONE_SHAPED_IDS`, `_PN_MEDICAL_CODE_RE`, `_PN_PUBLIC_PHONES`,
+`_PN_PUBLIC_POBOXES`). An MBI is eleven characters in a fixed shape that
+excludes S, L, O, I, B and Z, distinctive enough to read bare — a ledger
+prints it with no label and glues it to the surname in front of it, so its
+term has no LEFT boundary (the surname beside it is the weld cure's, letter
+hard against digit). The BCRC's fifteen-digit case number is faked in its
+three spaced groups; an ICN behind its label; an NPI behind "NPI" or a
+provider label, and the phone detector steps aside for a ten-digit value a
+label has claimed — two NPIs and the case number's tail had shipped as
+PHONES. A diagnosis or procedure code (ICD, CPT, HCPCS) is never a production
+stamp, and only the LETTERED shapes are refused an account-id label ("DEAL#
+23071" is a dealer's stamp, not a CPT code). The contractor's toll-free lines,
+fax, post office box and domain are on every conditional-payment letter and
+identify no one; faking them writes a number that may be somebody's real line.
+
+**An ADDRESS now fakes its HOUSE NUMBER and UNIT and drops the ZIP+4**
+(`_fake_house_number`, `_fake_unit`, `_fake_street`), at the owner's direction
+and reversing the older rule: beside a faked street the real number still says
+which house on the block, and the +4 names a delivery point. Each number is
+drawn on ITS OWN slot (`digits`, memo on the number), so "414" alone and
+"414-416" agree on 414's stand-in and a range keeps its shape, and two houses
+on one street never share a fake — the collapse the older rule was written
+against came from keying the number on the number-stripped street. The
+five-digit ZIP stays; the loader seeds the number's slot from a key whose fake
+carries a faked number, and seeds nothing from a key written when the number
+was kept (a memo of the real number would hand `digits` its own value).
+Accepted, and stated: a delivered folder re-run without its key gets new house
+numbers; with its key the loaded rows apply as written.
+
+**A word that is one person's GIVEN name and another's SURNAME is two
+words** (`_pn_name_token_tag`, `registry.name_role_primary`,
+`_pn_fake_name_token(role=)`). The registry memoises on the word, which is
+right for one person's spellings and wrong for a coincidence across people:
+counsel's given name and an unrelated attorney's surname drew one pool word,
+and "<Fake> I. <Surname>", "<Given> <Middle> <Fake>" and "<Fake> & <Partner>
+LLP" read as one person. The role that first draws a word holds its memo; the
+other role, arriving later, draws under its own slot. Both composers
+(`_pn_fake_person`, `_pn_person_token_map`) decide the role by the same rule
+(the last mappable word, or the first before a comma), a one-word name carries
+no role, and the bare token takes whichever role drew first — the residual,
+and stated, since a bare "Kramer" in the text cannot say which person it is.
+
+**A FOUR-letter operator-named token is swept at ONE slip and at a
+corroborated SITE only** (`_tracked_name_token_index`, the four-letter branch
+of `fuzzy_survivor_scan`, `_PN_WORD_BREAK_MIN` 4). The plaintiff's given name
+"Vahe" shipped as "VAHA" seven times and "V AHE" seven more, under the
+five-letter fold floor. The kern-break pattern reaches four letters now
+(measured: zero broken-spelling matches for 28 four-letter names over this
+repo's prose), and a four-letter token off the template or a `--term` joins
+the sweep's index — met at one slip, by a four-letter word only, and reported
+only where the lower-case tier's own site rule holds (a stand-in of this run
+hard against it, a name label, a narrative verb): "VAHA Strangeways" is the
+plaintiff beside her faked surname, "Vale of tears" and "Joan Baker" are one
+slip from Vahe and John and are nobody. An ALL-CAPS four-letter word is asked
+about in Title case where such a token exists, since the acronym rule would
+otherwise refuse the shouted given name.
+
+**A repeat DOWNLOAD is folded into `Combined Text.txt` once**
+(`_write_combined_text`). Eight of one batch's nineteen exports were "(1)" and
+"(2)" downloads of the same filings, and the combined file handed the drafting
+model each of them twice. Bodies identical but for the page REVIEW banners and
+whitespace are one member, the first name kept and the rest logged.
+
 **…and a cite WRAPS wherever the margin falls, and the guards read it as the
 EXPORT prints it** (`_PN_CITE_WS`, `_PN_CITE_V`, `set_page_context`). On
 pleading paper a citation breaks inside the plaintiff's name, around the

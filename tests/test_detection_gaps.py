@@ -221,12 +221,14 @@ def test_suffix_less_streets_are_read_off_their_tail():
     z = _learn(text)
     out = z.apply(text)
     _gone(out, "Broadway", "Avenue of the Stars", "Camino Real")
-    # The house number, the suite and the whole City, ST ZIP tail are kept.
-    assert re.search(r"^1234 \S+ \S+, Los Angeles, CA 90015$", out, re.M), out
-    assert re.search(r"^1888 \S+ \S+, Suite 1500, Los Angeles, CA 90067$",
+    # The house number and the suite number are faked in place (same width,
+    # never the real digits); the City, ST ZIP tail is kept.
+    assert re.search(r"^(?!1234 )\d{4} \S+ \S+, Los Angeles, CA 90015$",
                      out, re.M), out
-    assert re.search(r"^100 \S+ \S+, Suite 200, Redwood City, CA 94063$",
-                     out, re.M), out
+    assert re.search(r"^(?!1888 )\d{4} \S+ \S+, Suite (?!1500\b)\d{4}, "
+                     r"Los Angeles, CA 90067$", out, re.M), out
+    assert re.search(r"^(?!100 )\d{3} \S+ \S+, Suite (?!200\b)\d{3}, "
+                     r"Redwood City, CA 94063$", out, re.M), out
     assert "24 Hour Fitness Center opened" in out
     assert re.search(r"^¶ 12 \w+ Decl\. #3$", out, re.M), out
 

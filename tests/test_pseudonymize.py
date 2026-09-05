@@ -406,8 +406,10 @@ class TestAddressLocality:
 
     def test_street_only_address_unharmed(self):
         pz, _reg = _pz()
-        out = pz.apply("111 N. Hill St.")
-        assert "Hill" not in out
+        # (Not "111 N. Hill St." — the Stanley Mosk courthouse is a venue
+        # and is kept, handoff 2 §12.)
+        out = pz.apply("4570 N. Orchard St.")
+        assert "Orchard" not in out
 
 
 # ── Task 12 — no real material survives in an e-mail local part ─────────────
