@@ -20396,6 +20396,27 @@ class Pseudonymizer:
             rec["count"] += 1
         return out
 
+    def describe_reals(self, values):
+        """`values` as the LEAK warning names them: each with the CATEGORY and
+        SOURCE of the record it stands for ("Benz (entity-token, from
+        prescan)"), so a row with no key row behind it can be traced to the
+        pass that built its term without a second run. A batch shipped three
+        LEAK rows for words harvested off citations and applied nowhere — no
+        key row, so nothing said where the terms had come from — and finding
+        that out took the exports, the log and the PDF."""
+        by_real = {}
+        for rec in self.records.values():
+            by_real.setdefault(str(rec.get("real", "")).lower(), rec)
+        out = []
+        for v in sorted(values, key=lambda x: str(x).lower()):
+            rec = by_real.get(str(v).lower())
+            if rec:
+                out.append(f"{v} ({rec.get('category', '?')}, from "
+                           f"{rec.get('source') or '?'})")
+            else:
+                out.append(str(v))
+        return out
+
     def note_original(self, text):
         """Record the UNSCRUBBED text of an export as EVIDENCE for
         `confirm_findings`. Called with what the "original text files" option
@@ -29211,7 +29232,7 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
 
         if survivors:
             pseudonymizer.note_leaks(survivors)
-            shown = ", ".join(sorted(survivors)[:8])
+            shown = "; ".join(pseudonymizer.describe_reals(survivors)[:8])
             log.warning(f"  Pseudonymization LEAK on {pdf_path.name}: real "
                         f"value(s) still present in the .txt ({shown}). Review "
                         f"before sharing; add them with --term and re-run.")
@@ -30187,7 +30208,7 @@ def _write_word_text_version(src_path, text, log, pseudonymizer=None,
                                                                spliced=False))
         if survivors:
             pseudonymizer.note_leaks(survivors)
-            shown = ", ".join(sorted(survivors)[:8])
+            shown = "; ".join(pseudonymizer.describe_reals(survivors)[:8])
             log.warning(f"  Pseudonymization LEAK on {src_path.name}: real "
                         f"value(s) still present in the .txt ({shown}). Review "
                         f"before sharing; add them with --term and re-run.")
