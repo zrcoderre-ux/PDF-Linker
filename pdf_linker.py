@@ -13447,6 +13447,27 @@ def _pn_key_party_order(rows, alt_rows):
     # on its own. Targets are read in sheet order, so the first that fits
     # wins, and a fold is never itself a target.
     folds, folds_of_something = {}, set()
+    # The other way round first: a party's TOKEN may itself be the slip, and
+    # the correct spelling a one-word binding standing outside the party —
+    # the template spelled the name wrong, the operator starred the right
+    # spelling, and no document carries it. The starred spelling is the
+    # correct one, so it takes the token's place in the party and the token
+    # is written under it.
+    for fake, kids in children.items():
+        for i, kf in enumerate(kids):
+            if len(fwords[kf]) != 1 or len(rwords[kf]) != 1:
+                continue
+            for tf in order:
+                if (tf == fake or tf in claimed or tf not in namelike
+                        or len(fwords[tf]) != 1 or len(rwords[tf]) != 1):
+                    continue
+                if _pn_key_word_fold(rwords[kf][0], fwords[kf][0],
+                                     rwords[tf][0], fwords[tf][0]):
+                    claimed.add(tf)
+                    kids[i] = tf
+                    folds.setdefault(tf, []).append(kf)
+                    folds_of_something.add(kf)
+                    break
     for kf in order:
         if kf in claimed or kf not in namelike or len(fwords[kf]) != 1:
             continue
@@ -24001,6 +24022,30 @@ def _pn_alias_bind_canonical(registry, cword, cbase, vbase, log):
     # term list without being read off any document.
     if cbase in {str(f).lower() for f in registry.minted_fakes()}:
         return ""
+    # The value after the star is the CORRECT spelling, and is treated as one:
+    # it holds the clean stand-in and the misspelling holds the slip. Where
+    # the MISSPELLING was bound first — it came off the template or a
+    # document and drew a pool word, and the operator then starred the
+    # spelling no document carries — an ordinary draw for the canonical would
+    # fold it onto the misspelling's fake (`token`'s near-variant fold), so the
+    # correct spelling took the typo'd stand-in and the typo the clean one.
+    # The pool word is handed over instead, and the caller re-draws the
+    # misspelling as a slip of it. Only a CLEAN pool word moves: a fake the
+    # misspelling itself folded onto, or a recycled one, says nothing about
+    # which spelling is right, and the ordinary draw stands.
+    tag = _PnFakeRegistry._memo_tag("nametok")
+    held = registry._memo.get((tag, vbase))
+    if held and str(held).lower() in _PN_POOL_WORDS:
+        del registry._memo[(tag, vbase)]
+        registry._used.discard(str(held).lower())
+        registry._take((tag, cbase), held)
+        log.info(f"  ALIAS: {cword!r} is not spelled that way anywhere in this "
+                 f"folder, so it is being BOUND on your say-so — it takes the "
+                 f"stand-in {held!r} that {vbase!r} held, and {vbase!r} is "
+                 f"re-drawn as a slip of it. Check the spelling after the '*'. "
+                 f"The row is written to the key's '{_PN_KEY_PINNED_SHEET}' "
+                 f"sheet, since no export carries it.")
+        return held
     _pn_fake_name_token(cword, registry)
     # Read the binding back out of the MEMO rather than taking the draw's
     # return: that is the slot the ordinary path reads
