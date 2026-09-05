@@ -19938,8 +19938,17 @@ class Pseudonymizer:
         # Whitelisted URL spans are in the set for the same mirroring reason:
         # `_substitute` refuses to rewrite inside a verification link, so a
         # tracked value standing there must not be reported as a leak.
-        keep = _PnSpanIndex(self._keep_spans(text)
-                            + self._whitelisted_url_spans(text))
+        # The keep and URL spans are read off the UNMASKED body, as the write
+        # side reads them off `src`. Asked of the MASKED copy they came apart
+        # at the one place the mask reaches inside a token: the authorities
+        # appendix spells every cite out again in its verification link, the
+        # mask blanks the cited name wherever it stands, and a URL regex run
+        # over "scholar?q=    %20v.%20Mercedes-Benz" stops at the blank — so
+        # every word after it lay outside the whitelisted span and a tracked
+        # "Benz" inside the link was reported as a leak the write side had
+        # refused (the URL is whitelisted there) and no pass could clear.
+        keep = _PnSpanIndex(self._keep_spans(guard_body)
+                            + self._whitelisted_url_spans(guard_body))
         out = []
         for rec in self._leads_present(text, self.records.values(),
                                        lambda r: r.get("lead")):
@@ -20229,15 +20238,25 @@ class Pseudonymizer:
         raw, _idx = self._reduce_with_index(_NFKC(text))
         if not any(c in raw for c, _s, _r in cores):
             return []
-        masked = self._mask_protected_citations(_NFKC(text))
+        body = _NFKC(text)
+        masked = self._mask_protected_citations(body)
         red, idx = self._reduce_with_index(masked)
         # An operator KEEP is present ON PURPOSE, so it is not a leak — the rule
         # `_surviving_records` already follows, which this tier never did. Both
         # of the reduced passes ignored the keep set entirely, so an operator's
         # own decision was the one thing they would not honour. Mirrored in
         # `scrub_welded`, which must refuse the same spans.
-        keep = _PnSpanIndex(self._keep_spans(masked)
-                            + self._whitelisted_url_spans(masked))
+        # …and read off the UNMASKED body, as `scrub_welded` reads them off
+        # `src`: the mask blanks a cited name inside the appendix's
+        # verification link, and a URL regex run over the blanked copy loses
+        # the rest of the link — "American" inside "scholar?q=    %20v.%20
+        # American%20Isuzu" was reported here while the cure rightly refused
+        # it. Same length by construction (`_mask_uncached` blanks in place),
+        # checked rather than assumed, since an offset into the wrong string
+        # is silent.
+        span_src = body if len(body) == len(masked) else masked
+        keep = _PnSpanIndex(self._keep_spans(span_src)
+                            + self._whitelisted_url_spans(span_src))
         out = []
         for core, short, rec in cores:
             k = red.find(core)

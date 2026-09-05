@@ -2537,6 +2537,25 @@ the party), so its row stays reversible.
   Residual, and stated: at such a site the value is now silent on the LEAK tier
   as well as unfaked — which is what the guard has always chosen there, and the
   alternative was a folder that could never resolve.
+  **…and the KEEP and URL half of that mirror was asked about the wrong text
+  too** (`_surviving_records`, `surviving_reals_reduced`). Both read-side
+  tiers computed the keep spans and the whitelisted-URL spans on the
+  citation-MASKED copy, where `_substitute` and `scrub_welded` compute them on
+  the unmasked text. The mask blanks a cited name wherever it stands — inside a
+  token included — and the authorities appendix spells every cite out again in
+  its verification link, so "scholar?q=Kwan%20v.%20Mercedes-Benz…" read as
+  "scholar?q=    %20v.%20Mercedes-Benz…" and the URL regex stopped at the
+  blank: every word after it lay outside the whitelisted span. A batch's
+  worksheet carried "American", "Benz" and "Mercedes-Benz" as LEAK rows with no
+  key row behind them — harvested off cites, applied nowhere, every occurrence
+  protected on the write side — and the row could never be cleared, because
+  `--fix-leaks` runs that same refusal and reports again. Worse than noise: a
+  `yes` on such a row mints the word as an authoritative term and renames the
+  cited decision in every export. Both tiers read the spans off the UNMASKED
+  body now (`guard_body`, `span_src`), same length by construction and checked
+  rather than assumed, so the two sides of the mirror ask one question of one
+  string. Verified on the delivered export: all three rows go silent, and a
+  tracked word standing outside any cite still reports.
   **A word the composing faker KEPT is not one of our fakes**
   (`name_fake_words`). The furniture of a party name is preserved verbatim
   ("The Lovelace" -> "The Flintham") and a `{braced}` keep is too, but the
