@@ -3547,6 +3547,118 @@ keeps its defendant. Residual, and stated: a strung defendant whose name is
 itself split by the page break loses its shape span there, which costs a review
 row and never an authority.
 
+**A cited decision is never renamed through its SHORT FORMS, and the harvest
+never reads a citation's name** (`SUPRA_RE`, `find_supra_citations`,
+`_pn_cite_short_phrases`, the short-form rule in `_protected_citation_spans`,
+the citation mask in `_pn_learn_from_text`). A delivered batch kept every
+full cite of "RGC Gaslamp, LLC v. Ehmcke Sheet Metal Co., Inc. (2020) 56
+Cal.App.5th 413" byte-identical and shipped every "RGC Gaslamp, supra",
+every heading naming the case and every bare prose mention with the first
+word replaced by a pool fake — eleven times across three briefs. Three things
+compounded. The comma-led corporate-suffix harvester read both sides of the
+cite as this case's parties. The supra resolver admitted ONE capitalised word
+before ", supra" and keyed the full cite on its first word, so "RGC Gaslamp,
+supra" captured "Gaslamp", the cite was keyed on "RGC", the two never met,
+and `prune_citation_only_terms` — which asks whether a value stands anywhere
+OUTSIDE a citation — found it standing in an unresolved supra and kept it.
+And the write guard protected only what the parser returned. Closed at three
+seams. `SUPRA_RE` admits a run of up to four capitalised words and the
+resolver matches every suffix of the run against the LEADING WORDS of each
+full cite's name, longest first, so a lead-in the run swept up ("See RGC
+Gaslamp, supra") is walked past and the span is cut back to the words that
+resolved. The write side protects a declared short form wherever it stands
+BARE — the phrase, and its first word alone, as the mask already blanks it
+for the review tiers — except a word of a value this case TRACKS
+(`_tracked_real_words`, the mask's own exception), so a template party
+sharing a cited decision's name is still scrubbed. And the harvest input is
+run through the citation mask at `_pn_learn_from_text`'s choke point, beside
+the table-of-authorities and docket-code masks and for the same reason: a
+name harvested off a cite is never a party of this case, and a real party
+sharing the name is reached by the caption, the template and every role
+anchor. Two belts found on the way. The tail-less defendant half of
+`_in_authority_context` protected ANY name within its window of a strung
+" v. ", across a lower-case word and a full stop ("Kremerman v. White again.
+Helen Rasho"), while the mask's strung branch is a name run — so the party
+shipped in the clear with the leak tier silent; it now requires nothing but
+party name between the " v. " and the candidate. And the whitelisted
+verification-link spans `_substitute` refuses were handed to neither cure
+(`scrub_welded`, `scrub_survivors`) nor the reduced scan, which is how the
+appendix's `scholar?q=Posner%20v.%20Grunwald-Marx` came to be rewritten; all
+three take them now.
+
+**The party template is filtered to THIS folder's docket**
+(`_pn_folder_casenos`, `_pn_terms_from_xlsx(folder_casenos=…)`). An E-Court
+export is a CALENDAR: a sheet listing several matters, or last week's export
+for a different matter still in Downloads, and it was read whole — every
+sheet, every row — so a delivered key carried twenty-five real values from a
+stranger's lemon-law case, pinned `no match` on every re-run (the template is
+an authoritative source), and one of them faked a CITY in a letterhead.
+Where the sheet names MORE THAN ONE docket, only the rows naming a docket this
+folder's documents carry (read by shape off the first two pages of each PDF,
+canonicalised as `_pn_fake_caseno` seeds) are taken, a row naming none in
+such a sheet is dropped as ambiguous, and a multi-matter sheet naming none of
+this folder's dockets is refused whole and said so. A sheet naming one matter
+or no docket at all is read as it always was, and a multi-matter sheet in a
+folder whose docket could not be read is taken whole with a warning.
+
+**A "Declaration of …" capture that reads as a STATUTE is not a declarant**
+(`_pn_declarant_reads_as_statute`, `_PN_CODE_NAME_RE`). A county recorder
+stamps a recorded lien "Declaration of Exemption From Gov't Code § 27388.1
+Fee"; the anchor took "Exemption From Gov't Code" as a person, minted seven
+initial variants, and rewrote the stamp on every copy. A code name in the
+capture, a section sign in it or hard after it, or a last word that is a
+generic token says statute. **A captured name's own trailing stop ends it**
+(`_clean_name`/`_clean_tail` in `register_court_names`): "Judge Allison
+Mackenzie. Dept 55" bound the judge twice, once with the period.
+
+**A worksheet `yes` is screened before it mints** (`_pn_vocabulary_screen`,
+`_pn_original_texts`, `_pn_prefill_canonical`). A blanket `yes` down an
+OCR-heavy worksheet minted "Pay", "Enhanced Sealing", "Projection", "TRANS"
+and a dozen OCR fragments as PEOPLE, so "PAY CASH" and a contract's line
+items came back carrying surnames. `--fix-leaks` reads the originals FIRST
+now and refuses a `yes` whose every word the documents write in lower case at
+least as often as capitalised (`prune_prose_word_terms`' rule, asked of the
+operator's answer), or that is a lone all-caps token of four letters or fewer;
+a refused row is named, stays on the worksheet, and takes a typed replacement
+or a `*CANONICAL`. And a `yes` typed over a PRE-FILLED misspelling row is the
+alias it was pre-filled with: the Notes cell still names the canonical, so the
+row binds as a slip of the tracked name and never as a fresh person. A CLI
+`--term` is untouched — it is the operator's explicit instruction. Residual,
+stated: a vocabulary word the documents only ever capitalise ("Enhanced
+Sealing" as a line item) passes, since without a dictionary the corpus is the
+only screen.
+
+**An export of NO source document is named, and a stale copy is left alone**
+(`_orphan_exports`, `skip` on the combined writer). An export is named for
+its source's scrubbed stem, so one an earlier run wrote under an earlier
+key's fakes matches no source once the key has moved on; a delivered batch
+carried such a file — a byte-level duplicate of a live export under a
+stand-in no key row mapped — and the `--fix-leaks` sweep re-scrubbed it into a
+second generation while the combined file carried both. Every orphan is named
+at WARNING; only an orphan that is also a near-copy of a live export (nine
+lines in ten shared) is treated as stale — neither swept by `--fix-leaks` nor
+combined — since an export whose name moved because the operator retyped a
+key row is still the only copy of its document.
+
+**Three matching gaps, each a shape a bound value shipped in.** A street
+wrapped around an OCR stray line ("2000" / "lf" / "Riverside Drive, Los
+Angeles") — number and street two lines apart — was matched by nothing and
+reported by nothing, on three proofs of service; `register_addresses` now
+also binds the street with its suffix standing alone (`address_street`), to
+the same fake the address drew, since the number is the one part that
+identifies nobody. A caption's "of" glued to the plaintiff by extraction
+("ofQUILLMARK BUILDERS LLC") failed the full name's left boundary, so the
+reduced cure fixed the first token alone and half a party shipped reading as
+scrubbed; a name of two or more words may now open across a CASE FLIP behind
+a lower-case word (`_pn_build_pattern(glue_left=True)`, `(?-i:…)` keeping
+the flip case-sensitive under IGNORECASE), the left boundary otherwise
+holding as the thing that stops a short name firing inside a longer word, and
+`_lead_words` indexes the capitalised tail of such a word so the prefilter
+still sees it. And a bound name token rewrote the LOCAL part of an address
+the detector had not matched, so it shipped as `<fake-local>@<real-domain>`;
+`scrub_emails` now rewrites a tracked domain on its own wherever the local
+part beside it is one of this run's fakes.
+
 **…and a cite WRAPS wherever the margin falls, and the guards read it as the
 EXPORT prints it** (`_PN_CITE_WS`, `_PN_CITE_V`, `set_page_context`). On
 pleading paper a citation breaks inside the plaintiff's name, around the
