@@ -283,6 +283,21 @@ a by-NAME check that a Replacement column exists, and a key from any older
 version still reads as ours. (A test that indexes a
 key row by number is making the same mistake — a batch did, and now take the
 index from `_PN_KEY_HEADERS`.)
+**The value is never the FIRST word of its quote** (`_PN_CONTEXT_LEAD`, in
+`_pn_context_hit`), at the owner's direction. A sentence that opens with the
+value quotes nothing of what came before it, and what came before is half the
+evidence the row's question needs — the label, the role word, the sentence
+that introduced it. Where nothing stands between the quote's start and the
+value, the quote reaches back one sentence: INSIDE the paragraph where the
+paragraph has one (a value opening its second sentence is shown the first,
+never the caption above), and across the prose-run floor — the caption line
+above, even on another line — where the value opens the run itself. The whole
+previous sentence where the width allows, else its tail, cut at a word
+boundary behind an ellipsis and at least `_PN_CONTEXT_LEAD` characters of it.
+Asked in both modes alike, so the export half of a cell reaches back exactly
+as the original half did and the two still describe one passage; the Where
+range grows with it, since the quote really does come off that line too. The
+document's first word is the one place nothing can precede the value.
 **A key row is quoted only where its value stands as a WHOLE WORD**
 (`_pn_context_hit(bounded_only=True)`, from `note_key_context`). The search
 falls back to a bare substring for the worksheet, because a welded finding
