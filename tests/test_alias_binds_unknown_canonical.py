@@ -209,3 +209,25 @@ def test_a_fix_leaks_refusal_binds_nothing():
     assert "vazquez" not in reg.tokens_for("nametok")
     assert reg.tokens_for("nametok") == before
     assert "Vazquez" not in values
+
+
+def test_the_starred_spelling_takes_the_clean_word_from_the_misspelling():
+    """The value after the star is the CORRECT spelling. Where the
+    misspelling was bound first (it came off the template) and drew the pool
+    word, the canonical takes that word and the misspelling is re-drawn as a
+    slip of it — not the other way round, which is what an ordinary draw for
+    the canonical did (it folded onto the misspelling's fake)."""
+    reg = P._PnFakeRegistry()
+    terms = P._pn_build_terms(["Vazqez"], [], [], registry=reg)
+    held = reg.tokens_for("nametok")["vazqez"]
+    assert held.lower() in P._PN_POOL_WORDS
+    decisions = {"vazqez": {"value": "Vazqez", "fix": "yes",
+                            "fixcell": "*Vazquez", "alias": "Vazquez"}}
+    _terms, values = P._pn_apply_aliases(decisions, terms, reg,
+                                         logging.getLogger("x"))
+    toks = reg.tokens_for("nametok")
+    assert toks["vazquez"] == held
+    assert toks["vazqez"] != held
+    assert toks["vazqez"].lower() not in P._PN_POOL_WORDS
+    assert P._pn_osa_distance(toks["vazqez"].lower(), held.lower()) == 1
+    assert "Vazquez" in values

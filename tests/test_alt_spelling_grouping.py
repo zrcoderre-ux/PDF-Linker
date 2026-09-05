@@ -392,3 +392,50 @@ def test_every_row_is_written_once_when_spellings_nest():
     assert reals[0] == "Marco Zed"
     assert reals.index("Marco Bed") < reals.index("12 Elm St")
     assert reals.index("Marco Aed") < reals.index("12 Elm St")
+
+
+def _starred(tmp_path, text):
+    reg = P._PnFakeRegistry()
+    terms = P._pn_build_terms(["Manuel Vazqez"], [], [], registry=reg)
+    decisions = {"vazqez": {"value": "Vazqez", "fix": "yes",
+                            "fixcell": "*Vazquez", "alias": "Vazquez"}}
+    terms, vals = P._pn_apply_aliases(decisions, terms, reg, log)
+    terms += P._pn_build_terms([], [], vals, reg)
+    z = P.Pseudonymizer(terms, {}, registry=reg)
+    z.apply(text)
+    path = tmp_path / "pseudonym_key.xlsx"
+    z.write_key(path, log)
+    wb = openpyxl.load_workbook(path)
+    return {ws.title: [(str(r[1]), str(r[2])) for r in
+                       ws.iter_rows(min_row=2, values_only=True) if r and r[0]]
+            for ws in wb.worksheets}
+
+
+def test_the_starred_spelling_takes_the_tokens_slot_in_its_party(tmp_path):
+    """The template spelled the name wrong and a document spells it right.
+    The value after the star is the correct spelling, so it takes the
+    surname's slot in the party block and the misspelling is written under
+    it — even though the misspelling is the one the party was built from."""
+    sheets = _starred(tmp_path, "MANUEL VAZQEZ testified. Vazquez left.")
+    reals = [r for r, _f in sheets[P._PN_KEY_MAIN_SHEET]]
+    assert reals[:3] == ["Manuel Vazqez", "Manuel", "Vazquez"], reals
+    assert reals[3:5] == ["Vazquez", "Vazqez"] or reals[3] == "Vazqez", reals
+    fakes = dict(sheets[P._PN_KEY_MAIN_SHEET])
+    assert fakes["Vazquez"].lower() in P._PN_POOL_WORDS
+    assert fakes["Vazqez"].lower() not in P._PN_POOL_WORDS
+
+
+def test_a_starred_spelling_no_document_carries_is_pinned_with_the_clean_word(
+        tmp_path):
+    """No export carries the correct spelling, so its row lives on the pinned
+    sheet (`_PN_KEY_PINNED_SHEET`) as every unmatched authoritative binding
+    does — holding the clean pool word the misspelling used to hold, while the
+    misspelling on the main sheet carries the slip."""
+    sheets = _starred(tmp_path, "MANUEL VAZQEZ testified. Vazqez left.")
+    main, pinned = (dict(sheets[P._PN_KEY_MAIN_SHEET]),
+                    dict(sheets[P._PN_KEY_PINNED_SHEET]))
+    assert "Vazquez" in pinned and "Vazquez" not in main
+    assert pinned["Vazquez"].lower() in P._PN_POOL_WORDS
+    assert main["Vazqez"].lower() not in P._PN_POOL_WORDS
+    assert P._pn_osa_distance(main["Vazqez"].lower(),
+                              pinned["Vazquez"].lower()) == 1

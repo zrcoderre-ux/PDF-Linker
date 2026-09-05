@@ -154,9 +154,12 @@ rearranged, or word for word with one folded, `Manuel Vazqez`) sits right
 after the name it spells and before the tokens; a one-word fold sits under
 the token it is a slip of, wherever that token was written; one level only,
 or two spellings a slip apart would each claim the other. Which spelling
-holds the pool word is the registry's business (the shortest-first pre-bind
-drew `Palladina` before `Palladino`), and the one that folded onto it is
-written under it. A nickname's fake is the FRONT of its full name's, which
+holds the pool word is the registry's business for a fold it INFERRED (the
+shortest-first pre-bind drew `Palladina` before `Palladino`), and the one that
+folded onto it is written under it; a `*` settles it, because the starred
+spelling always holds the pool word (the alias rule, below), and where the
+party itself was built from the misspelling the starred spelling takes the
+token's slot in the party and the misspelling is written under it. A nickname's fake is the FRONT of its full name's, which
 reads as the same drop the real made, so `Ken` rides with `Kenneth` — where
 the nickname rule already wants it. The reversed row is also MARKED
 `alt spelling` now, its count joining the owner's: the macro reverses it
@@ -665,7 +668,16 @@ binding is ANNOUNCED by name at INFO, so a mistyped canonical stays visible as
 a line to read rather than a refusal to act on. `--fix-leaks`' refusal of a
 value already bound (`allow_rebind=False`) is asked BEFORE the canonical is
 bound, or that pass spent a pool word and announced a binding for an alias it
-then declined. The stand-in is read back out
+then declined. **The value after the star is the CORRECT spelling and is
+treated as one**, at the owner's direction: it holds the clean pool word and
+the misspelling holds the slip. Where the MISSPELLING was bound first — it
+came off the template or a document, and the operator then starred a spelling
+no document carries — an ordinary draw for the canonical folded it onto the
+misspelling's fake (`token`'s near-variant fold), so the correct spelling took
+the typo'd stand-in and the typo the clean one, and in the key the typo led
+the pair. The pool word is handed over instead and the misspelling re-drawn
+as a slip of it; only a CLEAN pool word moves, since a fake the misspelling
+itself folded onto says nothing about which spelling is right. The stand-in is read back out
 of the registry MEMO rather than taken from the draw's return, so it carries
 exactly the normalisation and canonical case it would have had if a document
 had spelled the name out. The newly-bound value is handed back in
