@@ -706,8 +706,19 @@ INRE_RE = re.compile(
     rf")"
 )
 
+# Up to FOUR capitalised words before ", supra", not one. A brief shortens
+# "RGC Gaslamp, LLC v. Ehmcke Sheet Metal Co., Inc." to "RGC Gaslamp, supra",
+# and the one-word form captured "Gaslamp" while the full cite was keyed on
+# "RGC": the two never met, the supra went unresolved, and the tokens
+# harvested off the full cite were faked in every short-form cite, heading
+# and bare mention of the decision while the full cite survived beside them.
+# `find_supra_citations` resolves the run against the leading words of each
+# full cite, longest suffix first, so a signal or lead-in word the run
+# captured ("See RGC Gaslamp, supra") is walked past.
 SUPRA_RE = re.compile(
-    rf"\b((?:(?:{_NONV_PREFIX})\s+)?[A-Z][A-Za-z0-9.\-'&]+(?:\s+v\.\s+[A-Z][A-Za-z0-9.\-'&]+)?)"
+    rf"\b((?:(?:{_NONV_PREFIX})\s+)?[A-Z][A-Za-z0-9.\-'&]+"
+    r"(?:\s+[A-Z][A-Za-z0-9.\-'&]+){0,3}"
+    r"(?:\s+v\.\s+[A-Z][A-Za-z0-9.\-'&]+)?)"
     r",\s*supra\b"
 )
 
@@ -1306,25 +1317,62 @@ def find_rule_citations(text: str):
     return results
 
 
+def _supra_word(w):
+    """A word of a case name as a short-form key: case-folded, outer
+    punctuation dropped, so "Gaslamp," and "GASLAMP" are one key."""
+    return w.strip(",.;:()[]").lower()
+
+
 def find_supra_citations(text: str, full_cites_in_order):
-    """Find supra cites and resolve to first matching short_name."""
+    """Find supra cites and resolve each to the full cite it shortens.
+
+    A short form may be several words ("RGC Gaslamp, supra" for "RGC
+    Gaslamp, LLC v. …"), so the run captured before ", supra" is matched
+    against the LEADING WORDS of every full cite's name — every suffix of the
+    run, longest first, so a lead-in the run swept up ("See RGC Gaslamp") is
+    walked past — and the span is cut back to the words that resolved. The
+    one-word key (`_short_name`) stands as the fallback it always was."""
     seen = {}
+    # The leading words of every full cite's name, one key per length up to
+    # four, with and without the "In re" / "Estate of" lead a brief drops in
+    # the short form.
+    leading = {}
     for c in full_cites_in_order:
-        if c["kind"] == "case" and c.get("short"):
-            seen.setdefault(c["short"], c)
+        if c["kind"] != "case" or not c.get("short"):
+            continue
+        seen.setdefault(c["short"], c)
+        name = str(c.get("plaintiff") or c.get("full_name") or "")
+        stripped = re.sub(rf"^(?:(?:{_NONV_PREFIX})\s+|Ex parte\s+|People v\.\s+)+",
+                          "", name, flags=re.IGNORECASE)
+        for form in (name, stripped):
+            words = [w for w in (_supra_word(x) for x in form.split()) if w]
+            for k in range(1, min(4, len(words)) + 1):
+                leading.setdefault(tuple(words[:k]), c)
 
     results = []
     for m in SUPRA_RE.finditer(text):
         cite_text = m.group(1)
         sname = _short_name(cite_text)
-        if sname in seen:
+        full, start = None, m.start()
+        pieces = list(re.finditer(r"\S+", cite_text))
+        words = [_supra_word(pc.group(0)) for pc in pieces]
+        for i in range(len(words)):
+            for j in range(len(words), i, -1):
+                key = tuple(w for w in words[i:j] if w)
+                if key and key in leading:
+                    full, start = leading[key], m.start(1) + pieces[i].start()
+                    break
+            if full is not None:
+                break
+        if full is None and sname in seen:
             full = seen[sname]
+        if full is not None:
             results.append({
                 "kind": "case",
                 "key": full["key"],
-                "span": m.span(),
-                "match_text": m.group(0),
-                "short": sname,
+                "span": (start, m.end()),
+                "match_text": text[start:m.end()],
+                "short": full.get("short") or sname,
                 "is_supra": True,
                 # Provider routing must FOLLOW the full cite: a WL-only key
                 # resolved through the default provider built a Lexis URL for
@@ -12234,7 +12282,8 @@ def _pn_address_adjacency(records):
     return warns
 
 
-def _pn_build_pattern(term, *, whole_word, follow=None, breakable=False):
+def _pn_build_pattern(term, *, whole_word, follow=None, breakable=False,
+                      glue_left=False):
     """Literal-match regex body (NFKC-normalized, escaped), with optional
     word-boundary guards. Runs of whitespace in the term match ANY whitespace
     run in the text, so a party name broken across a line wrap ("Toyota of\\n
@@ -12288,7 +12337,19 @@ def _pn_build_pattern(term, *, whole_word, follow=None, breakable=False):
     body = _PN_APOS_RE.sub(_PN_APOS_CLASS, body)
     if whole_word:
         right = rf"(?:(?!\w)|(?={follow}))" if follow else r"(?!\w)"
-        body = rf"(?<!\w)(?:{body}){right}"
+        # `glue_left`: a MULTI-word name may also open hard against a
+        # lower-case word, where a capital says the name begins —
+        # "ofQUILLMARK BUILDERS LLC", the caption's "of" glued to the
+        # plaintiff by extraction. The left boundary is the one that stops
+        # a short name firing inside a longer word, so it is relaxed only
+        # for a name of two or more words and only across a case flip
+        # (`(?-i:…)` keeps the flip case-sensitive under IGNORECASE); the
+        # reduced cure cannot reach this shape, since the name's own spaces
+        # make it a "broken" span there, and it was curing the first token
+        # alone — half a party, reading as scrubbed.
+        left = (r"(?:(?<!\w)|(?-i:(?<=[a-z])(?=[A-Z])))" if glue_left
+                else r"(?<!\w)")
+        body = rf"{left}(?:{body}){right}"
     return body
 
 
@@ -12409,6 +12470,7 @@ _PN_LEAD_CATS = frozenset({"person", "person-token", "entity", "entity-token",
                            "short-name", "display-name"})
 _PN_LEAD_WORD_RE = re.compile(r"[^\W\d_]+")
 _PN_LEAD_PREFILTER = True
+_PN_LEAD_GLUE_RE = re.compile(r"[a-z]([A-Z][^\W\d_]*)$")
 
 
 def _pn_term_lead(real, category):
@@ -12442,7 +12504,9 @@ class _PnTerm:
         self.whole_word = whole_word
         self.pattern = _pn_build_pattern(
             real, whole_word=whole_word, follow=follow,
-            breakable=_pn_term_is_breakable(category, source))
+            breakable=_pn_term_is_breakable(category, source),
+            glue_left=(category in ("person", "entity")
+                       and len(str(real).split()) >= 2))
         self.flags = 0 if case_sensitive else re.IGNORECASE
         self.priority = priority
         self.source = source
@@ -12586,7 +12650,30 @@ def _pn_split_cell(value):
     return clean
 
 
-def _pn_terms_from_xlsx(path, extra_name_headers, log):
+def _pn_folder_casenos(folder, log=None):
+    """The docket numbers this FOLDER's documents carry, read by shape off the
+    first pages of its PDFs — the run's own case identity, which the party
+    template is filtered against (`_pn_terms_from_xlsx`). Two pages per file
+    is where a caption stands; the full text is read later by the pre-scan.
+    Canonicalised the way `_pn_fake_caseno` seeds (`_pn_caseno_canon`), so a
+    spaced-out spelling and the template's cell are one number."""
+    found = set()
+    try:
+        import fitz
+    except ImportError:
+        return found
+    for pdf in _pdfs_in_folder(folder):
+        try:
+            with fitz.open(pdf) as doc:
+                text = "\n".join(page.get_text() for page in list(doc)[:2])
+        except Exception:
+            continue
+        for v in _pn_docket_numbers(text):
+            found.add(_pn_caseno_canon(v).upper())
+    return found
+
+
+def _pn_terms_from_xlsx(path, extra_name_headers, log, folder_casenos=None):
     """Pull party names, case numbers and attorney names from the workbook.
     Returns (names, casenos) as ordered, de-duplicated lists."""
     try:
@@ -12597,7 +12684,19 @@ def _pn_terms_from_xlsx(path, extra_name_headers, log):
     wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
     name_headers = {_pn_norm_header(h)
                     for h in _PN_NAME_HEADERS | set(extra_name_headers or [])}
-    names, casenos, seen_n, seen_c = [], [], set(), set()
+    # One (names, casenos) group per ROW, keyed on the docket the row names.
+    # The workbook is read WHOLE — every sheet, every row — and an E-Court
+    # export is a CALENDAR: a sheet listing several matters, or last week's
+    # export for a different matter still in Downloads, handed a delivered
+    # key twenty-five real values from a stranger's lemon-law case, every one
+    # pinned `no match` on every re-run, and one of them faked a CITY in a
+    # letterhead. So where the sheet names MORE THAN ONE matter, only the
+    # rows naming the docket this folder's documents carry are taken; a row
+    # with no docket in such a sheet is ambiguous and dropped; and a
+    # multi-matter sheet naming none of this folder's dockets is refused
+    # whole rather than taken whole. A sheet naming one matter, or no docket
+    # at all, is read as it always was.
+    groups = []
     for ws in wb.worksheets:
         rows = ws.iter_rows(values_only=True)
         try:
@@ -12606,17 +12705,48 @@ def _pn_terms_from_xlsx(path, extra_name_headers, log):
             continue
         cols = {i: _pn_norm_header(h) for i, h in enumerate(header)}
         for row in rows:
+            r_names, r_casenos = [], []
             for i, cell in enumerate(row):
                 h = cols.get(i, "")
                 if h in name_headers or "attorney" in h:
-                    for v, is_short in _pn_split_cell(cell):
-                        if v.lower() not in seen_n:
-                            seen_n.add(v.lower()); names.append((v, is_short))
+                    r_names.extend(_pn_split_cell(cell))
                 elif h in _PN_CASENO_HEADERS or "case number" in h:
-                    for v, _s in _pn_split_cell(cell):
-                        if v.lower() not in seen_c:
-                            seen_c.add(v.lower()); casenos.append(v)
+                    r_casenos.extend(v for v, _s in _pn_split_cell(cell))
+            if r_names or r_casenos:
+                groups.append((r_names, r_casenos))
     wb.close()
+    matters = {_pn_caseno_canon(c).upper() for _n, cs in groups for c in cs}
+    if len(matters) > 1:
+        want = {_pn_caseno_canon(c).upper() for c in (folder_casenos or ())}
+        hit = matters & want
+        if hit:
+            keep = [(n, cs) for n, cs in groups
+                    if any(_pn_caseno_canon(c).upper() in hit for c in cs)]
+            log.info(f"  Pseudonym key: {path.name} lists {len(matters)} "
+                     f"matters; taking the {len(keep)} row(s) for this folder's "
+                     f"docket ({', '.join(sorted(hit))}) and leaving "
+                     f"{len(groups) - len(keep)}.")
+            groups = keep
+        elif want:
+            log.warning(f"  Pseudonym key: {path.name} lists {len(matters)} "
+                        f"matters and NONE is this folder's docket "
+                        f"({', '.join(sorted(want))}) — refusing it, so a "
+                        f"stranger's parties are not hunted for here. Put this "
+                        f"case's Order*.xlsx in the folder, or pass --key.")
+            groups = []
+        else:
+            log.warning(f"  Pseudonym key: {path.name} lists {len(matters)} "
+                        f"matters and this folder's docket could not be read "
+                        f"off its documents — taking every row. Check the key "
+                        f"for parties of another matter.")
+    names, casenos, seen_n, seen_c = [], [], set(), set()
+    for r_names, r_casenos in groups:
+        for v, is_short in r_names:
+            if v.lower() not in seen_n:
+                seen_n.add(v.lower()); names.append((v, is_short))
+        for v in r_casenos:
+            if v.lower() not in seen_c:
+                seen_c.add(v.lower()); casenos.append(v)
     log.info(f"  Pseudonym key: {len(names)} name(s), {len(casenos)} case number(s)")
     return names, casenos
 
@@ -13141,6 +13271,19 @@ def _pn_cite_shape_spans(text):
             continue
         spans.append((s + at, e))
     return spans
+
+
+def _pn_cite_short_phrases(text):
+    """The short forms a brief declares with ", supra", whole — "RGC Gaslamp"
+    — as written, whitespace normalised. `_pn_cite_short_names` keeps the
+    first word of each for the mask; this is the phrase the write side
+    protects wherever the brief uses it bare."""
+    out = set()
+    for m in _PN_CITE_SHAPE_RE.finditer(text):
+        run = m.group("short")
+        if run:
+            out.add(re.sub(r"\s+", " ", run).strip(" ,"))
+    return out
 
 
 def _pn_cite_short_names(text):
@@ -14323,7 +14466,9 @@ def _pn_supplement_key_terms(terms, folder, name_column, registry, log):
     if template is None:
         return []
     try:
-        names, casenos = _pn_terms_from_xlsx(template, name_column, log)
+        names, casenos = _pn_terms_from_xlsx(
+            template, name_column, log,
+            folder_casenos=_pn_folder_casenos(folder, log))
     except RuntimeError as e:
         log.warning(f"  Pseudonymize: could not re-read the party template "
                     f"{template.name}: {e}. A party named only in a newly "
@@ -14648,10 +14793,41 @@ def _pn_declarant_names(text):
             # Collapse any line wrap in the captured name to single spaces.
             nm = re.sub(r"\s+", " ", m.group(1)).strip().rstrip(".").strip()
             nm = _pn_trim_declarant(nm)
+            if _pn_declarant_reads_as_statute(nm, text[m.end():m.end() + 24]):
+                continue
             if _pn_is_personlike_declarant(nm) and nm.lower() not in seen:
                 seen.add(nm.lower())
                 names.append(nm)
     return names
+
+
+# The code names a statute reference is written with, as they stand in a
+# recorder's stamp or a caption ("Gov't Code § 27388.1", "Civ. Code", "Code
+# Civ. Proc.", "Bus. & Prof. Code").
+_PN_CODE_NAME_RE = re.compile(
+    r"(?i)\b(?:gov(?:'|’)?t|gov\.?|civ\.?|code|penal|evid\.?|lab\.?|fam\.?|"
+    r"prob\.?|veh\.?|ins\.?|bus\.?|prof\.?|rev\.?|tax\.?|corp\.?|educ\.?|"
+    r"welf\.?|pub\.?|util\.?|health|safety|section|sec\.|§)(?!\w)")
+
+
+def _pn_declarant_reads_as_statute(name, after):
+    """True when a "Declaration of …" capture is a STATUTE reference and not a
+    declarant. A county recorder stamps a recorded lien "Declaration of
+    Exemption From Gov't Code § 27388.1 Fee", and the anchor took "Exemption
+    From Gov't Code" as a person, minted seven initial variants of it, and
+    rewrote the stamp on every copy. A code name inside the capture, a section
+    sign inside it or hard after it, or a last word that is no name word
+    (`_pn_is_name_token`, the question every bare token answers) says
+    statute; a declarant's name carries none of them."""
+    if not name:
+        return False
+    if "§" in name or _PN_CODE_NAME_RE.search(name):
+        return True
+    if re.match(r"\s*(?:§|section\b|sec\.)", after, re.IGNORECASE):
+        return True
+    words = re.sub(r",.*$", "", name).split()
+    return bool(words) and _pn_is_generic_token(
+        _pn_word_base(words[-1].rstrip(".,")))
 
 
 # ── Label-anchored names (exhibits, contracts, signature blocks) ─────────────
@@ -16809,6 +16985,25 @@ class Pseudonymizer:
                 new.append(_PnTerm("address_fragment", frag, fake,
                                    whole_word=True, case_sensitive=False,
                                    priority=1, source="document"))
+            # …and the STREET alone, name plus suffix ("Riverside Drive"),
+            # for the address a scan wrapped around a stray line: "2000" /
+            # "lf" / "Riverside Drive, Los Angeles CA 90039" — number and
+            # street two lines apart, matched by nothing, reported by
+            # nothing, on three proofs of service in one delivered batch.
+            # The number is the one part that identifies nobody, so the
+            # street without it takes the same fake the address drew.
+            core = self._fake_street_core(m.group(0))
+            bare = re.sub(r"^\s*[\d][\d\-\u2013\u2014]*[A-Za-z]?\s+", "", street).strip()
+            fake_bare = re.sub(r"^\s*[\d][\d\-\u2013\u2014]*\s+", "", core).strip()
+            bare_words = [t for t in bare.split()
+                          if t.strip(".,").lower() not in _DIRS]
+            if (len(bare.split()) >= 2 and fake_bare and bare.lower() != fake_bare.lower()
+                    and any(len(t.strip(".,")) >= 4 for t in bare_words[:-1])
+                    and ("address_street", bare.lower()) not in self.records
+                    and not _pn_is_protected_locality(bare)):
+                new.append(_PnTerm("address_street", bare, fake_bare,
+                                   whole_word=True, case_sensitive=False,
+                                   priority=1, source="document"))
         self._add_terms(new)
 
     def register_identifiers(self, text):
@@ -17021,9 +17216,18 @@ class Pseudonymizer:
             words = []
             for w in raw:
                 w = re.sub(r"['’][sS]$", "", w)
+                # A word's own trailing stop ("Mackenzie." at a sentence end)
+                # is punctuation, not spelling — the capture kept it and the
+                # judge was bound twice, once with the period — and it ENDS
+                # the name: what follows a full stop is the next sentence.
+                ended = bool(re.fullmatch(r"[A-Za-z'’-]{3,}[.,;:]+", w))
+                if ended:
+                    w = w.rstrip(".,;:")
                 if not w or not _name_word_ok(w):
                     break
                 words.append(w)
+                if ended:
+                    break
             if words and _pn_is_protected_locality(" ".join(words)):
                 return []
             return words
@@ -17073,6 +17277,8 @@ class Pseudonymizer:
             words, vocab_used = [], False
             for i, w in enumerate(reversed(raw)):
                 w = re.sub(r"['’][sS]$", "", w)
+                if re.fullmatch(r"[A-Za-z'’-]{3,}[.,;:]+", w):
+                    w = w.rstrip(".,;:")
                 if not w:
                     break
                 # A bare initial is part of the name even when its letter
@@ -17344,9 +17550,16 @@ class Pseudonymizer:
         for k, ws in memo:
             if k is text or k == text:
                 return ws
-        words = [w.lower() for w in _PN_LEAD_WORD_RE.findall(text)]
+        raw = _PN_LEAD_WORD_RE.findall(text)
+        words = [w.lower() for w in raw]
         ws = set(words)
         ws.update(a + b for a, b in zip(words, words[1:]))
+        # …and the capitalised tail of a word glued behind a lower-case run
+        # ("ofQUILLMARK" -> "quillmark"), the shape `glue_left` admits.
+        for w in raw:
+            m = _PN_LEAD_GLUE_RE.search(w)
+            if m:
+                ws.add(m.group(1).lower())
         memo.insert(0, (text, ws))
         del memo[2:]
         return ws
@@ -17605,6 +17818,16 @@ class Pseudonymizer:
             # another, whose plaintiff run opens at a string-cite seam.
             if _PN_PAGE_SEAM_RE.search(left[v.end():]):
                 return False      # tail-less AND across a page: see below
+            # Nothing but more party name may stand between the " v. " and
+            # the candidate. With no tail to bound it, this branch protected
+            # any name within the window of a strung " v. " — "Kremerman v.
+            # White again. Helen Rasho" read Helen Rasho as the cited
+            # defendant across a lower-case word and a full stop, and the
+            # mask (whose strung branch IS a name run) did not, so the party
+            # shipped in the clear with the leak tier silent.
+            if not re.fullmatch(r"(?:" + _PN_CITE_NAME_WORD + r",?"
+                                + _PN_CITE_WS_SAMEPAGE + r")*", left[v.end():]):
+                return False
             pm = re.search(r"(?:" + _PN_CITE_NAME_WORD + r",?" + _PN_CITE_WS
                            + r"){1,8}$", left[:v.start()])
             if pm is None or not _pn_string_cite_seam(text, s - len(left)
@@ -17735,6 +17958,33 @@ class Pseudonymizer:
                 continue
             for m in rx.finditer(text):
                 spans.append(m.span())
+        # A short form the brief declares with ", supra" is protected
+        # wherever it stands BARE — in the supra cite itself, in an argument
+        # heading, in prose ("RGC Gaslamp does not eliminate…") — the way
+        # the mask already blanks it for the review tiers, and for the same
+        # reason: a word inside a case name is a party of a published
+        # decision, not of this case. The phrase whole, and its first word
+        # alone as the mask does, both case-insensitively but only where
+        # written with a capital; never where the words are this case's own
+        # (`_tracked_real_words`, the mask's exception), so a template party
+        # that shares a cited decision's name is still scrubbed.
+        if "supra" in text:
+            tracked = self._tracked_real_words()
+            for phrase in _pn_cite_short_phrases(text):
+                words = phrase.split()
+                bases = [_pn_word_base(w).lower() for w in words]
+                if not words or all(b in tracked for b in bases if b):
+                    continue
+                forms = [words]
+                if (bases[0] and bases[0] not in tracked
+                        and len(bases[0]) >= _PN_HARVEST_TOKEN_MIN):
+                    forms.append(words[:1])
+                for form in forms:
+                    pat = (r"(?<![\w'’])" + r"\s+".join(re.escape(w) for w in form)
+                           + r"(?:['’]s)?(?![\w'’])")
+                    for m in re.finditer(pat, text, re.IGNORECASE):
+                        if m.group(0)[:1].isupper():
+                            spans.append(m.span())
         # Distinct, in first-seen order: a span listed twice protects nothing
         # twice and costs every consumer a second entry.
         return self._punch_own_casenos(text, list(dict.fromkeys(spans)))
@@ -18473,7 +18723,8 @@ class Pseudonymizer:
             return text
         return self._substitute(
             src, cands,
-            protected=self._protected_citation_spans(src) + self._keep_spans(src)
+            protected=(self._protected_citation_spans(src) + self._keep_spans(src)
+                       + self._whitelisted_url_spans(src))
             + self._whitelisted_url_spans(src))
 
     def scrub_emails(self, text):
@@ -18567,6 +18818,38 @@ class Pseudonymizer:
                 lines[i] = line.replace(stripped, fake_local, 1)
                 rec["count"] += 1
             src = "\n".join(lines)
+        # A REAL domain behind a local part this run already faked. A bound
+        # given-name token rewrote the local part of an address the detector
+        # had not matched (an e-signature audit trail printed it in a shape
+        # the regex missed), and the address shipped as
+        # `<fake-local>@<real-domain>` three times: half an address, reading
+        # as scrubbed, with the firm's domain standing. Every tracked address
+        # at that domain drew the same fake domain, so the domain is rewritten
+        # on its own wherever the local part beside it is ours.
+        domains = {}
+        for (cat, _rl), rec in self.records.items():
+            if cat != "email":
+                continue
+            real, fake = str(rec["real"]), str(rec["fake"])
+            if "@" in real and "@" in fake:
+                rd, fd = real.split("@", 1)[1].strip().lower(), fake.split("@", 1)[1].strip()
+                if rd and fd and rd != fd.lower():
+                    domains.setdefault(rd, (fd, rec))
+        if domains:
+            known = self.known_fake_words()
+            rx = re.compile(r"(?<![\w.])([\w.+-]+)@(" + "|".join(
+                re.escape(d) for d in sorted(domains, key=len, reverse=True))
+                + r")(?![\w.-])", re.IGNORECASE)
+
+            def _swap(m):
+                local, dom = m.group(1), m.group(2).lower()
+                pieces = re.split(r"[._+-]+", local)
+                if not any(_pn_word_is_own_fake(pc, known) for pc in pieces if pc):
+                    return m.group(0)
+                fd, rec = domains[dom]
+                rec["count"] += 1
+                return local + "@" + fd
+            src = rx.sub(_swap, src)
         return src
 
     def _weld_core(self, rec):
@@ -18645,7 +18928,8 @@ class Pseudonymizer:
         # of the reduced passes ignored the keep set entirely, so an operator's
         # own decision was the one thing they would not honour. Mirrored in
         # `scrub_welded`, which must refuse the same spans.
-        keep = _PnSpanIndex(self._keep_spans(masked))
+        keep = _PnSpanIndex(self._keep_spans(masked)
+                            + self._whitelisted_url_spans(masked))
         out = []
         for core, short, rec in cores:
             k = red.find(core)
@@ -18723,7 +19007,8 @@ class Pseudonymizer:
         # back token by token. Mirrored in `surviving_reals_reduced`, which must
         # not report what this refuses to touch.
         protected = _PnSpanIndex(self._protected_citation_spans(src)
-                                 + self._keep_spans(src))
+                                 + self._keep_spans(src)
+                                 + self._whitelisted_url_spans(src))
         cands.sort(key=lambda c: -len(c[0]))
         taken = [False] * len(reduced)
         repls = []
@@ -23886,7 +24171,9 @@ def _pn_apply_weld_follows(terms, follows, log=None):
             continue
         t.pattern = _pn_build_pattern(
             t.real, whole_word=t.whole_word, follow=re.escape(kept),
-            breakable=_pn_term_is_breakable(t.category, t.source))
+            breakable=_pn_term_is_breakable(t.category, t.source),
+            glue_left=(t.category in ("person", "entity")
+                       and len(str(t.real).split()) >= 2))
         t.lead = None          # may now butt against the kept text: no prefilter
         if log:
             log.info(f"  KEEP-PART: {str(t.real)!r} may butt straight against "
@@ -24417,6 +24704,15 @@ def _pn_parse_decision_rows(rows):
             fix, replacement = "", None
         elif low in ("yes", "y"):
             fix, replacement = "yes", None
+            # A `yes` typed over a PRE-FILLED misspelling row means "yes, it
+            # is that misspelling": the Notes cell still names the canonical
+            # the sweep found (`_PN_PREFILL_NOTE`), so the row binds as an
+            # ALIAS of the tracked name and never as a fresh person. A blanket
+            # `yes` down an OCR-heavy worksheet minted dozens of scanned
+            # spellings of one defendant as separate people.
+            canon = _pn_prefill_canonical(str(cell("notes") or ""))
+            if canon:
+                alias, fixcell = canon, _PN_ALIAS_MARKS[0] + canon
         elif low in ("no", "n"):
             fix, replacement = "no", None
         elif low == _PN_NEVER_CONTROL:
@@ -25874,6 +26170,16 @@ def _pn_update_master_keep(cfg, record_map, case_name, today, log,
 
 # The Notes text beside a PRE-FILLED alias, so the operator can tell the
 # tool's guess from an answer they typed. `{canon}` is the tracked value.
+_PN_PREFILL_NOTE_RE = re.compile(r"pre-filled: reads as a misspelling of "
+                                 r"(['\"])(?P<canon>.+?)\1")
+
+
+def _pn_prefill_canonical(notes):
+    """The canonical a pre-filled misspelling row's Notes cell names, or ""."""
+    m = _PN_PREFILL_NOTE_RE.search(str(notes or ""))
+    return m.group("canon").strip() if m else ""
+
+
 _PN_PREFILL_NOTE = ("pre-filled: reads as a misspelling of {canon!r} — leave "
                     "it to accept, clear it to decide later, or type another "
                     "answer")
@@ -26849,6 +27155,18 @@ def _pn_learn_from_text(pseudonymizer, text, stem=None):
     text = _pn_mask_toa_entries(text)
     ids_text = text
     text = _pn_mask_case_numbers(text)
+    # …and the NAMES of every citation the parser or the shape pattern can
+    # read are blanked out of the NAME passes too (`_mask_protected_citations`,
+    # the review tiers' own mask, which also blanks a declared short form
+    # wherever the brief uses it bare). The comma-led corporate-suffix
+    # harvester read "RGC Gaslamp, LLC v. Ehmcke Sheet Metal Co., Inc." and
+    # registered both sides as this case's parties; the prune that should
+    # have dropped them asked whether the value stood anywhere OUTSIDE a
+    # citation, and the two-word supra it stood in was not one the resolver
+    # could read. A name harvested off a cite is never a party of this case
+    # (a real party sharing the name is reached by the caption, the template
+    # and every role anchor), so the harvest simply never sees it.
+    text = pseudonymizer._mask_protected_citations(text)
     pseudonymizer.register_declarant_names(text)
     pseudonymizer.register_declarant_refs(text)
     pseudonymizer.register_court_names(text)
@@ -27127,20 +27445,90 @@ def _remove_combined_text(folder, log, why):
         log.warning(f"  Could not remove {path.name}: {e}")
 
 
-def _combined_text_after_run(folder, text_subdir, enabled, log, hold=None):
+def _orphan_exports(folder, text_subdir, pz, log):
+    """The `.txt` exports in `text_subdir` that NO source document in `folder`
+    would be written to — and, of those, the ones that DUPLICATE a live
+    export: (orphans, stale) as sets of file names.
+
+    An export is named for its source's scrubbed stem
+    (`_pseudonymized_txt_path`), so an export an EARLIER run wrote under an
+    earlier key's fakes matches no source once the key has moved on. One
+    such file sat in a delivered batch beside its replacement: a byte-level
+    duplicate of the evidentiary objections under a stand-in no key row
+    mapped, and the `--fix-leaks` sweep re-scrubbed it — the plaintiff's
+    "Construction LLC" and the role word "Plaintiff" faked, a second
+    generation nothing can reverse — while the combined file carried both.
+    Every orphan is named at WARNING; only an orphan that is also a
+    near-duplicate of a live export (nine lines in ten shared) is treated as
+    stale, since an export whose name moved because the operator retyped a
+    key row is still the only copy of its document."""
+    text_dir = folder / text_subdir
+    if not text_dir.is_dir():
+        text_dir = folder
+    sources = list(_pdfs_in_folder(folder)) + [
+        q for q in sorted(folder.iterdir())
+        if q.is_file() and q.suffix.lower() in _WORD_DOC_SUFFIXES
+        and not q.name.startswith("~$")]
+    expected = set()
+    for src in sources:
+        try:
+            expected.add(_pseudonymized_txt_path(text_dir, src, pz, log)
+                         .name.lower())
+        except Exception:
+            continue
+    if not expected:
+        return set(), set()
+    live, orphans = {}, {}
+    for pth in sorted(text_dir.glob("*.txt")):
+        if not pth.is_file() or _is_tool_txt_artifact(pth):
+            continue
+        try:
+            body = pth.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        if _combined_sections(body):
+            continue
+        (live if pth.name.lower() in expected else orphans)[pth.name] = body
+
+    def _lines(body):
+        return {ln.strip() for ln in body.splitlines() if ln.strip()}
+    stale = set()
+    live_lines = {n: _lines(b) for n, b in live.items()}
+    for name, body in orphans.items():
+        mine = _lines(body)
+        for other, theirs in live_lines.items():
+            if (len(mine) >= 20 and len(theirs) >= 20
+                    and len(mine & theirs) >= 0.9 * max(len(mine), len(theirs))):
+                stale.add(name)
+                log.warning(f"  {name} is an export of NO source document in "
+                            f"this folder and is a near-copy of {other} — an "
+                            f"earlier run's export left behind. It is neither "
+                            f"re-scrubbed nor combined; delete it.")
+                break
+        else:
+            log.warning(f"  {name} is an export of NO source document in this "
+                        f"folder (its stem matches no PDF or Word file's "
+                        f"scrubbed name). Left as it is — delete it if it is "
+                        f"an earlier run's leftover.")
+    return set(orphans), stale
+
+
+def _combined_text_after_run(folder, text_subdir, enabled, log, hold=None,
+                             skip=()):
     """What a finishing run does about `Combined Text.txt`, in one place so
     the full run and `--fix-leaks` cannot answer differently: with the
     setting ON it is written (or withheld, with `hold` saying why); with it
     OFF a file an earlier run wrote is removed, so a stale one never ships
     beside exports that have moved on."""
     if enabled:
-        return _write_combined_text(folder, text_subdir, log, hold=hold)
+        return _write_combined_text(folder, text_subdir, log, hold=hold,
+                                    skip=skip)
     _remove_combined_text(folder, log, "combined_text is off in "
                           "pdf_linker.config")
     return None
 
 
-def _write_combined_text(folder, text_subdir, log, hold=None):
+def _write_combined_text(folder, text_subdir, log, hold=None, skip=()):
     """Write `Combined Text.txt` into `folder` from the `.txt` exports in its
     `text_subdir`, or — with `hold` naming why the folder is not deliverable,
     or with nothing to combine — make sure no stale one is left. Returns the
@@ -27161,8 +27549,13 @@ def _write_combined_text(folder, text_subdir, log, hold=None):
     if not text_dir.is_dir():
         text_dir = folder            # older single-folder layout
     members = []
+    skipped = {str(n).lower() for n in skip}
     for pth in sorted(text_dir.glob("*.txt"), key=lambda q: q.name.lower()):
         if not pth.is_file() or _is_tool_txt_artifact(pth):
+            continue
+        if pth.name.lower() in skipped:
+            log.info(f"  Combined text: {pth.name} is an earlier run's "
+                     f"leftover (see above) — not a member.")
             continue
         try:
             body = pth.read_text(encoding="utf-8", errors="replace")
@@ -28622,6 +29015,73 @@ def _cache_original(folder, stem, text):
         pass
 
 
+def _pn_original_texts(folder, cfg):
+    """(the unscrubbed original texts of `folder`, where they came from): the
+    in-folder reference copies when `original_text_subfolder` wrote them,
+    else the run's TEMP cache (`_originals_cache_dir`). File reads only —
+    `note_original` is the caller's, once it has a Pseudonymizer."""
+    orig_dir = folder / (cfg.get("original_text_subfolder", "").strip()
+                         or "Original Text (real names - do not share)")
+    texts = []
+    if orig_dir.is_dir():
+        for o in sorted(orig_dir.glob("*.txt")):
+            try:
+                texts.append(o.read_text(encoding="utf-8", errors="ignore"))
+            except OSError:
+                pass
+        if texts:
+            return texts, orig_dir.name
+    d = _originals_cache_dir(folder)
+    if d.is_dir():
+        for f in sorted(d.glob("*.txt")):
+            try:
+                texts.append(f.read_text(encoding="utf-8", errors="ignore"))
+            except OSError:
+                pass
+    return texts, "the run's cached originals"
+
+
+_PN_VOCAB_WORD_RE = re.compile(r"(?<![\w'’])([A-Za-z][a-z'’-]{1,})(?![\w'’])")
+
+
+def _pn_vocabulary_screen(texts):
+    """A function `why(value)` -> "" when `value` may be minted as a name off
+    a worksheet `yes`, else the reason it may not.
+
+    Every word of the value written in lower case at least as often as
+    capitalised across `texts` is vocabulary — the rule `prune_prose_word_terms`
+    applies to a document harvest, asked here of the operator's `yes`, since
+    the worksheet's rows are the review tiers' guesses and a blanket `yes`
+    mints every one. A lone all-caps token of four letters or fewer is OCR
+    debris or an agency's initials. With no originals to read, only the
+    second rule can be asked."""
+    lower, upper = {}, {}
+    for text in texts:
+        for m in _PN_VOCAB_WORD_RE.finditer(text):
+            w = m.group(1)
+            base = w.lower().strip("'’-")
+            if not base:
+                continue
+            tally = lower if w[:1].islower() else upper
+            tally[base] = tally.get(base, 0) + 1
+
+    def why(value):
+        v = str(value).strip()
+        words = re.findall(r"[^\W\d_][\w'’-]*", v)
+        if len(words) == 1 and v.isupper() and len(v) <= 4 and v.isalpha():
+            return "it is a lone all-caps token of four letters or fewer"
+        if not words or not (lower or upper):
+            return ""
+        bases = [_pn_word_base(w).lower() for w in words]
+        bases = [b for b in bases if b and b not in _PN_NAME_CONNECTORS]
+        if bases and all(lower.get(b, 0) >= max(1, upper.get(b, 0))
+                         for b in bases):
+            return ("the documents write every word of it in lower case "
+                    "(vocabulary, not a name)")
+        return ""
+    return why
+
+
 def _load_cached_originals(folder, pz, log=None, collect=None):
     """Feed `pz` every cached original for `folder`. Returns how many.
     `collect`, when given, also receives each text — `--fix-leaks` quotes the
@@ -29755,6 +30215,20 @@ def _fix_leaks_mode(folder, args, cfg, log):
     # one cell is silently converted into a delivered leak.
     rejected = []
     auto_terms, explicit, weld_follows = [], {}, {}
+    # The originals are read FIRST, because a worksheet `yes` is screened
+    # against them: a value every word of which the documents write in lower
+    # case at least as often as capitalised is vocabulary, not a name —
+    # `prune_prose_word_terms`' own rule, asked of the operator's `yes`, since
+    # the worksheet's rows are the review tiers' guesses and a blanket `yes`
+    # mints every one. A blanket `yes` down an OCR-heavy worksheet minted
+    # "Pay", "Enhanced Sealing" and "Projection" as people and rewrote "PAY
+    # CASH" and a contract's line items; a lone all-caps token of four
+    # letters or fewer ("TRANS", "CSLB") is OCR debris or an agency's
+    # initials far more often than a party. A refused row is named, stays on
+    # the worksheet, and takes a typed replacement or a `*CANONICAL` when the
+    # operator means it.
+    orig_texts, orig_where = _pn_original_texts(folder, cfg)
+    orig_vocab = _pn_vocabulary_screen(orig_texts)
     for vl, d in decisions.items():
         # An INHERITED decision contributes its KEEP and nothing else — the
         # bracket generalises, the remainder is the authoring case's party.
@@ -29795,6 +30269,14 @@ def _fix_leaks_mode(folder, args, cfg, log):
                         f"equals the value itself — ignoring (a self-map never "
                         f"scrubs). Type a DIFFERENT replacement.")
         else:
+            why = orig_vocab(d["value"])
+            if why:
+                rejected.append(d["value"])
+                log.warning(f"  --fix-leaks: {d['value']!r} is marked yes but "
+                            f"{why} — not minting it as a name. Type a "
+                            f"replacement, or *CANONICAL if it misspells a "
+                            f"tracked name, to apply it.")
+                continue
             auto_terms.append(d["value"])
     auto_terms = _pn_drop_prior_fakes_from_terms(auto_terms, prior_fakes, log)
     suppressed = {vl for vl, d in decisions.items() if d["fix"] == "no"}
@@ -29903,10 +30385,12 @@ def _fix_leaks_mode(folder, args, cfg, log):
     # and the ETA/DONE run markers — are not exports and must not be scrubbed
     # or tracked (only reachable in the old single-folder layout, where
     # text_dir falls back to the case folder itself).
+    _orphans, stale_exports = _orphan_exports(folder, text_subdir, pz, log)
     files = sorted(p for p in text_dir.iterdir()
                    if p.is_file() and (p.suffix == ".txt"
                                        or p.name.endswith(".txt.LEAK"))
-                   and not _is_tool_txt_artifact(p))
+                   and not _is_tool_txt_artifact(p)
+                   and p.name not in stale_exports)
 
     # Projected-finish marker for the apply pass, same "ETA <clock>.txt" file the
     # full run drops so the operator sees how long Apply Leak Fixes will take.
@@ -29979,24 +30463,9 @@ def _fix_leaks_mode(folder, args, cfg, log):
     # loop, and the TEXTS kept as well as noted: the loop's fresh findings
     # quote their Context from this body (`_pn_leak_context`), the same rule
     # the full run follows.
-    orig_dir = folder / (cfg.get("original_text_subfolder", "").strip()
-                         or "Original Text (real names - do not share)")
-    orig_texts, n_orig, orig_where = [], 0, ""
-    if orig_dir.is_dir():
-        for o in sorted(orig_dir.glob("*.txt")):
-            try:
-                orig_texts.append(o.read_text(encoding="utf-8",
-                                              errors="ignore"))
-                pz.note_original(orig_texts[-1])
-                n_orig += 1
-            except OSError:
-                pass
-        orig_where = orig_dir.name
-    if not n_orig:
-        # No in-folder copy — the operator has that option off. The full run
-        # cached the same text in TEMP for exactly this pass.
-        n_orig = _load_cached_originals(folder, pz, log, collect=orig_texts)
-        orig_where = "the run's cached originals"
+    for t in orig_texts:                 # read above, before the decisions
+        pz.note_original(t)
+    n_orig = len(orig_texts)
     if n_orig:
         log.info(f"  --fix-leaks: confirming findings against {n_orig} "
                  f"original text file(s) from {orig_where}")
@@ -30149,7 +30618,7 @@ def _fix_leaks_mode(folder, args, cfg, log):
     _combined_text_after_run(
         folder, text_subdir, _config_bool(cfg, "combined_text", False), log,
         hold=(f"{still} export(s) still carry a party-name leak" if still
-              else None))
+              else None), skip=stale_exports)
 
     # The copy the full run held back for triage. This pass is the moment the
     # folder finally becomes what the run promised, so it is the moment the
@@ -30693,7 +31162,8 @@ def main():
                     reused_key = True
                 else:
                     names, casenos = _pn_terms_from_xlsx(
-                        key_path, args.name_column, log)
+                        key_path, args.name_column, log,
+                        folder_casenos=_pn_folder_casenos(folder, log))
                     terms = _pn_build_terms(names, casenos, extra_terms, registry)
             except RuntimeError as e:
                 # e.g. openpyxl missing. Don't abort the whole run (linking and
@@ -31194,7 +31664,10 @@ def main():
     # after the gate, so a quarantined one is never in it. Before the copy,
     # so the copy carries it.
     if pdfs or word_texts:
-        _combined_text_after_run(folder, text_subdir, combined_text, log)
+        _orphans, stale_exports = _orphan_exports(folder, text_subdir,
+                                                  pseudonymizer, log)
+        _combined_text_after_run(folder, text_subdir, combined_text, log,
+                                 skip=stale_exports)
 
     # LAST, deliberately: the copy is of a finished folder, so it carries the
     # exports, the key, the worksheet, the launchers and the DONE stamp — the

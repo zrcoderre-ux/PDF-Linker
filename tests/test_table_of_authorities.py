@@ -99,13 +99,16 @@ def test_a_body_page_is_untouched_by_the_mask():
     assert {"Michael Rodgers", "Sarah Whitlock"} <= reals
 
 
-def test_an_authority_cited_only_in_body_text_still_reaches_the_pruners():
-    # The mask is preventive and scoped to tables; the reactive pruners still
-    # own the case where a decision is cited in prose with no table to mask.
+def test_an_authority_cited_only_in_body_text_is_never_harvested():
+    # The table mask is scoped to entries; a decision cited in prose is kept
+    # out of the harvest by the citation mask `_pn_learn_from_text` now
+    # applies at the same seam — the names of every cite the parser or the
+    # shape pattern can read are blanked before any name pass reads the
+    # text, so the reactive pruners have nothing left to drop.
     body = ("Plaintiff relies on Hamilton v. Greenwich Investors XXVI, LLC "
             "(2011) 195 Cal.App.4th 1602.")
     reals = {t.real for t in _harvest(body).terms}
-    assert "Greenwich Investors XXVI, LLC" in reals
+    assert not any("Greenwich" in r or "Hamilton" in r for r in reals), reals
 
 
 # ─────────────────── the span walk-back cannot escape the table ─────────────
