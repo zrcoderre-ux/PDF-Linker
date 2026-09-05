@@ -772,11 +772,16 @@ the alias moved to `~` to make room, at the owner's direction). `~Smith` says
 first's stand-in. A scan error is not a spelling: nobody wrote "Smlth", the
 page did, and the export should read as the document does. So `*Smith` on the
 value replaces it by WHAT THE CORRECT TEXT BECOMES — Smith's own stand-in,
-word for word, where this case binds Smith; bound now on the operator's
-say-so (`_pn_ocr_target_is_name`: every word capitalised, one of them a name
-token, never form boilerplate) where it is a name the case has not met; and
-the correct text ITSELF where it is not a name at all ("cuve!nants" ->
-"covenants", a locality the house style keeps). A multi-word fix pairs its
+word for word, where this case binds Smith, and the correct text ITSELF
+everywhere else ("cuve!nants" -> "covenants"; a "Vazquez" the case has not
+bound is written as Vazquez). **A correction says what the page MEANT and
+nothing about whether it is a name**, at the owner's direction, so nothing is
+bound or minted on its account: a corrected name the case does not track
+stands in the export for the review scans and the worksheet to ask about, as
+they would of any other text, and a `yes` there is the decision to fake it.
+(It first shipped binding an unmet name on the operator's say-so, as the
+alias binds its canonical; that is the alias's business, where the operator
+is naming a party, and not this one's.) A multi-word fix pairs its
 words (`_pn_alias_word_pairs`) and corrects each garbled word's bare token
 too, so "Smlth" alone reads as Smith's stand-in beside "Jonh Smlth"; every
 existing term for the garbled value is dropped, since it is the key row being

@@ -4,9 +4,8 @@ to `~`.
 
 `*Smith` says the value is a SCAN ERROR and the text it garbled is Smith, so
 the value is replaced by what the correct text becomes: Smith's own stand-in
-where this case binds Smith (bound now, on the operator's say-so, where it is
-a name the case has not met), and the correct text itself where it is not a
-name at all. Every OCR-fix row goes to the key's pinned sheet, forward-only,
+where this case binds Smith, and the correct text itself everywhere else — a
+correction says what the page meant, not that the text is a name. Every OCR-fix row goes to the key's pinned sheet, forward-only,
 under Status `ocr fix`, so the macro never sees two Real Values on one
 Replacement and never un-fixes a corrected word. `~Smith` is the alias that
 `*Smith` used to be: two spellings of one name, the second a slip of the
@@ -97,13 +96,17 @@ def test_a_scan_error_of_ordinary_text_is_corrected_verbatim():
     assert out == "The covenants were read."
 
 
-def test_a_correct_name_the_case_has_not_met_is_bound_on_say_so(caplog):
+def test_a_correct_name_the_case_has_not_bound_is_written_verbatim(caplog):
+    """A correction says what the page MEANT, not that the text is a name:
+    nothing is bound or minted on its account. The corrected name stands in
+    the export for the scans and the worksheet to ask about as they would of
+    any other text."""
     d = _decisions(("Vazqez", "*Vazquez"))
     with caplog.at_level(logging.INFO):
         pz, out = _run([], d, "Vazqez signed.")
-    assert "Vazqez" not in out and "Vazquez" not in out
-    assert "BOUND on your say-so" in caplog.text
-    assert any(rl == "vazquez" for (_c, rl) in pz.records)
+    assert out == "Vazquez signed."
+    assert not any(rl == "vazquez" for (_c, rl) in pz.records)
+    assert "corrected to 'Vazquez' verbatim" in caplog.text
 
 
 def test_a_fix_naming_itself_does_nothing(caplog):
