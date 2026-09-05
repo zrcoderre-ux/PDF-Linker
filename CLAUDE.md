@@ -126,6 +126,44 @@ each hold a fake that is the front of one of the other's, which no ordering
 satisfies, so a pair is moved at most once — the alternative is a loop that
 swaps forever, and the shape does not arise once a short form rides with its
 party.
+**…and a spelling that does NOT share the Replacement is read off the VALUES**
+(`_pn_key_word_fold`, `_pn_key_rearranged`). The grouping shipped keyed on
+rows sharing a fake, and two kinds of spelling never do, by design. A
+surname-first TABLE spelling (`Vazquez Manuel`, `derived`) carries the party's
+words in the other ORDER, and sorted as a `person` row of its own it sorted
+FIRST, claimed the tokens in its own word order and put the reversed spelling
+at the head of the party — `Ashworth Rachel`, `Ashworth`, `Rachel` under
+`Rachel Ashworth`. And a MISSPELLING — the OCR near-miss the registry folds,
+or the one the operator declares with `*` — takes a mirrored SLIP of the
+canonical's fake and never the fake itself (`fold_onto`: two Real Values on
+one Replacement is what the macro calls ambiguous), so the twenty scanned
+spellings that motivated the LEAKS grouping shared nothing the key's could
+see, and landed as separate parties after the alphabet. Both are decided from
+the FOUR WORDS of the two bindings and never from registry state, because a
+re-run off the delivered key re-folds nothing (every fake is pinned, and the
+`*` cell is retired once applied) and the order the sheet comes back in must
+not depend on which run wrote it. The mirror leaves enough in the values: the
+fake deviates by the SAME op the real did, so the two length deltas are equal
+and the fake sits at exactly the op's distance from its base (one edit for a
+confusable or a swap, `reps` for letters duplicated or dropped), and a folded
+fake is never a POOL WORD — the near-twin rule puts every pool word two edits
+from every other, so a word one edit off a pool word is a typo of it and a word
+`reps` edits off that IS one is a draw; the recycled `Deverell5` is one edit
+from its own word and refused by name. A whole-name spelling (the words
+rearranged, or word for word with one folded, `Manuel Vazqez`) sits right
+after the name it spells and before the tokens; a one-word fold sits under
+the token it is a slip of, wherever that token was written; one level only,
+or two spellings a slip apart would each claim the other. Which spelling
+holds the pool word is the registry's business (the shortest-first pre-bind
+drew `Palladina` before `Palladino`), and the one that folded onto it is
+written under it. A nickname's fake is the FRONT of its full name's, which
+reads as the same drop the real made, so `Ken` rides with `Kenneth` — where
+the nickname rule already wants it. The reversed row is also MARKED
+`alt spelling` now, its count joining the owner's: the macro reverses it
+word by word off the parent's own token rows, so forward-only is honest for
+it, and `_pn_load_key` carries `derived` back on the re-run — a loaded row
+is otherwise an ordinary `person`, and the reversed spelling would lead the
+party on one run and not the next.
 **EVERY fake in an export must be reversible, and the run says so out loud.**
 `draft` shipped as "Ainsworth" 72 times and `review` as "Sterling" 84, across
 four documents, with neither mapping anywhere in the key. That is worse than the
@@ -624,7 +662,10 @@ written and a folded base answers False for every name there is —
 `_pn_build_terms` gate, which matters more here than anywhere because this
 value reaches the term list without being read off any document). And the
 binding is ANNOUNCED by name at INFO, so a mistyped canonical stays visible as
-a line to read rather than a refusal to act on. The stand-in is read back out
+a line to read rather than a refusal to act on. `--fix-leaks`' refusal of a
+value already bound (`allow_rebind=False`) is asked BEFORE the canonical is
+bound, or that pass spent a pool word and announced a binding for an alias it
+then declined. The stand-in is read back out
 of the registry MEMO rather than taken from the draw's return, so it carries
 exactly the normalisation and canonical case it would have had if a document
 had spelled the name out. The newly-bound value is handed back in
@@ -3474,7 +3515,12 @@ Three things close it. The page-FURNITURE hop moves to the TAIL alone
 (`_PN_CITE_TAIL_WS`) — it was added so a year behind a letterhead could be
 READ, and in the NAME RUN's own separator it let the name continue through that
 letterhead. A tail-less run is held to ONE PAGE, in the pattern and in both
-halves of the write guard: stacking a guess about where a tail-less cite ends
+halves of the write guard, the " v. " between its names INCLUDED
+(`_PN_CITE_V_SAMEPAGE`) — it shipped with the name runs held and the " v. "
+still free to hop the header, so a strung cite whose " v. " sat at the seam
+matched across it, the plaintiff's half of the guard refused it while the
+defendant's half and the mask admitted it, and the mask blanked the page
+header itself: stacking a guess about where a tail-less cite ends
 on a guess about a page break doubles the ways it can be wrong, the discipline
 `_pn_term_is_breakable` already states. And `set_page_context` writes the
 export's OWN page header at the seam instead of a bare newline — it reasoned

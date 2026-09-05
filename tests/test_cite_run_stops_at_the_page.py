@@ -120,3 +120,46 @@ class TestTheSeamIsTheExportsOwn:
         assert P._PN_CITE_PAGE_FURNITURE in P._PN_CITE_TAIL_WS
         assert P._PN_CITE_PAGE_FURNITURE not in P._PN_CITE_WS
         assert P._PN_CITE_PAGE_FURNITURE not in P._PN_CITE_NAME_RUN
+
+
+class TestTheVItselfMayNotStraddleThePage:
+    """The name runs of a tail-less cite were held to one page first and the
+    " v. " between them was not, so a strung cite whose " v. " sat at the
+    seam still matched across it — and the mask then blanked the page header
+    itself. Nothing bounds a tail-less run but its word count, so nothing in
+    it may cross a page: the pattern and both halves of the write guard now
+    say so together."""
+    P15 = ("27  (2004) 121 Cal.App.4th 358, 373-374; Ferrers Holdings\n")
+    P16 = (" 1  v. Coastal Gas & Electric Co. supports the point.\n")
+    EXPORT = P15 + "====== Page 16 ======\n" + P16
+
+    def test_the_shape_pattern_stops_at_the_seam(self):
+        runs = [self.EXPORT[a:b] for a, b in P._pn_cite_shape_spans(self.EXPORT)]
+        assert not any("Page 16" in r for r in runs), runs
+        assert not any("Ferrers" in r or "Coastal" in r for r in runs), runs
+
+    def test_the_page_header_survives_the_mask(self):
+        z = _pz(["Angela White"])
+        assert "====== Page 16 ======" in z._mask_protected_citations(self.EXPORT)
+
+    @pytest.mark.parametrize("party,page,before,after", [
+        ("Coastal Gas", P16, P15, ""),       # the defendant's half
+        ("Ferrers Holdings", P15, "", P16),  # the plaintiff's half
+    ])
+    def test_both_halves_of_the_write_guard_agree_with_the_mask(
+            self, party, page, before, after):
+        z = _pz([party])
+        s = self.EXPORT.index(party)
+        write = z._in_authority_context(self.EXPORT, s, s + len(party))
+        read = z._in_authority_context(
+            z._mask_protected_citations(self.EXPORT), s, s + len(party))
+        assert write == read is False
+        z.set_page_context(before, after)
+        assert party not in z.apply(page)
+
+    def test_a_strung_cite_whose_v_stays_on_its_page_keeps_both_names(self):
+        z = _pz(["Coastal Gas", "Ferrers Holdings"])
+        t = ("27  (2004) 121 Cal.App.4th 358, 373-374; Ferrers Holdings\n"
+             "28  v. Coastal Gas & Electric Co. supports the point.\n")
+        assert "Ferrers Holdings\n28  v. Coastal Gas & Electric Co." in [
+            t[a:b] for a, b in P._pn_cite_shape_spans(t)]
