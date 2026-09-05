@@ -7696,6 +7696,13 @@ class _PnFakeRegistry:
         # its words notwithstanding. The inverse of `keep_phrases`, read in
         # the same positional way — see `furniture_positions`.
         self.fake_phrases = frozenset()
+        # …and the same decisions as the TEXT they were typed against, for the
+        # span half: a `phrase` also punches its occurrences out of every kept
+        # SPAN (`Pseudonymizer._keep_spans`), so a `never` on a value that
+        # contains the phrase still keeps the rest of that value and not the
+        # phrase inside it. A pattern is built from the text, as a term's is,
+        # because the tuple of bases has lost the value's own punctuation.
+        self.fake_phrase_texts = frozenset()
 
     def kept_positions(self, bases):
         """Indices of `bases` (word bases, in order) that lie inside an
@@ -14593,7 +14600,7 @@ def _pn_load_key(path, registry, log, remint_recycled=False):
     # typed against one row left every OTHER row still applying its stored
     # composed fake for the same word, and the operator had to run twice (the
     # decision only reached the registry via the master sheet on the next run).
-    nuke, phrased = set(), set()
+    nuke, phrased, phrased_texts = set(), set(), set()
     for row in rows[1:]:
         real, fake = at(row, "real value"), at(row, "replacement")
         if real in (None, "") or fake in (None, ""):
@@ -14609,6 +14616,8 @@ def _pn_load_key(path, registry, log, remint_recycled=False):
                      else _pn_phrase_spec_in_value(
                          str(real), _pn_phrase_spec_parts(fake)) or [])
             phrased.update(t for t in map(_pn_phrase_tuple, parts) if t)
+            phrased_texts.update(" ".join(pt.split()) for pt in parts
+                                 if _pn_phrase_tuple(pt))
             continue
         if _pn_is_never_cell(fake):
             parts = [str(real)]           # "never" braces the WHOLE value
@@ -14633,6 +14642,9 @@ def _pn_load_key(path, registry, log, remint_recycled=False):
         registry.keep_phrases = frozenset(registry.keep_phrases | nuke_phrases)
     if phrased - set(registry.fake_phrases):
         registry.fake_phrases = frozenset(registry.fake_phrases | phrased)
+    if phrased_texts - set(registry.fake_phrase_texts):
+        registry.fake_phrase_texts = frozenset(registry.fake_phrase_texts
+                                               | phrased_texts)
         log.info(f"  Pseudonym key: {len(phrased)} value(s) marked 'phrase' "
                  f"will be faked whole wherever they stand inside a name, "
                  f"kept words included — "
@@ -15062,6 +15074,7 @@ def _pn_build_terms(names, casenos, extra_terms, registry=None, _prewarm=True):
         rec.keep_words = registry.keep_words   # the dry run must mint the same
         rec.keep_phrases = registry.keep_phrases
         rec.fake_phrases = registry.fake_phrases
+        rec.fake_phrase_texts = registry.fake_phrase_texts
         _pn_build_terms(names, casenos, extra_terms, rec, _prewarm=False)
         for tok in sorted(rec.pool_of, key=lambda s: (len(s), s)):
             pool, tag = rec.pool_of[tok]
@@ -19354,6 +19367,26 @@ class Pseudonymizer:
         # standing. An inherited `no` takes the ordinary tier below it.
         collect(local_soft, soft=True, party_wider_only=True)
         collect(self.keep_soft - local_soft, soft=True)
+        # A `phrase` decision is a guarantee that those words TOGETHER are
+        # faked, whatever keep stands around them — so its occurrences are
+        # punched out of every kept span, of every tier. `never` on "Bank of
+        # America Tower" with `phrase` on "Bank of America" keeps " Tower" and
+        # surrenders the phrase in front of it, which the composing fakers
+        # already do for the same name (`furniture_positions`); without this
+        # the span half kept the whole value verbatim and the export read the
+        # real bank. At the owner's direction: a phrase beats a keep that
+        # contains it as well as a keep on one of its words. The pieces the
+        # keep still covers are kept exactly as before.
+        phrase_texts = getattr(self.registry, "fake_phrase_texts", ()) or ()
+        if spans and phrase_texts:
+            holes = []
+            for ph in phrase_texts:
+                rx = self._compiled(_pn_build_pattern(ph, whole_word=True),
+                                    re.IGNORECASE)
+                holes.extend(m.span() for m in rx.finditer(text)
+                             if m.start() != m.end())
+            if holes:
+                spans = _pn_punch_spans(spans, holes)
         if len(memo) >= 2:          # hold the alternating pair, nothing older
             memo.clear()
         memo[memo_key] = spans
@@ -25389,12 +25422,15 @@ def _pn_is_never_cell(cell):
 # the old fake with the kept word inside it, and the text-only pass has no
 # real value left to match — so `--fix-leaks` refuses it and says so.
 #
-# ONE EDGE, decided: a keep on a value that CONTAINS the phrase and reaches
-# beyond it ("Bank of America Tower" kept as a building) is the more specific
-# statement about that site and still wins there; `phrase` beats a keep on a
-# word of the phrase or on the phrase itself. A one-word value carries no
-# phrase (there is no "inside"), so `phrase` on it is an ordinary `yes`, and
-# the loader says so.
+# A phrase is PROTECTIVE ONLY, and it beats every keep it meets — at the
+# owner's direction. It guarantees that those words TOGETHER are faked; it
+# says nothing about them apart, which is decided as it always was. So a keep
+# on a value that CONTAINS the phrase ("Bank of America Tower" as `never`)
+# keeps the rest of that value and surrenders the phrase inside it: the
+# composers fake those positions (`furniture_positions`) and `_keep_spans`
+# punches the phrase's occurrences out of the kept span, so the export reads
+# "<fake> Tower". A one-word value carries no phrase (there is no "inside"),
+# so `phrase` on it is an ordinary `yes`, and the loader says so.
 _PN_PHRASE_CONTROL = "phrase"
 _PN_PHRASE_TYPE = "PHRASE"
 # …and the PART form, as `{braces}` are to `never`: `(Bank of America)` on the
@@ -25466,7 +25502,8 @@ def _pn_fake_phrases(decisions):
     """The `phrase` decisions among `decisions`, as tuples of word bases —
     what goes on `registry.fake_phrases`. Every decision counts, inherited
     ones included: an inherited phrase mints nothing (no term is built for
-    it), it only says how a name this folder binds is composed."""
+    it), it only says how a name this folder binds is composed and where a
+    kept span gives way."""
     out = set()
     for d in decisions.values():
         for part in _pn_decision_phrase_parts(d):
@@ -25474,6 +25511,38 @@ def _pn_fake_phrases(decisions):
             if t:
                 out.add(t)
     return frozenset(out)
+
+
+def _pn_fake_phrase_texts(decisions):
+    """The same decisions as the text they were typed against — what goes on
+    `registry.fake_phrase_texts` and is matched in an export by
+    `Pseudonymizer._keep_spans` to punch the phrase out of a kept span."""
+    return frozenset(" ".join(str(part).split())
+                     for d in decisions.values()
+                     for part in _pn_decision_phrase_parts(d)
+                     if _pn_phrase_tuple(part))
+
+
+def _pn_punch_spans(spans, holes):
+    """`spans` with every `hole` cut out of them — the pieces of each span
+    that no hole covers, in order, empty pieces dropped."""
+    if not holes:
+        return list(spans)
+    holes = sorted(holes)
+    out = []
+    for s, e in spans:
+        cur = s
+        for hs, he in holes:
+            if he <= cur or hs >= e:
+                continue
+            if hs > cur:
+                out.append((cur, hs))
+            cur = max(cur, he)
+            if cur >= e:
+                break
+        if cur < e:
+            out.append((cur, e))
+    return out
 
 
 def _pn_keep_spec_parts(cell):
@@ -26475,6 +26544,7 @@ def _pn_set_keep_words(registry, decisions, log=None):
     # read at the same moment (`furniture_positions`).
     faked = _pn_fake_phrases(decisions)
     registry.fake_phrases = faked
+    registry.fake_phrase_texts = _pn_fake_phrase_texts(decisions)
     if faked and log:
         shown = [" ".join(ph) for ph in sorted(faked)[:6]]
         log.info(f"  PHRASE: {len(faked)} value(s) faked WHOLE wherever they "

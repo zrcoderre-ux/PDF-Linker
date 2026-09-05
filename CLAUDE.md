@@ -736,10 +736,18 @@ the worksheet is consumed once resolved. `--fix-leaks` applies a WORKSHEET
 phrase and REFUSES a KEY one, for the alias's reason: the delivered export
 carries the old fake with the kept word inside it and the text-only pass has
 no real value left to match, so the folder is left as it stands and the full
-re-run is pointed at. One edge, decided: a keep on a value that CONTAINS the
-phrase and reaches beyond it is the more specific statement about that site
-and still wins there; `phrase` beats a keep on a word of the phrase or on the
-phrase itself.
+re-run is pointed at. **A phrase is PROTECTIVE ONLY and beats EVERY keep it
+meets**, at the owner's direction: it guarantees that those words TOGETHER
+are faked and says nothing about them apart. So a keep on a value that
+CONTAINS the phrase (`never` on "Cross River Bank Tower") keeps the rest of
+that value and surrenders the phrase inside it — the composers fake those
+positions, and `_keep_spans` punches the phrase's occurrences out of every
+kept span of every tier (`fake_phrase_texts`, `_pn_punch_spans`; matched by
+TEXT through `_pn_build_pattern`, since the tuple of bases has lost the
+value's punctuation), so the export reads "<fake> Tower". The pieces the keep
+still covers are kept exactly as before, and the punch sits in the one
+function `_substitute` and `_surviving_records` both read, so replacement
+and detection cannot disagree about it.
 
 **A `*` and a `{brace}` COMPOSE in one cell** (`_pn_cell_is_alias_keep`,
 `_pn_alias_keep_spec`, `_pn_keep_spec_strip`). `*David {said}` on the value

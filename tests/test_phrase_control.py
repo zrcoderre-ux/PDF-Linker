@@ -243,6 +243,32 @@ def test_the_phrase_is_faked_whole_and_the_bare_word_is_still_kept():
     assert "The River is wide" in out             # …and stands alone untouched
 
 
+def test_a_phrase_beats_a_keep_that_contains_it():
+    """`never` on "Cross River Bank Tower" with `phrase` on "Cross River Bank":
+    the phrase is protective only and beats every keep it meets, so the rest of
+    the kept value stays and the phrase inside it is faked — in the composed
+    fake and in the export alike."""
+    decisions = _decisions(("Cross River Bank Tower", "never"),
+                           ("Cross River Bank", "phrase"))
+    pz, reg = _pz(["Cross River Bank"], decisions)
+    out = pz.apply("The Cross River Bank Tower stands tall.")
+    assert "Cross River Bank" not in out, out
+    assert "Bank Tower stands tall" in out
+    composed = P._pn_fake_entity("Cross River Bank Tower", reg)
+    assert "River" not in composed.split() and composed.endswith("Tower")
+    # Without the phrase the keep holds the whole value, as `never` promises.
+    pz2, _ = _pz(["Cross River Bank"], _decisions(("Cross River Bank Tower", "never")))
+    assert "Cross River Bank Tower stands tall" in pz2.apply(
+        "The Cross River Bank Tower stands tall.")
+
+
+def test_punching_a_hole_keeps_the_pieces_around_it():
+    assert P._pn_punch_spans([(0, 10), (20, 30)], [(3, 5), (8, 25), (29, 40)]) \
+        == [(0, 3), (5, 8), (25, 29)]
+    assert P._pn_punch_spans([(0, 10)], []) == [(0, 10)]
+    assert P._pn_punch_spans([(0, 10)], [(0, 10)]) == []
+
+
 # ── persistence: the master sheet, and the text-only pass ───────────────────
 
 def test_a_phrase_round_trips_through_the_master_keep_sheet(tmp_path, monkeypatch):
