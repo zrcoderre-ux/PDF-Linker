@@ -15115,7 +15115,11 @@ _PN_LOWER_ADJ_RIGHT_RE = re.compile(
     r"[ \t]+(?:[A-Z]\.?[ \t]+)?(?P<w>[A-Za-z][\w'’-]*)(?![\w'’])")
 
 
-def _pn_lower_name_site(text, s, e, person_fakes):
+_PN_LABEL_TAIL_MAX = 3
+_PN_POSSESSIVE_RE = re.compile("['’][sS]$|[sS]['’]$")
+
+
+def _pn_lower_name_site(text, s, e, person_fakes, positions=None):
     """Why the lower-case word at [s,e) may be somebody's name anyway — the
     corroboration that stands in for the capital it does not have. "" when the
     site says nothing.
@@ -15151,20 +15155,37 @@ def _pn_lower_name_site(text, s, e, person_fakes):
     ls = text.rfind("\n", 0, s) + 1
     m = _PN_NAME_LABEL_RE.match(text, ls)
     if m and m.end() <= s:
-        return "on a name label's own line"
+        # The label corroborates the NAME RUN after it and no more: at most
+        # three words, and never past a second label ("Name: X   Title:
+        # general manager of the dealership   Date:" corroborated all
+        # fourteen words of the form row).
+        between = text[m.end():s]
+        if (":" not in between
+                and len(_PN_RUN_WORD_RE.findall(between)) <= _PN_LABEL_TAIL_MAX):
+            return "on a name label's own line"
     le = text.find("\n", e)
     le = len(text) if le < 0 else le
-    # The stand-in must stand HARD against the word, across whitespace
-    # alone, an initial allowed between — the half-scrubbed pair is a given
-    # name's stand-in and the surname it was printed with ("Name: MANUEL
-    # vazqvez"). Two words either way admitted "Yardley, giving notice" (a
-    # comma: a list, not a name) and "Charleen tomorrow moring" (a word
-    # between), and in a brief full of stand-ins some occurrence of any
-    # common word will stand that near one.
     lm = _PN_LOWER_ADJ_LEFT_RE.search(text, ls, s)
     rm = _PN_LOWER_ADJ_RIGHT_RE.match(text, e, le)
-    if ((lm and _pn_word_base(lm.group("w")).lower() in person_fakes)
-            or (rm and _pn_word_base(rm.group("w")).lower() in person_fakes)):
+
+    def ours(mm, side):
+        """The neighbour is one of our PERSON fakes standing where the
+        half-scrubbed pair puts it: a given-name fake on the left, a surname
+        fake on the right — and never a possessive. Measured on 1.5 MB, every
+        false lower-case row came through this site: "Rasho's motive" (a
+        possessive stand-in is a party's, not a pair), "Rodgers erred" and
+        "Irving firing" (a SURNAME fake on the left of an ordinary word, where
+        the pair is a given fake hard against the surname)."""
+        if not mm:
+            return False
+        w = mm.group("w")
+        base = _pn_word_base(w).lower()
+        if base not in person_fakes or _PN_POSSESSIVE_RE.search(w):
+            return False
+        if positions and (positions[0] or positions[1]):
+            return base in (positions[0] if side == "L" else positions[1])
+        return True
+    if ours(lm, "L") or ours(rm, "R"):
         return "in a name run with one of our own stand-ins"
     v = _PN_LOWER_VERB_RE.match(text, e)
     if (v and v.group("verb") in _PN_NARRATIVE_VERBS
@@ -20442,6 +20463,7 @@ class Pseudonymizer:
         # asking for a capital first was blind to its own defendant's name.
         # See `_pn_lower_name_site` for the measurement.
         person_fakes = {w.lower() for w in self.name_fake_words()}
+        positions = self.name_fake_positions()
         party = self._party_token_bases()
         party_bigrams = {t: _pn_bigrams(t) for t in party}
         person_toks = self._tracked_person_tokens()
@@ -20465,10 +20487,13 @@ class Pseudonymizer:
         def _lower_every_site(word):
             hit = every_site.get(word)
             if hit is None:
-                pat = re.compile(r"(?<![\w'’])" + re.escape(word)
-                                 + r"(?![\w'’])")
+                # Every occurrence of the BASE word, possessive or not: the
+                # spelling in hand was "marker's", and its one occurrence
+                # was corroborated while fifteen plain "marker" were not.
+                pat = re.compile(r"(?<![\w'’])" + re.escape(_pn_word_base(word))
+                                 + r"(?:['’][sS])?(?![\w'’])")
                 hit = all(_pn_lower_name_site(src, o.start(), o.end(),
-                                              person_fakes)
+                                              person_fakes, positions)
                           for o in pat.finditer(src))
                 every_site[word] = hit
             return hit
@@ -20540,7 +20565,7 @@ class Pseudonymizer:
             # (3,584 -> 37,453 on a 249 KB body), so asking every one of them
             # would spend 0.2 s a file to answer about a few dozen.
             if word[:1].islower() and not _pn_lower_name_site(
-                    src, m.start(), m.end(), person_fakes):
+                    src, m.start(), m.end(), person_fakes, positions):
                 continue
             # …and EVERY occurrence must be corroborated, not the one in
             # hand. A name is a name wherever it stands, so a mangled surname
@@ -20664,6 +20689,13 @@ class Pseudonymizer:
         for word, base, raw, hits, close in found:
             if base in pair_taken:
                 continue            # reported as the half of a pair
+            # A lower-case word is held to the CLOSE reach and nothing else:
+            # it is in the sweep on its site alone, and the wide reach and
+            # the second degree are where the party bump admitted "motive"
+            # for Mortimer through the tool's own variant "Moreover". Every
+            # delivered lower-case true positive is within 2.0.
+            if word[:1].islower() and not close:
+                continue
             if not close and not any(t in multi for t in hits):
                 # A lone variant, and not a close one: reported only where
                 # it NEVER stands beside a name word nothing tracks — a bare
@@ -20702,6 +20734,16 @@ class Pseudonymizer:
                         min_len=_PN_NAME_FOLD_MIN, ends=False)
                            for v in targets):
                     continue
+                # The vocabulary screen the first loop applies: "Later" (one
+                # edit from the variant "Laker") and "Dates" (from "Rates")
+                # were reported here while the document wrote them lower
+                # case dozens of times.
+                if word[:1].isupper():
+                    if lower_words is None:
+                        lower_words = {w for w in _PN_RUN_WORD_RE.findall(src)
+                                       if w[:1].islower()}
+                    if base in lower_words:
+                        continue
                 if not self._finding_is_in_original(word):
                     continue
                 seen.add(base)
@@ -20776,6 +20818,30 @@ class Pseudonymizer:
                 self.review.append(("misspelled name?", raw))
                 out.append(("misspelled name?", raw))
         return out
+
+    def name_fake_positions(self):
+        """(given-name fakes, surname fakes) of this run's person bindings —
+        the first and last word of each multi-word person fake, a one-word
+        fake counting as a surname. The reversed table spelling is `derived`
+        and is left out, or every surname would sit in the given slot too.
+        What `_pn_lower_name_site` reads to ask whether a stand-in beside a
+        lower-case near-miss is standing where the half-scrubbed pair puts
+        it."""
+        given, surname = set(), set()
+        for (cat, _rl), rec in self.records.items():
+            if (cat not in ("person", "person-token", "display-name", "declarant")
+                    or rec.get("derived")):
+                continue
+            words = [_pn_word_base(w).lower() for w in str(rec["fake"]).split()]
+            words = [w for w in words if w and not self.registry.keeps_word(w)]
+            if not words:
+                continue
+            if len(words) == 1:
+                surname.add(words[0])
+            else:
+                given.add(words[0])
+                surname.add(words[-1])
+        return given, surname
 
     def name_fake_words(self):
         """The stand-in words this run minted for PEOPLE — the words a
