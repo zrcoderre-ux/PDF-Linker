@@ -321,11 +321,10 @@ def test_directional_two_word_street_detected():
     for real in ["817 N. La Brea Avenue, City of Inglewood",
                  "817 N. La Brea A venue, City of Inglewood"]:
         out = z.apply(real)
-        # The street NAME and the house NUMBER are faked; the suffix and
-        # the City/ST/ZIP tail are kept.
+        # The street NAME is the identifying part and is faked; the house
+        # NUMBER is kept verbatim, like the suffix and the City/ST/ZIP tail.
         assert "La Brea" not in out, f"street name survived: {out!r}"
-        assert "817" not in out, f"house number should be faked: {out!r}"
-        assert re.match(r"\d{3} \S+ A ?venue, City of Inglewood", out), out
+        assert "817" in out, f"house number should be kept: {out!r}"
         assert "La Brea" not in out, f"street name survived: {out!r}"
         assert "Inglewood" in out, f"locality was altered: {out!r}"
 
@@ -679,7 +678,7 @@ def test_suffixless_street_detected_with_tail():
     out = z.apply("offices at 1888 Century Park East, 19th Floor, "
                   "Los Angeles, CA 90067.")
     assert "Century Park" not in out, out
-    assert "1888" not in out, f"house number should be faked: {out!r}"
+    assert "1888" in out, f"house number should be kept: {out!r}"
     assert "19th Floor" in out and "Los Angeles, CA 90067" in out
     for prose in ("24 Hour Fitness Center opened a new gym",
                   "100 Years War East narrative"):

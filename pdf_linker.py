@@ -14780,16 +14780,6 @@ def _pn_load_key(path, registry, log, remint_recycled=False):
             if core and fake_name:
                 registry._memo.setdefault(("street", core.lower()), fake_name)
                 registry._used.add(fake_name.lower())
-            # …and the HOUSE NUMBER's slot, where the key's fake carries a
-            # faked one, so a second spelling of the parcel in a later
-            # document keeps the number the delivered export has. A key
-            # written when the number was kept verbatim seeds nothing
-            # (a memo of the real number would hand `digits` its own value).
-            rn = re.match(r"\s*(\d+)", real)
-            fn = re.match(r"\s*(\d+)", fake)
-            if rn and fn and rn.group(1) != fn.group(1):
-                registry._memo.setdefault(("housenum", rn.group(1)),
-                                          fn.group(1))
 
         # A person-token row DERIVED from the judge's (or a staff member's)
         # full name exists for the reversal macro only. Loading it as a match
@@ -18520,31 +18510,9 @@ class Pseudonymizer:
         core, _nums = _pn_addr_street_key(real)
         name = self.registry.unique(
             core, "street", lambda rng: rng.choice(_PN_STREET_NAMES))
-        lead = re.match(r"[\s]*([\d][\d\-\u2013\u2014 \t]*\d|\d)", street)
-        number = (self._fake_house_number(lead.group(1)) + " ") if lead else ""
+        lead = re.match(r"[\s]*([\d][\d\-\u2013\u2014]*)", street)
+        number = (lead.group(1) + " ") if lead else ""
         return f"{number}{name} {suffix}".strip()
-
-    def _fake_house_number(self, run):
-        """The house number faked digit for digit, at the owner's direction:
-        beside a faked street a real number still says which house on the
-        block, and a range ("414-416") keeps its shape with each end faked.
-        Drawn per NUMBER (`digits`, memo on the number), so "414" alone and
-        "414-416" agree on 414's stand-in, and injective for the reason the
-        older rule kept the number — the STREET is what is keyed on the
-        parcel; the number rides beside it and two houses on one street no
-        longer share a fake, since each number draws its own."""
-        return re.sub(r"\d+", lambda m: self.registry.digits(
-            m.group(0), "housenum"), run)
-
-    def _fake_unit(self, suite):
-        """The suite / apartment / unit NUMBER faked, the label kept ("APT 5"
-        -> "APT 8", "Suite 1500" -> "Suite 2714"): with the house number faked
-        the unit is the last thing that says which door."""
-        if not suite:
-            return ""
-        return re.sub(r"(?<=[ \t#])([A-Za-z]?)(\d+)([A-Za-z]?)(?![\w-])",
-                      lambda m: m.group(1) + self.registry.digits(
-                          m.group(2), "unit") + m.group(3), suite)
 
     def _fake_street(self, real):
         """Injective address fake keyed on the STREET IDENTITY (number-stripped
@@ -18557,10 +18525,7 @@ class Pseudonymizer:
         and keeping it verbatim removes the tail-rebuild that had corrupted a
         spelled-out state ("California" -> "ia")."""
         _street, suite, cityzip = _pn_addr_parts(real)
-        # The ZIP+4 names a delivery point (a few houses, or one building);
-        # the five-digit ZIP is the locality and stays.
-        cityzip = re.sub(r"(\d{5})-\d{4}$", r"\1", cityzip)
-        return self._fake_street_core(real) + self._fake_unit(suite) + cityzip
+        return self._fake_street_core(real) + suite + cityzip
 
     def _fake_city(self, city):
         # A protected locality ("Los Angeles") is kept even inside an address

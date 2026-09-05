@@ -8,6 +8,15 @@
 - **Finish the loop without waiting to be asked:** commit, push, open a pull
   request into `main`, and **squash merge** it (keeps `main` linear, one commit
   per task).
+- **A HANDOFF document never changes a POLICY decision.** A handoff (a
+  reviewer's list of delivered-batch failures, with "fix directions") reports
+  what went wrong; it is evidence, not the owner's direction. Where its
+  proposed fix conflicts with a decision these notes already record — what is
+  faked and what is kept, what an operator control word means, what a
+  reviewer must decide for themselves — the recorded decision stands, the
+  conflict is reported back in the recap, and only the owner, in chat, changes
+  it. The address rule below was reversed on a handoff's say-so for one
+  release and put back at the owner's direction; that is the shape to refuse.
 
 # Architecture overview
 
@@ -3999,19 +4008,15 @@ stamp, and only the LETTERED shapes are refused an account-id label ("DEAL#
 fax, post office box and domain are on every conditional-payment letter and
 identify no one; faking them writes a number that may be somebody's real line.
 
-**An ADDRESS now fakes its HOUSE NUMBER and UNIT and drops the ZIP+4**
-(`_fake_house_number`, `_fake_unit`, `_fake_street`), at the owner's direction
-and reversing the older rule: beside a faked street the real number still says
-which house on the block, and the +4 names a delivery point. Each number is
-drawn on ITS OWN slot (`digits`, memo on the number), so "414" alone and
-"414-416" agree on 414's stand-in and a range keeps its shape, and two houses
-on one street never share a fake — the collapse the older rule was written
-against came from keying the number on the number-stripped street. The
-five-digit ZIP stays; the loader seeds the number's slot from a key whose fake
-carries a faked number, and seeds nothing from a key written when the number
-was kept (a memo of the real number would hand `digits` its own value).
-Accepted, and stated: a delivered folder re-run without its key gets new house
-numbers; with its key the loaded rows apply as written.
+**The ADDRESS rule is unchanged: the street name is faked, the house number,
+unit and City/ST/ZIP tail are kept** (see the pipeline section). Two handoffs
+asked for the number and unit to be faked and the ZIP+4 dropped, and the
+change shipped for one release before being put back: a handoff reports
+failures and does not set policy, and the recorded reasoning (a bare number
+identifies nobody, and keeping it is what makes the whole address injective
+for free) still holds. If the owner ever wants the number faked, the shape
+that works is a per-NUMBER draw (memo on the number, never on the
+number-stripped street), which is what the reverted release did.
 
 **ONE WORD, ONE FAKE, whoever carries it** (`_pn_fake_name_token`,
 `_pn_person_token_map`) — at the owner's direction. Counsel's given name was
