@@ -243,16 +243,19 @@ def test_the_courthouse_address_is_a_venue_and_stays():
     assert "Orchard" not in out
 
 
-# ── §10 two people, one word ────────────────────────────────────────────────
+# ── §10 two people, one word: ONE fake, at the owner's direction ───────────
 
-def test_a_given_name_and_an_unrelated_surname_draw_two_words():
+def test_a_shared_word_reads_identically_wherever_it_stands():
+    """Counsel's given name is an unrelated attorney's surname. The export
+    carries the same ambiguity the filing does — one word, one fake — so a
+    reader can see that a bare reference names one of two people."""
     z, _r = _pz(["Kramer Ivan Lowther", "Bradley Kramer"])
     fakes = {t.real: t.fake for t in z.terms if t.category == "person"}
     given = fakes["Kramer Ivan Lowther"].split()[0]
     surname = fakes["Bradley Kramer"].split()[-1]
-    assert given != surname
-    out = z.apply("Kramer I. Lowther met Bradley Kramer.")
-    assert "Kramer" not in out
+    assert given == surname
+    out = z.apply("Kramer I. Lowther met Bradley Kramer and Mr. Kramer.")
+    assert "Kramer" not in out and out.count(given) == 3
 
 
 def test_one_persons_spellings_still_share_one_word():

@@ -4013,18 +4013,19 @@ was kept (a memo of the real number would hand `digits` its own value).
 Accepted, and stated: a delivered folder re-run without its key gets new house
 numbers; with its key the loaded rows apply as written.
 
-**A word that is one person's GIVEN name and another's SURNAME is two
-words** (`_pn_name_token_tag`, `registry.name_role_primary`,
-`_pn_fake_name_token(role=)`). The registry memoises on the word, which is
-right for one person's spellings and wrong for a coincidence across people:
-counsel's given name and an unrelated attorney's surname drew one pool word,
-and "<Fake> I. <Surname>", "<Given> <Middle> <Fake>" and "<Fake> & <Partner>
-LLP" read as one person. The role that first draws a word holds its memo; the
-other role, arriving later, draws under its own slot. Both composers
-(`_pn_fake_person`, `_pn_person_token_map`) decide the role by the same rule
-(the last mappable word, or the first before a comma), a one-word name carries
-no role, and the bare token takes whichever role drew first — the residual,
-and stated, since a bare "Kramer" in the text cannot say which person it is.
+**ONE WORD, ONE FAKE, whoever carries it** (`_pn_fake_name_token`,
+`_pn_person_token_map`) — at the owner's direction. Counsel's given name was
+an unrelated attorney's surname, both drew one pool word, and a handoff read
+"<Fake> I. <Surname>" beside "<Given> <Middle> <Fake>" as one person. A
+role-split — the second role to draw a word taking its own pool word —
+shipped for one release and was REVERTED: a bare "Mr. Kramer" then took the
+first role's word while the attorney's full name carried the other, so one
+person read as THREE, and the ambiguity the filing itself carries was hidden
+rather than shown. The rule is that identical real words read identically in
+the export: a bare reference that names one of two people in the source names
+one of two people in the deliverable, and the reader sees the ambiguity for
+themselves. Reversal is unaffected either way, since each full-name row
+reverses on its own.
 
 **A FOUR-letter operator-named token is swept at ONE slip and at a
 corroborated SITE only** (`_tracked_name_token_index`, the four-letter branch
