@@ -191,3 +191,21 @@ def test_the_bound_canonical_is_pinned_and_the_misspelling_is_not(tmp_path):
             where.setdefault(str(row[rv]), set()).add(name)
     assert where["Vazqez"] == {P._PN_KEY_MAIN_SHEET}
     assert where["Vazquez"] == {P._PN_KEY_PINNED_SHEET}
+
+
+def test_a_fix_leaks_refusal_binds_nothing():
+    """`--fix-leaks` leaves a value that already has a fake alone
+    (`allow_rebind=False`). That refusal is asked FIRST: the canonical must
+    not be bound on the operator's say-so, and announced, for an alias the
+    pass then declines to apply."""
+    reg = P._PnFakeRegistry()
+    terms = P._pn_build_terms(["Vazqez"], [], [], registry=reg)
+    decisions = {"vazqez": {"value": "Vazqez", "fix": "yes",
+                            "fixcell": "*Vazquez", "alias": "Vazquez"}}
+    before = dict(reg.tokens_for("nametok"))
+    _terms, values = P._pn_apply_aliases(decisions, terms, reg,
+                                         logging.getLogger("x"),
+                                         allow_rebind=False)
+    assert "vazquez" not in reg.tokens_for("nametok")
+    assert reg.tokens_for("nametok") == before
+    assert "Vazquez" not in values

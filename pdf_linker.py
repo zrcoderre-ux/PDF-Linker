@@ -12975,6 +12975,12 @@ _PN_CITE_TAIL = (r"(?:,?" + _PN_CITE_TAIL_WS + r"|,?[ \t]*)(?:" + _PN_CITE_YEAR
                  + r"|\d{1,4}" + _PN_CITE_WS + r"(?:" + REPORTER_PATTERN
                  + r")|supra\b)")
 _PN_CITE_V = _PN_CITE_WS + r"vs?\.?" + _PN_CITE_WS
+# …and the " v. " of a TAIL-LESS run stays on the page with both its names.
+# The name runs were held to one page first and this was not, so a strung
+# cite whose " v. " sat at the seam still matched across it — and the mask
+# then blanked the page header itself. Nothing bounds a tail-less run but its
+# word count, so nothing in it may cross a page.
+_PN_CITE_V_SAMEPAGE = _PN_CITE_WS_SAMEPAGE + r"vs?\.?" + _PN_CITE_WS_SAMEPAGE
 _PN_CITE_SHAPE_RE = re.compile(
     r"(?<![\w'’])(?:"
     r"(?P<full>" + _PN_CITE_NAME_RUN + _PN_CITE_V
@@ -12998,7 +13004,7 @@ _PN_CITE_SHAPE_RE = re.compile(
     # where a tail-less cite ends on a guess about a page break doubles the
     # ways it can be wrong; a wrapped strung defendant loses its shape span
     # at the page seam, which costs a review row and never an authority.
-    r"|(?P<strung>" + _PN_CITE_NAME_RUN_SAMEPAGE + _PN_CITE_V
+    r"|(?P<strung>" + _PN_CITE_NAME_RUN_SAMEPAGE + _PN_CITE_V_SAMEPAGE
     + _PN_CITE_NAME_RUN_SAMEPAGE + r")"
     r")")
 # What stands before a STRUNG cite: the pin or reporter of the cite before
@@ -13225,10 +13231,12 @@ def _pn_key_binding_blocks(rows, alt_rows):
     Two rows sharing a Replacement are never two parties: the registry is
     injective, so they are one value written several ways — a wrap-split
     hyphen ("Ardeshirpour- Zartoshti"), a `_pn_name_variants` near-miss, a
-    surname-first table spelling, an operator `*ANOTHER VALUE` alias. Every one
-    of them is registered against the canonical value's fake precisely so that
-    each spelling scrubs, and `write_key` already marks the non-canonical rows
-    `alt spelling`. What it did not do was PUT them anywhere: the sheet sorted
+    `--term` that repeats a bare token. Every one of them is registered against
+    the canonical value's fake precisely so that each spelling scrubs, and
+    `write_key` already marks the non-canonical rows `alt spelling`. (A
+    surname-first table spelling and a `*` alias are spellings too, and do NOT
+    share the Replacement — the first carries the words reversed, the second a
+    mirrored slip — so `_pn_key_party_order` reads those off the values.) What it did not do was PUT them anywhere: the sheet sorted
     alphabetically, so a party's misspellings were scattered down the key and
     the one thing the Status word says about them — "this is another spelling
     of some other row" — could not be acted on without searching the sheet for
@@ -13245,6 +13253,64 @@ def _pn_key_binding_blocks(rows, alt_rows):
                                   -r["count"], len(str(r["real"])),
                                   str(r["real"]).lower()))
     return blocks
+
+
+# The words of a key row's REAL VALUE, split the way `_PN_FAKE_WORD_RE` splits
+# its Replacement — the two are compared position by position. Unicode-aware,
+# because a real value may carry an accent ("Alarcón") where a fake never does.
+_PN_KEY_REAL_WORD_RE = re.compile(r"[^\W_]+")
+# The categories a SPELLING can be read across: a name, or a bare word of one.
+_PN_KEY_NAME_CATS = frozenset({"person", "person-token", "entity",
+                               "entity-token"})
+
+
+def _pn_key_real_words(real):
+    return _PN_KEY_REAL_WORD_RE.findall(str(real).lower())
+
+
+def _pn_key_word_fold(real, fake, preal, pfake):
+    """True when the binding `real -> fake` is a FOLDED SPELLING of the
+    binding `preal -> pfake` — the same slip of the same name, the way
+    `_PnFakeRegistry.fold_onto` mints one for an OCR near-miss the tool infers
+    ("Palladina" beside "Palladino") or a misspelling the operator declares
+    with `*` ("Vatquel" beside "Vazquez").
+
+    Decided from the four words ALONE and never from registry state, because
+    a re-run off a delivered key re-folds nothing (`_pn_load_key` pins every
+    fake, and the `*` cell is retired once applied), and the order the sheet
+    comes back in must not depend on which run wrote it. What the mirror
+    leaves in the values is enough to read it back: the fake deviates from
+    its base by the SAME op the real did, so the two LENGTH DELTAS are equal
+    (`_pn_mirror_op`), and the fake sits at exactly the op's distance from its
+    base — one edit for a confusable substitution or an adjacent swap, `reps`
+    for letters duplicated or dropped (`_pn_typo_variants`). And a folded fake
+    is never a POOL WORD: every pool word stands at least two edits from every
+    other (the near-twin rule), so a word one edit from a pool word is a typo
+    of it and not a draw, and a word `reps` edits away that IS in the pool is
+    a draw and not a fold. The exhausted-pool stand-in ("Deverell5") is one
+    edit from its own word and is refused by name. A nickname's fake — the
+    FRONT of its full name's ("Cran" of "Cranston") — reads as a drop of the
+    same number of letters the real dropped, and rides with the name it
+    shortens, which is where the nickname rule already wants it."""
+    real, fake = str(real).lower(), str(fake).lower()
+    preal, pfake = str(preal).lower(), str(pfake).lower()
+    if not (real and fake and preal and pfake) or fake == pfake or real == preal:
+        return False
+    dl = len(fake) - len(pfake)
+    if dl != len(real) - len(preal) or abs(dl) > _PN_FOLD_MAX_REPS:
+        return False
+    if fake in _PN_POOL_WORDS or _pn_recycled_fake(fake):
+        return False
+    return _pn_osa_distance(fake, pfake) == (abs(dl) or 1)
+
+
+def _pn_key_rearranged(fwords, pwords):
+    """True when `fwords` is `pwords` in another ORDER — a two-word person
+    written surname-first in a table, whose `derived` row carries the
+    correspondingly reversed fake. Same words, so the same party: a composed
+    fake is built word for word and the registry is injective."""
+    return (len(fwords) >= 2 and len(fwords) == len(pwords)
+            and fwords != pwords and sorted(fwords) == sorted(pwords))
 
 
 def _pn_key_party_order(rows, alt_rows):
@@ -13274,36 +13340,99 @@ def _pn_key_party_order(rows, alt_rows):
     the party's full fake must precede both, so the short form would have to be
     spliced INTO the block.
 
+    An alternate spelling is not always the SAME Replacement. Three of them
+    are — a wrap-split hyphen, a `_pn_name_variants` near-miss, a `--term`
+    that repeats a token — and those are one binding block already. Two are
+    not, by design, and were the rows the grouping missed. A surname-first
+    table spelling ("Vazquez Manuel", `derived`) carries the party's words in
+    the other ORDER (`_pn_key_rearranged`), and left to sort as a `person` row
+    of its own it sorted FIRST, claimed the tokens in its own word order, and
+    put the reversed spelling at the head of the party. And a MISSPELLING —
+    the OCR near-miss the registry folds, or the one the operator declares
+    with `*` — takes a mirrored SLIP of the canonical's fake, never the fake
+    itself (`fold_onto`: two Real Values on one Replacement is what the macro
+    calls ambiguous), so "Vazqez -> Inleby" shared nothing with
+    "Vazquez -> Ingleby" the grouping could see. Both are read off the VALUES
+    (`_pn_key_word_fold`), never off registry state, so a re-run off the key
+    reproduces the order: a whole-name spelling — the parent's words
+    rearranged, or word for word with one or more words folded
+    ("Manuel Vazqez") — sits right after the name it spells, before the
+    tokens; a one-word fold sits under the token it is a slip of, wherever
+    that token was written. One level only: a fold is never the target of
+    another, or two spellings one slip apart would each claim the other.
+
     A token is claimed by ONE parent — the first in the sheet's own order — so
     a surname two parties share ("Doe") is written once and not duplicated
     under each. A block nothing claims (a bare harvested surname, an address,
     a case number) keeps its place in the ordinary category run."""
     blocks = _pn_key_binding_blocks(rows, alt_rows)
 
-    def block_sort(fake):
-        owner = blocks[fake][0]
-        return (_PN_KEY_CATEGORY_RANK.get(owner["category"], 50),
-                owner["category"], str(owner["real"]).lower(), fake)
+    def owner(fake):
+        return blocks[fake][0]
 
-    words = {fake: _PN_FAKE_WORD_RE.findall(fake) for fake in blocks}
+    def block_sort(fake):
+        o = owner(fake)
+        return (_PN_KEY_CATEGORY_RANK.get(o["category"], 50),
+                o["category"], str(o["real"]).lower(), fake)
+
+    fwords = {fake: _PN_FAKE_WORD_RE.findall(fake) for fake in blocks}
+    rwords = {fake: _pn_key_real_words(owner(fake)["real"]) for fake in blocks}
     order = sorted(blocks, key=block_sort)
-    children, claimed = {}, set()
+    namelike = {f for f in order if owner(f)["category"] in _PN_KEY_NAME_CATS}
+
+    def spells(kf, pf):
+        """`kf` is another spelling of the whole name `pf`: the same words
+        rearranged, or word for word with at least one word folded."""
+        kw, pw = fwords[kf], fwords[pf]
+        if _pn_key_rearranged(kw, pw):
+            return True
+        kr, pr = rwords[kf], rwords[pf]
+        if not kw or len(kw) != len(pw) or len(kr) != len(kw) or len(pr) != len(pw):
+            return False
+        folded = False
+        for a, b, ra, rb in zip(kw, pw, kr, pr):
+            if a == b:
+                continue
+            if not _pn_key_word_fold(ra, a, rb, b):
+                return False
+            folded = True
+        return folded
+
+    claimed = set()
+    # Whole-name SPELLINGS of a party, read before its tokens are claimed so
+    # a reversed row cannot claim them first: a non-derived name of the same
+    # kind is the parent, and the spelling is anything of that kind whose
+    # words are its words rearranged or folded.
+    spellings = {}
     for fake in order:
-        owner = blocks[fake][0]
-        if owner["category"] not in ("person", "entity"):
+        o = owner(fake)
+        if (o["category"] not in ("person", "entity") or o.get("derived")
+                or len(fwords[fake]) < 2 or fake in claimed):
+            continue
+        for kf in order:
+            if (kf == fake or kf in claimed
+                    or owner(kf)["category"] != o["category"]):
+                continue
+            if spells(kf, fake):
+                claimed.add(kf)
+                spellings.setdefault(fake, []).append(kf)
+    children = {}
+    for fake in order:
+        o = owner(fake)
+        if o["category"] not in ("person", "entity") or fake in claimed:
             continue
         # Only a BARE TOKEN of this party's OWN kind is absorbed. A block led
         # by anything else is a binding in its own right — a one-word party, a
         # short form, a display name — and burying it under a name that happens
         # to contain its fake would hide a row the operator looks for by
         # category.
-        tokcat = f"{owner['category']}-token"
-        parent = words[fake]
+        tokcat = f"{o['category']}-token"
+        parent = fwords[fake]
         kids = []
         for kf in order:
-            if kf == fake or kf in claimed or blocks[kf][0]["category"] != tokcat:
+            if kf == fake or kf in claimed or owner(kf)["category"] != tokcat:
                 continue
-            kw = words[kf]
+            kw = fwords[kf]
             if not kw or len(kw) >= len(parent):
                 continue
             start = next((i for i in range(len(parent) - len(kw) + 1)
@@ -13313,15 +13442,59 @@ def _pn_key_party_order(rows, alt_rows):
             claimed.add(kf)
             kids.append((start, -len(kw), kf))
         children[fake] = [kf for _s, _n, kf in sorted(kids)]
+    # A one-word FOLD sits under the one-word binding it is a slip of — a
+    # token (already inside its party's block), or a one-word party standing
+    # on its own. Targets are read in sheet order, so the first that fits
+    # wins, and a fold is never itself a target.
+    folds, folds_of_something = {}, set()
+    for kf in order:
+        if kf in claimed or kf not in namelike or len(fwords[kf]) != 1:
+            continue
+        for tf in order:
+            if (tf == kf or tf not in namelike or len(fwords[tf]) != 1
+                    or tf in folds_of_something):
+                continue
+            if _pn_key_word_fold(rwords[kf][0] if len(rwords[kf]) == 1 else "",
+                                 fwords[kf][0],
+                                 rwords[tf][0] if len(rwords[tf]) == 1 else "",
+                                 fwords[tf][0]):
+                claimed.add(kf)
+                folds.setdefault(tf, []).append(kf)
+                folds_of_something.add(kf)
+                break
+
+    # Every block is written EXACTLY ONCE, whatever the claims say. A block
+    # can be claimed as a spelling and hold spellings of its own (a fold of a
+    # fold sorted ahead of the name it folds from), so the walk is recursive
+    # and remembers what it has emitted — and a block no walk reached still
+    # goes out as a party of its own, since a row dropped from the key is a
+    # fake nothing can reverse.
+    emitted = set()
+
+    def emit(fake, out):
+        if fake in emitted:
+            return
+        emitted.add(fake)
+        out.extend(blocks[fake])
+        for kf in folds.get(fake, ()):
+            emit(kf, out)
+        for kf in spellings.get(fake, ()):
+            emit(kf, out)
+        for kf in children.get(fake, ()):
+            emit(kf, out)
 
     party = []
     for fake in order:
         if fake in claimed:
             continue
-        block = list(blocks[fake])
-        for kf in children.get(fake, ()):
-            block.extend(blocks[kf])
+        block = []
+        emit(fake, block)
         party.append(block)
+    for fake in order:
+        if fake not in emitted:
+            block = []
+            emit(fake, block)
+            party.append(block)
     _pn_key_longer_first_blocks(party)
     return [r for block in party for r in block]
 
@@ -17274,7 +17447,9 @@ class Pseudonymizer:
                 return False      # tail-less AND across a page: see below
             if not _pn_string_cite_seam(text, s):
                 return False
-            m = re.match(_PN_CITE_NAME_RUN, after)
+            # The defendant's run is read the way the mask reads it — held
+            # to this page — or the two would disagree at the seam.
+            m = re.match(_PN_CITE_NAME_RUN_SAMEPAGE, after)
             defendant = after[:m.end()] if m else ""
             if not defendant.strip():
                 return False
@@ -17313,6 +17488,11 @@ class Pseudonymizer:
                            + r"){1,8}$", left[:v.start()])
             if pm is None or not _pn_string_cite_seam(text, s - len(left)
                                                       + pm.start()):
+                return False
+            # …and the plaintiff's run and the " v. " must sit on this page
+            # too: the check above covers only the stretch after the " v. ",
+            # and the mask holds the whole tail-less run to one page.
+            if _PN_PAGE_SEAM_RE.search(left[pm.start():v.start()]):
                 return False
             lead = pm.group(0)
             return not (self._side_is_trusted(lead)
@@ -20739,6 +20919,43 @@ class Pseudonymizer:
                 if r is not keep:
                     alt_rows.add(rk(r))
                     nalt += 1
+        # A DERIVED row whose fake is another row's fake with the words in a
+        # different ORDER — the surname-first table spelling
+        # `_pn_append_person_terms` registers, "Vazquez Manuel" -> "Ingleby
+        # Herriot" beside "Manuel Vazquez" -> "Herriot Ingleby" — is a
+        # spelling of that row for the same reason the same-fake rows are:
+        # the fake is composed word for word and the registry is injective,
+        # so the same words are the same party. It is marked the same way,
+        # so the sheet says what it is and `_pn_load_key` carries `derived`
+        # back on the re-run (a loaded row is otherwise an ordinary
+        # `person`, and `_pn_key_party_order` would let the reversed
+        # spelling lead the party on one run and not the next). Forward-only
+        # is honest for it: the macro reverses a composed fake word by word,
+        # off the token rows the parent's own words already carry. Its count
+        # joins the owner's, since the fake reached the export in that
+        # spelling.
+        by_words = {}
+        for r in keyrows:
+            if not r.get("derived") and r["category"] in ("person", "entity"):
+                by_words.setdefault(
+                    (r["category"],
+                     tuple(sorted(_PN_FAKE_WORD_RE.findall(
+                         str(r["fake"]).lower())))), []).append(r)
+        for r in keyrows:
+            if not r.get("derived") or _pn_key_rowkey(r) in alt_rows:
+                continue
+            words = _PN_FAKE_WORD_RE.findall(str(r["fake"]).lower())
+            if len(words) < 2:
+                continue
+            for p in by_words.get((r["category"], tuple(sorted(words))), ()):
+                if _pn_key_rearranged(
+                        words, _PN_FAKE_WORD_RE.findall(str(p["fake"]).lower())):
+                    pk = _pn_key_rowkey(p)
+                    alt_rows.add(_pn_key_rowkey(r))
+                    nalt += 1
+                    owner_count[pk] = (owner_count.get(pk, p["count"])
+                                       + r["count"])
+                    break
         if nalt:
             log.info(f"  Pseudonymize: {nalt} key row(s) marked "
                      f"'{_PN_KEY_ALT_STATUS}' (a synthetic spelling of another "
@@ -23864,6 +24081,17 @@ def _pn_apply_aliases(decisions, terms, registry, log, allow_rebind=True):
             vbase, cbase = _pn_word_base(vword), _pn_word_base(cword)
             if not vbase or not cbase or vbase == cbase:
                 continue          # a word the two spellings share needs nothing
+            # Asked FIRST, before the canonical is bound: a `--fix-leaks`
+            # pass that is going to leave the value alone must not spend a
+            # pool word on the canonical and announce a binding the alias it
+            # serves was then refused.
+            if (tag, vbase) in registry._memo and not allow_rebind:
+                log.warning(
+                    f"  ALIAS: {vword!r} is already bound to "
+                    f"{registry._memo[(tag, vbase)]!r} and the exports beside "
+                    f"this worksheet already carry it, so this pass leaves it "
+                    f"alone. Click 'Re-run PDF-Linker' to apply the alias.")
+                continue
             prev_fake = registry.tokens_for("nametok").get(cbase)
             if not prev_fake:
                 # Nothing to mirror because the canonical is not bound — which
@@ -23881,13 +24109,6 @@ def _pn_apply_aliases(decisions, terms, registry, log, allow_rebind=True):
                     f"stand-in in this case — nothing to mirror, so {vword!r} "
                     f"is faked the ordinary way. (Check the spelling of the "
                     f"value after the '*'.)")
-                continue
-            if (tag, vbase) in registry._memo and not allow_rebind:
-                log.warning(
-                    f"  ALIAS: {vword!r} is already bound to "
-                    f"{registry._memo[(tag, vbase)]!r} and the exports beside "
-                    f"this worksheet already carry it, so this pass leaves it "
-                    f"alone. Click 'Re-run PDF-Linker' to apply the alias.")
                 continue
             cand = registry.fold_onto(vbase, cbase, prev_fake, "nametok")
             if cand is None:

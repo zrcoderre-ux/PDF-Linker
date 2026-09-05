@@ -246,3 +246,149 @@ def test_an_undecided_row_never_sinks_to_sit_beside_a_resolved_sibling(
 ])
 def test_the_grouping_reads_the_cell_the_way_every_other_pass_does(cell, canon):
     assert P._pn_leak_alias_canon(cell) == canon
+
+
+# ── the key: spellings that do NOT share the Replacement ────────────────────
+
+def _key_rows(z, tmp_path, name="pseudonym_key.xlsx"):
+    path = tmp_path / name
+    z.write_key(path, log)
+    wb = openpyxl.load_workbook(path)
+    head = [str(h).strip().lower() for h in
+            next(wb[P._PN_KEY_MAIN_SHEET].iter_rows(max_row=1, values_only=True))]
+    return path, [dict(zip(head, r)) for r in
+                  wb[P._PN_KEY_MAIN_SHEET].iter_rows(min_row=2, values_only=True)
+                  if r and r[0]]
+
+
+def test_a_surname_first_table_spelling_sits_under_its_party(tmp_path):
+    """"Vazquez Manuel" carries the party's words REVERSED, so it shares no
+    Replacement with "Manuel Vazquez" — and as a `person` row of its own it
+    sorted first, claimed the tokens in its own word order, and put the
+    reversed spelling at the head of the party. It is a spelling of the
+    party, marked as one, and written right after it; the tokens keep the
+    party's own word order."""
+    reg = P._PnFakeRegistry()
+    z = P.Pseudonymizer(P._pn_build_terms(["Manuel Vazquez", "Rachel Ashworth"],
+                                          [], [], registry=reg), {}, registry=reg)
+    z.apply("MANUEL VAZQUEZ testified. Vazquez Manuel signed the table row. "
+            "Rachel Ashworth appeared. Ashworth Rachel is listed.")
+    _path, rows = _key_rows(z, tmp_path)
+    assert _reals(rows) == ["Manuel Vazquez", "Vazquez Manuel", "Manuel",
+                            "Vazquez", "Rachel Ashworth", "Ashworth Rachel",
+                            "Rachel", "Ashworth"], _reals(rows)
+    status = {r["real value"]: str(r["status"]).lower() for r in rows}
+    assert status["Vazquez Manuel"] == ALT
+    assert status["Manuel Vazquez"] == "replaced"
+
+
+def test_an_operator_alias_sits_under_the_token_it_misspells(tmp_path):
+    """A `*` alias takes a mirrored SLIP of the canonical's fake and never the
+    fake itself, so the twenty scanned spellings of one defendant shared
+    nothing the same-Replacement grouping could see. Read off the values, they
+    ride with the token they are slips of."""
+    reg = P._PnFakeRegistry()
+    terms = P._pn_build_terms(["Manuel Vazquez", "Rachel Ashworth"], [], [],
+                              registry=reg)
+    decisions = {v.lower(): {"value": v, "fix": "yes", "fixcell": "*Vazquez",
+                             "alias": "Vazquez"} for v in ("Vazqez", "Vatquel")}
+    terms, vals = P._pn_apply_aliases(decisions, terms, reg, log)
+    terms += P._pn_build_terms([], [], vals, reg)
+    z = P.Pseudonymizer(terms, {}, registry=reg)
+    z.apply("MANUEL VAZQUEZ testified. Vazqez left. Vatquel signed. "
+            "Rachel Ashworth appeared.")
+    _path, rows = _key_rows(z, tmp_path)
+    reals = _reals(rows)
+    i = reals.index("Vazquez")
+    assert reals[i + 1:i + 5] == ["Vatquel", "Vatquel", "Vazqez", "Vazqez"], reals
+    assert reals.index("Rachel Ashworth") > i + 4
+
+
+def test_an_inferred_typo_fold_sits_under_the_token_it_misspells(tmp_path):
+    """The registry's own fold — "Palladina" beside "Palladino" — is the same
+    shape as the operator's, and groups the same way."""
+    reg = P._PnFakeRegistry()
+    z = P.Pseudonymizer(P._pn_build_terms(["Marco Palladino", "Marco Palladina"],
+                                          [], [], registry=reg), {}, registry=reg)
+    out = z.apply("Marco Palladino signed. Marco Palladina countersigned.")
+    fakes = {r.real: r.fake for r in z.terms}
+    assert fakes["Marco Palladina"] != fakes["Marco Palladino"]
+    _path, rows = _key_rows(z, tmp_path)
+    reals = _reals(rows)
+    # Which spelling holds the POOL word is the registry's business (the
+    # shortest-first pre-bind drew "Palladina" first here); the one that
+    # folded onto it is written right under it, and their tokens likewise.
+    assert set(reals[:2]) == {"Marco Palladino", "Marco Palladina"}, reals
+    assert abs(reals.index("Palladina") - reals.index("Palladino")) == 1, reals
+
+
+def test_a_fold_is_read_off_the_values_so_a_rerun_off_the_key_agrees(tmp_path):
+    """A re-run off the delivered key re-folds nothing (every fake is pinned)
+    and no longer holds the `*` cell, so the grouping must be decidable from
+    the rows alone — or the sheet comes back shuffled on the first re-run."""
+    reg = P._PnFakeRegistry()
+    terms = P._pn_build_terms(["Manuel Vazquez", "Marco Palladino",
+                               "Marco Palladina"], [], [], registry=reg)
+    decisions = {"vatquel": {"value": "Vatquel", "fix": "yes",
+                             "fixcell": "*Vazquez", "alias": "Vazquez"}}
+    terms, vals = P._pn_apply_aliases(decisions, terms, reg, log)
+    terms += P._pn_build_terms([], [], vals, reg)
+    text = ("MANUEL VAZQUEZ testified. Vazquez Manuel signed. Vatquel left. "
+            "Marco Palladino signed. Marco Palladina countersigned.")
+    z = P.Pseudonymizer(terms, {}, registry=reg)
+    z.apply(text)
+    path, first = _key_rows(z, tmp_path)
+
+    reg2 = P._PnFakeRegistry()
+    loaded, _decisions = P._pn_load_key(path, reg2, log)
+    z2 = P.Pseudonymizer(loaded, {}, registry=reg2)
+    again = tmp_path / "again"
+    again.mkdir()
+    assert z2.apply(text) == z.apply(text)
+    _path2, second = _key_rows(z2, again)
+    assert _reals(second) == _reals(first)
+    assert [str(r["status"]).lower() for r in second] == [
+        str(r["status"]).lower() for r in first]
+
+
+@pytest.mark.parametrize("real,fake,preal,pfake,want", [
+    ("Vazqez", "Inleby", "Vazquez", "Ingleby", True),     # a letter dropped
+    ("Vatquel", "Inglebj", "Vazquez", "Ingleby", True),   # a confusable
+    ("Palladina", "Keswicka", "Palladino", "Keswick", False),  # lengths do not track
+    ("Palladinoo", "Keswickk", "Palladino", "Keswick", True),  # …and here they do
+    ("Ken", "Cran", "Kenneth", "Cranston", True),         # a nickname's front
+    ("Smiths", "Deverell5", "Jones", "Deverell", False),  # the recycled stand-in
+    ("Radley", "Ridley", "Bradley", "Radley", False),     # a pool word is a draw
+    ("Vazquez", "Ingleby", "Vazquez", "Ingleby", False),  # the same binding
+])
+def test_a_fold_is_read_off_the_four_words_alone(real, fake, preal, pfake, want):
+    assert P._pn_key_word_fold(real, fake, preal, pfake) is want
+
+
+def test_every_row_is_written_once_when_spellings_nest():
+    """A fold of a fold that sorts AHEAD of the name it folds from is claimed
+    as a spelling by the first fold, which is then itself claimed by the name.
+    The walk is recursive, so the nested row is written under its family —
+    and never dropped, since a row missing from the key is a fake nothing can
+    reverse."""
+    assert "ingleby" in P._PN_POOL_WORDS
+    rows = [
+        {"category": "person", "real": "Marco Zed", "fake": "Thorne Ingleby",
+         "count": 3, "source": "spreadsheet"},
+        {"category": "person", "real": "Marco Aed", "fake": "Thorne Inglebj",
+         "count": 1, "source": "spreadsheet"},
+        {"category": "person", "real": "Marco Bed", "fake": "Thorne Inglebi",
+         "count": 1, "source": "spreadsheet"},
+        {"category": "person-token", "real": "Zed", "fake": "Ingleby",
+         "count": 0, "source": "spreadsheet"},
+        {"category": "person-token", "real": "Marco", "fake": "Thorne",
+         "count": 0, "source": "spreadsheet"},
+        {"category": "address", "real": "12 Elm St", "fake": "12 Oak St",
+         "count": 1, "source": "regex"},
+    ]
+    out = P._pn_key_party_order(list(rows), set())
+    reals = [r["real"] for r in out]
+    assert sorted(reals) == sorted(r["real"] for r in rows), reals
+    assert reals[0] == "Marco Zed"
+    assert reals.index("Marco Bed") < reals.index("12 Elm St")
+    assert reals.index("Marco Aed") < reals.index("12 Elm St")
