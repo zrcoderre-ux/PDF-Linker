@@ -7690,12 +7690,54 @@ class _PnFakeRegistry:
         # to say about "States" inside "Midland States Bank" (see
         # `_pn_nuclear_split`).
         self.keep_phrases = frozenset()
+        # …and the operator's PHRASE decisions (`phrase` in a Fix? or
+        # Replacement cell), as tuples of word bases: a value to be faked
+        # WHOLE wherever it stands inside a name, an operator keep on one of
+        # its words notwithstanding. The inverse of `keep_phrases`, read in
+        # the same positional way — see `furniture_positions`.
+        self.fake_phrases = frozenset()
 
     def kept_positions(self, bases):
         """Indices of `bases` (word bases, in order) that lie inside an
         occurrence of a kept PHRASE — what the composing fakers leave
-        verbatim on top of `keeps_word`."""
-        return _pn_phrase_positions(bases, self.keep_phrases)
+        verbatim on top of `keeps_word` — less any position a faked PHRASE
+        claims, since inside one no operator keep applies."""
+        return (_pn_phrase_positions(bases, self.keep_phrases)
+                - self.faked_positions(bases))
+
+    def faked_positions(self, bases):
+        """Indices of `bases` covered by an occurrence of a `phrase` decision
+        (`fake_phrases`): positions where an operator keep — a `{braced}`
+        word, a `never`, a kept phrase — is set aside and the word is faked
+        with the rest of the name."""
+        return _pn_phrase_positions(bases, self.fake_phrases)
+
+    def furniture_positions(self, bases):
+        """Indices of `bases` a composing faker leaves VERBATIM: the built-in
+        furniture of a name (`_PN_NAME_FURNITURE` — firm words, connectors,
+        honorifics) wherever it stands, and an OPERATOR keep (`keep_words`,
+        `keep_phrases`) except inside a faked PHRASE. The one place the three
+        composers and the furniture repair ask "is this word kept here?", so
+        they cannot answer it differently.
+
+        The PHRASE control exists for the composition half of a nuclear
+        keep. The span half already yields to a party match that reaches
+        beyond the kept word; the composition half did not, so `never` on
+        "America" turned "Bank of America" into "<fake> of America" — the
+        whole name matched and replaced, the kept word riding through inside
+        the fake. A `phrase` decision on the name switches that off for the
+        words the phrase covers, and for nothing else: a bare "America"
+        keeps whatever rule it already had, and the built-in furniture
+        ("of") is not an operator keep and is still kept."""
+        faked = self.faked_positions(bases)
+        kept = _pn_phrase_positions(bases, self.keep_phrases)
+        out = set()
+        for i, b in enumerate(bases):
+            if b in _PN_NAME_FURNITURE:
+                out.add(i)
+            elif (b in self.keep_words or i in kept) and i not in faked:
+                out.add(i)
+        return out
 
     def keeps_word(self, base):
         """True when a word must be left verbatim inside a composed fake: the
@@ -8721,11 +8763,9 @@ def _pn_fake_person(name, registry):
     # the operator's own `{braced}` keeps are kept verbatim — but only while a
     # distinctive word is still left to fake, or the "fake" would be the name
     # itself and scrub nothing.
-    phrase_idx = registry.kept_positions(
+    furn_idx = registry.furniture_positions(
         [_pn_word_base(m.group(0)) for m in words])
-    furniture = {m.start() for i, m in enumerate(words)
-                 if registry.keeps_word(_pn_word_base(m.group(0)))
-                 or i in phrase_idx}
+    furniture = {m.start() for i, m in enumerate(words) if i in furn_idx}
     if not [m for m in words
             if not _keep(m.group(0), m.start()) and m.start() != trail_at
             and m.start() not in furniture]:
@@ -8939,7 +8979,7 @@ def _pn_rejoin_words(text, words, replacements):
 
 
 def _pn_restore_furniture(real, fake, keep_words=frozenset(),
-                          keep_phrases=frozenset()):
+                          keep_phrases=frozenset(), fake_phrases=frozenset()):
     """Repair a stored fake that an older build composed by faking the FURNITURE
     of a name — "Law Offices of Scott C. Stratman" -> "Braxton Mansffield
     bancroft Merrick C. Whitlock", "the Waggoner" -> "chetwood Atwater". Those
@@ -8953,20 +8993,27 @@ def _pn_restore_furniture(real, fake, keep_words=frozenset(),
     ALL furniture ("The Law Firm") has to keep whatever distinct fake it has.
 
     `keep_words` adds the run's `{braced}` nuclear keeps, so bracing a word also
-    corrects the binding a previous run baked into the key for it."""
+    corrects the binding a previous run baked into the key for it.
+    `fake_phrases` is the operator's `phrase` decisions: inside one of those a
+    kept word is FAKED on purpose, so it is never "repaired" back — without
+    this exemption the re-run would quietly undo the phrase, since the row's
+    stored fake carries the faked word and this pass would re-keep it."""
     rw = list(_PN_WORD_RE.finditer(str(real)))
     fw = list(_PN_WORD_RE.finditer(str(fake)))
     if not rw or len(rw) != len(fw):
         return None
-    phrase_idx = _pn_phrase_positions(
-        [_pn_word_base(m.group(0)) for m in rw], keep_phrases)
+    bases = [_pn_word_base(m.group(0)) for m in rw]
+    phrase_idx = _pn_phrase_positions(bases, keep_phrases)
+    faked_idx = _pn_phrase_positions(bases, fake_phrases)
     out, cursor, changed = [], 0, False
     for i, (rm, fm) in enumerate(zip(rw, fw)):
         out.append(fake[cursor:fm.start()])
         rtok = rm.group(0)
         base = _pn_word_base(rtok)
-        if ((base in _PN_NAME_FURNITURE or base in keep_words
-             or i in phrase_idx) and fm.group(0) != rtok):
+        if ((base in _PN_NAME_FURNITURE
+             or ((base in keep_words or i in phrase_idx)
+                 and i not in faked_idx))
+                and fm.group(0) != rtok):
             out.append(rtok)
             changed = True
         else:
@@ -9105,8 +9152,10 @@ def _pn_fake_entity_parts(name, registry, prefer=None):
     # only the other words ("California Pizza Kitchen" -> "California <fake>").
     state_keep = _pn_state_keep_flags([_pn_word_affixes(t)[1].lower() for t in toks])
 
-    # A kept PHRASE is verbatim where the phrase itself stands in the name.
-    phrase_idx = registry.kept_positions(
+    # A kept PHRASE is verbatim where the phrase itself stands in the name,
+    # and an operator keep is set aside inside a faked one
+    # (`furniture_positions`).
+    furn_idx = registry.furniture_positions(
         [_pn_word_base(_pn_word_affixes(t)[1]) for t in toks])
 
     def _furniture(idx, core):
@@ -9121,9 +9170,7 @@ def _pn_fake_entity_parts(name, registry, prefer=None):
         # answered a NARROWER question than they did, and the gap was the whole
         # of `_PN_HONORIFICS`: "Mr. Kool's Collision, LLC" came out
         # "EVERLINE. REDWOOD'S LIGHTWELL, LLC".
-        base = _pn_word_base(core)
-        return ((registry.keeps_word(base) or len(core) == 1
-                 or idx in phrase_idx)
+        return ((idx in furn_idx or len(core) == 1)
                 and not state_keep[idx])
     # Kept only while a distinctive word is still left to fake, so a name made
     # of nothing else ("The Law Firm", "M & M") never maps onto itself.
@@ -9167,13 +9214,12 @@ def _pn_person_token_map(name, registry):
         return _pn_is_suffix_token(w, bare_ambiguous=evidence)
 
     words = list(_PN_WORD_RE.finditer(name))
-    phrase_idx = registry.kept_positions(
+    furn_idx = registry.furniture_positions(
         [_pn_word_base(m.group(0)) for m in words])
     keep_furniture = any(
         len(m.group(0)) > 1 and not _suffix(m)
         and m.group(0).strip(".,").lower() not in _PN_DOC_ABBREV
-        and not registry.keeps_word(_pn_word_base(m.group(0)))
-        and i not in phrase_idx
+        and i not in furn_idx
         for i, m in enumerate(words))
     out = {}
     for i, m in enumerate(words):
@@ -9185,7 +9231,7 @@ def _pn_person_token_map(name, registry):
         if len(w) == 1 or _suffix(m) or w.strip(".,").lower() in _PN_DOC_ABBREV:
             continue
         base = _pn_word_base(w)
-        if keep_furniture and (registry.keeps_word(base) or i in phrase_idx):
+        if keep_furniture and i in furn_idx:
             continue
         if base:
             # Drawn on the BASE, exactly as `_pn_fake_name_token` does — keyed
@@ -14547,10 +14593,22 @@ def _pn_load_key(path, registry, log, remint_recycled=False):
     # typed against one row left every OTHER row still applying its stored
     # composed fake for the same word, and the operator had to run twice (the
     # decision only reached the registry via the master sheet on the next run).
-    nuke = set()
+    nuke, phrased = set(), set()
     for row in rows[1:]:
         real, fake = at(row, "real value"), at(row, "replacement")
         if real in (None, "") or fake in (None, ""):
+            continue
+        if _pn_is_phrase_cell(fake) or _pn_phrase_spec_parts(fake) is not None:
+            # A `phrase` (or a `(…)` part) typed into the key is the same
+            # circular case as a brace: it governs how OTHER rows' stored
+            # fakes are read back (`_pn_restore_furniture` must not re-keep a
+            # word inside it), so it lands on the registry before any row is
+            # processed. A part that is not in its value seeds nothing (it is
+            # the warned literal replacement, below).
+            parts = ([str(real)] if _pn_is_phrase_cell(fake)
+                     else _pn_phrase_spec_in_value(
+                         str(real), _pn_phrase_spec_parts(fake)) or [])
+            phrased.update(t for t in map(_pn_phrase_tuple, parts) if t)
             continue
         if _pn_is_never_cell(fake):
             parts = [str(real)]           # "never" braces the WHOLE value
@@ -14573,6 +14631,13 @@ def _pn_load_key(path, registry, log, remint_recycled=False):
                  + (" …" if len(nuke_words) > 8 else ""))
     if nuke_phrases - set(registry.keep_phrases):
         registry.keep_phrases = frozenset(registry.keep_phrases | nuke_phrases)
+    if phrased - set(registry.fake_phrases):
+        registry.fake_phrases = frozenset(registry.fake_phrases | phrased)
+        log.info(f"  Pseudonym key: {len(phrased)} value(s) marked 'phrase' "
+                 f"will be faked whole wherever they stand inside a name, "
+                 f"kept words included — "
+                 + ", ".join(" ".join(t) for t in sorted(phrased)[:6])
+                 + (" …" if len(phrased) > 6 else ""))
 
     terms, seen, key_decisions, reminted = [], set(), {}, []
     for row in rows[1:]:
@@ -14664,6 +14729,44 @@ def _pn_load_key(path, registry, log, remint_recycled=False):
                 "replacement": None, "fake_values": None, "fixcell": ctrl,
                 "notes": "pseudonym key"}
             continue
+        if _pn_is_phrase_cell(ctrl):
+            # `phrase`: fake this Real Value WHOLE, its kept words included.
+            # The stored fake is gone (the operator typed over it), so no
+            # term is built here — the caller builds one from the value, as
+            # for a worksheet `yes`, with the phrase already on the registry
+            # (pre-scan above) so the fake is composed with every word faked.
+            if not _pn_phrase_tuple(real):
+                log.info(f"  Pseudonym key: 'phrase' on the one-word value "
+                         f"{real!r} has no inside to govern — taken as an "
+                         f"ordinary yes (fake it).")
+            key_decisions[real.lower()] = {
+                "value": real, "type": _PN_PHRASE_TYPE, "fix": "yes",
+                "replacement": None, "fake_values": None, "fixcell": ctrl,
+                "alias": None, "phrase": True, "phrase_parts": None,
+                "notes": "pseudonym key"}
+            continue
+        if _pn_phrase_spec_parts(ctrl) is not None:
+            # `(Bank of America)`: the part form — the parenthesised run is the
+            # phrase, the rest of the value keeps its own rules, and the whole
+            # value is re-faked as above.
+            parts = _pn_phrase_spec_in_value(real, _pn_phrase_spec_parts(ctrl))
+            if parts is not None:
+                if not any(_pn_phrase_tuple(pt) for pt in parts):
+                    log.info(f"  Pseudonym key: {ctrl!r} on {real!r} names a "
+                             f"one-word run, which has no inside to govern — "
+                             f"taken as an ordinary yes (fake the value).")
+                key_decisions[real.lower()] = {
+                    "value": real, "type": _PN_PHRASE_TYPE, "fix": "yes",
+                    "replacement": None, "fake_values": None, "fixcell": ctrl,
+                    "alias": None, "phrase": True, "phrase_parts": parts,
+                    "notes": "pseudonym key"}
+                continue
+            log.warning(
+                f"  Pseudonym key: {ctrl!r} in the Replacement cell for "
+                f"{real!r} does not name part of that value, so it is being "
+                f"taken as a literal replacement. To fake a run of the value "
+                f"whole, its kept words included, parenthesise words the value "
+                f"contains.")
         if "[" in ctrl or "{" in ctrl:
             frags = _pn_bracket_keep(real, ctrl)
             nuke = bool(_pn_keep_spec_parts(ctrl)[1])
@@ -14710,7 +14813,8 @@ def _pn_load_key(path, registry, log, remint_recycled=False):
         if cat in ("person", "entity", "short-name", "display-name",
                    "person-token", "entity-token"):
             fixed = _pn_restore_furniture(real, fake, registry.keep_words,
-                                          registry.keep_phrases)
+                                          registry.keep_phrases,
+                                          registry.fake_phrases)
             if fixed:
                 log.info(f"  Pseudonymize: repaired key row {real!r} -> {fixed!r} "
                          f"(was {fake!r}; firm/connector and brace-kept words "
@@ -14957,6 +15061,7 @@ def _pn_build_terms(names, casenos, extra_terms, registry=None, _prewarm=True):
         rec = _PnTokenOrderRecorder()
         rec.keep_words = registry.keep_words   # the dry run must mint the same
         rec.keep_phrases = registry.keep_phrases
+        rec.fake_phrases = registry.fake_phrases
         _pn_build_terms(names, casenos, extra_terms, rec, _prewarm=False)
         for tok in sorted(rec.pool_of, key=lambda s: (len(s), s)):
             pool, tag = rec.pool_of[tok]
@@ -25255,6 +25360,122 @@ def _pn_is_never_cell(cell):
     return str(cell or "").strip().lower() == _PN_NEVER_CONTROL
 
 
+# The PHRASE control word: "phrase" in a Fix? or Replacement cell says "this
+# value is faked WHOLE, every word of it, wherever it stands inside a name —
+# an operator keep on one of its words notwithstanding". It governs the
+# INSIDE of the phrase and nothing else: a bare "America" keeps whatever rule
+# it already had (`never` keeps it verbatim, the generic screen withholds its
+# token), and only inside "Bank of America" is the keep set aside.
+#
+# The keep it exists to override is the NUCLEAR one, and the failure is at
+# COMPOSITION rather than at matching. A soft `no` already loses inside a
+# party match, and the span half of a nuclear keep yields to a party match
+# that reaches beyond the kept word — but the composing fakers keep a nuclear
+# word verbatim inside any party name, so with "America" on the master sheet
+# as `never`, "Bank of America" was matched, replaced, and came out
+# "<fake> of America": the kept word riding through inside the fake.
+# `_PnFakeRegistry.furniture_positions` is where the phrase takes effect, and
+# `_pn_restore_furniture` is exempted for it, or the re-run would undo it.
+#
+# The other way round from `never`: `never` is `{braces}` around the whole
+# value, and `phrase` is the whole value with every brace on its words lifted.
+# It is a `yes` as far as every other pass is concerned — the value IS faked,
+# a local one builds its term, an inherited one only shapes composition — and
+# it is not a KEEP (`_pn_decision_is_keep` is false of it), so it never
+# retires a key row or protects a span. It persists on the master KEEP sheet
+# under its own type, because the keep it overrides lives there: every folder
+# that binds the phrase fakes it whole. A `phrase` typed into the KEY needs
+# the full re-run, exactly as a key alias does — the delivered export carries
+# the old fake with the kept word inside it, and the text-only pass has no
+# real value left to match — so `--fix-leaks` refuses it and says so.
+#
+# ONE EDGE, decided: a keep on a value that CONTAINS the phrase and reaches
+# beyond it ("Bank of America Tower" kept as a building) is the more specific
+# statement about that site and still wins there; `phrase` beats a keep on a
+# word of the phrase or on the phrase itself. A one-word value carries no
+# phrase (there is no "inside"), so `phrase` on it is an ordinary `yes`, and
+# the loader says so.
+_PN_PHRASE_CONTROL = "phrase"
+_PN_PHRASE_TYPE = "PHRASE"
+# …and the PART form, as `{braces}` are to `never`: `(Bank of America)` on the
+# row "Bank of America Tower" names the run INSIDE the value that is the
+# phrase. The whole value is still faked (the cell is a `yes`); only the words
+# inside the parentheses have the operator's keeps lifted, and the rest of the
+# value follows whatever rule it already had. The cell must be NOTHING BUT
+# parenthesised groups, so a typed replacement that happens to carry a
+# parenthetical ("Acme (Holdings)") is still read as the replacement it is.
+_PN_PHRASE_PAREN_RE = re.compile(r"\(([^()]*)\)")
+_PN_PHRASE_ONLY_PARENS_RE = re.compile(r"^\s*(?:\([^()]*\)\s*)+$")
+
+
+def _pn_phrase_spec_parts(cell):
+    """The parenthesised group(s) of a `(…)` phrase-spec cell, stripped and
+    emptied of blanks — or None when the cell is not one (anything other than
+    parenthesised groups in it, or no group with text)."""
+    txt = str(cell or "")
+    if not _PN_PHRASE_ONLY_PARENS_RE.match(txt):
+        return None
+    parts = [m.group(1).strip() for m in _PN_PHRASE_PAREN_RE.finditer(txt)]
+    parts = [pt for pt in parts if pt]
+    return parts or None
+
+
+def _pn_phrase_spec_in_value(value, parts):
+    """The `parts` of a phrase-spec that stand in `value` as whole words, or
+    None when one does not — the cell cannot then say which run it means, and
+    the caller treats it as a literal replacement, exactly as a brace whose
+    text is not part of its value is treated."""
+    v = " ".join(_NFKC(str(value or "")).split()).lower()
+    for pt in parts:
+        want = " ".join(_NFKC(pt).split()).lower()
+        if not want or not re.search(r"(?<!\w)" + re.escape(want) + r"(?!\w)", v):
+            return None
+    return list(parts)
+
+
+def _pn_is_phrase_cell(cell):
+    """True when a Fix?/Replacement cell is the bare PHRASE control word."""
+    return str(cell or "").strip().lower() == _PN_PHRASE_CONTROL
+
+
+def _pn_phrase_tuple(value):
+    """The tuple of word bases a `phrase` decision on `value` covers — the
+    shape `_pn_phrase_positions` matches inside a party name — or None for a
+    value of fewer than two words, which has no inside to govern."""
+    bases = [b for b in (_pn_word_base(m.group(0))
+                         for m in _PN_WORD_RE.finditer(_NFKC(str(value or ""))))
+             if b]
+    return tuple(bases) if len(bases) >= 2 else None
+
+
+def _pn_decision_is_phrase(d):
+    """True when a decision is the PHRASE control (`_PN_PHRASE_CONTROL`)."""
+    return bool(d.get("phrase"))
+
+
+def _pn_decision_phrase_parts(d):
+    """The text(s) a PHRASE decision fakes whole: the parenthesised part(s)
+    for a `(…)` cell, else the whole value for the bare control word."""
+    if not _pn_decision_is_phrase(d):
+        return []
+    parts = d.get("phrase_parts")
+    return list(parts) if parts else ([d["value"]] if d.get("value") else [])
+
+
+def _pn_fake_phrases(decisions):
+    """The `phrase` decisions among `decisions`, as tuples of word bases —
+    what goes on `registry.fake_phrases`. Every decision counts, inherited
+    ones included: an inherited phrase mints nothing (no term is built for
+    it), it only says how a name this folder binds is composed."""
+    out = set()
+    for d in decisions.values():
+        for part in _pn_decision_phrase_parts(d):
+            t = _pn_phrase_tuple(part)
+            if t:
+                out.add(t)
+    return frozenset(out)
+
+
 def _pn_keep_spec_parts(cell):
     """([bracketed parts], {braced} parts) of a keep-spec cell, each stripped and
     emptied of blanks. Both kinds are cut out of the value the same way; they
@@ -25876,6 +26097,9 @@ def _pn_parse_decision_rows(rows):
       * anything else — an explicit typed replacement (`replacement`).
     'never' is the whole value brace-kept: a NUCLEAR keep, recorded as a `no`
     carrying its own control word in `fixcell` so every nuclear path sees it.
+    'phrase' is the opposite promise about the whole value: fake it WHOLE,
+    an operator keep on one of its words notwithstanding — recorded as a
+    `yes` carrying `phrase` (see `_PN_PHRASE_CONTROL`).
     An alias is an ordinary 'yes' as far as every other pass is concerned — the
     value IS faked — and carries the canonical value alongside."""
     if not rows:
@@ -25898,6 +26122,7 @@ def _pn_parse_decision_rows(rows):
         raw = str(cell("fix? (yes/no)") or "").strip()
         low = raw.lower()
         replacement, fake_values, fixcell, alias = None, None, None, None
+        phrase, phrase_parts = False, None
         if raw in _PN_XL_ERROR_VALUES:
             # Excel's own error text, not an instruction — see
             # `_PN_XL_ERROR_VALUES`. Left UNDECIDED, so the row comes back for
@@ -25922,8 +26147,26 @@ def _pn_parse_decision_rows(rows):
             # is left to fake) whose `fixcell` carries the control word, which is
             # what `_pn_decision_nuclear_parts` reads to promote it to NUCLEAR.
             fix, replacement, fixcell = "no", None, raw
+        elif low == _PN_PHRASE_CONTROL:
+            # The whole value faked WHOLE, every word, inside any name it
+            # stands in — an ordinary `yes` everywhere else, flagged so the
+            # registry can set the operator's keeps aside inside it.
+            fix, replacement, fixcell, phrase = "yes", None, raw, True
         elif low == "":
             fix, replacement = "", None
+        elif _pn_phrase_spec_parts(raw) is not None:
+            # `(Bank of America)`: the parenthesised run is the phrase, faked
+            # whole with its kept words; the rest of the value keeps its own
+            # rules. A part that is not in the value cannot say which run it
+            # means and falls through as an explicit replacement, the way a
+            # brace does — the loader warns about the key's; the worksheet
+            # writer echoes the cell back for the operator to see.
+            fixcell = raw
+            parts = _pn_phrase_spec_in_value(val, _pn_phrase_spec_parts(raw))
+            if parts is None:
+                fix, replacement = "yes", raw
+            else:
+                fix, phrase, phrase_parts = "yes", True, parts
         elif _pn_cell_is_alias_keep(raw):
             # `*David {said}`: BOTH controls in one cell. The spec cuts the
             # value and the alias fakes what the cut leaves. The three spec
@@ -25957,7 +26200,8 @@ def _pn_parse_decision_rows(rows):
         out[val.lower()] = {"value": val, "type": str(cell("type") or "").strip(),
                             "fix": fix, "replacement": replacement,
                             "fake_values": fake_values, "fixcell": fixcell,
-                            "alias": alias,
+                            "alias": alias, "phrase": phrase,
+                            "phrase_parts": phrase_parts,
                             "notes": str(cell("notes") or "").strip(),
                             # Master KEEP only: which case folders this decision
                             # came from, so a run can tell its OWN past decision
@@ -26227,6 +26471,15 @@ def _pn_set_keep_words(registry, decisions, log=None):
         for part in _pn_decision_nuclear_parts(d))
     registry.keep_words = words
     registry.keep_phrases = phrases
+    # …and the PHRASE decisions, the keeps' inverse, which the same composers
+    # read at the same moment (`furniture_positions`).
+    faked = _pn_fake_phrases(decisions)
+    registry.fake_phrases = faked
+    if faked and log:
+        shown = [" ".join(ph) for ph in sorted(faked)[:6]]
+        log.info(f"  PHRASE: {len(faked)} value(s) faked WHOLE wherever they "
+                 f"stand inside a name, a kept word included — "
+                 f"{', '.join(shown)}{' …' if len(faked) > 6 else ''}")
     if words and log:
         log.info(f"  KEEP (nuclear): {len(words)} brace-kept word(s) will never "
                  f"be faked, in this or any name — "
@@ -27266,7 +27519,8 @@ def _pn_update_master_leaks(master_path, values, case_name, today, log,
 def _pn_read_master_keep(cfg):
     """The durable cross-folder KEEP decisions {value_lower: decision} from the
     master workbook's KEEP sheet — the `no`/bracket instructions to re-apply on
-    every run in every folder. Empty when the sheet is absent/unreadable."""
+    every run in every folder, and the `phrase` decisions that override them
+    inside a name. Empty when the sheet is absent/unreadable."""
     path = _pn_master_path(cfg)
     if not path.exists():
         return {}
@@ -27338,6 +27592,10 @@ def _pn_update_master_keep(cfg, record_map, case_name, today, log,
         # rather than filing it as an ordinary KEEP-PART.
         if _pn_decision_nuclear_parts(d):
             vtype = _PN_KEEP_NUCLEAR_TYPE
+        elif _pn_decision_is_phrase(d):
+            # The keeps' inverse, on the keeps' own sheet: the value is faked
+            # WHOLE in every folder that binds it, a kept word included.
+            vtype = _PN_PHRASE_TYPE
         else:
             vtype = d.get("type") or ("KEEP-PART" if d.get("fake_values") else "KEEP")
         g = rows.get(vl)
@@ -27673,7 +27931,7 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
         fix_col = get_column_letter(
             next(i for i, (h, _k, _w) in enumerate(_PN_LEAK_COLUMNS, start=1)
                  if h.lower().startswith("fix?")))
-        dv = DataValidation(type="list", formula1='"yes,no,never"',
+        dv = DataValidation(type="list", formula1='"yes,no,never,phrase"',
                             allow_blank=True)
         dv.showErrorMessage = False   # offer the dropdown but ALSO allow a typed
         dv.showInputMessage = True    # replacement in the cell, not just yes/no
@@ -27684,10 +27942,10 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
         # is the belt; keeping the authored text under the limit is what stops
         # the next control word costing the operator the whole explanation.
         dv.prompt = ("yes = auto fake · no = leave it here · never = never fake "
-                     "it, in any folder · *OTHER VALUE = this is a misspelling "
-                     "of that value, so fake it the same way · or type the "
-                     "exact replacement · or [bracket] the part to KEEP and the "
-                     "rest is faked")
+                     "it, in any folder · phrase = fake it whole, kept words "
+                     "too · *OTHER VALUE = a misspelling of that value, faked "
+                     "the same way · or type the exact replacement · or "
+                     "[bracket] the part to KEEP; the rest is faked")
         ws.add_data_validation(dv)
         dv.add(f"{fix_col}2:{fix_col}{len(rows) + 1}")
     except Exception:
@@ -27698,6 +27956,7 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
         log.warning(f"  Wrote leak-review worksheet: {xlsx.name} — {active} "
                     f"item(s) to triage (Fix?: 'yes' scrubs with an auto fake, "
                     f"'no' leaves it here, 'never' leaves it in every folder, "
+                    f"'phrase' fakes it whole with any kept word inside it, "
                     f"'*OTHER VALUE' says this is a misspelling of that one, "
                     f"or type the exact replacement to use).")
         if prefilled:
@@ -31392,11 +31651,19 @@ def _fix_leaks_mode(folder, args, cfg, log):
     # An alias typed into the LEAKS worksheet is the different thing and IS
     # applied below: the value it names is a LEAK, unscrubbed text still
     # standing in the export, so faking it is exactly what this pass is for.
+    # A `phrase` typed into the key is the same kind of thing: it re-composes
+    # a fake the exports already carry (the kept word inside it is what the
+    # operator wants faked), and the real value it would match is no longer
+    # in that text.
     key_aliases = [d["value"] for d in key_decisions.values() if d.get("alias")]
-    if key_aliases:
-        msg = ("--fix-leaks: " + ", ".join(repr(v) for v in key_aliases[:6])
-               + (" …" if len(key_aliases) > 6 else "")
-               + " carry a '*' alias in the pseudonym key's Replacement column. "
+    key_phrases = [d["value"] for d in key_decisions.values() if d.get("phrase")]
+    if key_aliases or key_phrases:
+        moved = key_aliases + key_phrases
+        what = " / ".join(w for w, v in (("a '*' alias", key_aliases),
+                                          ("'phrase'", key_phrases)) if v)
+        msg = ("--fix-leaks: " + ", ".join(repr(v) for v in moved[:6])
+               + (" …" if len(moved) > 6 else "")
+               + f" carry {what} in the pseudonym key's Replacement column. "
                  "That changes a fake the exports already carry, and this pass "
                  "never re-reads the PDFs — click 'Re-run PDF-Linker' instead. "
                  "Nothing has been changed.")
@@ -31405,7 +31672,7 @@ def _fix_leaks_mode(folder, args, cfg, log):
         _copy_folder_after_run(
             folder, _copy_dest_root(cfg, args, log), log,
             provider=getattr(args, "provider", "lexis"),
-            hold="a '*' alias in the key needs a full re-run — nothing was "
+            hold=f"{what} in the key needs a full re-run — nothing was "
                  "applied.")
         return 0
     # A master row this folder authored is still OURS: the local LEAKS.xlsx is
@@ -31482,7 +31749,9 @@ def _fix_leaks_mode(folder, args, cfg, log):
                         f"equals the value itself — ignoring (a self-map never "
                         f"scrubs). Type a DIFFERENT replacement.")
         else:
-            why = orig_vocab(d["value"])
+            # A `phrase` is the operator's deliberate statement about a name
+            # and is never screened as a blanket yes.
+            why = None if d.get("phrase") else orig_vocab(d["value"])
             if why:
                 rejected.append(d["value"])
                 log.warning(f"  --fix-leaks: {d['value']!r} is marked yes but "
@@ -31579,7 +31848,8 @@ def _fix_leaks_mode(folder, args, cfg, log):
     # Record this run's LOCAL keep decisions into the cross-folder master KEEP
     # sheet so a key/worksheet edit made here persists globally.
     _keep_rec = {vl: d for vl, d in decisions.items()
-                 if _pn_decision_is_keep(d) and vl in local_vls}
+                 if (_pn_decision_is_keep(d) or _pn_decision_is_phrase(d))
+                 and vl in local_vls}
     # The folder is named on that cross-case sheet by its PSEUDONYM — this
     # case's own stand-ins where the key can supply them, the opaque id
     # otherwise. Logged once, because `pdf_linker.log` stays with the case and
@@ -32405,12 +32675,24 @@ def main():
                 terms += _pn_build_terms([], [], key_frags, registry)
                 log.info(f"  Pseudonym key: auto-faking {len(key_frags)} "
                          f"bracketed keep-spec fragment(s).")
+            # A `phrase` typed over a key row: the row's binding is rebuilt
+            # from the value, with the phrase on the registry, so the fake is
+            # composed with every word faked. An authoritative term, as a
+            # worksheet `yes` is.
+            key_phrases = [d["value"] for d in key_decisions.values()
+                           if d.get("phrase")]
+            if key_phrases:
+                terms += _pn_build_terms([], [], key_phrases, registry)
+                log.info(f"  Pseudonym key: re-faking {len(key_phrases)} "
+                         f"value(s) marked 'phrase' whole "
+                         f"({', '.join(key_phrases[:6])}).")
             for vl, d in key_decisions.items():
                 leak_decisions[vl] = d
-                if not d.get("alias"):
-                    # An alias leaves nothing of the value standing — it is
-                    # faked whole — so there is nothing to suppress, and a
-                    # spelling that somehow survives should still gate.
+                if not d.get("alias") and not d.get("phrase"):
+                    # An alias or a phrase leaves nothing of the value
+                    # standing — it is faked whole — so there is nothing to
+                    # suppress, and a spelling that somehow survives should
+                    # still gate.
                     suppressed.add(vl)
 
         # "Ours" for a keep-spec's faking half, plus every decision typed into
@@ -32693,6 +32975,12 @@ def main():
             hit = any(p.lower() in pseudonymizer.kept_hits
                       for p in _pn_decision_keep_parts(d))
             if vl in pseudonymizer._keep_local or hit:
+                _record[vl] = d
+        # A LOCAL `phrase` decision persists there too: the keep it overrides
+        # lives on that sheet, so the override has to outlive the worksheet
+        # (consumed once resolved) and the key cell (retired on this write).
+        for vl, d in leak_decisions.items():
+            if _pn_decision_is_phrase(d) and vl in local_vls:
                 _record[vl] = d
         if _record:
             _pn_update_master_keep(cfg, _record, case_label,

@@ -105,7 +105,7 @@ def test_shortening_it_dropped_no_control_word(tmp_path):
     column accepts is still named in it, because this text is the only place
     the worksheet says what may be typed."""
     prompt = _validations(_leaks(tmp_path))[0].get("prompt")
-    for word in ("yes", "no", "never", "*OTHER VALUE", "[bracket]",
+    for word in ("yes", "no", "never", "phrase", "*OTHER VALUE", "[bracket]",
                  "replacement"):
         assert word in prompt, (word, prompt)
 

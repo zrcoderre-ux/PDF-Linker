@@ -697,6 +697,50 @@ spelling several slips out ("Vatqual" for Vazquez) is past the reach, so
 binding the correct spelling first — `--term`, the party template, or a key
 row — is what reaches it, and the alias is then unrestricted as before.
 
+**A `phrase` is the INVERSE of a `never`: the whole value faked WHOLE, an
+operator keep on one of its words notwithstanding** (`_PN_PHRASE_CONTROL`,
+`_PnFakeRegistry.fake_phrases` / `furniture_positions`, `_pn_fake_phrases`,
+`_PN_PHRASE_TYPE`). A nuclear keep does two things, and only one of them
+yields to a party match. The SPAN half releases where a party match reaches
+beyond the kept word, so the name is matched and replaced; the COMPOSITION
+half — `keeps_word`, consulted by all three composers — kept the word verbatim
+inside any party name, so with "River" on the master sheet as `never`, "Cross
+River Bank" came out "<fake> River Bank": the kept word riding through inside
+the fake, on a name whose words are fine alone and identifying together. (A
+soft `no` needs nothing here: it is already released inside a party match.)
+`phrase` in the Replacement or Fix? cell lifts the operator's keeps
+(`keep_words`, `keep_phrases`) at the positions the phrase covers inside a
+name being composed, and NOTHING else: the built-in furniture ("of", "Bank",
+an honorific) is not an operator keep and stays; a bare "River" keeps whatever
+rule it had; and "River" inside a name the phrase does not cover is still
+kept. `furniture_positions` is the one place the three composers and
+`_pn_restore_furniture` now ask "is this word kept here?", and that repair is
+EXEMPTED inside a phrase — it exists to re-keep a brace-kept word in a stored
+composed fake, so without the exemption the re-run would quietly undo the
+phrase. **`(…)` is the PART form, as `{}` is to `never`**
+(`_pn_phrase_spec_parts`, `_pn_phrase_spec_in_value`): `(Cross River Bank)`
+on the row "Cross River Bank Tower" names the run inside the value that is
+the phrase; the whole value is still faked and the rest of it keeps its own
+rules (a `never` on "Tower" still holds there). The cell must be NOTHING BUT
+parenthesised groups, or a typed replacement carrying a parenthetical would
+be read as one; a part not in the value is the warned literal replacement a
+brace with the same defect is. A one-word value has no inside, so `phrase` on
+it is an ordinary `yes`, and the loader says so. It IS a `yes` everywhere
+else — a LOCAL one builds its term (the key's row is rebuilt from the value,
+the memo keeping every token fake the exports already carry; a worksheet one
+fakes the leak), an INHERITED one only shapes composition and mints nothing —
+and it is not a KEEP (`_pn_decision_is_keep` is false of it), so it retires
+no row, protects no span and is never `suppressed`. It PERSISTS on the master
+KEEP sheet under its own type, because the keep it overrides lives there and
+the worksheet is consumed once resolved. `--fix-leaks` applies a WORKSHEET
+phrase and REFUSES a KEY one, for the alias's reason: the delivered export
+carries the old fake with the kept word inside it and the text-only pass has
+no real value left to match, so the folder is left as it stands and the full
+re-run is pointed at. One edge, decided: a keep on a value that CONTAINS the
+phrase and reaches beyond it is the more specific statement about that site
+and still wins there; `phrase` beats a keep on a word of the phrase or on the
+phrase itself.
+
 **A `*` and a `{brace}` COMPOSE in one cell** (`_pn_cell_is_alias_keep`,
 `_pn_alias_keep_spec`, `_pn_keep_spec_strip`). `*David {said}` on the value
 "avidsaid" — a clipped OCR lead welded to the next word, "David said" with the
