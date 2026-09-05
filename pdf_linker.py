@@ -24875,6 +24875,17 @@ def _pn_locate(parsed, needle, limit=12):
 # capped, rather than being trusted to be one sentence.
 _PN_CONTEXT_MAX = 220
 _PN_CONTEXT_MIN = 60
+# The value is never the FIRST word of its quote — at the owner's direction.
+# A sentence that OPENS with the value ("Rasho served the notice.") quotes
+# nothing of what came before it, and what came before is the half of the
+# evidence the reader wants: the label, the role word, the end of the
+# sentence that introduced it. So where nothing precedes the value inside the
+# quote, the quote reaches BACK to the previous sentence terminator, across a
+# line and across the prose-run floor — the caption block above a paragraph
+# is exactly what "what came before" means there — and keeps at least this
+# many characters of it, cut at a word boundary and marked with an ellipsis,
+# where the whole previous sentence would push the quote past its width.
+_PN_CONTEXT_LEAD = 40
 # Only a real terminator. A semicolon and a colon end a CLAUSE, and a label
 # ("PROCESS SERVER: Michael Rodgers") is exactly the context worth keeping.
 _PN_SENT_END_RE = re.compile(r"[.!?](?=\s|$)")
@@ -25191,6 +25202,32 @@ def _pn_context_hit(parsed, needle, width=_PN_CONTEXT_MAX, within=None,
                 start, si = min(start, cand_start[si]), si + 1
             else:
                 break
+    # The value never OPENS the quote (`_PN_CONTEXT_LEAD`). Where nothing
+    # stands between the quote's start and the hit — the value opens its
+    # sentence, or its prose run, or the page — reach back to the previous
+    # terminator anywhere in the body, the run floor notwithstanding, and keep
+    # what fits: the whole previous sentence when the width allows, else its
+    # tail. Asked in both modes alike, so the export half of a cell reaches
+    # back exactly as the original half did.
+    lead_cut = False
+    if hit > 0 and not text[start:hit].strip():
+        k_prev = bisect.bisect_left(ends, start)
+        prev = ends[k_prev - 1] if k_prev > 0 else 0
+        # One sentence back, and INSIDE the run where the run holds one: a
+        # value opening the second sentence of a paragraph is shown the
+        # first, not the caption above the paragraph. The run floor is
+        # crossed only where the value opens the run itself.
+        if start > floor:
+            prev = max(prev, floor)
+        if prev < start:
+            room = max(width - (end - hit), _PN_CONTEXT_LEAD)
+            ext = prev
+            if hit - ext > room:
+                ext = hit - room
+                while ext < hit and not text[ext - 1].isspace():
+                    ext += 1                # open on a word, not inside one
+                lead_cut = ext > prev
+            start = min(start, ext)
     # The lines the quote came off, for a second body to be held to.
     lo_line = hi_line = i
     for k in range(i - 1, -1, -1):
@@ -25203,7 +25240,9 @@ def _pn_context_hit(parsed, needle, width=_PN_CONTEXT_MAX, within=None,
         hi_line = k
     site = (lo_line, hi_line, ei, si)
     sent = re.sub(r"\s+", " ", text[start:end]).strip()
-    if len(sent) <= width:
+    if lead_cut:
+        sent = "…" + sent
+    if len(sent) <= width + 1:
         return sent, site
     # Too long to read: a window centred on the value, rather than a truncation
     # that may not even contain it.

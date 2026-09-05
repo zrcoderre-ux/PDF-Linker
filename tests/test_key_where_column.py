@@ -97,12 +97,17 @@ def test_the_location_is_the_pdf_page_the_quote_came_off(tmp_path):
     key = tmp_path / "pseudonym_key.xlsx"
     _run().write_key(key, log)
     by_real = {str(r["Real Value"]): r for r in _rows(key)}
-    assert by_real["Helen Rasho"]["Where (page:line)"] == "p.1:2"
-    # "Marcus Delacroix" is quoted from the sentence that wraps lines 7-8 of
-    # the SECOND PDF page, which prints itself as 4 — one range, the page named
-    # once, and both numbers said because they differ.
+    # The caption names her at the head of line 2; the quote reaches back to
+    # the court's own line above it, so the value is not the first word of
+    # its quote (`_PN_CONTEXT_LEAD`), and the range says so.
+    assert by_real["Helen Rasho"]["Where (page:line)"] == "p.1:1-2"
+    # "Marcus Delacroix" OPENS the sentence that wraps lines 7-8 of the SECOND
+    # PDF page, which prints itself as 4, so the quote reaches back to the
+    # sentence before it on line 6 (`_PN_CONTEXT_LEAD`: the value is never
+    # the first word of its quote) — one range, the page named once, and
+    # both numbers said because they differ.
     assert (by_real["Marcus Delacroix"]["Where (page:line)"]
-            == "p.2 (printed p.4):7-8")
+            == "p.2 (printed p.4):6-8")
 
 
 def test_a_body_with_no_pages_is_located_by_line(tmp_path):
@@ -269,6 +274,7 @@ def test_the_site_where_is_read_off_the_prep_table():
     """`_pn_context_prep` drops blank and gutter-only lines, so an index into
     the parsed body would be off by every one of them."""
     parsed = P._pn_body_lines(SOURCE)
-    _q, site = P._pn_context_hit(parsed, "Marcus Delacroix")
-    assert P._pn_site_where(parsed, site) == "p.2 (printed p.4):7-8"
+    q, site = P._pn_context_hit(parsed, "Marcus Delacroix")
+    assert q.startswith("Helen Rasho signed")     # the sentence before it
+    assert P._pn_site_where(parsed, site) == "p.2 (printed p.4):6-8"
     assert P._pn_site_where(parsed, None) == ""
