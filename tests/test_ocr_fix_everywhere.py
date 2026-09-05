@@ -322,5 +322,5 @@ def test_fix_leaks_corrects_the_originals_and_the_pdf(tmp_path):
 def test_fix_leaks_asks_only_about_this_worksheets_fixes():
     src = inspect.getsource(P._fix_leaks_mode)
     assert "_pn_ocr_corrections(terms, registry, loaded=False)" in src
-    assert "_pn_fix_ocr_in_folder_pdfs(folder, ocr_corr, log)" in src
-    assert "_pn_correct_original_files(folder, cfg, ocr_corr, log)" in src
+    assert "_pn_fix_ocr_in_folder_pdfs(folder, ocr_corr, log, applied=_applied)" in src
+    assert "_pn_correct_original_files(folder, cfg, ocr_corr, log, applied=_applied)" in src
