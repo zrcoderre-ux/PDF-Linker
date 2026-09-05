@@ -7782,6 +7782,12 @@ class _PnFakeRegistry:
         # text layer (`_pn_ocr_corrections`), where the term list corrects
         # only the export.
         self.ocr_corrections = {}
+        # …and the normalised garbles a correction actually LANDED on this
+        # run — in a PDF's text layer, an original copy or a Word body — so
+        # an inherited `**` fix that corrected text here can be re-affirmed
+        # on the master sheet (Times Seen / Cases), and one that met no
+        # garble is not.
+        self.ocr_applied = set()
 
     def kept_positions(self, bases):
         """Indices of `bases` (word bases, in order) that lie inside an
@@ -14795,9 +14801,11 @@ def _pn_load_key(path, registry, log, remint_recycled=False):
             if target is None:
                 target = _pn_ocr_fix_target(ctrl)
             key_decisions[real.lower()] = {
-                "value": real, "type": "OCR-FIX", "fix": "yes",
+                "value": real, "type": _PN_OCR_FIX_TYPE, "fix": "yes",
                 "replacement": None, "fake_values": frags, "fixcell": ctrl,
-                "alias": None, "ocr_fix": target, "notes": "pseudonym key"}
+                "alias": None, "ocr_fix": target,
+                "ocr_durable": _pn_ocr_fix_durable(ctrl),
+                "notes": "pseudonym key"}
             continue
         pair_frags = (_pn_bracket_keep(real, ctrl)
                       if _pn_cell_is_alias_keep(ctrl) else None)
@@ -26091,8 +26099,22 @@ _PN_ALIAS_FORMULA_CHARS = "()!&%*/+;:"
 # CORRECT spelling through the canonical's own row, which is what a reader
 # wants of a scan error. `--fix-leaks` applies a worksheet `*` (the value is a
 # leak standing in the text) and refuses a key one, for the alias's reason.
+#
+# TWO stars (`**San Diego` on "SanDiega") say the same thing about this value
+# AND that the garble is a COMMON one — a scan's habitual misreading of a
+# generic term, a city, a courthouse — so the correction is REMEMBERED: it is
+# written to the master workbook's KEEP sheet under `_PN_OCR_FIX_TYPE` and
+# applied in every folder from then on, wherever that exact garble stands
+# (`_pn_ocr_fix_durable`, at the owner's direction). A single star stays a
+# statement about one scan of one document and is never persisted. An
+# inherited fix mints nothing a folder does not carry: the term it builds
+# matches nothing where the garble is absent, and an unmatched OCR-fix row is
+# never written to the key (`write_key`'s `_reversible`), so a folder that
+# never met the garble is untouched by it.
 _PN_OCR_MARK = "*"
 _PN_OCR_STATUS = "ocr fix"
+# The master KEEP sheet's Type for a `**` correction.
+_PN_OCR_FIX_TYPE = "OCR-FIX"
 
 
 def _pn_ocr_fix_target(cell):
@@ -26100,10 +26122,9 @@ def _pn_ocr_fix_target(cell):
     or None when the cell is not an OCR fix. Quoted like an alias, refused
     where nothing alphanumeric follows the star or a keep-spec rides in it
     (that shape is `_pn_ocr_keep_spec`'s)."""
-    txt = str(cell or "").strip()
-    if not txt or txt[0] != _PN_OCR_MARK:
+    txt, _durable = _pn_ocr_mark_strip(cell)
+    if txt is None:
         return None
-    txt = txt[1:].strip()
     if len(txt) > 1 and txt[0] in _PN_ALIAS_QUOTES and txt[-1] in _PN_ALIAS_QUOTES:
         txt = txt[1:-1].strip()
     if not txt or not any(c.isalnum() for c in txt):
@@ -26111,6 +26132,32 @@ def _pn_ocr_fix_target(cell):
     if any(c in "{}[]" for c in txt):
         return None
     return txt
+
+
+def _pn_ocr_mark_strip(cell):
+    """(text after the OCR mark, durable) — `*X` gives ("X", False), the
+    DURABLE `**X` gives ("X", True), and a cell not opening on the mark gives
+    (None, False). Exactly one or two stars: a third is nobody's control and
+    stays in the text, where `_pn_ocr_fix_target` refuses it nothing but a
+    literal star can make sense of."""
+    txt = str(cell or "").strip()
+    if not txt or txt[0] != _PN_OCR_MARK:
+        return None, False
+    txt = txt[1:].strip()
+    durable = bool(txt) and txt[0] == _PN_OCR_MARK
+    if durable:
+        txt = txt[1:].strip()
+    return txt, durable
+
+
+def _pn_ocr_fix_durable(cell):
+    """True when `cell` is the DURABLE OCR fix — `**CORRECT TEXT`, or the
+    keep-spec form `**David {said}` — to be remembered on the master KEEP
+    sheet and applied in every folder. False for a single star and for a cell
+    that is no OCR fix at all."""
+    rest = _pn_keep_spec_strip(cell)
+    _txt, durable = _pn_ocr_mark_strip(rest)
+    return durable and _pn_ocr_fix_target(rest) is not None
 
 
 def _pn_ocr_keep_spec(value, cell):
@@ -26255,8 +26302,9 @@ def _pn_ocr_whole_text(d):
         return None
     if d.get("fake_values"):
         cell = str(d.get("fixcell") or "").strip()
-        if cell.startswith(_PN_OCR_MARK):
-            cell = cell[1:]
+        stripped, _durable = _pn_ocr_mark_strip(cell)
+        if stripped is not None:
+            cell = stripped
         cell = re.sub(r"[\[\]{}]", " ", cell)
         cell = "".join(c for c in cell if c not in _PN_ALIAS_QUOTES)
         whole = " ".join(cell.split())
@@ -26304,17 +26352,19 @@ def _pn_ocr_corrections(terms, registry, loaded=True):
     return out
 
 
-def _pn_correct_ocr_text(text, corrections):
+def _pn_correct_ocr_text(text, corrections, applied=None):
     """`text` with every OCR fix in `corrections` applied: each garble
     replaced, as a WHOLE WORD and in the garble's own casing, by the correct
     text. What the ORIGINAL copy, the TEMP evidence cache and a Word body
     get — a garble is what the page wrote and a correction says what the
     page meant, so the reference copy of the document reads as corrected.
     (The export takes the same fix through its term, which yields to a
-    citation and to a keep as every term does.)"""
+    citation and to a keep as every term does.) `applied`, when given, is a
+    set the key of every correction that landed is added to
+    (`registry.ocr_applied`)."""
     if not text or not corrections:
         return text
-    for _key, (garble, correct) in corrections.items():
+    for key, (garble, correct) in corrections.items():
         if not str(garble).strip() or not str(correct).strip():
             continue
         try:
@@ -26322,7 +26372,9 @@ def _pn_correct_ocr_text(text, corrections):
                              re.IGNORECASE)
         except re.error:
             continue
-        text = pat.sub(lambda m: _pn_case_like(m.group(0), correct), text)
+        text, n = pat.subn(lambda m: _pn_case_like(m.group(0), correct), text)
+        if n and applied is not None:
+            applied.add(key)
     return text
 
 
@@ -26353,7 +26405,7 @@ def _pn_pdf_invisible_spans(page):
 _PN_OCR_TEXT_ANGLES = {(1, 0): 0, (0, -1): 90, (-1, 0): 180, (0, 1): 270}
 
 
-def _pn_fix_ocr_in_pdf(doc, corrections, log, name=""):
+def _pn_fix_ocr_in_pdf(doc, corrections, log, name="", applied=None):
     """Correct every OCR fix in `corrections` IN THE PDF's own text layer, so
     the document itself reads as the correction says and every later reading
     of it — this tool's next run, a viewer's search, another program's
@@ -26398,6 +26450,8 @@ def _pn_fix_ocr_in_pdf(doc, corrections, log, name=""):
     fixes = []
     for garble, correct in corrections.values():
         gw = [_pn_word_affixes(w)[1].lower() for w in str(garble).split()]
+        # (`applied` is keyed the way `corrections` is: on the normalised
+        # garble, which `_pn_ocr_corrections` builds with this same `norm`.)
         gw = [w for w in gw if w]
         if gw and str(correct).strip() and norm(garble) != norm(correct):
             fixes.append((gw, str(garble), str(correct)))
@@ -26476,6 +26530,8 @@ def _pn_fix_ocr_in_pdf(doc, corrections, log, name=""):
                     for k in range(1, n):
                         repl[i + k] = ""
                 done.append((core, fixed))
+                if applied is not None:
+                    applied.add(norm(garble))
                 i += n
         if not repl:
             log.info(f"  OCR FIX: {tag}page {page.number + 1} carries a garble "
@@ -26550,7 +26606,7 @@ def _pn_fix_ocr_in_pdf(doc, corrections, log, name=""):
     return changed
 
 
-def _pn_correct_original_files(folder, cfg, corrections, log):
+def _pn_correct_original_files(folder, cfg, corrections, log, applied=None):
     """Apply `corrections` (`_pn_correct_ocr_text`) to the ORIGINAL text on
     disk — the in-folder reference copies, and the TEMP evidence cache — for
     `--fix-leaks`, which never rebuilds them. Returns the files rewritten."""
@@ -26568,7 +26624,7 @@ def _pn_correct_original_files(folder, cfg, corrections, log):
                 old = f.read_text(encoding="utf-8", errors="ignore")
             except OSError:
                 continue
-            new = _pn_correct_ocr_text(old, corrections)
+            new = _pn_correct_ocr_text(old, corrections, applied=applied)
             if new == old:
                 continue
             try:
@@ -26581,7 +26637,7 @@ def _pn_correct_original_files(folder, cfg, corrections, log):
     return n
 
 
-def _pn_fix_ocr_in_folder_pdfs(folder, corrections, log):
+def _pn_fix_ocr_in_folder_pdfs(folder, corrections, log, applied=None):
     """Correct `corrections` in the text layer of every source PDF in
     `folder` (`_pn_fix_ocr_in_pdf`), for `--fix-leaks`. The ONE thing that
     pass does to a PDF, and it is a text-layer patch: no extraction, no OCR,
@@ -26603,7 +26659,8 @@ def _pn_fix_ocr_in_folder_pdfs(folder, corrections, log):
             log.warning(f"  OCR FIX: could not open {pdf.name}: {e}")
             continue
         try:
-            pages = _pn_fix_ocr_in_pdf(doc, corrections, log, name=pdf.name)
+            pages = _pn_fix_ocr_in_pdf(doc, corrections, log, name=pdf.name,
+                                       applied=applied)
             if not pages:
                 continue
             temp = pdf.with_name(pdf.stem + "_temp.pdf")
@@ -26992,6 +27049,7 @@ def _pn_parse_decision_rows(rows):
         low = raw.lower()
         replacement, fake_values, fixcell, alias = None, None, None, None
         phrase, phrase_parts, ocr_fix = False, None, None
+        ocr_durable = False
         if raw in _PN_XL_ERROR_VALUES:
             # Excel's own error text, not an instruction — see
             # `_PN_XL_ERROR_VALUES`. Left UNDECIDED, so the row comes back for
@@ -27047,12 +27105,15 @@ def _pn_parse_decision_rows(rows):
             elif frags:
                 fix, fake_values = "yes", frags
                 ocr_fix = _pn_ocr_fix_target(_pn_keep_spec_strip(raw))
+                ocr_durable = _pn_ocr_fix_durable(raw)
             else:
                 fix = "no"
         elif _pn_ocr_fix_target(raw):
             # `*Smith`: this value is a SCAN ERROR of Smith, and reads as
             # Smith reads — see `_PN_OCR_MARK`. A `yes` to every other pass.
+            # `**Smith` is the same fix REMEMBERED on the master sheet.
             fix, ocr_fix, fixcell = "yes", _pn_ocr_fix_target(raw), raw
+            ocr_durable = _pn_ocr_fix_durable(raw)
         elif _pn_cell_is_alias_keep(raw):
             # `~David {said}`: BOTH controls in one cell. The spec cuts the
             # value and the alias fakes what the cut leaves. The three spec
@@ -27088,6 +27149,7 @@ def _pn_parse_decision_rows(rows):
                             "fake_values": fake_values, "fixcell": fixcell,
                             "alias": alias, "phrase": phrase,
                             "phrase_parts": phrase_parts, "ocr_fix": ocr_fix,
+                            "ocr_durable": ocr_durable,
                             "notes": str(cell("notes") or "").strip(),
                             # Master KEEP only: which case folders this decision
                             # came from, so a run can tell its OWN past decision
@@ -28403,11 +28465,28 @@ def _pn_update_master_leaks(master_path, values, case_name, today, log,
                  f"({len(rows)} distinct value(s))")
 
 
+def _pn_layer_decisions(master, folder):
+    """This folder's worksheet decisions laid OVER the master sheet's — a case
+    can locally override a global keep when it must — EXCEPT that a worksheet
+    row with NOTHING typed in it is not a decision and shadows nothing. A
+    folder run before a `**` correction reached the master sheet carries that
+    garble as an undecided row; on the re-run the inherited fix answers it,
+    where the bare row would have hidden the fix and asked the question
+    again. The same holds of an inherited keep."""
+    out = dict(master)
+    for vl, d in folder.items():
+        if vl in out and not d.get("fix") and not d.get("fixcell"):
+            continue
+        out[vl] = d
+    return out
+
+
 def _pn_read_master_keep(cfg):
     """The durable cross-folder KEEP decisions {value_lower: decision} from the
     master workbook's KEEP sheet — the `no`/bracket instructions to re-apply on
-    every run in every folder, and the `phrase` decisions that override them
-    inside a name. Empty when the sheet is absent/unreadable."""
+    every run in every folder, the `phrase` decisions that override them
+    inside a name, and the `**` OCR corrections remembered for every folder
+    (`_PN_OCR_FIX_TYPE`). Empty when the sheet is absent/unreadable."""
     path = _pn_master_path(cfg)
     if not path.exists():
         return {}
@@ -28483,6 +28562,10 @@ def _pn_update_master_keep(cfg, record_map, case_name, today, log,
             # The keeps' inverse, on the keeps' own sheet: the value is faked
             # WHOLE in every folder that binds it, a kept word included.
             vtype = _PN_PHRASE_TYPE
+        elif d.get("ocr_durable"):
+            # A `**` correction: a scan's habitual garble of a generic term,
+            # corrected in every folder it turns up in — see `_PN_OCR_MARK`.
+            vtype = _PN_OCR_FIX_TYPE
         else:
             vtype = d.get("type") or ("KEEP-PART" if d.get("fake_values") else "KEEP")
         g = rows.get(vl)
@@ -28828,11 +28911,11 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
         # clause per control word and no room for prose. `_pn_xl_fit_validations`
         # is the belt; keeping the authored text under the limit is what stops
         # the next control word costing the operator the whole explanation.
-        dv.prompt = ("yes = auto fake · no = leave it · never = never fake it, "
-                     "in any folder · phrase = fake it whole, kept words too · "
+        dv.prompt = ("yes = auto fake · no = leave it · never = never fake it "
+                     "anywhere · phrase = fake it whole, kept words too · "
                      "~OTHER VALUE = a misspelling of it · *CORRECT TEXT = a "
-                     "scan error of it · or type the replacement · or [bracket] "
-                     "the part to KEEP")
+                     "scan error of it, ** in every folder · or type the "
+                     "replacement · [bracket] the part to KEEP")
         ws.add_data_validation(dv)
         dv.add(f"{fix_col}2:{fix_col}{len(rows) + 1}")
     except Exception:
@@ -29140,7 +29223,8 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         # correction says, exactly as the export does through its term.
         original = _pn_correct_ocr_text(
             original, _pn_ocr_corrections(pseudonymizer.terms,
-                                          pseudonymizer.registry))
+                                          pseudonymizer.registry),
+            applied=getattr(pseudonymizer.registry, "ocr_applied", None))
         pseudonymizer.note_original(original)
         # …and cached in TEMP, because `--fix-leaks` never reopens the PDFs and
         # would otherwise have no evidence at all. Never in the case folder:
@@ -30171,7 +30255,8 @@ def _write_word_text_version(src_path, text, log, pseudonymizer=None,
         # extracts: export, evidence and reference copy then read one text.
         text = _pn_correct_ocr_text(
             text, _pn_ocr_corrections(pseudonymizer.terms,
-                                      pseudonymizer.registry))
+                                      pseudonymizer.registry),
+            applied=getattr(pseudonymizer.registry, "ocr_applied", None))
         # Per-file backstop to the folder pre-scan (mirrors _write_text_version):
         # learn any declarant / dba / firm / locality / identifier stated here.
         _pn_learn_from_text(pseudonymizer, text, src_path.stem)
@@ -30529,7 +30614,10 @@ def process_pdf(pdf_path: Path, log: logging.Logger,
         try:
             _corr = _pn_ocr_corrections(pseudonymizer.terms,
                                         pseudonymizer.registry)
-            if _corr and _pn_fix_ocr_in_pdf(doc, _corr, log):
+            if _corr and _pn_fix_ocr_in_pdf(
+                    doc, _corr, log,
+                    applied=getattr(pseudonymizer.registry, "ocr_applied",
+                                    None)):
                 ocr_changed = True
         except Exception as e:
             log.warning(f"  OCR fix in the PDF failed (non-fatal): {e}")
@@ -32536,7 +32624,7 @@ def _fix_leaks_mode(folder, args, cfg, log):
     # the very binding the operator brace-kept away.
     master_keep = _pn_read_master_keep(cfg)
     folder_decisions = _pn_read_leak_decisions(folder)
-    decisions = {**master_keep, **folder_decisions}
+    decisions = _pn_layer_decisions(master_keep, folder_decisions)
     _pn_set_keep_words(registry, decisions, log)
     try:
         terms, key_decisions = _pn_load_key(key_path, registry, log)
@@ -32697,9 +32785,12 @@ def _fix_leaks_mode(folder, args, cfg, log):
     auto_terms += alias_values
     # A `*CORRECT TEXT` OCR fix in the worksheet: the leak is a scan error and
     # reads as the correct text reads. A value already bound is left alone
-    # here, for the alias's reason.
+    # here, for the alias's reason. A `**` fix inherited from the master
+    # sheet is applied as well — where its garble stands in a leak, that is
+    # exactly the answer the operator recorded it to give.
     terms = _pn_apply_ocr_fixes(
-        {vl: d for vl, d in decisions.items() if vl in local_vls},
+        {vl: d for vl, d in decisions.items()
+         if vl in local_vls or d.get("ocr_durable")},
         terms, registry, log, allow_rebind=False)
     # A worksheet `*` corrects the ORIGINAL text and the PDF too, not only the
     # export. THIS worksheet's fixes only (`loaded=False`): a pinned key row
@@ -32708,9 +32799,11 @@ def _fix_leaks_mode(folder, args, cfg, log):
     # extraction, no OCR, an invisible layer's word rewritten.
     ocr_corr = _pn_ocr_corrections(terms, registry, loaded=False)
     if ocr_corr:
-        orig_texts = [_pn_correct_ocr_text(t, ocr_corr) for t in orig_texts]
-        _pn_correct_original_files(folder, cfg, ocr_corr, log)
-        _pn_fix_ocr_in_folder_pdfs(folder, ocr_corr, log)
+        _applied = getattr(registry, "ocr_applied", None)
+        orig_texts = [_pn_correct_ocr_text(t, ocr_corr, applied=_applied)
+                      for t in orig_texts]
+        _pn_correct_original_files(folder, cfg, ocr_corr, log, applied=_applied)
+        _pn_fix_ocr_in_folder_pdfs(folder, ocr_corr, log, applied=_applied)
     fix_terms = auto_terms + list(explicit)
     if not fix_terms and rejected:
         # Nothing was applied AND a decision was dropped: the folder is not
@@ -32783,8 +32876,15 @@ def _fix_leaks_mode(folder, args, cfg, log):
     # Record this run's LOCAL keep decisions into the cross-folder master KEEP
     # sheet so a key/worksheet edit made here persists globally.
     _keep_rec = {vl: d for vl, d in decisions.items()
-                 if (_pn_decision_is_keep(d) or _pn_decision_is_phrase(d))
+                 if (_pn_decision_is_keep(d) or _pn_decision_is_phrase(d)
+                     or d.get("ocr_durable"))
                  and vl in local_vls}
+    # An INHERITED `**` OCR fix that corrected text here is re-affirmed on
+    # the master sheet, as an inherited keep that protected text is.
+    for vl, d in decisions.items():
+        if d.get("ocr_durable") and vl not in _keep_rec \
+                and vl in (getattr(registry, "ocr_applied", None) or ()):
+            _keep_rec[vl] = d
     # The folder is named on that cross-case sheet by its PSEUDONYM — this
     # case's own stand-ins where the key can supply them, the opaque id
     # otherwise. Logged once, because `pdf_linker.log` stays with the case and
@@ -33445,7 +33545,7 @@ def main():
         # can locally override a global keep when it must.
         master_keep = _pn_read_master_keep(cfg)
         folder_decisions = _pn_read_leak_decisions(folder)
-        leak_decisions = {**master_keep, **folder_decisions}
+        leak_decisions = _pn_layer_decisions(master_keep, folder_decisions)
         if master_keep:
             log.info(f"  Master KEEP: {len(master_keep)} durable no/bracket "
                      f"decision(s) loaded from the cross-folder log.")
@@ -33648,9 +33748,13 @@ def main():
             terms += _pn_build_terms([], [], alias_values, registry)
         # A `*CORRECT TEXT` OCR fix: the value is a scan error and reads as the
         # correct text reads — after the aliases, over the final term list,
-        # since it looks the correct text's own binding up there.
+        # since it looks the correct text's own binding up there. A `**` fix
+        # INHERITED from the master sheet is applied too: it names a common
+        # garble of a generic term, and the whole point of remembering it is
+        # that no folder has to answer it again (`_pn_ocr_fix_durable`).
         terms = _pn_apply_ocr_fixes(
-            {vl: d for vl, d in leak_decisions.items() if vl in local_vls},
+            {vl: d for vl, d in leak_decisions.items()
+             if vl in local_vls or d.get("ocr_durable")},
             terms, registry, log)
 
         # Over the FINAL term list, so a loaded key term is widened too: on a
@@ -33924,6 +34028,17 @@ def main():
         # (consumed once resolved) and the key cell (retired on this write).
         for vl, d in leak_decisions.items():
             if _pn_decision_is_phrase(d) and vl in local_vls:
+                _record[vl] = d
+        # A `**` OCR fix persists there for the same reason — the worksheet
+        # it was typed into is consumed once resolved — and an INHERITED one
+        # that corrected text here is re-affirmed, so Times Seen and Cases
+        # say which folders the garble has turned up in.
+        ocr_hits = ({str(r["real"]).lower()
+                     for r in pseudonymizer.records.values()
+                     if r.get("ocr_fix") and r["count"] > 0}
+                    | set(getattr(registry, "ocr_applied", ()) or ()))
+        for vl, d in leak_decisions.items():
+            if d.get("ocr_durable") and (vl in local_vls or vl in ocr_hits):
                 _record[vl] = d
         if _record:
             _pn_update_master_keep(cfg, _record, case_label,

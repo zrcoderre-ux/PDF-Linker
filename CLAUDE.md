@@ -863,6 +863,40 @@ PDFs for a WORKSHEET `*` — the one thing that pass does to a PDF, and it is
 a text-layer patch with no extraction and no OCR, saved as the full run
 saves — and never for a pinned key row, which is a fix an earlier run made.
 
+**…and TWO stars make a correction DURABLE** (`_pn_ocr_fix_durable`,
+`_pn_ocr_mark_strip`, `_PN_OCR_FIX_TYPE`, `registry.ocr_applied`,
+`_pn_layer_decisions`), at the owner's direction. A scan garbles the same
+generic term the same way in every folder — "SanDiega" for San Diego, a
+courthouse, a code name — and a `*` answers it for one scan of one document,
+so the operator was typing the same correction into every worksheet it
+turned up in. `**San Diego` on "SanDiega" is the same correction REMEMBERED:
+the decision is written to the master workbook's KEEP sheet under its own
+Type (`OCR-FIX`, beside `KEEP-ALWAYS` and `PHRASE`, the instruction cell
+holding the `**` as typed), read back by `_pn_read_master_keep` in every
+folder, and applied at both `_pn_apply_ocr_fixes` call sites whatever folder
+it came from — the one control that is applied INHERITED, because a scan's
+habitual misreading of a generic term is exactly the thing that generalises,
+where a `*` on a party's name is one matter's and the alias's remainder is
+never inherited for that reason. Meant for GENERIC terms only, which the
+operator chooses cell by cell: a single star stays a statement about one
+document and is never persisted. It costs a folder nothing where the garble
+is absent — the term matches nothing, an unmatched OCR-fix row is never
+written to the key (`write_key`'s `_reversible`: count 0, not loaded, not an
+authoritative source) and no worksheet row is carried for it — and where the
+garble IS found the master row is re-affirmed (Times Seen, Cases), the
+evidence being `registry.ocr_applied`: the correction lands BEFORE the text is
+scrubbed (in the PDF's layer, the original copy or the Word body), so the
+export term's own count is 0 by then and cannot be the witness. A `**` typed
+into the KEY's Replacement column persists the same way; `--fix-leaks` applies
+an inherited fix to a leak as it applies a worksheet `*`, and still refuses a
+key one. And a worksheet row with NOTHING typed in it no longer shadows a
+master decision (`_pn_layer_decisions`, for keeps too): a folder run before
+the `**` reached the master sheet carries the garble as an undecided row, and
+`{**master, **folder}` let that bare row hide the fix and ask the question
+again on the re-run. A row the operator DID answer still wins locally. The
+LEAKS dropdown prompt names the form ("** in every folder") inside its
+255-character ceiling.
+
 **A `~` and a `{brace}` COMPOSE in one cell** (`_pn_cell_is_alias_keep`,
 `_pn_alias_keep_spec`, `_pn_keep_spec_strip`). `~David {said}` on the value
 "avidsaid" — a clipped OCR lead welded to the next word, "David said" with the
