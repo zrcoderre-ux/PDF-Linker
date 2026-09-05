@@ -10555,6 +10555,14 @@ def _pn_ocr_distance_within(word, tracked, k, min_len=8, ends=True):
         return False
     if abs(len(word) - len(tracked)) * 0.5 > k:
         return False
+    # A letter one word has and the other lacks costs at least 0.5 to put
+    # right (a clipped edge), and no edit mends more than two of them (a
+    # substitution swaps one letter for another): so half the symmetric
+    # difference of the two letter sets is a floor on the distance, and a
+    # pair over the reach on that count alone is refused before the table is
+    # built. Measured: 96 percent of the pairs the sweep compares stop here.
+    if len(set(word) ^ set(tracked)) * 0.5 > k:
+        return False
     return _pn_ocr_distance(word, tracked, ends) <= k
 
 
@@ -11601,7 +11609,30 @@ def _pn_word_is_own_fake(word, known):
     base = _pn_word_base(word)
     if base in known:
         return True
-    return any(k in base for k in known if len(k) >= 5)
+    if len(base) < 5:
+        return False
+    rx = _pn_own_fake_rx(known)
+    return bool(rx is not None and rx.search(base))
+
+
+_PN_OWN_FAKE_RX = {}
+
+
+def _pn_own_fake_rx(known):
+    """One compiled alternation of the run's long stand-ins, for the welded
+    test in `_pn_word_is_own_fake`. That test asked "is any known fake a
+    substring of this word?" by walking the whole set per word, and the
+    review tiers ask it of every capitalised word on the page: measured at
+    17 million set walks on one 130-page filing. Keyed on the set's identity
+    and size, since the set only ever grows within a run."""
+    key = (id(known), len(known))
+    rx = _PN_OWN_FAKE_RX.get(key)
+    if rx is None and key not in _PN_OWN_FAKE_RX:
+        longs = sorted((k for k in known if len(k) >= 5), key=len, reverse=True)
+        rx = re.compile("|".join(re.escape(k) for k in longs)) if longs else None
+        _PN_OWN_FAKE_RX.clear()
+        _PN_OWN_FAKE_RX[key] = rx
+    return rx
 
 
 def _pn_is_name_word(w):
@@ -12368,10 +12399,40 @@ def _pn_term_is_breakable(category, source):
             and source in _PN_KEY_UNMATCHED_SOURCES)
 
 
+# The categories whose terms a text is PREFILTERED for by lead word
+# (`_pn_term_lead`, `Pseudonymizer._lead_words`): a name matches only where
+# its first word stands, so a page that never carries that word need not be
+# scanned with the term's pattern at all. Every other category (a case
+# number, an address, an identifier) keeps the full scan — their patterns
+# open on digits or on shapes a word index does not describe.
+_PN_LEAD_CATS = frozenset({"person", "person-token", "entity", "entity-token",
+                           "short-name", "display-name"})
+_PN_LEAD_WORD_RE = re.compile(r"[^\W\d_]+")
+_PN_LEAD_PREFILTER = True
+
+
+def _pn_term_lead(real, category):
+    """The first WORD of `real`, lower-cased — the key a text is prefiltered
+    on before the term's own pattern is run over it — or None for a term the
+    prefilter must never skip.
+
+    Exact by construction, never a heuristic: a term matches WHOLE WORDS and
+    its words are joined on whitespace, so wherever the pattern can match,
+    the real's first word stands in the text as a word of its own — or, for
+    a break-tolerant name (`_pn_build_pattern(breakable=True)`), as two
+    adjacent pieces that JOIN to it, which is why `_lead_words` also indexes
+    every adjacent pair. A weld-follow term ("SmithDecl.") may butt against
+    its kept text and has no lead here, so it is always scanned."""
+    if category not in _PN_LEAD_CATS:
+        return None
+    m = _PN_LEAD_WORD_RE.search(str(real))
+    return m.group(0).lower() if m else None
+
+
 class _PnTerm:
     __slots__ = ("category", "real", "fake", "pattern", "flags", "priority",
                  "source", "whole_word", "count", "loaded", "derived",
-                 "cap_only")
+                 "cap_only", "lead")
 
     def __init__(self, category, real, fake, *, whole_word, case_sensitive,
                  priority, source, derived=False, follow=None):
@@ -12395,6 +12456,7 @@ class _PnTerm:
         # A bare word split out of a longer name never matches a LOWER-CASE
         # occurrence — see `_pn_term_is_cap_only`.
         self.cap_only = _pn_term_is_cap_only(category)
+        self.lead = None if follow else _pn_term_lead(real, category)
 
 
 # ── Spreadsheet key (the E-Court order-template export) ──────────────────────
@@ -15837,6 +15899,7 @@ class Pseudonymizer:
                 "source": t.source, "count": t.count, "pattern": t.pattern,
                 "flags": t.flags, "loaded": getattr(t, "loaded", False),
                 "derived": getattr(t, "derived", False),
+                "lead": getattr(t, "lead", None),
                 "cap_only": _pn_term_is_cap_only(t.category)}
         # Real values pre-bound from a reused key: authoritative, so the
         # citation-only prune must never drop one (a party that happens to
@@ -15928,6 +15991,7 @@ class Pseudonymizer:
                 "source": t.source, "count": 0, "pattern": t.pattern,
                 "flags": t.flags, "loaded": getattr(t, "loaded", False),
                 "derived": getattr(t, "derived", False),
+                "lead": getattr(t, "lead", None),
                 "cap_only": _pn_term_is_cap_only(t.category)}
             added = True
         if added:
@@ -17264,9 +17328,45 @@ class Pseudonymizer:
             self._rx_cache[key] = rx
         return rx
 
+    def _lead_words(self, text):
+        """The words of `text`, lower-cased, plus every ADJACENT PAIR joined —
+        the set a term's lead word is looked up in before its pattern runs.
+
+        The pairs are what keep the prefilter EXACT for a break-tolerant
+        name: extraction reads a kerned "VADIM" as "V ADIM" and a scan as
+        "V.ADIM", and either way the two pieces the tokeniser yields join to
+        the word the term is looking for. Memoized on the text for the same
+        reason `_keep_spans` is, two entries deep, because the passes
+        alternate between a page and its column-ordered twin."""
+        memo = getattr(self, "_lead_memo", None)
+        if memo is None:
+            memo = self._lead_memo = []
+        for k, ws in memo:
+            if k is text or k == text:
+                return ws
+        words = [w.lower() for w in _PN_LEAD_WORD_RE.findall(text)]
+        ws = set(words)
+        ws.update(a + b for a, b in zip(words, words[1:]))
+        memo.insert(0, (text, ws))
+        del memo[2:]
+        return ws
+
+    def _leads_present(self, text, items, lead_of):
+        """`items` whose lead word (`lead_of(item)`) stands in `text` — or
+        that have no lead and are always scanned. The single screen every
+        term-scanning pass runs through, so a page pays for the names it
+        carries and not for the whole list: measured at 8 percent of the
+        terms on an ordinary page, the regex itself still deciding every
+        match. Off when `_PN_LEAD_PREFILTER` is False, which the equivalence
+        test uses to compare the two."""
+        if not _PN_LEAD_PREFILTER:
+            return list(items)
+        ws = self._lead_words(text)
+        return [it for it in items if (lead_of(it) is None or lead_of(it) in ws)]
+
     def _term_cands(self, text):
         out = []
-        for t in self.terms:
+        for t in self._leads_present(text, self.terms, lambda t: t.lead):
             for m in self._compiled(t.pattern, t.flags).finditer(text):
                 if m.start() == m.end():
                     continue
@@ -17551,6 +17651,23 @@ class Pseudonymizer:
         ruling's own caption and must still be replaced — when BOTH sides name a
         trusted party from the key. One trusted side is not enough (Sanchez v.
         Valencia Holding Co. has a trusted-looking plaintiff yet is authority)."""
+        # Memoized on the text and the scan state (`_side_is_trusted` reads
+        # the terms): the full export is asked about half a dozen times per
+        # file — the detect copy's scrub, both weld cures, both survivor
+        # scans — and each parse costs seconds on a long filing.
+        memo_key = (text, self._scan_state_key())
+        memo = getattr(self, "_cite_span_memo", None)
+        if memo is None:
+            memo = self._cite_span_memo = []
+        for k, hit in memo:
+            if k == memo_key:
+                return list(hit)
+        spans = self._protected_citation_spans_uncached(text)
+        memo.insert(0, (memo_key, spans))
+        del memo[2:]
+        return list(spans)
+
+    def _protected_citation_spans_uncached(self, text):
         spans = []
         try:
             cites = find_all_citations(text)
@@ -17592,12 +17709,21 @@ class Pseudonymizer:
         # reporter. Protection-only, and the caption exemption above applies
         # equally — a "X v. Y" whose sides are both this case's parties is the
         # document's own caption and is still replaced.
+        # One regex per DISTINCT case name, not per citation. A brief cites
+        # its controlling authority a dozen times, and this loop compiled and
+        # ran the same "P v. D" pattern over the whole text once per cite —
+        # and appended every occurrence that many times over, so the span
+        # list handed to every downstream index was inflated by the citation
+        # count (measured: 716 cites of two decisions produced 257,044 spans
+        # where 1,432 were distinct, and 8.8 s where 0.15 s was the work).
+        seen_names = set()
         for c in cites:
             if c.get("kind") != "case" or c.get("plaintiff") is None:
                 continue
             p, d = c.get("plaintiff", ""), c.get("defendant", "")
-            if not p or not d:
+            if not p or not d or (p, d) in seen_names:
                 continue
+            seen_names.add((p, d))
             if self._side_is_trusted(p) and self._side_is_trusted(d):
                 continue
             body = (r"\s+".join(re.escape(w) for w in p.split())
@@ -17609,7 +17735,9 @@ class Pseudonymizer:
                 continue
             for m in rx.finditer(text):
                 spans.append(m.span())
-        return self._punch_own_casenos(text, spans)
+        # Distinct, in first-seen order: a span listed twice protects nothing
+        # twice and costs every consumer a second entry.
+        return self._punch_own_casenos(text, list(dict.fromkeys(spans)))
 
     def _punch_own_casenos(self, text, spans):
         """`spans` with THIS CASE'S OWN case numbers cut out of them.
@@ -17755,7 +17883,7 @@ class Pseudonymizer:
             return hit
         # Spans of full party-name matches, which override EITHER kind of keep.
         party = []
-        for t in self.terms:
+        for t in self._leads_present(text, self.terms, lambda t: t.lead):
             if t.category not in _PN_PARTY_OVERRIDE_CATS:
                 continue
             for m in self._compiled(t.pattern, t.flags).finditer(text):
@@ -17992,8 +18120,17 @@ class Pseudonymizer:
         # chosen, and it is built as we go.)
         protected = _PnSpanIndex(protected) if protected else None
         chosen, occ = [], []
+        # The chosen spans are DISJOINT by construction (a candidate that
+        # overlaps one already taken is dropped here), so "does [s, e)
+        # overlap any of them?" is a bisect on their sorted starts: the
+        # span before it must end by `s`, the span after it must start at
+        # or past `e`. The linear walk it replaces ran once per candidate
+        # over every span chosen so far — 41 million comparisons on one
+        # 130-page filing.
+        occ_s, occ_e = [], []
         for _prio, s, e, rec in cands:
-            if any(s < oe and os < e for os, oe in occ):
+            i = bisect.bisect_right(occ_s, s)
+            if (i and occ_e[i - 1] > s) or (i < len(occ_s) and occ_s[i] < e):
                 continue
             # Never rewrite inside a protected citation span (P0-A): a candidate
             # overlapping a cited decision's name is dropped so the authority
@@ -18006,6 +18143,9 @@ class Pseudonymizer:
                     and self._in_authority_context(gtext, s + goff, e + goff)):
                 continue
             occ.append((s, e))
+            j = bisect.bisect_right(occ_s, s)
+            occ_s.insert(j, s)
+            occ_e.insert(j, e)
             chosen.append((s, e, rec))
         for s, e, rec in sorted(chosen, key=lambda c: -c[0]):  # right-to-left
             # Match the casing of the text being replaced: a caption written in
@@ -18243,7 +18383,8 @@ class Pseudonymizer:
         keep = _PnSpanIndex(self._keep_spans(text)
                             + self._whitelisted_url_spans(text))
         out = []
-        for rec in self.records.values():
+        for rec in self._leads_present(text, self.records.values(),
+                                       lambda r: r.get("lead")):
             if nuclear and str(rec["real"]).lower() in nuclear:
                 continue
             if (kept and rec["category"] not in _PN_PARTY_OVERRIDE_CATS
@@ -20017,6 +20158,7 @@ class Pseudonymizer:
         # See `_pn_lower_name_site` for the measurement.
         person_fakes = {w.lower() for w in self.name_fake_words()}
         party = self._party_token_bases()
+        party_bigrams = {t: _pn_bigrams(t) for t in party}
         person_toks = self._tracked_person_tokens()
         lower_words = None          # built lazily, for the first near-miss
         spell = self._tracked_word_spellings()   # the canonical words
@@ -20081,7 +20223,7 @@ class Pseudonymizer:
             # reach below is worth nothing to a comparison never made.
             if party:
                 bgs = _pn_bigrams(base)
-                near |= {t for t in party if bgs & _pn_bigrams(t)}
+                near |= {t for t, tb in party_bigrams.items() if bgs & tb}
             deg = degraded.overlaps(m.start(), m.end())
             # The WIDE reach, with no end-letter penalty: the net a word the
             # scan keeps mangling is caught in, decided below once the
@@ -20427,12 +20569,21 @@ class Pseudonymizer:
         # itself, which is what stands in the export.
         toks = {t for t in self._tracked_name_token_index()[1] if len(t) >= 5}
         if toks:
+            # A truncated real is a tracked token missing its first one or
+            # two characters, so index the tokens by those two tails once
+            # and look each lower-case word up, instead of walking every
+            # token per word (the product was 36 million comparisons on one
+            # 130-page filing).
+            by_tail = {}
+            for t in toks:
+                for cut in (1, 2):
+                    if len(t) - cut >= 4:
+                        by_tail.setdefault(t[cut:], []).append(t)
             for m in re.finditer(r"(?<![\w'’])[a-z]{4,}(?![\w'’])", src):
                 frag = m.group(0)
                 if frag in seen:
                     continue
-                lost = [t for t in toks
-                        if t.endswith(frag) and 1 <= len(t) - len(frag) <= 2]
+                lost = sorted(by_tail.get(frag, ()))
                 if not lost:
                     continue
                 # The "missing" lead may be standing RIGHT THERE, one break
@@ -23173,6 +23324,26 @@ def _pn_context_prep(parsed):
     return prep
 
 
+_PN_CONTEXT_LOWER = []
+
+
+def _pn_context_lower(lowers):
+    """(the lower-cased lines of a body joined on one space, the offset each
+    line starts at in that string) — memoized on the `lowers` list's identity,
+    two entries deep, for the reason `_pn_context_prep` is."""
+    for k, v in _PN_CONTEXT_LOWER:
+        if k is lowers:
+            return v
+    starts, run = [], 0
+    for low in lowers:
+        starts.append(run)
+        run += len(low) + 1
+    v = (" ".join(lowers), starts)
+    _PN_CONTEXT_LOWER.insert(0, (lowers, v))
+    del _PN_CONTEXT_LOWER[_PN_CONTEXT_PREP_SLOTS:]
+    return v
+
+
 def _pn_context(parsed, needle, width=_PN_CONTEXT_MAX):
     """The sentence `needle` stands in — see `_pn_context_hit`, of which this
     is the quote-only form."""
@@ -23289,29 +23460,52 @@ def _pn_context_hit(parsed, needle, width=_PN_CONTEXT_MAX, within=None,
     # The bare search stays, because a WELDED or REDUCED finding has no bounded
     # occurrence by construction ("HELENRASHO" for "Rasho"), and the nearest
     # readable sentence beats an empty cell.
+    ltext, lstarts = _pn_context_lower(lowers)
+
     def _scan(bounded):
+        # One search over the JOINED lower-cased body instead of one per
+        # line: a key with hundreds of rows asked this of a 4,000-line
+        # export once per row, and the per-line regex calls were most of
+        # what the Context columns cost. Same answer by construction — a
+        # hit is mapped back to its line, a hit that straddles the seam
+        # between two lines (which no per-line search could make) is
+        # skipped, the first hit on a PROSE line wins (the whole question
+        # the cell is there to settle: "Charge" appears first in "CHARGE OF
+        # DISCRIMINATION", a caption, and the sentence "served on Charge"
+        # is the one that answers) and the first hit anywhere stands in for
+        # it, exactly as before.
         first = None
-        rx = re.compile(r"(?<!\w)" + re.escape(nl) + r"(?!\w)") if bounded else None
-        for k, low in enumerate(lowers):
+        lo = (lstarts[lo_want] if lo_want is not None
+              and 0 <= lo_want < len(lowers) else 0)
+        hi = (lstarts[hi_want] + len(lowers[hi_want])
+              if hi_want is not None and 0 <= hi_want < len(lowers)
+              else len(ltext))
+        # `str.find` and a boundary test, not a `(?<!\w)` regex: a pattern
+        # opening on a lookbehind forfeits the literal-prefix scan, and
+        # measured on a 400 KB body it cost 3 ms a row against 0.1 ms here.
+        # `\w` is exactly "alphanumeric or underscore" (`str.isalnum`).
+        def _wordch(c):
+            return c == "_" or c.isalnum()
+
+        def _finds():
+            j = ltext.find(nl, lo, hi)
+            while j >= 0:
+                if not bounded or (
+                        (j == 0 or not _wordch(ltext[j - 1]))
+                        and (j + len(nl) >= len(ltext)
+                             or not _wordch(ltext[j + len(nl)]))):
+                    yield j
+                j = ltext.find(nl, j + 1, hi)
+        hits = _finds()
+        for pos in hits:
+            k = bisect.bisect_right(lstarts, pos) - 1
+            if pos + len(nl) > lstarts[k] + len(lowers[k]):
+                continue        # straddles the seam between two lines
             if lo_want is not None and not (lo_want <= k <= hi_want):
                 continue        # a hit outside the passage is not this pair's
-            if rx is not None:
-                m = rx.search(low)
-                j = m.start() if m else -1
-            else:
-                j = low.find(nl)
-            if j < 0:
-                continue
-            at = lines[k][0] + j
+            at = lines[k][0] + (pos - lstarts[k])
             if first is None:
                 first = at
-            # PROSE beats a heading, which is the whole question the cell is
-            # there to settle: "Charge" appears first in "CHARGE OF
-            # DISCRIMINATION" — a caption, and no evidence either way — and
-            # again in "served on Charge at his residence", which is a name.
-            # Quoting the first occurrence would show the operator the one that
-            # proves nothing. Same test `prune_heading_only_terms` uses; the
-            # first prose hit settles it, so the walk stops there.
             if lines[k][2]:
                 return at
         return first
@@ -23693,6 +23887,7 @@ def _pn_apply_weld_follows(terms, follows, log=None):
         t.pattern = _pn_build_pattern(
             t.real, whole_word=t.whole_word, follow=re.escape(kept),
             breakable=_pn_term_is_breakable(t.category, t.source))
+        t.lead = None          # may now butt against the kept text: no prefilter
         if log:
             log.info(f"  KEEP-PART: {str(t.real)!r} may butt straight against "
                      f"the kept {kept!r} — the bracketed value welds them.")
