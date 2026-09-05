@@ -25912,9 +25912,13 @@ _PN_ALIAS_FORMULA_CHARS = "()!&%*/+;:"
 # a scan error is not a spelling: nobody wrote "Smlth", the page did, and the
 # export should read as the document does. So the value is REPLACED BY WHAT
 # THE CORRECT TEXT BECOMES: the correct text's own stand-in, word for word,
-# where this case binds it (or binds it now, on the operator's say-so, as the
-# alias binds its canonical), and the correct text itself where it is not a
-# name at all ("cuve!nants" -> "covenants"). Reversal is the care in it: a row
+# where this case binds it, and the correct text ITSELF everywhere else
+# ("cuve!nants" -> "covenants"; a "Vazquez" the case has not bound is written
+# as Vazquez). A correction says what the page MEANT and nothing about whether
+# it is a name — at the owner's direction — so nothing is bound or minted on
+# its account: a corrected name the case does not track stands in the export
+# for the review scans and the worksheet to ask about as they would of any
+# other text. Reversal is the care in it: a row
 # `Smlth -> <Smith's fake>` beside `Smith -> <Smith's fake>` is the two-Real-
 # Values-one-Replacement shape `DeAnonymize.bas` retires, and a row
 # `cuve!nants -> covenants` would UN-FIX the word in the tentative. So every
@@ -25972,27 +25976,12 @@ def _pn_cell_is_ocr_keep(cell):
     return bool(_pn_ocr_fix_target(_pn_keep_spec_strip(cell)))
 
 
-def _pn_ocr_target_is_name(target):
-    """Whether the CORRECT text of an OCR fix is a NAME this case may bind —
-    every word capitalised where it is written and at least one of them a
-    name token — or ordinary text to be written verbatim ("covenants", a
-    locality the house style keeps). Screened as `_pn_alias_bind_canonical`
-    screens a canonical: never form boilerplate."""
-    words = [w for w in str(target).split() if _pn_word_affixes(w)[1]]
-    if not words or _pn_is_never_fake(target):
-        return False
-    cores = [_pn_word_affixes(w)[1] for w in words]
-    if not all(c[0].isupper() for c in cores):
-        return False
-    return any(_pn_is_name_token(c) for c in cores)
-
-
 def _pn_apply_ocr_fixes(decisions, terms, registry, log, allow_rebind=True):
     """Honour every `*CORRECT TEXT` OCR fix in `decisions`: the value is a scan
     error, so it is replaced by what the correct text becomes — the correct
-    text's own stand-in where this case binds it (bound now where it does
-    not, when it is a name), the correct text itself where it is not a name.
-    Returns the new term list.
+    text's own stand-in where this case binds it, the correct text itself
+    everywhere else. Nothing is bound on its account: a correction says what
+    the page meant, not that the text is a name. Returns the new term list.
 
     Word for word, as the alias is: a multi-word fix pairs each garbled word
     with the word it garbles (`_pn_alias_word_pairs`), and a garbled word
@@ -26035,19 +26024,6 @@ def _pn_apply_ocr_fixes(decisions, terms, registry, log, allow_rebind=True):
                 f"alone. Click 'Re-run PDF-Linker' to apply the fix.")
             continue
         canon = find(target)
-        if canon is None and _pn_ocr_target_is_name(target):
-            built = [t for t in _pn_build_terms([], [], [target], registry)
-                     if norm(t.real) == norm(target)] or                     _pn_build_terms([], [], [target], registry)
-            for t in built:
-                if find(t.real) is None:
-                    terms.append(t)
-            canon = find(target)
-            if canon is not None:
-                log.info(f"  OCR FIX: {target!r} is not spelled that way "
-                         f"anywhere in this folder, so it is being BOUND on "
-                         f"your say-so and faked {canon.fake!r} — check the "
-                         f"spelling after the '{_PN_OCR_MARK}'. Its row goes "
-                         f"to the key's '{_PN_KEY_PINNED_SHEET}' sheet.")
         if canon is not None:
             # A FULL-name category even where the correct text is a bare
             # token: the value is the operator's own whole answer, and a
@@ -26059,8 +26035,9 @@ def _pn_apply_ocr_fixes(decisions, terms, registry, log, allow_rebind=True):
         else:
             fake, cat, prio = target, "ocr-fix", 2
             log.info(f"  OCR FIX: {value!r} is a scan error of {target!r}, "
-                     f"which is not a name this case binds — it is corrected "
-                     f"to {target!r} verbatim.")
+                     f"which this case does not bind — it is corrected to "
+                     f"{target!r} verbatim, and whether that is a name is "
+                     f"the worksheet's question as for any other text.")
         drop.add(norm(value))
         if norm(value) in {norm(a.real) for a in added}:
             continue
