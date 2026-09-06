@@ -3148,7 +3148,7 @@ def _reading_frame_spans(page, spans):
         weight[key] = weight.get(key, 0) + len(str(sp.get("text", "")))
     dom = max(weight, key=weight.get) if weight else (1, 0)
     if not rot and dom == (1, 0):
-        return spans
+        return _deskew_spans(spans)
     m = page.rotation_matrix if rot else fitz.Matrix(1, 0, 0, 1, 0, 0)
     for theta in (0, 90, 180, 270):
         turned = fitz.Point(dom) * fitz.Matrix(theta)
@@ -3166,6 +3166,130 @@ def _reading_frame_spans(page, spans):
             o = fitz.Point(sp["origin"]) * m
             new["origin"] = (o.x, o.y)
         out.append(new)
+    return _deskew_spans(out)
+
+
+# A page's text is read as SKEWED when the baselines of adjacent pieces of one
+# line slope by at least this much (dy per pt of dx; 0.0015 is about 0.09
+# degrees, under which the drift across a letter-width line is under 1 pt and
+# `_ROW_BASELINE_TOL` absorbs it) and at most this much (a slope past ~8
+# degrees is not a scan's skew but a layout of its own — a rotated stamp, a
+# diagonal watermark — and shearing the page by it would wreck the rows it
+# was meant to straighten). Measured from at least `_DESKEW_MIN_PAIRS`
+# lines at least 120 pt wide, or one slanted stamp could tilt a straight
+# page.
+_DESKEW_MIN_SLOPE = 0.0015
+_DESKEW_MAX_SLOPE = 0.14
+_DESKEW_MIN_PAIRS = 6
+
+
+def _page_skew_slope(spans):
+    """The slope (dy per pt of dx, in the reading frame) at which the lines of
+    `spans` run across the page, or 0.0 where the page reads straight.
+
+    A scanned page is rarely square on the glass, and its OCR layer follows
+    the printed line: each word sits on the baseline the recogniser measured
+    for it, so a line that rises a degree to the right has its words' origins
+    climbing across the page. The pieces of one printed line are CHAINED —
+    each to the nearest span opening just past its right edge, within half a
+    line-height (or the skew cap's share of the gap) of its baseline, so a
+    neighbour across a column gap or on the line below is never a link —
+    and the slope is read off the chain's two ENDS, over the whole line's
+    width. Not off adjacent pairs: the extractor joins two or three words
+    into one piece at one origin, so half the adjacent steps are exactly 0
+    and a median of them came in a third short on a page three degrees off.
+    The estimate is the MEDIAN over the chains at least `_DESKEW_MIN_PAIRS`
+    long, so a rotated stamp or a slanted signature cannot move a straight
+    page, and the ordinary born-digital page — every chain at slope exactly
+    0 — is left at 0.0 and untouched by construction."""
+    items = [sp for sp in spans
+             if sp.get("bbox") and sp["bbox"][2] > sp["bbox"][0]
+             and sp["bbox"][3] > sp["bbox"][1]]
+    if len(items) < _DESKEW_MIN_PAIRS + 1:
+        return 0.0
+    items.sort(key=lambda sp: sp["bbox"][0])
+    xs = [sp["bbox"][0] for sp in items]
+    nxt = {}
+    for i, sp in enumerate(items):
+        x0, y0, x1, y1 = sp["bbox"]
+        h = y1 - y0
+        ay = _span_baseline(sp)
+        lo = bisect.bisect_left(xs, x1 - 1.0)
+        for j in range(lo, min(lo + 12, len(items))):
+            b = items[j]
+            if j == i:
+                continue
+            gap = b["bbox"][0] - x1
+            if gap > 2.5 * h:
+                break
+            if abs(_span_baseline(b) - ay) <= max(0.5 * h, _DESKEW_MAX_SLOPE
+                                                  * (b["bbox"][0] - x0)):
+                nxt[i] = j
+                break
+    heads = set(range(len(items))) - set(nxt.values())
+    slopes = []
+    for i in heads:
+        j, n = i, 1
+        seen = {i}
+        while j in nxt and nxt[j] not in seen:
+            j = nxt[j]
+            seen.add(j)
+            n += 1
+        if n < 2:
+            continue
+        a, b = items[i], items[j]
+        ax = (a.get("origin") or (a["bbox"][0], 0))[0]
+        bx = (b.get("origin") or (b["bbox"][0], 0))[0]
+        dx = bx - ax
+        if dx < 120.0:
+            continue
+        slopes.append((_span_baseline(b) - _span_baseline(a)) / dx)
+    if len(slopes) < _DESKEW_MIN_PAIRS:
+        return 0.0
+    slope = statistics.median(slopes)
+    if abs(slope) < _DESKEW_MIN_SLOPE or abs(slope) > _DESKEW_MAX_SLOPE:
+        return 0.0
+    return slope
+
+
+def _deskew_spans(spans):
+    """`spans` with a scan's SKEW sheared out of their y — every piece of one
+    printed line brought back onto one baseline — so `_cluster_rows` reads
+    the line as a row. The same list, untouched, where the page reads
+    straight (`_page_skew_slope` is 0.0), so the usual export does not move.
+
+    A letter scanned a degree off square came out with every line in three
+    pieces on three rows, the END of each line ABOVE its beginning: the OCR
+    layer's words follow the printed baseline, the extractor joins them into
+    pieces while the drift stays inside its own tolerance and starts a new
+    piece when it does not, and `_cluster_rows` then compares each piece's
+    baseline to the ROW's first — so the tail of a 500 pt line, 9 pt higher
+    than its head, is a different row, sorted above it. A SHEAR and not a
+    rotation, deliberately: it moves y alone, by the slope times the span's
+    own distance from the page's left edge, so every x — the indent, the
+    column a piece is laid out at — is exactly what the page prints, where a
+    rotation would slide the top of the page sideways against the bottom. It
+    is a frame for CLUSTERING; what is written is the spans' text."""
+    # Measured and sheared up to three times: the first estimate is taken
+    # over pieces whose own baselines still slope, so on a page a few degrees
+    # off it comes in short, and the residual is what the next pass reads.
+    out = spans
+    for _ in range(3):
+        slope = _page_skew_slope(out)
+        if not slope:
+            break
+        left = min(sp["bbox"][0] for sp in out if sp.get("bbox"))
+        sheared = []
+        for sp in out:
+            new = dict(sp)
+            x0, y0, x1, y1 = sp["bbox"]
+            ax = (sp.get("origin") or (x0, 0))[0]
+            shift = slope * (ax - left)
+            new["bbox"] = (x0, y0 - shift, x1, y1 - shift)
+            if sp.get("origin"):
+                new["origin"] = (sp["origin"][0], sp["origin"][1] - shift)
+            sheared.append(new)
+        out = sheared
     return out
 
 
