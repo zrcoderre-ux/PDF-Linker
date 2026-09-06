@@ -3767,6 +3767,48 @@ PLEADING-row path (`_detect_line_anchors`) still reads unrotated geometry,
 so a scanned brief that arrives through /Rotate keeps its gutter numbers
 only where the page's own rotation was already undone.
 
+**…and a SKEWED scan is sheared straight before its rows are clustered**
+(`_page_skew_slope`, `_deskew_spans`, in `_reading_frame_spans`;
+`_DESKEW_MIN_SLOPE`, `_DESKEW_MAX_SLOPE`, `_DESKEW_MIN_PAIRS`). A letter
+scanned about a degree off square — ordinary paragraphs, a few indented
+bullets — came out with every line in three pieces on three rows, the END
+of each line ABOVE its beginning, at the column it sits at on the page:
+`occasions, by phone· in an effort to discuss your` on one row, `by both
+first class mail and, on at least three` under it, `We have attemptedto
+contact you` under that. The OCR layer follows the printed line — each word
+sits on the baseline the recogniser measured for it — so a line that rises
+to the right has its words' origins climbing across the page; the
+extractor joins words into pieces while the drift stays inside its own
+tolerance and starts a new piece when it does not; and `_cluster_rows`
+compares each piece to the ROW's first baseline (`_ROW_BASELINE_TOL`, 3 pt),
+so the tail of a 500 pt line, 9 pt higher than its head, is a different row
+and sorts above it. The slope is read off CHAINS — each piece linked to the
+nearest span opening just past its right edge within half a line-height of
+its baseline, the two ends of a chain at least 120 pt apart giving one
+slope, the median over at least six chains the page's — and not off
+adjacent pairs, because the extractor puts two or three words at ONE
+origin, so half the adjacent steps are exactly 0 and a pairwise median came
+in a third short on a page three degrees off. Then a SHEAR and not a
+rotation, deliberately: y alone moves, by the slope times the span's own
+distance from the page's left edge, so every x — the indent, the column a
+piece is laid out at — is exactly what the page prints, where a rotation
+would slide the top of the page sideways against the bottom. Measured and
+sheared up to three times, since the first estimate is taken over pieces
+whose own baselines still slope. A straight page reads slope 0.0 and gets
+the SAME list back (every chain at exactly 0, and under `_DESKEW_MIN_SLOPE`
+the drift across a letter-width line is under a point), so the ordinary
+export does not move; a slope past `_DESKEW_MAX_SLOPE` (~8°) is a layout of
+its own and refused; a slanted received-stamp is a few chains against the
+page's many and cannot move the median. Both renderers take it through the
+one frame function, after the quarter-turn framing, so a landscape scan
+displayed through /Rotate that is also a degree off is read straight.
+Residual, and stated: past about two degrees the extractor's own merged
+pieces carry more than the tolerance of baseline noise (a piece's second
+word really sits lower than the origin it was given) and lines split
+again; a scan that far off is the page to re-scan. The PLEADING-row path
+(`_detect_line_anchors`) still clusters unsheared geometry, as it does
+unrotated.
+
 **A SPREADSHEET printed into an exhibit exports as a TABLE** (`_page_table_text`).
 A billing export, a damages schedule, a payment history: the page is a grid, and
 plain extraction reads it a cell at a time, top to bottom. Every value survives
