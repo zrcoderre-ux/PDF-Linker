@@ -3809,6 +3809,48 @@ again; a scan that far off is the page to re-scan. The PLEADING-row path
 (`_detect_line_anchors`) still clusters unsheared geometry, as it does
 unrotated.
 
+**A RULED TABLE on pleading paper is read by the lines the page DRAWS, and
+folded into CELLS** (`_page_rules`, `_split_row_columns(rules=…)`,
+`_ruled_table`, `_fold_ruled_rows`, from `_page_lined_rows`). A reply
+separate statement is a three-column grid — the moving party's facts, the
+opposing party's responses, the reply — and each cell wraps its own paragraph
+over several printed lines. Read line by line, the export interleaved the
+three, one printed line of each cell per numbered line, so a paragraph could
+only be followed by reading down a column of fragments; and where two cells'
+lines sat closer than `_COLUMN_GAP_MIN` they were welded outright, "(Caira v.
+historical fact stated." — the end of one cell's line run into the start of
+the next across the rule between them, which the gap test cannot see because
+a cell's padding is a few points. The rules are the page's own statement of
+where its columns and rows are, and they are read off its line art: a line
+item, a hair-thin rectangle, or the edges of a STROKED box (a table drawn as
+cell rectangles has no line items at all; a filled one is shading and draws
+no column), at least `_RULE_MIN_LEN` long so an underline, a checkbox edge or
+a fill-in slot bounds nothing, strokes within `_RULE_MERGE_TOL` merged into
+one. Two things follow. Every row split — the linker's `_detect_line_anchors`
+included — cuts at a vertical rule whatever the gap, so the weld is gone
+from every reading of the page. And `_page_lined_rows` folds each row of
+cells into ONE row: each cell's lines joined into its paragraph, the cells
+laid left to right behind pipes, the header's cells followed by a
+`| --- |` rule row — the grid `_page_table_text` already writes for a
+spreadsheet exhibit, and the one table shape a person and a drafting model
+read without being told. The row keeps the gutter number of the line it
+starts on, so a pinpoint still lands on the fact; the lines the cells ran
+on below it are folded into it and print no number, at the cost of a
+`p.X:Y` inside a cell — accepted, because a separate statement is cited by
+fact number and never by line. Each cell is its own SEGMENT at its own x,
+so `_page_column_streams` still scrubs column by column and a name a cell
+wrapped mid-name is contiguous for the first time; `_page_detect_text` reads
+the cells whole for the same reason. The grid needs an interior rule with
+text on both sides of it and at least `_RULED_MIN_BANDS` row bands, so a box
+around one column of text folds nothing, and a band carrying a caption's own
+furniture (a role row, a "vs.") is never folded: a caption box drawn with
+lines is not a table, and `_pn_reconstruct_caption` reads it row by row.
+Rows outside the grid — the title above it — are untouched, and a page
+drawing no rules is returned as it came, so the ordinary export does not
+move. Residual, and stated: a single span that itself crosses a rule
+(one text object set across two cells) is split by nothing here; the
+desplice rebuild reads column jumps, not rules.
+
 **A SPREADSHEET printed into an exhibit exports as a TABLE** (`_page_table_text`).
 A billing export, a damages schedule, a payment history: the page is a grid, and
 plain extraction reads it a cell at a time, top to bottom. Every value survives

@@ -3459,18 +3459,88 @@ def _drop_redrawn_fragments(spans):
     return [sp for i, sp in enumerate(spans) if i not in drop]
 
 
-def _split_row_columns(spans, gap_min=_COLUMN_GAP_MIN):
-    """Split one row's spans into column segments at wide horizontal gaps.
+# A stroke is a RULE — a table's column or row line — when it is this long
+# (pt): shorter than a line of type it is an underline, a checkbox edge or a
+# form's fill-in slot, and none of those bounds a column.
+_RULE_MIN_LEN = 40.0
+# Two rules this close (pt) are one line drawn twice (a box border beside a
+# cell border) and are read as one.
+_RULE_MERGE_TOL = 2.5
+
+
+def _page_rules(page):
+    """(vertical, horizontal) rules on `page`, from its own line art:
+    vertical as [(x, y0, y1)], horizontal as [(y, x0, x1)], each the merged
+    extent of the strokes drawn at that position. A stroke is a line item, a
+    hair-thin filled rectangle, or an edge of a BOX (a table drawn as cell
+    rectangles has no line items at all). Returns ([], []) where the page
+    has none, or its drawings cannot be read."""
+    vert, horiz = [], []
+    try:
+        drawings = page.get_drawings()
+    except Exception:
+        return [], []
+    for d in drawings:
+        for item in d.get("items", []):
+            kind = item[0]
+            if kind == "l":
+                p1, p2 = item[1], item[2]
+                if abs(p1.x - p2.x) <= 1.5 and abs(p2.y - p1.y) >= _RULE_MIN_LEN:
+                    vert.append(((p1.x + p2.x) / 2, min(p1.y, p2.y),
+                                 max(p1.y, p2.y)))
+                elif abs(p1.y - p2.y) <= 1.5 and abs(p2.x - p1.x) >= _RULE_MIN_LEN:
+                    horiz.append(((p1.y + p2.y) / 2, min(p1.x, p2.x),
+                                  max(p1.x, p2.x)))
+            elif kind == "re":
+                r = item[1]
+                if r.width <= 2.5 and r.height >= _RULE_MIN_LEN:
+                    vert.append(((r.x0 + r.x1) / 2, r.y0, r.y1))
+                elif r.height <= 2.5 and r.width >= _RULE_MIN_LEN:
+                    horiz.append(((r.y0 + r.y1) / 2, r.x0, r.x1))
+                elif r.width >= _RULE_MIN_LEN and r.height >= _RULE_MIN_LEN:
+                    # A box: its four edges are rules. Only a STROKED box —
+                    # a filled one is shading, and a shaded caption band or
+                    # a highlighted cell draws no column.
+                    if d.get("color") is None:
+                        continue
+                    vert += [(r.x0, r.y0, r.y1), (r.x1, r.y0, r.y1)]
+                    horiz += [(r.y0, r.x0, r.x1), (r.y1, r.x0, r.x1)]
+
+    def merge(items):
+        out = []
+        for pos, a, b in sorted(items):
+            if out and pos - out[-1][0] <= _RULE_MERGE_TOL:
+                q, qa, qb = out[-1]
+                out[-1] = ((q + pos) / 2, min(qa, a), max(qb, b))
+            else:
+                out.append((pos, a, b))
+        return out
+    return merge(vert), merge(horiz)
+
+
+def _split_row_columns(spans, gap_min=_COLUMN_GAP_MIN, rules=()):
+    """Split one row's spans into column segments at wide horizontal gaps —
+    and at every VERTICAL RULE the page draws between two spans (`rules`,
+    the x of each; see `_page_rules`).
 
     A pleading caption is two columns — party names left, document title right —
     and both sit on the same printed line. Joining them left-to-right into one
     string welds the two into a phrase that exists nowhere on the page
     ("DREAM TEAM REAL ESTATE" + "BAY EQUITY LENDING, INC."), which no party-name
-    term can match. Returns [(x0, text), ...] in left-to-right order."""
+    term can match. A ruled TABLE — a separate statement's three columns —
+    puts its cells a few points apart, under the gap this splits at, so the
+    end of one cell's line ran into the start of the next ("(Caira v.
+    historical fact stated."); the rule between them is the page saying where
+    the column ends, and it splits whatever the gap. Returns [(x0, text), ...]
+    in left-to-right order."""
     segments, current, prev_x1 = [], [], None
+    rules = sorted(rules or ())
     for sp in sorted(spans, key=lambda s: s["bbox"][0]):
         x0, x1 = sp["bbox"][0], sp["bbox"][2]
-        if current and prev_x1 is not None and (x0 - prev_x1) > gap_min:
+        ruled = (prev_x1 is not None and any(
+            prev_x1 - 1.0 <= r <= x0 + 1.0 for r in rules))
+        if current and prev_x1 is not None and ((x0 - prev_x1) > gap_min
+                                                or ruled):
             segments.append(current)
             current = []
         current.append(sp)
@@ -3513,6 +3583,9 @@ def _detect_line_anchors(page, desplice=False):
     """
     from collections import Counter, defaultdict
     blocks = page.get_text("dict")["blocks"]
+    # The page's own vertical rules: a column boundary the gap test cannot see
+    # (a table's cells sit a few points apart), handed to every row split.
+    vrules = [x for x, _y0, _y1 in _page_rules(page)[0]]
 
     # Step 1: find spans whose text is a small integer (1-30) on the left
     # third of the page. These are line-number candidates.
@@ -3648,7 +3721,7 @@ def _detect_line_anchors(page, desplice=False):
     for num in sorted(rows_by_num):
         stacks = {}                              # band -> {row_y: [x0, text]}
         for row in sorted(rows_by_num[num], key=lambda r: r["y"]):
-            for x, text in _split_row_columns(row["spans"]):
+            for x, text in _split_row_columns(row["spans"], rules=vrules):
                 if _CAPTION_DIVIDER_RE.match(text):
                     continue
                 text = _CAPTION_DIVIDER_LEAD_RE.sub("", text)
@@ -3724,7 +3797,7 @@ def _detect_line_anchors(page, desplice=False):
              + _drop_overdrawn_spans(margin))
     for row in _cluster_rows(stray):
         segs = []
-        for x, text in _split_row_columns(row["spans"]):
+        for x, text in _split_row_columns(row["spans"], rules=vrules):
             if _CAPTION_DIVIDER_RE.match(text):
                 continue
             text = _CAPTION_DIVIDER_LEAD_RE.sub("", text)
@@ -23499,6 +23572,7 @@ def _page_lined_rows(page):
     anchors = _detect_line_anchors(page)
     if not anchors:
         return None
+    anchors = _fold_ruled_rows(anchors, page)
 
     def _strip_markers(rows):
         """Drop legacy right-margin markers from row segments. The flowing-
@@ -23535,7 +23609,8 @@ def _page_lined_rows(page):
     score = _page_weld_score(rows)
     if score:
         try:
-            cured = _detect_line_anchors(page, desplice=True)
+            cured = _fold_ruled_rows(_detect_line_anchors(page, desplice=True),
+                                     page)
         except Exception:
             cured = None
         if cured:
@@ -23544,6 +23619,142 @@ def _page_lined_rows(page):
             if _page_weld_score(crows) < score:
                 return crows
     return rows
+
+
+# A ruled table on pleading paper needs this many ROW BANDS (the gaps
+# between horizontal rules that cross its columns) before its rows are folded
+# into cells: a caption box drawn with lines is one band, a table is a header
+# band and at least one fact under it.
+_RULED_MIN_BANDS = 2
+_RULED_MIN_BAND_HEIGHT = 8.0   # pt; two rules closer than this are one edge
+
+
+def _ruled_table(page, anchors):
+    """(column x's, band y's) of the ruled TABLE on a pleading page, or None.
+    The columns are the page's vertical rules; the bands are the horizontal
+    rules that cross the table's whole width, each pair bounding one row of
+    cells. None where the page draws no such grid — no vertical rule, fewer
+    than `_RULED_MIN_BANDS` bands, or no rule with text on BOTH sides of it
+    (a box around one column of text bounds nothing)."""
+    vr, hr = _page_rules(page)
+    if len(vr) < 2 or not hr:
+        return None
+    xs = [x for x, _y0, _y1 in vr]
+    x_lo, x_hi = xs[0], xs[-1]
+    ys = sorted(y for y, a, b in hr
+                if a <= x_lo + _RULE_MERGE_TOL * 2 and b >= x_hi - _RULE_MERGE_TOL * 2)
+    bands = [(a, b) for a, b in zip(ys, ys[1:]) if b - a >= _RULED_MIN_BAND_HEIGHT]
+    if len(bands) < _RULED_MIN_BANDS:
+        return None
+    # An INTERIOR rule: text stands on both sides of it on some row.
+    interior = False
+    for x in xs[1:-1]:
+        left = right = False
+        for a in anchors:
+            for sx, _t in a["segments"]:
+                if sx < x - 1.0:
+                    left = True
+                elif sx > x + 1.0:
+                    right = True
+        if left and right:
+            interior = True
+            break
+    if not interior:
+        return None
+    return xs, bands
+
+
+def _fold_ruled_rows(anchors, page):
+    """`anchors` with every row of a ruled TABLE folded into ONE row of CELLS.
+
+    A separate statement is a three-column grid on pleading paper — the
+    moving party's facts, the opposing party's responses, the reply — and
+    each cell wraps its own paragraph over several printed lines. Read line
+    by line the export interleaved the three, one printed line of each cell
+    per numbered line, so a paragraph could only be followed by reading
+    down a column of fragments, and where two cells' lines sat closer than
+    the column gap they were welded outright ("(Caira v. historical fact
+    stated."). The rules the page DRAWS are its own statement of where the
+    columns and rows are, so each row of cells is folded into one row: each
+    cell's lines joined into its paragraph, the cells laid left to right
+    behind pipes — the grid `_page_table_text` writes for a spreadsheet
+    exhibit, and the one table shape a person and a drafting model read
+    without being told — with the header's cells followed by a rule row. The
+    row keeps the gutter number of the line it starts on, so a pinpoint
+    still lands on the fact; the lines the cells ran on below it are folded
+    into it and print no number of their own (a separate statement is cited
+    by fact number, never by line). Rows outside the grid — the title above
+    it, the text below — are untouched, and a page with no grid is returned
+    as it came. A band carrying a caption's own furniture (a role row, a
+    "vs.") is never folded: a caption box drawn with lines is not a table,
+    and `_pn_reconstruct_caption` reads it row by row."""
+    if not anchors:
+        return anchors
+    try:
+        grid = _ruled_table(page, anchors)
+    except Exception:
+        grid = None
+    if grid is None:
+        return anchors
+    xs, bands = grid
+    ncols = len(xs) - 1
+
+    def column_of(x):
+        for i in range(ncols):
+            if xs[i] - 2.0 <= x < xs[i + 1] - 2.0:
+                return i
+        return None
+
+    ordered = sorted(anchors, key=lambda a: a["y_mid"])
+    taken = set()
+    folded = []
+    for bi, (ya, yb) in enumerate(bands):
+        members = [a for a in ordered if ya <= a["y_mid"] <= yb
+                   and id(a) not in taken]
+        if not members:
+            continue
+        cells = [[] for _ in range(ncols)]
+        ok = True
+        for a in members:
+            for x, t in a["segments"]:
+                c = column_of(x)
+                if c is None:
+                    ok = False
+                    break
+                if (_PN_CAPTION_VS_RE.match(t) or _PN_CAPTION_PROLE_RE.match(t)
+                        or _PN_CAPTION_DROLE_RE.match(t)):
+                    ok = False
+                    break
+                cells[c].append(t.strip())
+            if not ok:
+                break
+        if not ok or not any(cells):
+            continue
+        for a in members:
+            taken.add(id(a))
+        segs = []
+        for c in range(ncols):
+            text = "| " + " ".join(t for t in cells[c] if t)
+            if c == ncols - 1:
+                text = text.rstrip() + " |"
+            segs.append((xs[c] + 3.0, text.rstrip() if c < ncols - 1 else text))
+        first = next((a["line_num"] for a in members
+                      if a["line_num"] is not None), None)
+        folded.append({
+            "line_num": first,
+            "body_text": " ".join(t for _x, t in segs),
+            "segments": segs,
+            "y_mid": members[0]["y_mid"],
+        })
+        if bi == 0:
+            rule = "| " + " | ".join(["---"] * ncols) + " |"
+            folded.append({"line_num": None, "body_text": rule,
+                           "segments": [(xs[0] + 3.0, rule)],
+                           "y_mid": members[0]["y_mid"] + 0.01})
+    if not folded:
+        return anchors
+    rest = [a for a in ordered if id(a) not in taken]
+    return sorted(rest + folded, key=lambda a: a["y_mid"])
 
 
 _COLUMN_BAND_TOL = 30.0   # pt; segment left edges this close share a page column
