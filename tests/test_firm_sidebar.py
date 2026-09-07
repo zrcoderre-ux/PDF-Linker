@@ -118,3 +118,48 @@ def test_a_page_with_no_sidebar_does_not_move(tmp_path):
         for a in P._detect_line_anchors(_build(tmp_path, lambda pg: None))]
     assert (None, STAMP) in before
     assert sum(1 for n, _t in before if n is not None) == 28
+
+
+# ── The mark that is a PICTURE ───────────────────────────────────────────────
+# The firm that reported this prints its mark as an IMAGE in the margin, hard
+# against the gutter (x 25-54 pt beside numbers at x 55), so it has no text
+# span at all and reaches the export only through `_ocr_image_regions` — which
+# read the rotated logo (upside down, as often as not) and laid the reading
+# into the page's text layer. That image is never rendered now.
+
+def _pleading_with_margin_image(tmp_path, img_rect):
+    doc = fitz.open()
+    pg = doc.new_page(width=612, height=792)
+    y = 80
+    for i in range(1, 29):
+        pg.insert_text((55 if i > 9 else 62, y), f"{i}", fontsize=10)
+        pg.insert_text((110, y), f"Body line {i}.", fontsize=10)
+        y += 24
+    pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 148, 565))
+    pix.clear_with(255)
+    pg.insert_image(img_rect, pixmap=pix)
+    return doc
+
+
+def test_a_margin_image_beside_the_numbers_is_a_sidebar(tmp_path):
+    doc = _pleading_with_margin_image(tmp_path, fitz.Rect(24.9, 340.2, 54.2, 451.8))
+    pg = doc[0]
+    _x, col = P._pleading_gutter(pg)
+    rects = P._image_ocr_rects(pg)
+    assert rects and all(P._sidebar_image_rect(r, col) for r in rects)
+
+
+def test_a_body_image_is_not(tmp_path):
+    doc = _pleading_with_margin_image(tmp_path, fitz.Rect(300, 500, 520, 590))
+    pg = doc[0]
+    _x, col = P._pleading_gutter(pg)
+    assert not any(P._sidebar_image_rect(r, col) for r in P._image_ocr_rects(pg))
+
+
+def test_a_stamp_image_above_line_one_is_not(tmp_path):
+    # An e-filing stamp pasted as a picture sits above the band and reaches
+    # past the gutter; neither half of the rule takes it.
+    doc = _pleading_with_margin_image(tmp_path, fitz.Rect(30, 20, 200, 60))
+    pg = doc[0]
+    _x, col = P._pleading_gutter(pg)
+    assert not any(P._sidebar_image_rect(r, col) for r in P._image_ocr_rects(pg))

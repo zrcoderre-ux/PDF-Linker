@@ -3739,6 +3739,20 @@ sidebar, which is not the deliverable (the do-not-share original copy is
 built from the same rows as the export, so it loses the sidebar with it).
 A caption page with too few numbers for the pleading path is rendered by
 `_page_visual_text`, which has no gutter to measure and is unchanged.
+**…and the mark that is a PICTURE is never READ** (`_sidebar_image_rect`,
+`_pleading_gutter`, in `_ocr_image_regions`). The firm that reported this
+prints its mark as an IMAGE — two image objects at x 25-54 pt beside numbers
+at x 55 — so the page has no sidebar span at all, and the name reached the
+export through the image-OCR pass: an image on a page whose own text is
+sound is read for the words the layer lacks, the rotated logo cleared the
+newness floor (upside down, as often as not), and the reading was laid into
+the PDF's text layer, where it then reached every rendering of the page.
+The same measurement is asked of the picture BEFORE OCR is spent on it, so
+the words never exist: `_pleading_gutter` is Steps 1-2 of
+`_detect_line_anchors` factored out, so the row extractor and the OCR pass
+measure the margin one way. A stamp pasted as a picture above line 1 and a
+signature image in the body are neither wholly left of the gutter nor
+beside the band, and are read as before.
 
 **The export mirrors the page's GEOMETRY, so it reads SIDE BY SIDE with the
 PDF** (`_visual_row_text` / `_page_visual_text`). Joining a row's pieces with
