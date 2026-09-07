@@ -3707,6 +3707,39 @@ page whose 10-29 outnumber its 1-9 puts `dominant_x` on the wider run
 ("1 SERVICE LIST"). `_FOOTER_MASK_PT` still masks the running footer, which
 repeats the document title on every page and carries nothing else.
 
+**…and a FIRM SIDEBAR in the margin OUTSIDE the gutter is not content**
+(`_sidebar_spans`, `_SIDEBAR_GUTTER_TOL`, Step 7a of `_detect_line_anchors`).
+One firm prints its name up the side of every page, set bottom-to-top and
+unusually close to the line-number column; scanned upside down it reads
+top-to-bottom. Step 7 took it for the left-margin label it was written to
+keep and emitted it as an unnumbered row — an OCR'd copy as a scatter of
+debris words down the page — so the export named a firm nothing else on the
+page says, on every page. The exclusion is measured off the GUTTER ITSELF:
+the numbers are the leftmost thing a pleading prints, so a span wholly left
+of the column they stand in is in the margin outside the pleading. The
+operator's own observation was that the left margin "would need to fit just
+the numbers" and that the right margin happened to be that wide; the width
+is read from the page rather than proxied through the right margin, which is
+a coincidence of one firm's layout. A ROTATED span left of the gutter is a
+sidebar whatever its exact x — nothing a filing wants read is printed
+sideways in its margin. A HORIZONTAL span (the OCR'd copy, whose direction
+says nothing) is one only where it ends wholly left of the gutter, stands
+BESIDE the numbered band (the half-lead the row assignment already uses),
+and shares its baseline with nothing that reaches past the gutter — three
+guards that each keep something real: the e-filing stamp above line 1 is
+horizontal, sits above the band, and its words share a baseline with text
+that runs into the page, so an OCR'd stamp split into per-word spans is kept
+whole even where a tall one overlaps the band; and a service block below
+line 28 is never wholly left of the gutter. Residual, and stated: an OCR'd
+sidebar whose debris words run above line 1 or below line 28 keeps those
+words, a label a filing really printed sideways in its left margin goes with
+the sidebar (the exhibit-cover scan reads the raw layer and is untouched),
+and the flowing text that drives citation detection still carries the
+sidebar, which is not the deliverable (the do-not-share original copy is
+built from the same rows as the export, so it loses the sidebar with it).
+A caption page with too few numbers for the pleading path is rendered by
+`_page_visual_text`, which has no gutter to measure and is unchanged.
+
 **The export mirrors the page's GEOMETRY, so it reads SIDE BY SIDE with the
 PDF** (`_visual_row_text` / `_page_visual_text`). Joining a row's pieces with
 one space destroyed exactly what the eye lines the two up by: a two-column
