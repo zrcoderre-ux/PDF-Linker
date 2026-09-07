@@ -2530,6 +2530,22 @@ def _ocr_image_regions(doc, log):
         rects = _image_ocr_rects(page)
         if not rects:
             continue
+        # A picture in the margin OUTSIDE a pleading's gutter is a firm's
+        # mark, set up the side of the page hard against the line numbers,
+        # and reading it puts the firm's name — or, read upside down, a
+        # letter-soup of it — into a text layer that then reaches every
+        # export of every page. Not rendered at all: the words are not the
+        # document's, and `_sidebar_spans` would only have to drop them again.
+        gutter = _pleading_gutter(page)
+        if gutter is not None:
+            side = [r for r in rects if _sidebar_image_rect(r, gutter[1])]
+            if side:
+                log.info(f"  Image OCR: page {page.number + 1} — {len(side)} "
+                         f"image(s) in the margin outside the line-number "
+                         f"gutter (a firm's sidebar) left unread")
+                rects = [r for r in rects if not _sidebar_image_rect(r, gutter[1])]
+                if not rects:
+                    continue
         have_low = {w.lower() for w in _IMG_OCR_WORD_RE.findall(text)}
         kept = 0
         for rect in rects:
@@ -3555,6 +3571,132 @@ def _split_row_columns(spans, gap_min=_COLUMN_GAP_MIN, rules=()):
     return out
 
 
+# A margin span whose glyph box ends within this many points of the gutter
+# column's left edge is still wholly LEFT of it: a rotated span's box carries
+# the font's ascent, and a scan's OCR box a point or two of slop, neither of
+# which is the text reaching into the gutter.
+_SIDEBAR_GUTTER_TOL = 2.0
+
+
+def _sidebar_spans(spans, line_col, tol):
+    """ids of the spans in `spans` that are FIRM-SIDEBAR furniture on a
+    pleading page: text printed in the margin OUTSIDE the line-number column
+    (`line_col`, the gutter numbers as `_detect_line_anchors` collected them,
+    with their glyph boxes).
+
+    Two shapes, one measurement. A ROTATED span standing left of the gutter is
+    a sidebar whatever its exact x — a firm's name set up the side of the page
+    (`dir` (0, -1)), or down it where the page was scanned upside down — since
+    nothing a filing wants read is printed sideways in its margin. A
+    HORIZONTAL span is a sidebar only where it ends wholly left of the gutter
+    column AND stands BESIDE the numbered band (within `tol`, the half-lead
+    the row assignment already uses, of the first and last number's box) AND
+    shares its baseline with nothing that reaches past the gutter. Each guard
+    keeps something real: the e-filing stamp above line 1 is horizontal, sits
+    above the band, and its words share a baseline with text that runs into
+    the page, so an OCR'd stamp split into per-word spans is kept whole even
+    where a tall one overlaps the band; and a service block below line 28 is
+    never wholly left of the gutter. What it costs, stated: an OCR'd sidebar
+    whose debris words run ABOVE line 1 or BELOW line 28 keeps those words,
+    and a label a filing really printed sideways in its left margin goes with
+    the sidebar (the exhibit-cover scan reads the raw layer and is untouched).
+    """
+    if not line_col or not spans:
+        return set()
+    gutter_left = min(s["x0"] for s in line_col) + _SIDEBAR_GUTTER_TOL
+    band_top = min(s["y0"] for s in line_col) - tol
+    band_bot = max(s["y1"] for s in line_col) + tol
+    reach = [_span_baseline(sp) for sp in spans if sp["bbox"][2] > gutter_left]
+    out = set()
+    for sp in spans:
+        x0, y0, x1, y1 = sp["bbox"]
+        d = sp.get("_dir") or (1.0, 0.0)
+        rotated = abs(d[0] - 1.0) > 0.05 or abs(d[1]) > 0.05
+        if rotated:
+            if x0 < gutter_left:
+                out.add(id(sp))
+            continue
+        if x1 > gutter_left:
+            continue
+        if y1 < band_top or y0 > band_bot:
+            continue
+        base = _span_baseline(sp)
+        if any(abs(base - r) <= _ROW_BASELINE_TOL for r in reach):
+            continue
+        out.add(id(sp))
+    return out
+
+
+def _pleading_gutter(page, blocks=None):
+    """The line-number GUTTER of a pleading page: `(dominant_x, line_col)`,
+    where `line_col` is the spans of the dominant line-number column as
+    `{num, y_mid, x0, y0, y1}` dicts — or None where the page has no
+    recognisable column (fewer than five numbers in one x-band). Steps 1-2 of
+    `_detect_line_anchors`, factored out so the image-OCR pass can ask the
+    same question of the same page and the margin is measured ONE way."""
+    from collections import Counter
+    if blocks is None:
+        try:
+            blocks = page.get_text("dict")["blocks"]
+        except Exception:
+            return None
+    # Step 1: find spans whose text is a small integer (1-30) on the left
+    # third of the page. These are line-number candidates.
+    line_spans = []
+    for b in blocks:
+        if "lines" not in b:
+            continue
+        for ln in b["lines"]:
+            for sp in ln["spans"]:
+                t = sp["text"].strip()
+                if (re.fullmatch(r"\d{1,2}", t) and 1 <= int(t) <= 30
+                        and sp["bbox"][0] < page.rect.width / 3):
+                    line_spans.append({
+                        "num": int(t),
+                        "y_mid": _span_baseline(sp),
+                        "x0": sp["bbox"][0],
+                        "y0": sp["bbox"][1],
+                        "y1": sp["bbox"][3],
+                    })
+    if not line_spans:
+        return None
+    # Step 2: cluster by x to find the dominant line-number column.
+    x_buckets = Counter(round(s["x0"] / 5) * 5 for s in line_spans)
+    dominant_x = x_buckets.most_common(1)[0][0]
+    line_col = [s for s in line_spans if abs(s["x0"] - dominant_x) < 8]
+    if len(line_col) < 5:
+        # Fewer than 5 line numbers: probably a caption page or similar
+        # - not a real pleading-paper page.
+        return None
+    return dominant_x, line_col
+
+
+def _gutter_lead_tol(line_col):
+    """Half the page's own line lead (capped at `_GUTTER_MATCH_TOL`): how far
+    a row may sit from a gutter number and still belong to it, and how far
+    beside the numbered band the sidebar rule reaches."""
+    ys = sorted(s["y_mid"] for s in line_col)
+    leads = [b - a for a, b in zip(ys, ys[1:]) if b - a > 1]
+    return min(_GUTTER_MATCH_TOL,
+               (statistics.median(leads) if leads else _GUTTER_MATCH_TOL) * 0.5)
+
+
+def _sidebar_image_rect(rect, line_col):
+    """True when an image rect stands in the margin OUTSIDE a pleading's
+    gutter — wholly left of the line-number column and beside the numbered
+    band — which is where a firm prints its mark up the side of the page
+    (`_sidebar_spans` states the rule for text; this is the same measurement
+    asked of a picture, before OCR is spent reading it)."""
+    if not line_col:
+        return False
+    tol = _gutter_lead_tol(line_col)
+    gutter_left = min(s["x0"] for s in line_col) + _SIDEBAR_GUTTER_TOL
+    band_top = min(s["y0"] for s in line_col) - tol
+    band_bot = max(s["y1"] for s in line_col) + tol
+    return (rect.x1 <= gutter_left
+            and not (rect.y1 < band_top or rect.y0 > band_bot))
+
+
 def _detect_line_anchors(page, desplice=False):
     """Per-page: find pleading-paper line numbers and gather body text on
     each numbered row.
@@ -3581,39 +3723,18 @@ def _detect_line_anchors(page, desplice=False):
     spliced like that matches no pseudonymizer term, so the extraction bug was
     also a disclosure bug.
     """
-    from collections import Counter, defaultdict
+    from collections import defaultdict
     blocks = page.get_text("dict")["blocks"]
     # The page's own vertical rules: a column boundary the gap test cannot see
     # (a table's cells sit a few points apart), handed to every row split.
     vrules = [x for x, _y0, _y1 in _page_rules(page)[0]]
 
-    # Step 1: find spans whose text is a small integer (1-30) on the left
-    # third of the page. These are line-number candidates.
-    line_spans = []
-    for b in blocks:
-        if "lines" not in b:
-            continue
-        for ln in b["lines"]:
-            for sp in ln["spans"]:
-                t = sp["text"].strip()
-                if (re.fullmatch(r"\d{1,2}", t) and 1 <= int(t) <= 30
-                        and sp["bbox"][0] < page.rect.width / 3):
-                    line_spans.append({
-                        "num": int(t),
-                        "y_mid": _span_baseline(sp),
-                        "x0": sp["bbox"][0],
-                    })
-    if not line_spans:
+    # Steps 1-2: the gutter column (`_pleading_gutter`, shared with the
+    # image-OCR pass so both measure the margin off one definition).
+    found = _pleading_gutter(page, blocks)
+    if found is None:
         return []
-
-    # Step 2: cluster by x to find the dominant line-number column.
-    x_buckets = Counter(round(s["x0"] / 5) * 5 for s in line_spans)
-    dominant_x = x_buckets.most_common(1)[0][0]
-    line_col = [s for s in line_spans if abs(s["x0"] - dominant_x) < 8]
-    if len(line_col) < 5:
-        # Fewer than 5 line numbers: probably a caption page or similar
-        # - not a real pleading-paper page.
-        return []
+    dominant_x, line_col = found
 
     # Step 2a: the page's own line lead. A body row belongs to a line number
     # only if it sits within HALF a lead of it; anything further is furniture.
@@ -3621,10 +3742,7 @@ def _detect_line_anchors(page, desplice=False):
     # printed page number (7-18 pt below line 28) were adopted onto line 28:
     #   "28  (FAC, p. 8:17-18.) 1"
     #   "28  ...a flood on OPPOSITION TO DEFENDANT'S MOTION TO STRIKE..."
-    ys = sorted(s["y_mid"] for s in line_col)
-    leads = [b - a for a, b in zip(ys, ys[1:]) if b - a > 1]
-    tol = min(_GUTTER_MATCH_TOL,
-              (statistics.median(leads) if leads else _GUTTER_MATCH_TOL) * 0.5)
+    tol = _gutter_lead_tol(line_col)
 
     # Step 3: collect body-text spans (right of the line-number column, above
     # the footer band) and cluster them into physical rows by baseline.
@@ -3778,23 +3896,49 @@ def _detect_line_anchors(page, desplice=False):
     # pinpoint "p.3:7" still never lands on furniture.
     claimed = {id(sp) for rs in rows_by_num.values()
                for r in rs for sp in r["spans"]}
-    margin = [sp
-              for b in blocks if "lines" in b
-              for ln in b["lines"]
-              for sp in ln["spans"]
-              if sp["text"].strip()
-              and sp["bbox"][0] < body_x_min
-              and _span_baseline(sp) <= footer_top
-              # A bare small integer to the LEFT of the body column is a gutter
-              # number, full stop — including one the x-clustering left out of
-              # `line_col`. Pleading paper right-aligns the gutter, so the
-              # single digits sit in their own sub-column a few points right of
-              # the double digits, and a page whose 10-29 outnumber its 1-9 puts
-              # dominant_x on the wider run. Matching only near dominant_x let
-              # "1".."9" through as body text ("1 SERVICE LIST").
-              and not re.fullmatch(r"\d{1,2}", sp["text"].strip())]
-    stray = ([sp for sp in body_spans if id(sp) not in claimed]
-             + _drop_overdrawn_spans(margin))
+    margin = []
+    for b in blocks:
+        if "lines" not in b:
+            continue
+        for ln in b["lines"]:
+            for sp in ln["spans"]:
+                if (sp["text"].strip()
+                        and sp["bbox"][0] < body_x_min
+                        and _span_baseline(sp) <= footer_top
+                        # A bare small integer to the LEFT of the body column
+                        # is a gutter number, full stop — including one the
+                        # x-clustering left out of `line_col`. Pleading paper
+                        # right-aligns the gutter, so the single digits sit in
+                        # their own sub-column a few points right of the double
+                        # digits, and a page whose 10-29 outnumber its 1-9 puts
+                        # dominant_x on the wider run. Matching only near
+                        # dominant_x let "1".."9" through as body text
+                        # ("1 SERVICE LIST").
+                        and not re.fullmatch(r"\d{1,2}", sp["text"].strip())):
+                    sp["_dir"] = ln.get("dir") or (1.0, 0.0)
+                    margin.append(sp)
+    stray = [sp for sp in body_spans if id(sp) not in claimed]
+    # Step 7a: a FIRM SIDEBAR is not content. The margin OUTSIDE the gutter —
+    # between the page edge and the line-number column — is where a firm
+    # prints its name up the side of the page (a watermark set bottom-to-top,
+    # or top-to-bottom where the page was scanned upside down), and one firm
+    # sets it hard against the numbers. Step 7 read it as a left-margin label
+    # and emitted it as an unnumbered row — an OCR'd copy as a scatter of
+    # debris words down the page — and the export then carried a firm name
+    # nothing else on the page says, on every page.
+    #
+    # The exclusion is measured off the GUTTER ITSELF (`_sidebar_spans`): the
+    # numbers are the leftmost thing a pleading prints, so a span wholly left
+    # of the column they stand in is in the margin outside the pleading. That
+    # is the width the operator observed the left margin "would need to fit
+    # just the numbers", read from the page rather than proxied through the
+    # right margin, which is a coincidence of one firm's layout. The e-filing
+    # stamp above line 1 keeps its place: it is horizontal, and its text
+    # reaches past the gutter into the page.
+    margin = _drop_overdrawn_spans(margin)
+    sidebar = _sidebar_spans(margin + stray, line_col, tol)
+    margin = [sp for sp in margin if id(sp) not in sidebar]
+    stray = stray + margin
     for row in _cluster_rows(stray):
         segs = []
         for x, text in _split_row_columns(row["spans"], rules=vrules):
