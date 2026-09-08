@@ -10679,8 +10679,14 @@ _PN_ADDR_TAIL_CUE_STRICT = (
     r"|\d{1,3}(?i:st|nd|rd|th)[ \t]+(?i:Floor|Fl)\b"
     rf"|(?:[{_PN_LAT_UPPER}][{_PN_LAT}]+[ \t]*,?[ \t]*){{1,3}}"
     r"[A-Za-z]{2}\.?[ \t]+\d{5})")
+# The house number may be WELDED to a directional — "1100N Central Ave" is
+# how an OCR'd letterhead and a recorder's index both print it — so the gap
+# after the number is a space OR the directional itself (a lookahead, so the
+# directional is still read as the first name word). Nothing else may follow
+# a number without a space, so "24Hour" stays prose.
+_PN_ADDR_NUM_SEP = r"(?:[ \t]+|(?=[NSEW]{1,2}[ \t]))"
 _PN_ADDR_STREET_PAT = (
-    rf"{_PN_ADDR_NUM}[ \t]+"
+    rf"{_PN_ADDR_NUM}{_PN_ADDR_NUM_SEP}"
     rf"(?:(?:{_PN_ADDR_WORD}[ \t]+){{1,4}}{_PN_ADDR_SUFFIX}\b\.?"
     rf"|(?:{_PN_ADDR_WORD}[ \t]+){{1,3}}{_PN_ADDR_CLOSE}\b(?={_PN_ADDR_TAIL_CUE})"
     # The run must END on a word boundary: with no suffix to close on, the
@@ -10724,6 +10730,9 @@ def _pn_addr_canon(real):
     # the same parcel. Give the period back its space first — this string is
     # only ever an identity KEY, never text that gets written out.
     real = re.sub(r"(?<=[A-Za-z])\.(?=[A-Za-z])", ". ", real)
+    # …and a directional welded to the house number ("1100N Central") is
+    # the same parcel as "1100 N Central", so the number is cut loose first.
+    real = re.sub(r"^(\s*\d+)([NSEW]{1,2})(?=[ \t])", r"\1 \2", real)
     toks = re.split(r"[ \t]+", real.strip())
     out = []
     for t in toks:
@@ -10749,8 +10758,9 @@ def _pn_addr_name_of(street):
     one-fake collapse the registry exists to prevent (and the reversal macro
     answers by restoring none of them). A digit run is consumed only when a
     separator follows it, so the "5" of "5th" stays with its name."""
+    out = re.sub(r"^(\s*\d+)([NSEW]{1,2})(?=[ \t])", r"\1 \2", str(street))
     out = re.sub(r"^\s*(?:\d+(?:[ \t]*[-\u2013\u2014][ \t]*\d+)?[ \t]+)+", "",
-                 str(street)).strip()
+                 out).strip()
     out = re.sub(rf"[ \t]+{_PN_ADDR_SUFFIX}\b\.?[ \t]*$", "", out).strip()
     return out
 
@@ -10783,7 +10793,8 @@ def _pn_addr_street_key(real):
 # nothing — so only the number and name words are faked; Street/Road/Court/Way…
 # are always left as they stand.
 _PN_ADDR_SUFFIX_OF_RE = re.compile(
-    rf"{_PN_ADDR_NUM}[ \t]+(?:{_PN_ADDR_WORD}[ \t]+){{1,4}}({_PN_ADDR_SUFFIX}\b\.?)")
+    rf"{_PN_ADDR_NUM}{_PN_ADDR_NUM_SEP}(?:{_PN_ADDR_WORD}[ \t]+){{1,4}}"
+    rf"({_PN_ADDR_SUFFIX}\b\.?)")
 
 
 def _pn_addr_suffix_of(real):
@@ -11886,9 +11897,12 @@ _PN_ID_RES = {
     # An assessor's parcel number is a public lookup to an owner and a
     # street; "APN 5555-012-034" (case-sensitive — "apn" is inside words).
     "parcel number": re.compile(
-        r"(?i)\b(?:(?-i:APN)|assessor['’]?s?[ \t]+parcel[ \t]+(?:no\.?|number|#)|"
+        # The label is written "APN", "A.P.N." and "A.P.N.:" and the number
+        # is spaced as often as dashed ("2181 028 002"); a title report's
+        # legal description does both.
+        r"(?i)\b(?:(?-i:A\.?P\.?N\.?)|assessor['’]?s?[ \t]+parcel[ \t]+(?:no\.?|number|#)|"
         r"parcel[ \t]+(?:no\.?|number|#))[ \t]*:?[ \t]*#?[ \t]*"
-        r"(\d{3,4}(?:-\d{2,4}){2,3})(?![\w])"),
+        r"(\d{3,4}(?:[- ]\d{2,4}){2,3})(?![\w])"),
     "passport number": re.compile(
         r"(?i)\bpassport[ \t]*(?:no\.?|number|#)?[ \t]*:?[ \t]*#?[ \t]*"
         r"((?-i:[A-Z]{0,2})\d{7,9})(?![\w])"),
@@ -11902,15 +11916,20 @@ _PN_ID_RES = {
     # own numbering.
     "instrument number": re.compile(
         r"(?i)\b(?:instrument|recording|recorder['’]?s|document|doc\.?)[ \t]*"
-        r"(?:no\.?|number|#)[ \t]*:?[ \t]*#?[ \t]*((?:19|20)\d{2}-?\d{6,8})"
+        r"(?:no\.?|number|#)[ \t]*:?[ \t]*#?[ \t]*"
+        # The year may be TWO digits with the dash carrying the shape
+        # ("25-0810028", a Los Angeles recorder's own spelling), which a
+        # four-digit-year class walked past on every deed of a title report.
+        r"((?:(?:19|20)\d{2}-?|\d{2}-)\d{6,8})"
         r"(?![\w])"),
     # An EEOC charge ("480-2022-01234") or a DFEH/CRD case number.
     "charge number": re.compile(
         r"(?i)\b(?:(?-i:EEOC|DFEH|CRD)[ \t]+)?charge[ \t]*(?:no\.?|number|#)"
         r"[ \t]*:?[ \t]*#?[ \t]*(\d{3}-\d{4}-\d{5}|\d{6}-\d{8})(?![\w])"),
     # A notary's commission number, on every jurat.
+    # A notary's STAMP abbreviates its own label ("COMM. #2475538").
     "commission number": re.compile(
-        r"(?i)\bcommission[ \t]*(?:no\.?|number|#)[ \t]*:?[ \t]*#?[ \t]*"
+        r"(?i)\b(?:commission|comm\.?)[ \t]*(?:no\.?|number|#)[ \t]*:?[ \t]*#?[ \t]*"
         r"(\d{6,8})(?![\w])"),
     "loan number": re.compile(
         r"(?i)\bloan[ \t]*(?:no\.?|number|#|id)[ \t]*:?[ \t]*#?[ \t]*"
@@ -16136,9 +16155,14 @@ _PN_LABEL_NAME = r"[A-Z][A-Za-z.'’-]+(?:[ \t]+[A-Z][A-Za-z0-9.'’-]+){0,3}"
 # matched nothing and the exhibit's owner names were never registered. At most
 # ONE newline, or the label would reach across a blank line into unrelated prose.
 _PN_LABEL_GAP = r"[ \t]*\n?[ \t]*"
+# The same run where two names are joined by "and": the run must stop
+# BEFORE the conjunction, or "MARK X AND SVETLANA" is read as one four-word
+# name and the split leaves the second person as a bare given name.
+_PN_LABEL_NAME_NOAND = (r"[A-Z][A-Za-z.'’-]+"
+                        r"(?:[ \t]+(?!(?i:and)[ \t])[A-Z][A-Za-z0-9.'’-]+){0,3}")
 _PN_LABEL_RES = (
     re.compile(r"(?i:property\s+owners?)[ \t]*:?" + _PN_LABEL_GAP +
-               r"(?P<n>" + _PN_LABEL_NAME + r"(?:[ \t]+(?:and|&)[ \t]+"
+               r"(?P<n>" + _PN_LABEL_NAME_NOAND + r"(?:[ \t]+(?i:and|&)[ \t]+"
                + _PN_LABEL_NAME + r")?)"),
     # NB: the plural `s` lives INSIDE the case-insensitive group. Left outside it
     # matched "Contractors:" but not the "CONTRACTORS:" an exhibit actually prints.
@@ -16149,13 +16173,55 @@ _PN_LABEL_RES = (
     # space before the colon is how those forms print it, and `[ \t]*:`
     # admits it). Each was verified as reaching NO pass at all: the value
     # behind it shipped in the clear, ungated and unreported.
+    # A TITLE REPORT's property history names every prior owner and lender
+    # behind "GRANTOR:", "GRANTEE:", "TRUSTOR:" and "LENDER:", two of them
+    # joined by "AND"; a Secretary of State printout names the "Agent for
+    # Service of Process:". A reviewed batch shipped three prior owners and
+    # four lenders off one Ticor exhibit, and the registered agent off the
+    # SOS page, with every one of these labels in front of them.
     re.compile(r"(?i:(?:contractor|owner|client|tenant|landlord|buyer|seller|"
                r"patient(?:[ \t]+name)?|insured|claimant|borrower|guarantor|"
                r"employee|employer|applicant|debtor|lessee|lessor|beneficiary|"
-               r"trustee|witness|provider|treating[ \t]+physician|"
+               r"trustee|trustor|grantor|grantee|lender|vestee|assignor|"
+               r"assignee|mortgagor|mortgagee|record[ \t]+owner|"
+               r"agent[ \t]+for[ \t]+service(?:[ \t]+of[ \t]+process)?|"
+               r"witness|provider|treating[ \t]+physician|"
                r"reserved[ \t]+by|salesperson|requested[ \t]+by|"
                r"prepared[ \t]+by)s?)"
-               r"[ \t]*:" + _PN_LABEL_GAP + r"(?P<n>" + _PN_LABEL_NAME + r")"),
+               r"[ \t]*:" + _PN_LABEL_GAP + r"(?P<n>" + _PN_LABEL_NAME_NOAND +
+               r"(?:[ \t]+(?i:and|&)[ \t]+" + _PN_LABEL_NAME + r")?)"),
+    # A CAPACITY trails a person after a comma the way a credential does:
+    # "Robert Kersnick, as Co-Trustee of the Kersnick Family Trust"; "Jane
+    # Roe, Successor Trustee"; "Owen Blakely, Executor". A recorded deed and
+    # a probate exhibit name their people this way and no other. The comma
+    # plus the capacity word is the corroboration; a trust ("the Kersnick
+    # Family Trust, as Trustee") fails the two-word screen or is an entity.
+    re.compile(r"(?P<n>" + _PN_LABEL_NAME + r")[ \t]*,[ \t]*"
+               r"(?:(?i:as|in[ \t]+(?:his|her|its|their)[ \t]+capacity[ \t]+as)"
+               r"[ \t]+)?(?:(?i:the|an?)[ \t]+)?"
+               r"(?i:(?:co-|successor[ \t]+|sole[ \t]+)?trustees?|executor|"
+               r"executrix|administrat(?:or|rix)|conservator|guardian|"
+               r"personal[ \t]+representative|judgment[ \t]+(?:creditor|debtor))"
+               r"(?![\w-])"),
+    # …and a JUDGMENT CREDITOR or DEBTOR is named role-first, as a plaintiff
+    # is ("judgment creditor Damon Paikos recorded an abstract"). The
+    # two-word role is not in `_PN_PARTY_ROLE_WORDS`, so no role prefix read
+    # it, and the creditor shipped in an enforcement declaration.
+    re.compile(r"(?i:judgment[ \t]+(?:creditor|debtor))[ \t]+"
+               r"(?P<n>" + _PN_LABEL_NAME + r")(?![\w])"),
+    # A notary named ONLY in the STAMP BOX: the name alone on its line, then
+    # within two short lines "Notary Public" ("SHABBIR AZAM / Notary Public
+    # - California / Los Angeles County / Commission # 2475537"). The jurat
+    # anchors below want "before me, X, Notary Public" on one line; an
+    # acknowledgment's stamp has no sentence at all, and five notaries of one
+    # batch shipped that way while their commission numbers were faked.
+    # STRICT, so a form line above the title ("State of California") is
+    # refused; the intervening lines are held short so a paragraph cannot
+    # stand between the name and the title.
+    re.compile(r"(?m)^[ \t]*(?P<n>[A-Z][A-Za-z.'’-]+"
+               r"(?:[ \t]+[A-Z][A-Za-z.'’-]+){1,3})[ \t]*\n"
+               r"(?:[ \t]*[^\n]{0,40}\n){0,2}"
+               r"[ \t]*(?i:notary[ \t]+public)(?![\w])(?P<strict>)"),
     # A licensing-board page names the licensee with NO colon: "The qualifying
     # individual Farhad Ardeshirpour certified that…". The phrase is a term of
     # art (Bus. & Prof. Code § 7068) and nothing but a person follows it. It
@@ -16694,7 +16760,8 @@ def _pn_label_names(text):
     out, seen = [], set()
 
     def take(raw, *, cased=True, strict=False, cred=False):
-        pieces = [p.strip() for p in re.split(r"\s+(?:and|&)\s+", raw) if p.strip()]
+        pieces = [p.strip() for p in re.split(r"\s+(?:(?i:and)|&)\s+", raw)
+                  if p.strip()]
         # "Roxanne and Thomas Purscelley" -> give the bare first name the
         # shared surname so it registers as a person, not a lone first name.
         if pieces and len(pieces[-1].split()) >= 2:
@@ -17145,6 +17212,19 @@ def _pn_clean_phrase(s):
         s = s[:m.start()]
 
 
+def _pn_distinctive_trade_name(word):
+    """True for a ONE-word fictitious business name worth harvesting off a
+    dba: four or more letters, name-shaped, on no vocabulary list, and not
+    a party role or a generic token — the screen a bare business token
+    takes before it may exist at all."""
+    w = word.strip(".,;:'’\"")
+    base = _pn_word_base(w).lower()
+    return (len(base) >= 4 and base.isalpha()
+            and _pn_is_name_token(w) and not _pn_is_generic_token(w)
+            and base not in _PN_COMMON_WORDS and not _pn_is_role_token(w)
+            and base not in _PN_DBA_PHRASE_STOP)
+
+
 def _pn_name_pair_ok(head, tail):
     """The screens a two-sided name pair read out of PROSE must clear. Shared by
     the dba harvest and the alias harvest, for the reason `_weld_core` is
@@ -17153,8 +17233,15 @@ def _pn_name_pair_ok(head, tail):
     # Both sides must be at least two words. A one-word name read out of prose
     # ("dba Equity", "aka Smith") would become a term that fires on every
     # ordinary use of the word; a single-word alias has to be supplied with
-    # --term instead.
-    if len(head.split()) < 2 or len(tail.split()) < 2:
+    # --term instead. The ONE exception is a DISTINCTIVE one-word trade
+    # name behind a two-word legal name ("Fundamental Capital LLC dba
+    # Kapitus"): a coined word that passes the name-token screen, is on no
+    # vocabulary list and is at least four letters is a business name and
+    # nothing else, and a judgment creditor's dba shipped three times under
+    # the two-word floor.
+    if len(head.split()) < 2:
+        return False
+    if len(tail.split()) < 2 and not _pn_distinctive_trade_name(tail):
         return False
     if head.lower() in _PN_DBA_PHRASE_STOP or tail.lower() in _PN_DBA_PHRASE_STOP:
         return False
@@ -17163,12 +17250,38 @@ def _pn_name_pair_ok(head, tail):
     return not (_pn_is_party_role(head) or _pn_is_party_role(tail))
 
 
+# A dba's LEGAL name may wrap, so the head phrase reaches back across a line
+# — and back into whatever stood on the line above, which in a recorded
+# instrument is the party named in a capacity ("Jane Roe, Successor Trustee
+# / Fundamental Capital LLC dba Kapitus"). The head is cut at the LAST
+# capacity or role word, so the name in a capacity keeps its own harvest and
+# the legal name is what the dba binds.
+_PN_CAPACITY_CUT_WORDS = frozenset({
+    "successor", "trustee", "trustees", "executor", "executrix",
+    "administrator", "administratrix", "conservator", "guardian",
+    "representative", "individually", "capacity", "behalf"})
+
+
+def _pn_trim_capacity_lead(phrase):
+    """`phrase` with everything up to and including its last capacity or
+    party-role word removed ("Jane Roe, Successor Trustee Fundamental Capital
+    LLC" -> "Fundamental Capital LLC"); unchanged where none stands in it."""
+    words = phrase.split()
+    cut = 0
+    for i, w in enumerate(words):
+        base = _pn_word_base(w.strip(",.;:")).lower()
+        if base in _PN_CAPACITY_CUT_WORDS or _pn_is_role_token(w):
+            cut = i + 1
+    return " ".join(words[cut:]) if cut else phrase
+
+
 def _pn_dba_pairs(text):
     """[(legal_name, fictitious_name), ...] read off `text`, de-duplicated."""
     pairs, seen = [], set()
     for rx in (_PN_DBA_TEXT_RE, _PN_DBA_OF_RE):
         for m in rx.finditer(text):
-            head = _pn_trim_address(_pn_clean_phrase(m.group("head")))
+            head = _pn_trim_capacity_lead(
+                _pn_trim_address(_pn_clean_phrase(m.group("head"))))
             tail = _pn_trim_address(_pn_clean_phrase(m.group("tail")))
             if not _pn_name_pair_ok(head, tail):
                 continue

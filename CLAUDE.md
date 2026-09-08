@@ -4315,6 +4315,33 @@ the detector had not matched, so it shipped as `<fake-local>@<real-domain>`;
 `scrub_emails` now rewrites a tracked domain on its own wherever the local
 part beside it is one of this run's fakes.
 
+**Seven near-misses off one reviewed batch, each a shape a rule already
+covered, one notch out** (`test_reviewed_batch_gaps.py`). A title report's
+instrument number is written with a TWO-digit year ("25-0810028") and the
+class wanted four; its parcel number is labelled "A.P.N." and spaced as often
+as dashed; a recorder's index WELDS the house number to its directional
+("1100N Central Ave", `_PN_ADDR_NUM_SEP`, and `_pn_addr_canon` cuts the
+number loose so the two spellings stay one parcel); a notary named ONLY in
+the stamp box — the name alone on a line, "Notary Public" within two short
+lines under it — met neither jurat anchor, and the stamp abbreviates its
+own label ("COMM. #"); a coined one-word dba ("Fundamental Capital LLC dba
+Kapitus") fell under the two-word floor, which now admits a DISTINCTIVE
+one-word tail (`_pn_distinctive_trade_name`: four-plus letters, name-shaped,
+on no vocabulary list) — and because the head phrase may wrap, it is cut at
+the last capacity or role word (`_pn_trim_capacity_lead`), or the party
+named in a capacity on the line above was swallowed into the legal name; the
+labels a title report and an SOS printout name their people with (GRANTOR,
+GRANTEE, TRUSTOR, LENDER, Agent for Service of Process) join the label set,
+the value admitting a second name behind "AND" and the name run stopping
+before it (`_PN_LABEL_NAME_NOAND`); and a person named in a CAPACITY after a
+comma ("Robert Kersnick, as Co-Trustee", "Owen Blakely, in his capacity as
+Executor") or role-first as a JUDGMENT CREDITOR is harvested as a
+credential-trailed name is. Residual, and stated: a lender with no
+name-shaped word ("DOWNEY S/L"), a bare "Downey", is still nothing, and a
+vocabulary word the documents only ever capitalise passes the dba screen
+("dba Equity"), the corpus prune being the screen of last resort as it is
+for every harvest.
+
 **The E-Court "Other Names" cell carries CREDENTIALS and ROLE columns, and
 neither is a name** (`_pn_cell_is_credential`, `_PN_CELL_ROLE_TAIL_RE`, in
 `_pn_split_cell`). The export writes a physician's degree as its own comma
