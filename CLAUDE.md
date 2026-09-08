@@ -3249,12 +3249,42 @@ the party), so its row stays reversible.
   firing inside a longer word. A keep can never rip its word out of OTHER
   text either way — keeps and terms match on word boundaries, never
   substrings, so `[is]` on one row touches no "This", "basis" or "analysis"
-  anywhere. **Website vs e-mail**: a government
-  WEBSITE (`*.gov`/`*.mil`) is public infrastructure — never faked, never flagged
-  — but the `@` settles it, so `clerk@courts.ca.gov` names a person and is faked
-  like any other address (`_pn_url_whitelisted` gates urls only). An **e-mail is
-  never a worksheet row**: it is always faked, so "should I fake this?" has one
-  answer and the row is pure triage cost. `_pn_is_email_value` keeps addresses
+  anywhere. **Website vs e-mail — EVERY website not ending in `.gov` is
+  faked, and every e-mail address is faked WHOLE**, at the owner's direction
+  (`_pn_url_whitelisted`, `_pn_fake_domain`, `_pn_contact_value`). A `.gov`
+  WEBSITE is public infrastructure — never faked, never flagged — but the `@`
+  settles it, so `clerk@courts.ca.gov` names a person and is faked like any
+  other address (`_pn_url_whitelisted` gates urls only, and
+  `_whitelisted_url_spans` never protects a host standing behind an "@").
+  The rule used to carry a LIST behind it — `.mil`, the e-filing vendors
+  (One Legal, usLegalPro), the BCRC contractor's site, and the consumer mail
+  providers (gmail, yahoo, outlook…) passed through as naming no party — and a
+  reviewed batch shipped a mortgage servicer's site, the opposing firm's
+  domain inside a half-faked address, and a webmail address with the real
+  given name in its handle. One rule with no list is what "every website"
+  means; the ONE exemption left is `_PN_URL_WHITELIST`, the exact hosts of
+  the verification links the authorities appendix writes into the export
+  itself (a legal publisher, the tool's own output, and rewriting them
+  breaks the links). Three things ride with it. The bare-domain branch of
+  the url detector no longer refuses a host standing right behind an "@":
+  where the e-mail detector reads the address it wins the overlap anyway
+  (the longer candidate at the same priority), and where it does not — the
+  handle on the line above, a scan's debris inside it — the refusal was the
+  only thing keeping the firm's domain in the export as the real half of
+  `<fake-local>@<real-domain>`. A `no`/`never`/bracket typed against an
+  address or a non-.gov website is NOT HONOURED: `_pn_parse_decision_rows`
+  sets the row aside with a warning (neither kept nor minted, so the
+  detectors fake the value as they fake every other) and `_pn_load_key`
+  drops such a key row so the value takes a fresh fake — a delivered master
+  KEEP sheet carried dozens of url/domain `no` rows, and a soft keep then
+  applied every one in every folder, which is the likeliest way a servicer's
+  site came to stand verbatim in a scrubbed letterhead. And `.mil` joins the
+  TLDs the bare-domain branch reads, since a bare `army.mil` was never a
+  match at all while it was exempt. `_PN_PUBLIC_REVIEW_HOSTS` is unchanged
+  and is still only about REVIEW ROWS: a host on it is faked like any other,
+  and the row it would earn where the detector missed it is refused. An
+  **e-mail is never a worksheet row**: it is always faked, so "should I fake
+  this?" has one answer and the row is pure triage cost. `_pn_is_email_value` keeps addresses
   out of `LEAKS.xlsx` (the console log and `pdf_linker.log` still report them, so
   a detector miss is never hidden), the url/domain review class ignores a host
   preceded by `@` (OCR that spaced an address out left the host standing), and

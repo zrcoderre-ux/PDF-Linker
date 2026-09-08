@@ -127,12 +127,12 @@ def test_email_domains_injective():
         f"domain map is not injective: {dict(zip(hosts, fakes))}")
 
 
-# P2  Public consumer providers carry no identity and should pass through.
-#   (Recommendation — delete this test if the firm prefers to fake them, but
-#   then test_email_domains_injective still governs uniqueness.)
-def test_public_email_providers_preserved():
+# P2  Public consumer providers used to pass through; the firm chose to fake
+#   them (every e-mail address is faked whole), and injectivity above still
+#   governs uniqueness.
+def test_public_email_providers_are_faked_like_any_host():
     for h in ["gmail.com", "yahoo.com", "outlook.com", "hotmail.com", "icloud.com"]:
-        assert P._pn_fake_domain(h) == h, f"public provider {h} was faked"
+        assert P._pn_fake_domain(h) != h, f"public provider {h} passed through"
 
 
 # P2  The macro-reversible key must not carry rows that matched nothing.

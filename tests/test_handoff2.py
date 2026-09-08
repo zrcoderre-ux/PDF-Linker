@@ -218,8 +218,11 @@ def test_a_diagnosis_code_is_not_a_stamp_and_the_bcrc_contacts_are_kept():
     z.register_identifiers(text)
     out = z.apply(text)
     for kept in ("M54.5", "99213", "1-855-798-2627", "405-869-3309",
-                 "PO Box 138832", "www.gdit.com/cob"):
+                 "PO Box 138832"):
         assert kept in out, (kept, out)
+    # The contractor's WEBSITE is no longer an exception: every host not
+    # ending in .gov is faked (owner's rule); its lines and box stay public.
+    assert "gdit.com" not in out, out
     assert "23071" not in out, out
 
 

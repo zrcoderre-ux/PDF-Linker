@@ -10602,6 +10602,9 @@ def _pn_fake_dob(real, registry):
 # `_fake_email`, which takes it apart, have to agree on what one looks like.
 _PN_AT_SIGN = r"(?:[ \t]{0,2}(?:@|[(\[{][ \t]*[aA][ \t]*[)\]}])[ \t]{0,2})"
 _PN_AT_SIGN_RE = re.compile(_PN_AT_SIGN)
+# The at-sign as the LAST thing before a position (`search(text, 0, pos)`):
+# asks whether a domain match is the host of an address.
+_PN_AT_SIGN_TAIL_RE = re.compile(_PN_AT_SIGN + r"\Z")
 
 
 def _pn_email_canon(real):
@@ -11132,19 +11135,19 @@ def _pn_fake_street(real):
 
 
 # ── URL / bare-domain handling ──────────────────────────────────────────────
-# Citation hosts the authorities appendix emits on purpose — never rewrite them,
-# or the public verification links break. The second group is e-filing /
-# court-services infrastructure: a One Legal or usLegalPro status page in a
-# proof of service names the FILING CHANNEL, not a party — like a `.gov` host
-# it identifies no one, so faking it protects nothing and flagging it put a
-# worksheet row (and an operator "no") in front of every filing-receipt page.
+# EVERY website that does not end in `.gov` is faked, at the owner's direction
+# (`_pn_url_whitelisted`). The one exemption is this list: the hosts the
+# authorities appendix WRITES INTO THE EXPORT ITSELF as verification links for
+# published authority (`_build_authorities_appendix`) — the tool's own output,
+# naming a legal publisher and no party, and rewriting them breaks the links.
+# The e-filing and court-services hosts that used to sit here (One Legal,
+# usLegalPro, the BCRC contractor) and the public-provider e-mail domains are
+# faked like any other host now: a reader learns nothing from "postbox4.org"
+# where they learnt nothing from "onelegal.com", and one rule with no list
+# behind it is what "every website" means.
 _PN_URL_WHITELIST = (
     "leginfo.legislature.ca.gov", "law.cornell.edu", "scholar.google.com",
-    "courts.ca.gov", "google.com", "casetext.com", "justia.com",
-    "onelegal.com", "uslegalpro.com", "lawhelpcalifornia.org",
-    # The Medicare Benefits Coordination & Recovery Center's contractor
-    # domain, printed on every conditional-payment letter.
-    "gdit.com",
+    "google.com",
 )
 
 
@@ -11182,10 +11185,15 @@ def _pn_url_whitelisted(real):
     # bare "ca.gov" tail on its own line, which the child-only whitelist
     # missed — the detector minted a domain record for it, and that record
     # then "survived" inside every deliberately-kept courts.ca.gov citation
-    # link, a LEAK row per file across the whole folder.
-    if host in ("gov", "mil") or host.endswith((".gov", ".mil")):
+    # link, a LEAK row per file across the whole folder. `.gov` ALONE, at the
+    # owner's direction ("fake all of them that don't end in .gov"): the
+    # `.mil` exemption that rode beside it is gone with the rest of the list.
+    if host == "gov" or host.endswith(".gov"):
         return True
-    return any(host == w or host.endswith("." + w) for w in _PN_URL_WHITELIST)
+    # EXACT hosts: the appendix writes `scholar.google.com` and a
+    # `www.google.com/search` fallback, and nothing else under google.com is
+    # the tool's own output (`mail.google.com` in an exhibit is a website).
+    return host in _PN_URL_WHITELIST
 
 
 # Public-infrastructure hosts for the url/domain REVIEW class only — never a
@@ -11202,6 +11210,7 @@ def _pn_url_whitelisted(real):
 # more public infrastructure appears.
 _PN_PUBLIC_REVIEW_HOSTS = frozenset("""
 lacourt.org courts.ca.gov jamsadr.com jamsadr.org adr.org onelegal.com
+uslegalpro.com lawhelpcalifornia.org
 docusign.com docusign.net avvo.com lawyers.com martindale.com nolo.com
 justia.com courtlistener.com uscourts.gov
 reuters.com dailyjournal.com businesswire.com bloomberg.com prnewswire.com
@@ -11238,16 +11247,6 @@ def _pn_host_is_public_infra(host):
                for w in _PN_PUBLIC_REVIEW_HOSTS if tail != w)
 
 
-# Consumer mail providers shared by millions: the host identifies no one, and
-# faking it both protects nothing and, once two distinct real hosts collapse
-# onto one fake, misleads a reader into thinking opposing parties shared an
-# inbox. These pass through unchanged; every other host is faked injectively.
-_PN_PUBLIC_EMAIL_DOMAINS = frozenset({
-    "gmail.com", "googlemail.com", "yahoo.com", "ymail.com", "yahoo.co.uk",
-    "outlook.com", "hotmail.com", "hotmail.co.uk", "live.com", "msn.com",
-    "icloud.com", "me.com", "mac.com", "aol.com", "proton.me", "protonmail.com",
-    "gmx.com", "gmx.net", "mail.com", "zoho.com", "yandex.com",
-})
 
 # Default registry for bare `_pn_fake_domain` calls (module fallbacks / tests).
 # The Pseudonymizer passes its own per-case registry so domain fakes reset
@@ -11649,18 +11648,18 @@ def _pn_scan_fold_dist(word, tracked, degraded=False, party=False):
 
 
 def _pn_fake_domain(domain, registry=None):
-    """A stable, injective fake host for a real domain. Common public providers
-    (gmail, yahoo, outlook, …) pass through unchanged — they carry no identity.
-    Every other distinct real host gets its OWN fake from the neutral pool, so
-    two parties never collapse onto one domain (the earlier `_pn_rng(...).choice`
-    put gmail, yahoo and the firm domain all on `letterbox.co`). Keyed on the
-    registrable host, so `paula@themillenniallawyer.com` and
-    `www.TheMillennialLawyer.com` land on the SAME fake."""
+    """A stable, injective fake host for a real domain. Every distinct real
+    host gets its OWN fake from the neutral pool, so two parties never collapse
+    onto one domain (the earlier `_pn_rng(...).choice` put gmail, yahoo and
+    the firm domain all on `letterbox.co`). Keyed on the registrable host, so
+    `paula@themillenniallawyer.com` and `www.TheMillennialLawyer.com` land on
+    the SAME fake. The consumer providers (gmail, yahoo, outlook, …) used to
+    pass through as carrying no identity; they are faked like any other host
+    now, at the owner's direction — every e-mail address is faked WHOLE, and
+    a rule with a list of exceptions behind it is not that rule."""
     host = domain.lower()
     if host.startswith("www."):
         host = host[4:]
-    if host in _PN_PUBLIC_EMAIL_DOMAINS:
-        return host
     reg = registry if registry is not None else _PN_DOMAIN_REGISTRY
     return reg.domain(host, _PN_EMAIL_DOMAINS)
 
@@ -11735,10 +11734,20 @@ _PN_DETECTORS = {
     # that spelling in clear text — unflagged too, since the review scan reads
     # this same regex. Every host consumer already case-folds (`_pn_url_host`,
     # `_pn_fake_domain`), so the caps spelling seeds the same fake.
+    # The bare-domain branch used to REFUSE a host standing right behind an
+    # "@" — that is the e-mail detector's address. It is, where the e-mail
+    # detector reads it: the address candidate is the longer of the two at
+    # the same priority and wins the overlap, so the refusal bought nothing
+    # there. Where the e-mail detector did NOT read it (the local part on the
+    # line above, a scan's debris inside the handle), the refusal was the
+    # only thing keeping the firm's domain in the export: a bare surname
+    # token then faked the local part and the export read
+    # `<fake-local>@<real-domain>` — half an address, reading as scrubbed.
+    # The domain is a website whatever stands in front of its "@".
     "url": (re.compile(
         r"(?:https?://|www\.)[^\s<>()\"'‘’“”]*[^\s<>()\"'‘’“”.,;:!?]"
-        r"|(?<!@)(?<![\w.])[A-Za-z0-9][\w-]*(?:\.[\w-]+)*"
-        r"\.(?:com|net|org|law|gov|edu|us|biz|info)\b"
+        r"|(?<![\w.])[A-Za-z0-9][\w-]*(?:\.[\w-]+)*"
+        r"\.(?:com|net|org|law|gov|mil|edu|us|biz|info)\b"
         r"(?:/[^\s<>()\"'‘’“”.,;:!?]*)?", re.IGNORECASE),
         _pn_fake_url),
     # A P.O. Box: the box number faked, the label and the locality kept (see
@@ -12578,6 +12587,29 @@ def _pn_is_email_value(value):
     return bool(local.strip()
                 and re.fullmatch(r"[A-Za-z0-9.\-_]+\.[A-Za-z]{2,}",
                                  re.sub(r"\s+", "", host)))
+
+
+def _pn_contact_value(value):
+    """What a value IS when the owner's rule says it is faked whatever an
+    operator typed against it: "e-mail address" for an address, "website"
+    for a URL or bare domain whose host is not `.gov` (or one of the tool's
+    own verification-link hosts, on which a keep is moot), else None.
+
+    A `no` or `never` on such a value is not honoured (`_pn_parse_decision_rows`,
+    `_pn_load_key`): every address and every non-.gov website is faked, at
+    the owner's direction, and a delivered master KEEP sheet carried dozens of
+    url/domain `no` rows that a soft keep then applied in EVERY folder — so
+    the servicer's site and the opposing firm's domain stood verbatim in an
+    export while the rest of the letterhead was scrubbed."""
+    v = " ".join(str(value).split())
+    if not v:
+        return None
+    if _pn_is_email_value(v):
+        return "e-mail address"
+    if (_PN_DETECTORS["url"][0].fullmatch(v) and not _pn_url_fragmentary(v)
+            and not _pn_url_whitelisted(v)):
+        return "website"
+    return None
 
 
 def _pn_is_procedural_phrase(value):
@@ -15035,6 +15067,8 @@ def _pn_load_key(path, registry, log, remint_recycled=False):
         real, fake = at(row, "real value"), at(row, "replacement")
         if real in (None, "") or fake in (None, ""):
             continue
+        if _pn_contact_value(real):
+            continue                # a keep on an address or website: refused below
         if _pn_is_phrase_cell(fake) or _pn_phrase_spec_parts(fake) is not None:
             # A `phrase` (or a `(…)` part) typed into the key is the same
             # circular case as a brace: it governs how OTHER rows' stored
@@ -15114,6 +15148,19 @@ def _pn_load_key(path, registry, log, remint_recycled=False):
         # the decision back for the caller to apply (keep-protection / fragment
         # faking) and persist to the worksheet + master log.
         ctrl = fake.strip()
+        contact = _pn_contact_value(real)
+        if contact and (ctrl.lower() in ("no", "n") or _pn_is_never_cell(ctrl)
+                        or ("{" in ctrl or "[" in ctrl)
+                        and _pn_bracket_keep(str(real), ctrl) is not None):
+            # The row's stored fake is gone (the operator typed over it) and
+            # the keep is not honoured (`_pn_contact_value`), so the row is
+            # DROPPED: the detector fakes the value afresh on this run, as it
+            # fakes every other address and website.
+            log.warning(f"  Pseudonym key: {ctrl!r} on the {contact} {real!r} "
+                        f"is not honoured — every e-mail address and every "
+                        f"website not ending in .gov is faked; the row is "
+                        f"dropped and the value takes a fresh fake.")
+            continue
         if ctrl.lower() in ("no", "n"):
             key_decisions[real.lower()] = {
                 "value": real, "type": "KEEP", "fix": "no", "replacement": None,
@@ -19686,7 +19733,13 @@ class Pseudonymizer:
         unfaked inside a URL the whitelist already calls public."""
         spans = []
         for m in _PN_DETECTORS["url"][0].finditer(text):
-            if _pn_url_whitelisted(m.group(0)):
+            # A `.gov` host standing right behind an "@" is the host of an
+            # ADDRESS, not a website, and the address is faked whole: the
+            # bare-domain branch now reads it (so an unmatched firm domain
+            # behind a stray "@" is faked), and protecting it here would hand
+            # `clerk@courts.ca.gov` back to the export with the person in it.
+            if (_pn_url_whitelisted(m.group(0))
+                    and not _PN_AT_SIGN_TAIL_RE.search(text, 0, m.start())):
                 spans.append(m.span())
         return spans
 
@@ -27490,7 +27543,7 @@ def _pn_apply_aliases(decisions, terms, registry, log, allow_rebind=True):
     return kept, values
 
 
-def _pn_parse_decision_rows(rows):
+def _pn_parse_decision_rows(rows, log=None):
     """Parse the (values_only) rows of a decision sheet — LEAKS or KEEP — into
     {value_lower: {value, type, fix, replacement, fake_values, fixcell, notes}}.
     `fix` is normalised to 'yes'/'no'/''. A Fix? entry that is NOT a reserved
@@ -27623,6 +27676,19 @@ def _pn_parse_decision_rows(rows):
                 fix, fake_values = "yes", frags          # keep bracketed, fake rest
             else:
                 fix = "no"                # whole value bracketed -> keep all of it
+        # A keep on an e-mail address or a non-.gov website is not a decision
+        # the operator gets to make (`_pn_contact_value`): the row is read as
+        # UNDECIDED — neither kept nor minted — and the detectors fake the
+        # value as they fake every other. Said out loud, since a `no` the
+        # operator typed is being set aside.
+        kind = _pn_contact_value(val)
+        if kind and (fix == "no" or fake_values is not None):
+            if log is not None:
+                log.warning(f"  KEEP not honoured: {raw!r} on the {kind} "
+                            f"{val!r} — every e-mail address and every "
+                            f"website not ending in .gov is faked, whatever "
+                            f"was typed against it.")
+            continue
         out[val.lower()] = {"value": val, "type": str(cell("type") or "").strip(),
                             "fix": fix, "replacement": replacement,
                             "fake_values": fake_values, "fixcell": fixcell,
@@ -28128,7 +28194,7 @@ def _pn_triage_pending(folder, text_subdir):
                for d in _pn_read_leak_decisions(folder).values())
 
 
-def _pn_read_leak_decisions(folder):
+def _pn_read_leak_decisions(folder, log=None):
     """{value_lower: decision} read back from this folder's LEAKS worksheet the
     reviewer annotated on a prior run — the transient, per-case genuine-leak
     triage. (The durable `no`/bracket KEEP decisions live in the cross-folder
@@ -28158,7 +28224,7 @@ def _pn_read_leak_decisions(folder):
         wb.close()
     except Exception:
         return {}
-    return _pn_parse_decision_rows(rows)
+    return _pn_parse_decision_rows(rows, log)
 
 
 def _leak_sev(t):
@@ -28960,7 +29026,7 @@ def _pn_layer_decisions(master, folder):
     return out
 
 
-def _pn_read_master_keep(cfg):
+def _pn_read_master_keep(cfg, log=None):
     """The durable cross-folder KEEP decisions {value_lower: decision} from the
     master workbook's KEEP sheet — the `no`/bracket instructions to re-apply on
     every run in every folder, the `phrase` decisions that override them
@@ -28976,7 +29042,7 @@ def _pn_read_master_keep(cfg):
         wb.close()
     except Exception:
         return {}
-    return _pn_parse_decision_rows(rows)
+    return _pn_parse_decision_rows(rows, log)
 
 
 def _pn_update_master_keep(cfg, record_map, case_name, today, log,
@@ -33101,8 +33167,8 @@ def _fix_leaks_mode(folder, args, cfg, log):
     # fakes and decides which token rows come back as terms — so the brace has
     # to be on the registry before the key is opened, or this pass would re-apply
     # the very binding the operator brace-kept away.
-    master_keep = _pn_read_master_keep(cfg)
-    folder_decisions = _pn_read_leak_decisions(folder)
+    master_keep = _pn_read_master_keep(cfg, log)
+    folder_decisions = _pn_read_leak_decisions(folder, log)
     decisions = _pn_layer_decisions(master_keep, folder_decisions)
     _pn_set_keep_words(registry, decisions, log)
     try:
@@ -34022,8 +34088,8 @@ def main():
         #     decisions, remembered across every folder and run).
         # The folder's own decisions layer ON TOP of the global keeps, so a case
         # can locally override a global keep when it must.
-        master_keep = _pn_read_master_keep(cfg)
-        folder_decisions = _pn_read_leak_decisions(folder)
+        master_keep = _pn_read_master_keep(cfg, log)
+        folder_decisions = _pn_read_leak_decisions(folder, log)
         leak_decisions = _pn_layer_decisions(master_keep, folder_decisions)
         if master_keep:
             log.info(f"  Master KEEP: {len(master_keep)} durable no/bracket "
