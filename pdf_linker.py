@@ -27265,6 +27265,8 @@ def _pn_correct_original_files(folder, cfg, corrections, log, applied=None):
         if not d.is_dir():
             continue
         for f in sorted(d.glob("*.txt")):
+            if _is_tool_txt_artifact(f):
+                continue         # the combined copy is rebuilt from these
             try:
                 old = f.read_text(encoding="utf-8", errors="ignore")
             except OSError:
@@ -30417,6 +30419,7 @@ def _is_tool_txt_artifact(p):
     leak_txts = {f"{_PN_LEAK_STEM}.txt"} | {
         f"{stem}.txt" for stem in _PN_LEAK_LEGACY_STEMS}
     if p.name in leak_txts or p.name in (_COMBINED_TEXT_NAME,
+                                         _COMBINED_ORIGINAL_NAME,
                                          _NEW_REAL_VALUES_FILE):
         return True
     if (p.name.startswith(_ETA_MARKER_PREFIX + " ")
@@ -30485,6 +30488,19 @@ def _drop_superseded_combined_exports(folder, text_subdir, log):
 # no count of anything but its own members, and rewritten only when its
 # content changes.
 _COMBINED_TEXT_NAME = "Combined Text.txt"
+# …and, where the UNSCRUBBED copies are kept as well (`keep_original_text`),
+# the same file of THOSE, inside the do-not-share subfolder beside the
+# individual originals — at the owner's direction. Never anywhere else: it
+# carries every real name in the folder, and the subfolder's name is the one
+# thing that says so. Built from the original copies on disk exactly as the
+# shareable one is built from the exports, but with no leak hold: an original
+# is real names by design, is never gated and never quarantined, so the file
+# is written whenever its members are, whatever the gate then decides about
+# the exports. `_pn_original_texts` and `_pn_correct_original_files` skip it
+# by name (it is the tool's own artifact, `_is_tool_txt_artifact`), or every
+# original would be read twice; `--fix-leaks` rebuilds it after an OCR
+# correction moves the copies it is made of.
+_COMBINED_ORIGINAL_NAME = "Combined Original Text.txt"
 _COMBINE_RULE = "#" * 78
 
 # ── New Real Values.txt: names the reader spotted, handed to the next pass ──
@@ -30597,24 +30613,39 @@ def _combine_doc_banner(i, n, name):
     return f"{'#' * 8} DOCUMENT {i} OF {n} IN THIS COMBINED FILE: {name} {'#' * 8}"
 
 
-def _combined_text_body(members, text_subdir):
+def _combined_text_body(members, text_subdir, original=False):
     """The combined file: a header naming every member, then each member's
-    text behind its own DOCUMENT banner. `members` is `[(name, text), ...]`."""
+    text behind its own DOCUMENT banner. `members` is `[(name, text), ...]`.
+    `original` writes the header of the UNSCRUBBED file, which has to say
+    what it is."""
     n = len(members)
     head = [_COMBINE_RULE,
             f"# {_COMBINE_MARK} — {n} document{'' if n == 1 else 's'} in one "
-            f"file",
-            "#",
-            f"# Every text export in this case folder's \"{text_subdir}\" "
-            f"folder, in one file",
-            "# for uploading as a single document. NOTHING was dropped or "
-            "shortened: each",
-            "# one appears in full, in the order listed, behind its own "
-            "DOCUMENT banner.",
-            "# The individual exports are still in that folder and carry the "
-            "same text.",
-            "#",
-            "# Documents in this file:"]
+            f"file"]
+    if original:
+        head += ["#",
+                 f"# Every ORIGINAL text file in this case folder's "
+                 f"\"{text_subdir}\" folder, in",
+                 "# one file. This is the UNSCRUBBED text: it carries the REAL "
+                 "NAMES and is",
+                 "# NOT to be shared. NOTHING was dropped or shortened: each "
+                 "one appears in",
+                 "# full, in the order listed, behind its own DOCUMENT banner. "
+                 "The individual",
+                 "# original text files are still in that folder and carry the "
+                 "same text."]
+    else:
+        head += ["#",
+                 f"# Every text export in this case folder's \"{text_subdir}\" "
+                 f"folder, in one file",
+                 "# for uploading as a single document. NOTHING was dropped or "
+                 "shortened: each",
+                 "# one appears in full, in the order listed, behind its own "
+                 "DOCUMENT banner.",
+                 "# The individual exports are still in that folder and carry "
+                 "the same text."]
+    head += ["#",
+             "# Documents in this file:"]
     head += [f"#   {i}. {name}" for i, (name, _t) in enumerate(members, 1)]
     head += ["#",
              "# Page numbering restarts at every DOCUMENT banner: a 'p.3:7' "
@@ -30638,8 +30669,8 @@ def _combined_text_is_ours(path):
         return False
 
 
-def _remove_combined_text(folder, log, why):
-    path = folder / _COMBINED_TEXT_NAME
+def _remove_combined_text(folder, log, why, name=_COMBINED_TEXT_NAME):
+    path = folder / name
     if not path.is_file() or not _combined_text_is_ours(path):
         return
     try:
@@ -30717,6 +30748,44 @@ def _orphan_exports(folder, text_subdir, pz, log):
     return set(orphans), stale
 
 
+def _combined_members(text_dir, log, label="Combined text", skip=()):
+    """`[(name, text), ...]` of the `.txt` files in `text_dir` that belong in
+    a combined file, in case-folded name order — the one membership rule the
+    shareable file and the original one share, so they cannot disagree about
+    what a member is."""
+    members, bodies = [], {}
+    skipped = {str(n).lower() for n in skip}
+    for pth in sorted(text_dir.glob("*.txt"), key=lambda q: q.name.lower()):
+        if not pth.is_file() or _is_tool_txt_artifact(pth):
+            continue
+        if pth.name.lower() in skipped:
+            log.info(f"  {label}: {pth.name} is an earlier run's "
+                     f"leftover (see above) — not a member.")
+            continue
+        try:
+            body = pth.read_text(encoding="utf-8", errors="replace")
+        except OSError as e:
+            log.warning(f"  {label}: could not read {pth.name}: {e}")
+            continue
+        if _combined_sections(body):
+            log.info(f"  {label}: {pth.name} is itself a combined file "
+                     f"left by an older version — not folded in again.")
+            continue
+        # A repeat DOWNLOAD of one filing ("Motion (1).pdf") is the same
+        # document twice, and folding both in hands the drafting model the
+        # text twice. Bodies identical but for the page REVIEW banners (an
+        # OCR pass can differ between two downloads) are one member.
+        norm = re.sub(r"[ \t]*[—–-]+[ \t]*REVIEW:[^\n]*", "", body)
+        norm = re.sub(r"[=\s]+", " ", norm).strip()
+        if norm in bodies:
+            log.info(f"  {label}: {pth.name} is a duplicate of "
+                     f"{bodies[norm]} — folded in once.")
+            continue
+        bodies[norm] = pth.name
+        members.append((pth.name, body))
+    return members
+
+
 def _combined_text_after_run(folder, text_subdir, enabled, log, hold=None,
                              skip=()):
     """What a finishing run does about `Combined Text.txt`, in one place so
@@ -30752,36 +30821,7 @@ def _write_combined_text(folder, text_subdir, log, hold=None, skip=()):
     text_dir = folder / text_subdir
     if not text_dir.is_dir():
         text_dir = folder            # older single-folder layout
-    members, bodies = [], {}
-    skipped = {str(n).lower() for n in skip}
-    for pth in sorted(text_dir.glob("*.txt"), key=lambda q: q.name.lower()):
-        if not pth.is_file() or _is_tool_txt_artifact(pth):
-            continue
-        if pth.name.lower() in skipped:
-            log.info(f"  Combined text: {pth.name} is an earlier run's "
-                     f"leftover (see above) — not a member.")
-            continue
-        try:
-            body = pth.read_text(encoding="utf-8", errors="replace")
-        except OSError as e:
-            log.warning(f"  Combined text: could not read {pth.name}: {e}")
-            continue
-        if _combined_sections(body):
-            log.info(f"  Combined text: {pth.name} is itself a combined file "
-                     f"left by an older version — not folded in again.")
-            continue
-        # A repeat DOWNLOAD of one filing ("Motion (1).pdf") is the same
-        # document twice, and folding both in hands the drafting model the
-        # text twice. Bodies identical but for the page REVIEW banners (an
-        # OCR pass can differ between two downloads) are one member.
-        norm = re.sub(r"[ \t]*[—–-]+[ \t]*REVIEW:[^\n]*", "", body)
-        norm = re.sub(r"[=\s]+", " ", norm).strip()
-        if norm in bodies:
-            log.info(f"  Combined text: {pth.name} is a duplicate of "
-                     f"{bodies[norm]} — folded in once.")
-            continue
-        bodies[norm] = pth.name
-        members.append((pth.name, body))
+    members = _combined_members(text_dir, log, skip=skip)
     if not members:
         _remove_combined_text(folder, log, "there are no text exports to "
                               "combine")
@@ -30801,6 +30841,58 @@ def _write_combined_text(folder, text_subdir, log, hold=None, skip=()):
         return None
     log.info(f"  Wrote {path.name}: {len(members)} text export(s) in one "
              f"file, in the case folder beside the {text_subdir!r} folder.")
+    return path
+
+
+def _combined_original_after_run(folder, original_subdir, enabled, log):
+    """What a finishing run does about `Combined Original Text.txt` in the
+    do-not-share subfolder: with BOTH settings on (`combined_text` and
+    `keep_original_text`) it is written from the original copies there;
+    otherwise a file an earlier run wrote is removed, so a stale one never
+    sits beside originals that have moved on. `original_subdir` is the
+    subfolder's NAME whether or not originals are being kept this run — the
+    removal needs it either way."""
+    orig_dir = folder / original_subdir
+    if enabled:
+        return _write_combined_original(folder, original_subdir, log)
+    if orig_dir.is_dir():
+        _remove_combined_text(orig_dir, log, "combined_text and "
+                              "keep_original_text are not both on in "
+                              "pdf_linker.config", name=_COMBINED_ORIGINAL_NAME)
+    return None
+
+
+def _write_combined_original(folder, original_subdir, log):
+    """Write `Combined Original Text.txt` INSIDE `folder / original_subdir`
+    from the individual original `.txt` copies there, or make sure no stale
+    one is left. Same members rule, same banners and the same byte-stable
+    rewrite as `_write_combined_text`; no hold, because an original is never
+    gated. Returns the path written, else None."""
+    orig_dir = folder / original_subdir
+    if not orig_dir.is_dir():
+        return None
+    path = orig_dir / _COMBINED_ORIGINAL_NAME
+    members = _combined_members(orig_dir, log, label="Combined original text")
+    if not members:
+        _remove_combined_text(orig_dir, log, "there are no original text "
+                              "files to combine", name=_COMBINED_ORIGINAL_NAME)
+        return None
+    content = _combined_text_body(members, original_subdir, original=True)
+    try:
+        if path.is_file() and path.read_text(encoding="utf-8") == content:
+            log.info(f"  {path.name} is unchanged ({len(members)} "
+                     f"document(s)).")
+            return path
+    except (OSError, UnicodeDecodeError):
+        pass
+    try:
+        path.write_text(content, encoding="utf-8")
+    except OSError as e:
+        log.warning(f"  Could not write {path.name}: {e}")
+        return None
+    log.info(f"  Wrote {original_subdir}/{path.name}: {len(members)} original "
+             f"text file(s) in one file, beside the individual originals "
+             f"(real names — do not share).")
     return path
 
 
@@ -31818,7 +31910,9 @@ _CONFIG_BLOCKS = (
      "# one file to upload where a folder of them is awkward. It is built from\n"
      "# the exports as delivered, so it is never written while an export is\n"
      "# quarantined for a leak (Apply Leak Fixes writes it once the last one is\n"
-     "# released), and it is removed again when this is turned off.\n"
+     "# released), and it is removed again when this is turned off. With\n"
+     "# keep_original_text also on, a \"Combined Original Text.txt\" of the\n"
+     "# UNSCRUBBED copies is written INSIDE that do-not-share folder as well.\n"
      "combined_text = off\n"
      "\n"
      ),
@@ -32264,6 +32358,8 @@ def _pn_original_texts(folder, cfg):
     texts = []
     if orig_dir.is_dir():
         for o in sorted(orig_dir.glob("*.txt")):
+            if _is_tool_txt_artifact(o):
+                continue         # the combined copy: every original twice
             try:
                 texts.append(o.read_text(encoding="utf-8", errors="ignore"))
             except OSError:
@@ -33569,6 +33665,14 @@ def _fix_leaks_mode(folder, args, cfg, log):
                       for t in orig_texts]
         _pn_correct_original_files(folder, cfg, ocr_corr, log, applied=_applied)
         _pn_fix_ocr_in_folder_pdfs(folder, ocr_corr, log, applied=_applied)
+    # The combined ORIGINAL follows the copies it is made of — rebuilt after a
+    # correction moved them, removed if the settings no longer ask for it.
+    # Not held with the exports: an original is never quarantined.
+    _combined_original_after_run(
+        folder, cfg.get("original_text_subfolder", "").strip()
+        or "Original Text (real names - do not share)",
+        _config_bool(cfg, "combined_text", False)
+        and _config_bool(cfg, "keep_original_text", False), log)
     fix_terms = auto_terms + list(explicit)
     if not fix_terms and rejected:
         # Nothing was applied AND a decision was dropped: the folder is not
@@ -34763,6 +34867,16 @@ def main():
         _drop_superseded_combined_exports(folder, text_subdir, log)
         if original_subdir:
             _drop_superseded_combined_exports(folder, original_subdir, log)
+        # The one-file copy of the ORIGINALS, inside their own do-not-share
+        # folder. HERE and not with the shareable combined file below: an
+        # original is never gated, so this is written (or removed) whatever
+        # the gate decides about the exports, exactly as the individual
+        # originals were.
+        _combined_original_after_run(
+            folder, original_subdir or (
+                cfg.get("original_text_subfolder", "").strip()
+                or "Original Text (real names - do not share)"),
+            bool(combined_text and original_subdir), log)
 
     # One key file for the whole folder maps every real value to its fake.
     if pseudonymizer is not None:
