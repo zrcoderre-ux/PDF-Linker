@@ -3579,6 +3579,32 @@ answerable at the top of the page.
   text-only form on pleading paper (an MC-025 attachment) keeps its numbers, and
   a text-only form off pleading paper still takes the form path because its
   values would otherwise stay unanchored.
+  **…and ONE box read off the page is not a form** (`_form_page_render`,
+  `_form_displaces_rows`, `_ink_state_spans`). A delivered declaration's
+  CAPTION page — twenty-eight numbered lines, the attorney block, a two-column
+  caption, the court's e-filing stamp — came out as
+  `[printed court form — … 1 box(es), 0 marked]`: the gutter numbers set on
+  lines of their own, the stamp's lines interleaved word by word ("9/04/2026
+  County of 3:58 Los Angeles PM" — the form layout groups rows by overlap,
+  and a stamp's 6-point lines overlap), the caption's columns gone. The ink
+  gate admits a page on checkbox-SIZED line art, which a pleading can carry
+  for reasons of its own (a firm template's own check-off boxes, a stamp's
+  frame), and the routing rule then read the one empty box the pass paired
+  with a caption as "a checkbox state" and handed the page over. A widget's
+  state is the form's own word and is still enough alone; an INK state is
+  inferred, so it displaces the rows only where the page is form-shaped by a
+  stronger measure than the gate's — a form id in the footer, or at least
+  `_INK_MIN_BOXES` states actually PAIRED with captions, the count the gate
+  asks of the line art asked of the result. A page below that keeps its rows
+  and gets the few states it has laid INTO them, as SPANS at the box's own
+  place on the nearest row's baseline (`_detect_line_anchors(ink=…)`), so the
+  export reads `28  718 [X] Stanley Mosk` with its number kept and nothing
+  the ink pass read is lost; the glyph inside a box and an underscore slot's
+  underscores go with the state, as the form layout drops them. Detection
+  reads the same rows (`_page_detect_text(ink=…)`), per the standing rule.
+  `_form_page_text` is unchanged for every other caller; the render carries
+  its source, box count and form id beside the text because the text alone
+  cannot say whether it earns the page.
 - **Detection reads what the export writes.** `_page_detect_text` takes the
   DECIDED form text via the `_FORM_UNDECIDED` sentinel — distinct from `None`,
   which means "decided against it" — because a page whose form rendering was

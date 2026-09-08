@@ -3697,14 +3697,17 @@ def _sidebar_image_rect(rect, line_col):
             and not (rect.y1 < band_top or rect.y0 > band_bot))
 
 
-def _detect_line_anchors(page, desplice=False):
+def _detect_line_anchors(page, desplice=False, ink=None):
     """Per-page: find pleading-paper line numbers and gather body text on
     each numbered row.
 
     With `desplice=True` the body spans are rebuilt from character-level
     geometry (`_despliced_body_spans`), splitting any span whose glyphs jump
     between columns — the retry path for a page whose ordinary extraction
-    shows splice corruption.
+    shows splice corruption. With `ink` (the page's `_ink_form_cells` result)
+    the checkbox states the ink pass read are laid in as spans of their own
+    (`_ink_state_spans`), so a pleading page carrying a few printed boxes keeps
+    its numbers and still says what the boxes hold.
 
     Returns list of {line_num, body_text, segments, y_mid} for each row that has
     both a line number in the gutter and body text in the same horizontal band.
@@ -3762,7 +3765,7 @@ def _detect_line_anchors(page, desplice=False):
     # A page whose text layer is drawn twice yields each piece twice, and this
     # path welds the copies together — see `_drop_overdrawn_spans`. After the
     # desplice branch, so both span sources are covered by the one call.
-    body_spans = _drop_overdrawn_spans(body_spans)
+    body_spans = _ink_state_spans(_drop_overdrawn_spans(body_spans), ink)
     rows = _cluster_rows(body_spans)
     if not rows:
         return []
@@ -23865,7 +23868,7 @@ def _build_authorities_appendix(full_text, pseudonymizer=None, collect=None,
     return "\n".join(lines)
 
 
-def _page_lined_rows(page):
+def _page_lined_rows(page, ink=None):
     """For a pleading-paper page, return [(line_num, segments), ...] in reading
     order, so the .txt can mirror the PDF's line numbering. `segments` is
     [(x0, text), ...] — the row split at column gutters. `line_num` is the
@@ -23878,8 +23881,17 @@ def _page_lined_rows(page):
     pseudonymize each line's BODY on its own — so the line-number prefix is
     never seen by a detector (e.g. the address regex would otherwise read the
     printed line number as a street number). Returning the SEGMENTS lets it go
-    one better and pseudonymize each column on its own."""
-    anchors = _detect_line_anchors(page)
+    one better and pseudonymize each column on its own.
+
+    `ink` is the page's `_ink_form_cells` result where the caller has one and
+    the page keeps its rows regardless (see `_form_displaces_rows`): the
+    checkbox states it read are laid into the rows they stand on."""
+    # The ordinary call keeps its shape — a caller with no ink to lay in is
+    # the common one, and it is what a test that stands in for the detector
+    # answers to.
+    detect = ((lambda pg, **kw: _detect_line_anchors(pg, ink=ink, **kw))
+              if ink is not None else _detect_line_anchors)
+    anchors = detect(page)
     if not anchors:
         return None
     anchors = _fold_ruled_rows(anchors, page)
@@ -23919,8 +23931,7 @@ def _page_lined_rows(page):
     score = _page_weld_score(rows)
     if score:
         try:
-            cured = _fold_ruled_rows(_detect_line_anchors(page, desplice=True),
-                                     page)
+            cured = _fold_ruled_rows(detect(page, desplice=True), page)
         except Exception:
             cured = None
         if cured:
@@ -24936,11 +24947,15 @@ def _ink_square_drawings(page):
 
 
 def _ink_form_cells(page):
-    """(cells, boxes, marked, unsure, exact) for a form filled with ink, or None
-    when the page is not an ink-filled form.
+    """(cells, boxes, marked, unsure, exact, consumed) for a form filled with
+    ink, or None when the page is not an ink-filled form.
 
     `exact` is True when every state came from a glyph or a vector path — no
     raster inference was needed, so the states are as trustworthy as a widget's.
+    `consumed` is the rects of the spans a state box now stands for (the mark
+    glyph inside it), so a caller laying the states over ANOTHER rendering of
+    the page — the pleading rows, see `_ink_state_spans` — can drop the
+    same glyphs this one does.
     """
     import fitz
     # The gate, cheapest-first: a page whose own line art already shows enough
@@ -25099,7 +25114,7 @@ def _ink_form_cells(page):
             if part.strip():
                 cells.append(_form_cell(bb[1] + h * (k + 0.5), h / 2, bb[0],
                                         part.strip()))
-    return cells, boxes, marked, unsure, exact
+    return cells, boxes, marked, unsure, exact, consumed
 
 
 def _form_page_cells(page):
@@ -25447,6 +25462,36 @@ def _page_table_text(page, flowing=None):
     return _done("\n\n".join(it[2] for it in items).strip() or None)
 
 
+def _form_page_render(page):
+    """The court-form rendering of `page` with what it was built from, or None
+    when the page is neither a widget form nor an ink one:
+
+        {"text":    the rendering `_form_page_text` returns,
+         "source":  "fields" (widgets), "exact" or "ink" (the ink pass),
+         "boxes":   how many checkboxes it carries,
+         "form_no": the form id printed in the footer, or "",
+         "ink":     the `_ink_form_cells` tuple, for an ink rendering}
+
+    The text alone cannot say whether it EARNS the page — see
+    `_form_displaces_rows` — which is why the parts ride with it."""
+    got = _form_page_cells(page)
+    if got is not None and got[0]:
+        cells, boxes, checked = got
+        text = (_form_banner(page, boxes, checked) + "\n"
+                + "\n".join(_form_layout(cells)))
+        return {"text": text, "source": "fields", "boxes": boxes,
+                "form_no": _form_page_number(page), "ink": None}
+    ink = _ink_form_cells(page)
+    if ink is None or not ink[0]:
+        return None
+    cells, boxes, marked, unsure, exact, _consumed = ink
+    source = "exact" if exact else "ink"
+    text = (_form_banner(page, boxes, marked, unsure, source) + "\n"
+            + "\n".join(_form_layout(cells)))
+    return {"text": text, "source": source, "boxes": boxes,
+            "form_no": _form_page_number(page), "ink": ink}
+
+
 def _form_page_text(page):
     """Reading-order text for a court form: every checkbox rendered as [X], [ ]
     (or [?] when it could not be read) beside the caption it governs, and every
@@ -25455,18 +25500,113 @@ def _form_page_text(page):
     Prefers the form's own WIDGETS, which are authoritative. Falls back to the
     ink pass for a form that was flattened or printed-and-scanned. Returns None
     when the page is neither, so the caller keeps ordinary extraction."""
-    got = _form_page_cells(page)
-    if got is not None and got[0]:
-        cells, boxes, checked = got
-        return (_form_banner(page, boxes, checked) + "\n"
-                + "\n".join(_form_layout(cells)))
-    ink = _ink_form_cells(page)
-    if ink is None or not ink[0]:
-        return None
-    cells, boxes, marked, unsure, exact = ink
-    return (_form_banner(page, boxes, marked, unsure,
-                         "exact" if exact else "ink") + "\n"
-            + "\n".join(_form_layout(cells)))
+    render = _form_page_render(page)
+    return None if render is None else render["text"]
+
+
+def _form_displaces_rows(render):
+    """True when a form rendering earns the place of the page's PLEADING ROWS.
+
+    The rows are the export's own pinpoint index — "p.3:7" lands on them — so
+    a rendering that costs them has to carry something no other rendering can:
+    a checkbox STATE (`_form_has_state_boxes`). A widget's state is the form's
+    own word and is enough on its own. An INK state is inferred, and one of
+    them is not evidence that the page is a form at all: the ink gate lets a
+    page in on checkbox-SIZED line art, which a pleading can carry for reasons
+    of its own (a template's own check-off boxes, a stamp's frame), and a
+    delivered caption page — twenty-eight numbered lines, one empty box found
+    beside the courthouse name — lost its numbers and its columns to that box,
+    the e-filing stamp's lines interleaved word by word and the gutter numbers
+    set on lines of their own. So an ink rendering displaces the rows only
+    where the page is form-shaped by a stronger measure than the gate's: a form
+    id in its footer, or at least `_INK_MIN_BOXES` states actually PAIRED with
+    captions — the count the gate asks of the line art, asked of the result.
+    A page below that keeps its rows and gets the few states it has laid INTO
+    them (`_ink_state_spans`), so nothing the ink pass read is lost."""
+    if render is None or not _form_has_state_boxes(render["text"]):
+        return False
+    if render["source"] == "fields":
+        return True
+    return bool(render["form_no"]) or render["boxes"] >= _INK_MIN_BOXES
+
+
+# A state box belongs to the printed row whose baseline is nearest its own
+# centre, within this much: half the lead of double-spaced pleading paper, so
+# a box beside a line is that line's and a box between two lines is nobody's.
+_INK_ROW_TOL = 12.0
+_INK_STATE_MARKS = ("[X]", "[ ]", "[?]")
+
+
+def _ink_state_spans(body_spans, ink):
+    """`body_spans` with every checkbox STATE the ink pass read laid in as a
+    span of its own — "[X]", "[ ]" or "[?]" at the box's own place on the page,
+    on the baseline of the nearest printed row — and the glyphs a state now
+    stands for (the flattened check inside the box) taken out, as the form
+    rendering takes them out. So a pleading page carrying a few printed boxes
+    keeps its gutter numbers and its columns AND says what the boxes hold,
+    where before the page had to choose (`_form_displaces_rows`). A SPAN and
+    not a segment, so the state rides through the row split, the column bands
+    and the join exactly as a printed word would: "718 [ ] Stanley Mosk", the
+    mark between the words it stands between. A caption opening on an
+    underscore slot loses the underscores the state stands for, or the row
+    would read "[X] __ entire action". A state no row is near enough to claim
+    is left out rather than invented onto a line."""
+    if not ink or not body_spans:
+        return body_spans
+    cells, _boxes, _marked, _unsure, _exact, consumed = ink
+    states = [(y, h, x, t) for y, h, x, t in cells if t in _INK_STATE_MARKS]
+    if not states:
+        return body_spans
+    kept = []
+    for sp in body_spans:
+        bb = sp["bbox"]
+        mx, my = (bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2
+        if any(r.x0 <= mx <= r.x1 and r.y0 <= my <= r.y1 for r in consumed):
+            continue
+        if any(abs(x - bb[0]) <= 1.0 and abs(y - my) <= _INK_ROW_TOL
+               for y, _h, x, _t in states) and _INK_USCORE_RE.match(sp["text"]):
+            text = _INK_USCORE_RE.sub("", sp["text"]).lstrip()
+            if not text.strip():
+                continue
+            # The caption now opens where its first word does — past the
+            # underscores the state stands in for, so the state sorts first.
+            cut = len(sp["text"]) - len(text)
+            x0 = min(bb[2], bb[0] + cut * 0.5 * float(sp.get("size") or 10.0))
+            sp = dict(sp, text=text, bbox=(x0, bb[1], bb[2], bb[3]))
+        kept.append(sp)
+    for y, half, x, mark in states:
+        near = min(kept, key=lambda sp: abs(_span_baseline(sp) - y), default=None)
+        if near is None or abs(_span_baseline(near) - y) > _INK_ROW_TOL:
+            continue
+        base = _span_baseline(near)
+        side = max(2.0 * half, 1.0)
+        kept.append({"text": mark, "bbox": (x, y - half, x + side, y + half),
+                     "origin": (x, base), "size": near.get("size", side),
+                     "font": "", "flags": 0, "_dir": near.get("_dir", (1.0, 0.0)),
+                     "_ink_state": True})
+    return kept
+    consumed = [(r.x0, r.y0, r.x1, r.y1) for r in consumed]
+    for y, x, mark in states:
+        near = min(anchors, key=lambda a: abs(a["y_mid"] - y))
+        if abs(near["y_mid"] - y) > _INK_ROW_TOL:
+            continue
+        segs = []
+        for sx, text in near["segments"]:
+            if sx >= x and any(cx0 - 1.0 <= sx <= cx1 + 1.0
+                               and cy0 - _INK_ROW_TOL <= y <= cy1 + _INK_ROW_TOL
+                               for cx0, cy0, cx1, cy1 in consumed):
+                head, _sep, tail = text.partition(" ")
+                if len(head) <= 2:
+                    text = tail
+            if abs(sx - x) <= 1.0:
+                text = _INK_USCORE_RE.sub("", text)
+            if text.strip():
+                segs.append((sx, text.strip()))
+        segs.append((x, mark))
+        segs.sort()
+        near["segments"] = segs
+        near["body_text"] = " ".join(t for _x, t in segs)
+    return anchors
 
 
 def _doc_has_form_fields(doc):
@@ -25494,7 +25634,7 @@ def _form_has_state_boxes(form):
 _FORM_UNDECIDED = object()
 
 
-def _page_detect_text(page, form=_FORM_UNDECIDED):
+def _page_detect_text(page, form=_FORM_UNDECIDED, ink=None):
     """Column-ordered plain text for a page, for NAME DETECTION and leak
     checking only. On a two-column caption the on-paper reading order splices
     the columns together; reading each column top to bottom instead makes a
@@ -25508,7 +25648,7 @@ def _page_detect_text(page, form=_FORM_UNDECIDED):
         # at all in a usable place — so detection and the leak scan must read
         # THAT, not the unanchored heap plain extraction produces.
         return form
-    rows = _page_lined_rows(page)
+    rows = _page_lined_rows(page, ink=ink)
     if not rows:
         flowing = _MARKER_DETECT_RE.sub("", _page_flowing_text(page))
         # Detection reads exactly what the export writes — the rule the form
@@ -29673,7 +29813,6 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         # number each line (a "p.X:Y" cite lands on the right text) AND scrub
         # each line's body without its number prefix; other pages fall back to
         # flowing text.
-        rows = _page_lined_rows(page)
         # A court-form page is rebuilt from its widgets, or from the INK on it
         # when the widgets are gone (see _form_page_text). Not gated on
         # `has_fields`: a printed-and-scanned form declares no AcroForm at all,
@@ -29682,10 +29821,19 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         # It wins over the pleading-rows path only when the rendering actually
         # carries a checkbox state — that is invisible to every other rendering,
         # which is worth giving up line numbering for, while a form with only
-        # text fields keeps its gutter numbers.
-        form = _form_page_text(page)
-        if form is not None and rows is not None and not _form_has_state_boxes(form):
-            form = None
+        # text fields keeps its gutter numbers — and, for a state READ OFF THE
+        # PAGE, only where the page is form-shaped by more than the one box
+        # (`_form_displaces_rows`). A pleading with a box or two keeps its rows
+        # and gets the states laid into them.
+        render = _form_page_render(page)
+        ink = None
+        rows = _page_lined_rows(page)
+        if render is not None and rows is not None and not _form_displaces_rows(render):
+            if render["ink"] is not None and _form_has_state_boxes(render["text"]):
+                ink = render["ink"]
+                rows = _page_lined_rows(page, ink=ink)
+            render = None
+        form = None if render is None else render["text"]
         display = clean
         if form is not None:
             forms_seen.append(i + 1)
@@ -29715,7 +29863,7 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         orig_pages.append(clean)
         # Pass the DECIDED form text (None when this page's form rendering was
         # suppressed above), so detection reads exactly what the export writes.
-        detect_pages.append(_page_detect_text(page, form=form))
+        detect_pages.append(_page_detect_text(page, form=form, ink=ink))
         # Header carries the printed (footer) page number when present, so the
         # page half of a pinpoint cite is unambiguous too.
         label = _footer_page_label(page)
