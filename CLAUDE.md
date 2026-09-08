@@ -4843,6 +4843,31 @@ order case-folded, rewritten only when the content differs — and
 `_is_tool_txt_artifact` knows its name, so under the older single-folder
 layout `--fix-leaks` never scrubs it as an export or folds it into itself.
 
+**…and with the ORIGINALS kept as well, the same file of THOSE is written
+INSIDE the do-not-share subfolder** (`_COMBINED_ORIGINAL_NAME` =
+`Combined Original Text.txt`, `_write_combined_original`,
+`_combined_original_after_run`, `_combined_members`), at the owner's
+direction. `combined_text` AND `keep_original_text` both on: the individual
+unscrubbed copies in `Original Text (real names - do not share)` are also
+written into one file there, beside them, behind the same DOCUMENT banners
+and through the same membership rule (`_combined_members`, factored out of
+the shareable writer so the two cannot disagree about what a member is —
+repeat downloads folded once, an older consolidation's file never nested).
+ONLY there, never the case folder and never `Text Files`: it carries every
+real name in the folder, and the subfolder's name is the one thing that says
+so; its own header says it too. NO leak hold, unlike the shareable file — an
+original is real names by design, is never gated and never quarantined, so
+this is written (or removed) at the point the individual originals are
+settled, BEFORE the gate, whatever the gate then decides about the exports;
+`--fix-leaks` rebuilds it after `_pn_correct_original_files` has moved the
+copies it is made of, and removes it when either setting is off. It is the
+tool's own artifact (`_is_tool_txt_artifact`), so `_pn_original_texts` never
+hands `--fix-leaks` every original twice, `_pn_correct_original_files` never
+corrects it in place (it is rebuilt from the corrected members), and
+`_drop_superseded_combined_exports` — which removes an OLDER version's
+combined original once every member has its own copy again, a test the
+new file passes by construction — leaves it alone.
+
 ## Performance notes
 
 - Term/record regex patterns are **compiled once** per run via a
