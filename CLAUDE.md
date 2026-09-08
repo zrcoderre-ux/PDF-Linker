@@ -5019,6 +5019,27 @@ Rewritten whole every run and REMOVED when a folder cites nothing, so it never
 describes a batch that has moved on, and it carries nothing volatile so an
 unchanged folder reproduces it.
 
+**`New Real Values.txt` is the READER's way back in** (`_NEW_REAL_VALUES_FILE`,
+`_pn_read_new_real_values`). The pdf-viewer repo's text reader
+(`viewer/text-reader.html`) shows the scrubbed exports with the real names put
+back ON SCREEN from the key, every pseudonym marked — so the name the run left
+in the clear is the unmarked one, and the operator flags it there. The flags
+are written to this file in the CASE FOLDER, one value per line, `#` lines
+comments, and every run in the folder — the full run and `--fix-leaks`
+alike — reads them as if each had been typed as a `--term`: the operator's
+explicit instruction, AUTHORITATIVE and screened by nothing, so a value the
+key then pins carries source `--term` and reverses like any other. A `.txt`
+and not a worksheet row because the reader is a web page with no workbook
+writer, and a line per value is what a person can also type by hand. Spaces
+in the name, never underscores, by the owner's rule for documents. Never an
+export: it sits beside the key, and `_is_tool_txt_artifact` knows it by name
+so the older single-folder layout never scrubs it or folds it into a combined
+file. The reader never writes the fakes' real values anywhere else — its
+saves carry the pseudonyms underneath — so this file is the ONE thing it
+leaves in the folder that names a real value, and it names only values the
+exports already carried in the clear. Pinned in `test_new_real_values.py`,
+end to end through both passes.
+
 **A launcher RESOLVES its paths when it is clicked, and says so when it
 can't** (`_launcher_resolve_bat` / `_launcher_resolve_sh`). A launcher records
 the absolute interpreter and script paths of the machine that wrote it, and
