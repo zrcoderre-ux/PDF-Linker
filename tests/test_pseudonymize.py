@@ -235,9 +235,13 @@ class TestUrlDetector:
     def test_matches_bare_www(self):
         assert self.url.search("see www.TheMillennialLawyer.com today")
 
-    def test_does_not_match_email_domain(self):
+    def test_matches_the_domain_behind_an_at_sign_too(self):
+        # The host of an address is a website whatever stands before its "@":
+        # where the e-mail detector reads the address it wins the overlap (the
+        # longer candidate at the same priority); where it does not, this is
+        # what keeps the firm's domain out of `<fake-local>@<real-domain>`.
         found = [m.group(0) for m in self.url.finditer("paula@themillenniallawyer.com")]
-        assert not any("themillennial" in f for f in found)
+        assert found == ["themillenniallawyer.com"]
 
     def test_url_and_email_same_fake_domain(self):
         assert (pl._pn_fake_domain("www.TheMillennialLawyer.com")
@@ -419,9 +423,10 @@ class TestEmailLocalPart:
         out = pz.apply("Roxane.enterprise1@gmail.com")
         assert "enterprise1" not in out.lower()
         assert "roxane" not in out.lower()
-        # Public providers (gmail/yahoo/…) identify no one and now pass through
-        # unchanged; the local part is what must never survive.
-        assert "@gmail.com" in out.lower()
+        # Every address is faked WHOLE, the provider's host included (owner's
+        # rule: nothing but a .gov WEBSITE is left standing).
+        assert "gmail.com" not in out.lower()
+        assert "@" in out
 
     def test_known_name_reuses_its_fake(self):
         pz, reg = _pz(names=["Zachary Coderre"])

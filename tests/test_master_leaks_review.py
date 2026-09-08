@@ -90,6 +90,10 @@ def test_curly_quote_not_swallowed_into_url_match():
 
 
 # ── e-filing infrastructure hosts ───────────────────────────────────────────
+# These used to be whitelisted as naming the filing channel and no party. The
+# owner's rule is now one rule with no list behind it: every website not
+# ending in .gov is faked, and a review row for one is still refused (the
+# host is faked, so there is nothing to decide).
 
 @pytest.mark.parametrize("url", [
     "https://status.onelegal.com/",
@@ -97,12 +101,12 @@ def test_curly_quote_not_swallowed_into_url_match():
     "https://uslegalpro.com/californiaefile/login",
     "www.lawhelpcalifornia.org",
 ])
-def test_efiling_infrastructure_is_whitelisted(url):
-    assert P._pn_url_whitelisted(url)
+def test_efiling_infrastructure_is_faked_like_any_website(url):
+    assert not P._pn_url_whitelisted(url)
     out = _pz().apply(f"Track your filing at {url} anytime.")
-    assert url in out                               # never faked
+    assert url not in out                           # faked
     assert not [s for c, s in P._pn_review_findings(f"see {url} now")
-                if c == "url/domain"]               # never flagged
+                if c == "url/domain"]               # still never flagged
 
 
 def test_efiling_email_is_still_faked():

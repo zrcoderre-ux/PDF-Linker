@@ -1,13 +1,18 @@
 """
 Website / e-mail scrubbing policy.
 
-  * a website is FAKED (`www.acmecorp.com` -> a neutral fake host);
+  * a website is FAKED (`www.acmecorp.com` -> a neutral fake host) — EVERY
+    website that does not end in `.gov`, at the owner's direction: no
+    e-filing vendor, no public mail provider, no `.mil`; the one exemption is
+    the hosts of the verification links the tool itself writes;
   * an e-mail — anything carrying an `@` — is FAKED, local part AND host;
-  * a GOVERNMENT website (`*.gov`, `*.mil`) is never faked and never flagged:
-    it names an agency, not a party, so faking it protects no one and burying
-    the real findings under it costs a review pass; but
+  * a `.gov` website is never faked and never flagged: it names an agency,
+    not a party, so faking it protects no one and burying the real findings
+    under it costs a review pass; but
   * a government host inside an E-MAIL is faked anyway — `jane.roe@courts.ca.gov`
-    identifies a person, not an agency, and the `@` is what settles it.
+    identifies a person, not an agency, and the `@` is what settles it;
+  * a `no` / `never` typed against an address or a non-.gov website is NOT
+    honoured — the row is set aside with a warning and the value is faked.
 
 Run:  cd PDF-Linker && python3 -m pytest tests/test_url_email_policy.py -v
 """
@@ -59,10 +64,35 @@ def test_an_email_is_faked_local_part_and_host(addr):
     "oag.ca.gov",
     "https://www.cdcr.ca.gov/facilities",
     "usdoj.gov",
-    "army.mil",
-    "https://www.navy.mil/local",
 ])
 def test_a_government_website_is_never_faked(url):
+    text = f"See {url} now."
+    assert _apply(text) == text
+
+
+@pytest.mark.parametrize("url", [
+    "army.mil",
+    "https://www.navy.mil/local",
+    "https://status.onelegal.com/",
+    "www.gdit.com/cob",
+    "mail.google.com/mail",          # not the appendix's scholar host
+    "gmail.com",
+])
+def test_every_other_host_is_faked(url):
+    # ".gov" is the rule and there is no list behind it.
+    out = _apply(f"See {url} now.")
+    assert url not in out, out
+
+
+@pytest.mark.parametrize("url", [
+    "https://scholar.google.com/scholar?q=Rasho%20v.%20Quillmark",
+    "https://www.law.cornell.edu/uscode/text/42/1983",
+    "https://leginfo.legislature.ca.gov/faces/codes.xhtml",
+])
+def test_the_tools_own_verification_links_survive(url):
+    # The authorities appendix writes these into the export itself; they name
+    # a legal publisher and no party, and rewriting them breaks the links.
+    assert P._pn_url_whitelisted(url)
     text = f"See {url} now."
     assert _apply(text) == text
 
@@ -97,6 +127,37 @@ def test_a_government_host_inside_an_email_is_faked(addr):
     # The stand-in must not itself pose as a government address.
     fake = next(w.strip(".,;:") for w in out.split() if "@" in w)
     assert not fake.lower().endswith((".gov", ".mil"))
+
+
+def test_a_firm_domain_behind_an_unread_at_sign_is_still_faked():
+    # The e-mail detector needs a local part in front of the "@"; a wrap that
+    # left the handle on the line above leaves "@acmecorp.com" behind. The
+    # domain is a website whatever stands before its "@", so it is faked —
+    # where before it shipped as the real half of `<fake-local>@<real-domain>`.
+    out = _apply("e-mail:\n@acmecorp.com")
+    assert "acmecorp" not in out.lower(), out
+
+
+def test_a_keep_on_an_address_or_website_is_not_honoured():
+    # A `no` on a website is a decision the operator no longer gets to make;
+    # the master KEEP sheet of a delivered folder carried dozens, and a soft
+    # keep then applied every one in every folder.
+    rows = [["Type", "Value", "Fix? (yes/no)", "Notes"],
+            ["url/domain", "www.mrcooper.com", "no", ""],
+            ["url/domain", "www.courts.ca.gov", "no", ""],
+            ["email", "jane.roe@acmecorp.com", "never", ""],
+            ["name", "Rosa Delgado", "no", ""]]
+    out = P._pn_parse_decision_rows(rows)
+    assert "www.mrcooper.com" not in out
+    assert "jane.roe@acmecorp.com" not in out
+    assert out["www.courts.ca.gov"]["fix"] == "no"   # a .gov site may be kept
+    assert out["rosa delgado"]["fix"] == "no"
+    for kind, value in (("e-mail address", "jane.roe@acmecorp.com"),
+                        ("website", "www.mrcooper.com"),
+                        ("website", "mrcooper.com"),
+                        (None, "www.courts.ca.gov"),
+                        (None, "Rosa Delgado")):
+        assert P._pn_contact_value(value) == kind, value
 
 
 def test_gov_website_and_gov_email_on_the_same_line():
@@ -180,26 +241,26 @@ def test_google_never_binds_a_bare_token_at_all():
 
 def test_a_whitelisted_link_survives_a_name_shaped_token():
     # Second line: even when a real party's own token appears inside a
-    # whitelisted host (a declarant named "Justia" / law.justia.com), the span
-    # is protected like a citation, so the verification link stays
-    # byte-for-byte. Without the protection this exact text shipped as
+    # whitelisted host (a declarant named "Cornell" / law.cornell.edu), the
+    # span is protected like a citation, so the verification link stays
+    # byte-for-byte. Without the protection this exact shape shipped as
     # "law.aldous.com" — the bare person-token fired inside the host.
-    z = _pz_with_names("Justia Ramirez")
-    assert any(t.real.lower() == "justia" for t in z.terms)  # token really binds
-    url = "https://law.justia.com/cases/california/court-of-appeal/"
-    out = z.apply(f"Declarant Justia Ramirez cites {url} in support.")
+    z = _pz_with_names("Cornell Ramirez")
+    assert any(t.real.lower() == "cornell" for t in z.terms)  # token really binds
+    url = "https://www.law.cornell.edu/uscode/text/42/1983"
+    out = z.apply(f"Declarant Cornell Ramirez cites {url} in support.")
     assert url in out, "a whitelisted verification link must never be rewritten"
-    assert "Justia Ramirez" not in out  # the declarant is still faked
+    assert "Cornell Ramirez" not in out  # the declarant is still faked
 
 
 def test_a_protected_url_survivor_is_not_reported_as_a_leak():
     # The scan must stay mirrored with the substitution side: a value standing
     # inside a span _substitute refuses to touch must not be reported, or the
     # export is quarantined by a leak nothing can ever clear.
-    z = _pz_with_names("Justia Ramirez")
-    out = z.apply("See https://law.justia.com/cases/california/ for the cite.")
+    z = _pz_with_names("Cornell Ramirez")
+    out = z.apply("See https://www.law.cornell.edu/uscode/text/42/ for the cite.")
     survivors = {s.lower() for s in z.surviving_reals(out)}
-    assert not any("justia" in s for s in survivors), survivors
+    assert not any("cornell" in s for s in survivors), survivors
 
 
 # ── OCR spellings of one address are ONE address ────────────────────────────

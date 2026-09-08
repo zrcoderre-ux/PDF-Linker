@@ -303,12 +303,20 @@ def test_a_real_name_beside_a_kept_word_is_asked_about_AS_FOUND():
 
 def test_an_opaque_value_is_never_cut_up():
     """The nuclear set really does hold words like "com", "www", "no" and "n",
-    harvested from braced URLs and addresses in a master KEEP sheet."""
-    pz = _pz_with_keeps([("www.acme.com/path", "{www.acme.com/path}")])
+    harvested from braced opaque values in a master KEEP sheet. (A keep on a
+    WEBSITE is refused now — every non-.gov host is faked, see
+    `_pn_contact_value` — so the opaque value here is a path that is not a
+    URL by the detector's shape; the reduction it pins is unchanged.)"""
+    pz = _pz_with_keeps([("www.acme/com/path", "{www.acme/com/path}")])
     assert ("www", "acme", "com", "path") in pz.registry.keep_phrases
     assert "com" not in pz.registry.keep_words      # a phrase, not its words
     assert _triage(pz, ["553.com", "Tol. No.", "vrv.rtxpension.com"]) == [
         "553.com", "Tol. No.", "vrv.rtxpension.com"]
+
+
+def test_a_braced_keep_on_a_website_is_refused():
+    pz = _pz_with_keeps([("www.acme.com/path", "{www.acme.com/path}")])
+    assert not pz.registry.keep_phrases
 
 
 def test_no_original_text_is_needed():
