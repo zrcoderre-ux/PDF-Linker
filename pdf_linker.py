@@ -30303,7 +30303,8 @@ def _is_tool_txt_artifact(p):
     scrubbed and never tracked."""
     leak_txts = {f"{_PN_LEAK_STEM}.txt"} | {
         f"{stem}.txt" for stem in _PN_LEAK_LEGACY_STEMS}
-    if p.name in leak_txts or p.name == _COMBINED_TEXT_NAME:
+    if p.name in leak_txts or p.name in (_COMBINED_TEXT_NAME,
+                                         _NEW_REAL_VALUES_FILE):
         return True
     if (p.name.startswith(_ETA_MARKER_PREFIX + " ")
             or p.name.startswith(_DONE_MARKER_PREFIX + " ")):
@@ -30372,6 +30373,53 @@ def _drop_superseded_combined_exports(folder, text_subdir, log):
 # content changes.
 _COMBINED_TEXT_NAME = "Combined Text.txt"
 _COMBINE_RULE = "#" * 78
+
+# ── New Real Values.txt: names the reader spotted, handed to the next pass ──
+# The text reader (the pdf-viewer repo's viewer/text-reader.html) shows the
+# scrubbed exports with the real names put back ON SCREEN from the key, each
+# pseudonym marked — so a name the run left in the clear is the unmarked one,
+# and the operator flags it there. The flags are written to THIS file in the
+# case folder, one value per line, `#` lines being comments, and every run in
+# the folder — the full run and `--fix-leaks` alike — reads them as if each had
+# been typed as a `--term`: the operator's explicit instruction, AUTHORITATIVE
+# and screened by nothing, exactly as a `--term` is. A `.txt` and not a
+# spreadsheet because the reader is a web page with no workbook writer, and a
+# line per value is what a person can also type by hand. Spaces in the name,
+# never underscores, by the owner's rule for documents. Never an export: it
+# sits in the case folder, and `_is_tool_txt_artifact` knows it by name so the
+# older single-folder layout never scrubs it or folds it into a combined file.
+_NEW_REAL_VALUES_FILE = "New Real Values.txt"
+
+
+def _pn_read_new_real_values(folder, log=None):
+    """The values flagged in the text reader, in file order, de-duplicated
+    case-insensitively, whitespace folded; [] with no readable file."""
+    path = Path(folder) / _NEW_REAL_VALUES_FILE
+    if not path.is_file():
+        return []
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except UnicodeDecodeError:
+        try:
+            text = path.read_text(encoding="latin-1")
+        except OSError:
+            return []
+    except OSError:
+        return []
+    out, seen = [], set()
+    for raw in text.splitlines():
+        line = " ".join(raw.split())
+        if not line or line.startswith("#"):
+            continue
+        if line.lower() in seen:
+            continue
+        seen.add(line.lower())
+        out.append(line)
+    if out and log:
+        shown = ", ".join(out[:6]) + (" …" if len(out) > 6 else "")
+        log.info(f"  {_NEW_REAL_VALUES_FILE}: {len(out)} value(s) flagged in the "
+                 f"text reader will be scrubbed as --term values ({shown}).")
+    return out
 
 
 def _combine_doc_banner(i, n, name):
@@ -33388,7 +33436,12 @@ def _fix_leaks_mode(folder, args, cfg, log):
                  "what no longer carries a leak. (To scrub a value, mark its "
                  "row yes or type the exact replacement, then click again.)")
 
-    terms += _pn_build_terms([], [], list(args.term or []) + auto_terms, registry)
+    # The text reader's flagged values ride along here too: this is the pass
+    # the operator clicks after reading, and a name spotted in an export is a
+    # leak this text-only pass exists to cure.
+    terms += _pn_build_terms(
+        [], [], list(args.term or []) + auto_terms
+        + _pn_read_new_real_values(folder, log), registry)
     _pn_apply_weld_follows(terms, weld_follows, log)
     # Operator-typed replacements: authoritative, reversible, never re-derived.
     # Appended LAST so they win Pseudonymizer.__init__'s last-write-wins records
@@ -34145,7 +34198,10 @@ def main():
                 weld_follows.update(
                     _pn_bracket_welds(d["value"], d.get("fixcell") or ""))
         suppressed = {vl for vl, d in leak_decisions.items() if d["fix"] == "no"}
-        extra_terms = list(args.term or []) + fix_terms
+        # …and the values flagged in the text reader, the operator's own
+        # instruction like a typed --term (see `_NEW_REAL_VALUES_FILE`).
+        extra_terms = (list(args.term or []) + fix_terms
+                       + _pn_read_new_real_values(folder, log))
         if fix_terms:
             log.info(f"  Leak worksheet: scrubbing {len(fix_terms)} value(s) "
                      f"marked Fix?=yes ({', '.join(fix_terms[:6])}).")
