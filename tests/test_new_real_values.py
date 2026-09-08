@@ -5,7 +5,9 @@ read by every run in that folder — the full run and `--fix-leaks` alike — as
 if each had been typed as a `--term`. The reader shows the scrubbed exports
 with the real names put back on screen from the key and every pseudonym
 marked, so the unmarked name is the one the run missed; this file is how that
-sighting reaches the next pass.
+sighting reaches the next pass. The same file carries the reader's KEEPS —
+`no: VALUE` / `never: VALUE` for a value the run faked that should have been
+left alone (a cited decision's name) — read as the worksheet's own decisions.
 
 Run:  cd PDF-Linker && python3 -m pytest tests/test_new_real_values.py -v
 """
@@ -129,3 +131,44 @@ def test_fix_leaks_reads_it_too(tmp_path, monkeypatch):
     text = export.read_text(encoding="utf-8")
     assert "Rosa Delgado" not in text and "signed the lease" in text
     assert "Rosa Delgado" in {str(r[1]) for r in _key_rows(folder)}
+
+
+# ── keeps ────────────────────────────────────────────────────────────────────
+
+def test_keep_lines_are_decisions_and_never_terms(tmp_path):
+    (tmp_path / NAME).write_text(
+        "Rosa Delgado\nno: Stockton Theatres\nNEVER: Palermo\nnever: palermo\n",
+        encoding="utf-8")
+    assert pl._pn_read_new_real_values(tmp_path, log) == ["Rosa Delgado"]
+    keeps = pl._pn_read_reader_keeps(tmp_path, log)
+    assert set(keeps) == {"stockton theatres", "palermo"}
+    assert keeps["stockton theatres"]["fix"] == "no"
+    assert keeps["stockton theatres"].get("fixcell") in (None, "")
+    assert keeps["palermo"]["fix"] == "no"
+    assert keeps["palermo"]["fixcell"] == "never"
+
+
+def test_a_typed_worksheet_cell_wins_over_the_readers_line(tmp_path):
+    (tmp_path / NAME).write_text("no: Stockton\nno: Palermo\n", encoding="utf-8")
+    sheet = {"stockton": {"value": "Stockton", "fix": "yes", "fixcell": None},
+             "palermo": {"value": "Palermo", "fix": "", "fixcell": None}}
+    merged = pl._pn_with_reader_keeps(sheet, tmp_path, log)
+    assert merged["stockton"]["fix"] == "yes"       # the operator's own answer
+    assert merged["palermo"]["fix"] == "no"         # an undecided row, answered
+
+
+def test_a_kept_value_comes_back_unfaked_on_the_next_run(tmp_path, monkeypatch):
+    folder = tmp_path / "Smith v Jones"
+    folder.mkdir()
+    _docx(folder / "Filing.docx",
+          "Acme Widgets Inc cites Stockton Theatres throughout.")
+    assert _run_main(folder, monkeypatch, "--pseudonymize",
+                     "--term", "Acme Widgets Inc", "--term", "Stockton Theatres") == 0
+    export = folder / "Text Files" / "Filing.txt"
+    assert "Stockton Theatres" not in export.read_text(encoding="utf-8")
+    # The reader says the case name was wrongly faked.
+    (folder / NAME).write_text("no: Stockton Theatres\n", encoding="utf-8")
+    assert _run_main(folder, monkeypatch, "--pseudonymize",
+                     "--term", "Acme Widgets Inc", "--term", "Stockton Theatres") == 0
+    text = export.read_text(encoding="utf-8")
+    assert "Stockton Theatres" in text and "Acme Widgets" not in text

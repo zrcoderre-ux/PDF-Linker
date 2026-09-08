@@ -5037,8 +5037,20 @@ so the older single-folder layout never scrubs it or folds it into a combined
 file. The reader never writes the fakes' real values anywhere else — its
 saves carry the pseudonyms underneath — so this file is the ONE thing it
 leaves in the folder that names a real value, and it names only values the
-exports already carried in the clear. Pinned in `test_new_real_values.py`,
-end to end through both passes.
+exports already carried in the clear. **The same file carries the reader's
+KEEPS** (`_pn_read_reader_keeps`, `_pn_with_reader_keeps`, `_READER_KEEP_RE`):
+a value the run faked that should have been left alone — a word of a cited
+decision's name, most often — is right-clicked in the reader and written as
+`no: VALUE` (this folder) or `never: VALUE` (every folder), and read through
+`_pn_parse_decision_rows` as the worksheet's own cell would be, so every
+consequence a typed `no`/`never` has follows: the key row retired, the span
+protected, the master sheet updated. Laid UNDER the worksheet at both
+decision sites (the full run and `--fix-leaks`), so a cell the operator typed
+still wins and the reader's line answers an undecided or absent row. The
+reader shows the keep at once — the highlight goes, the tooltip says the file
+still carries the fake — and the FULL re-run is what restores the export,
+since the text-only pass never reverses a fake. Pinned in
+`test_new_real_values.py`, end to end through both passes and for a keep.
 
 **A launcher RESOLVES its paths when it is clicked, and says so when it
 can't** (`_launcher_resolve_bat` / `_launcher_resolve_sh`). A launcher records

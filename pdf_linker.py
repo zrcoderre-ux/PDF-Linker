@@ -30504,34 +30504,92 @@ _COMBINE_RULE = "#" * 78
 _NEW_REAL_VALUES_FILE = "New Real Values.txt"
 
 
-def _pn_read_new_real_values(folder, log=None):
-    """The values flagged in the text reader, in file order, de-duplicated
-    case-insensitively, whitespace folded; [] with no readable file."""
+# …and the same file carries the reader's KEEPS: a value the run faked that
+# should have been left alone — a word of a cited decision's name, most
+# often. A line `no: VALUE` is the worksheet's own `no` for this folder and
+# `never: VALUE` its `never` (the nuclear keep, every folder), read through
+# `_pn_parse_decision_rows` so every consequence a typed cell has — the key
+# row retired, the span protected, the master sheet updated — follows here
+# too. A worksheet cell the operator typed still wins over the reader's line
+# for the same value; the reader's line answers an undecided row.
+_READER_KEEP_RE = re.compile(r"^(no|never)\s*:\s*(.+?)\s*$", re.I)
+
+
+def _pn_read_reader_file(folder):
+    """(values to fake, [(control, value), …]) off `New Real Values.txt`, in
+    file order, de-duplicated case-insensitively, whitespace folded; empty
+    with no readable file."""
     path = Path(folder) / _NEW_REAL_VALUES_FILE
     if not path.is_file():
-        return []
+        return [], []
     try:
         text = path.read_text(encoding="utf-8-sig")
     except UnicodeDecodeError:
         try:
             text = path.read_text(encoding="latin-1")
         except OSError:
-            return []
+            return [], []
     except OSError:
-        return []
-    out, seen = [], set()
+        return [], []
+    terms, keeps, seen = [], [], set()
     for raw in text.splitlines():
         line = " ".join(raw.split())
         if not line or line.startswith("#"):
             continue
-        if line.lower() in seen:
+        m = _READER_KEEP_RE.match(line)
+        control, value = (m.group(1).lower(), m.group(2)) if m else (None, line)
+        if value.lower() in seen:
             continue
-        seen.add(line.lower())
-        out.append(line)
+        seen.add(value.lower())
+        if control:
+            keeps.append((control, value))
+        else:
+            terms.append(value)
+    return terms, keeps
+
+
+def _pn_read_new_real_values(folder, log=None):
+    """The values flagged in the text reader as REAL and unfaked — scrubbed as
+    --term values; [] with no readable file. (The keeps in the same file are
+    `_pn_read_reader_keeps`'.)"""
+    out, _keeps = _pn_read_reader_file(folder)
     if out and log:
         shown = ", ".join(out[:6]) + (" …" if len(out) > 6 else "")
         log.info(f"  {_NEW_REAL_VALUES_FILE}: {len(out)} value(s) flagged in the "
                  f"text reader will be scrubbed as --term values ({shown}).")
+    return out
+
+
+def _pn_read_reader_keeps(folder, log=None):
+    """{value_lower: decision} for the reader's `no:` / `never:` lines, in the
+    shape `_pn_read_leak_decisions` returns, so they layer with the worksheet's
+    own; {} with none."""
+    _terms, keeps = _pn_read_reader_file(folder)
+    if not keeps:
+        return {}
+    rows = [["Value", "Fix? (yes/no)", "Notes"]]
+    rows += [[value, control, "kept in the text reader"] for control, value in keeps]
+    out = _pn_parse_decision_rows(rows, log)
+    if out and log:
+        shown = ", ".join(f"{c}: {v}" for c, v in keeps[:6]) + (" …" if len(keeps) > 6 else "")
+        log.info(f"  {_NEW_REAL_VALUES_FILE}: {len(out)} value(s) the text reader "
+                 f"marked as wrongly faked will be kept ({shown}).")
+    return out
+
+
+def _pn_with_reader_keeps(folder_decisions, folder, log=None):
+    """The folder's worksheet decisions with the reader's keeps laid UNDER
+    them: a cell the operator typed wins, an undecided or absent row takes
+    the reader's answer."""
+    keeps = _pn_read_reader_keeps(folder, log)
+    if not keeps:
+        return folder_decisions
+    out = dict(folder_decisions)
+    for vl, d in keeps.items():
+        have = out.get(vl)
+        if have and (have.get("fix") or have.get("fixcell")):
+            continue
+        out[vl] = d
     return out
 
 
@@ -33329,7 +33387,8 @@ def _fix_leaks_mode(folder, args, cfg, log):
     # to be on the registry before the key is opened, or this pass would re-apply
     # the very binding the operator brace-kept away.
     master_keep = _pn_read_master_keep(cfg, log)
-    folder_decisions = _pn_read_leak_decisions(folder, log)
+    folder_decisions = _pn_with_reader_keeps(
+        _pn_read_leak_decisions(folder, log), folder, log)
     decisions = _pn_layer_decisions(master_keep, folder_decisions)
     _pn_set_keep_words(registry, decisions, log)
     try:
@@ -34255,7 +34314,8 @@ def main():
         # The folder's own decisions layer ON TOP of the global keeps, so a case
         # can locally override a global keep when it must.
         master_keep = _pn_read_master_keep(cfg, log)
-        folder_decisions = _pn_read_leak_decisions(folder, log)
+        folder_decisions = _pn_with_reader_keeps(
+            _pn_read_leak_decisions(folder, log), folder, log)
         leak_decisions = _pn_layer_decisions(master_keep, folder_decisions)
         if master_keep:
             log.info(f"  Master KEEP: {len(master_keep)} durable no/bracket "
