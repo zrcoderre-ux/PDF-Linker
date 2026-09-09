@@ -53,6 +53,21 @@ def _pz(names=("Helen Rasho", "Marcus Delacroix")):
     return P.Pseudonymizer(terms, list(P._PN_DEFAULT_DETECTORS), registry=reg)
 
 
+def _pz_with_pinned_row():
+    """A Pseudonymizer whose key will carry the second sheet.
+
+    Only a scan-error correction is pinned now (`_PN_KEY_PINNED_SHEET`): an
+    unmatched authoritative binding sits on the main sheet with the rest."""
+    hdr = ("Value", "Fix? (yes/no)", "Type", "Notes", "Cases", "Origin")
+    dec = P._pn_parse_decision_rows(
+        [hdr, ("Delacrolx", "*Delacroix", "", "", "", "")])
+    reg = P._PnFakeRegistry()
+    terms = P._pn_build_terms(["Helen Rasho", "Marcus Delacroix"], [], [],
+                              registry=reg)
+    terms = P._pn_apply_ocr_fixes(dec, terms, reg, log)
+    return P.Pseudonymizer(terms, list(P._PN_DEFAULT_DETECTORS), registry=reg)
+
+
 def test_the_pseudonym_key_wraps(tmp_path):
     z = _pz()
     z.apply(SOURCE)
@@ -63,10 +78,10 @@ def test_the_pseudonym_key_wraps(tmp_path):
 
 
 def test_the_keys_pinned_sheet_wraps_too(tmp_path):
-    # A binding no export carried lives on its own sheet, and it is written by a
+    # A scan-error correction lives on its own sheet, and it is written by a
     # separate `append` loop — so it is a separate chance to forget.
-    z = _pz(names=["Helen Rasho", "Someone Neverpresent"])
-    z.apply(SOURCE)
+    z = _pz_with_pinned_row()
+    z.apply(SOURCE + " 3  Delacrolx was served.\n")
     key = tmp_path / "pseudonym_key.xlsx"
     z.write_key(key, log)
     names = openpyxl.load_workbook(key).sheetnames
@@ -116,9 +131,10 @@ def test_the_columns_carry_their_declared_widths(tmp_path):
     ordinary party name; Context gets the width a whole sentence needs; the
     Fix? cell gets room for its longest control word and no more.
     """
-    z = _pz(names=["Helen Rasho", "Someone Neverpresent"])
-    z.apply(SOURCE)
-    z.note_key_context(SOURCE)
+    z = _pz_with_pinned_row()
+    body = SOURCE + " 3  Delacrolx was served.\n"
+    z.apply(body)
+    z.note_key_context(body)
     key = tmp_path / "pseudonym_key.xlsx"
     z.write_key(key, log)
     wb = openpyxl.load_workbook(key)

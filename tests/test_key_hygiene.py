@@ -1,13 +1,17 @@
 """
 D7 / D8 — what the delivered key and the OCR-mangled detectors got wrong.
 
-D8. The delivered key had 335 rows and 133 of them were droppable or harmful.
-`write_key` deliberately keeps a row the party template named even when the
+D8. `write_key` deliberately keeps a row the party template named even when the
 batch never mentioned the party — the fake is already minted and the row is the
-only durable record of a binding a later filing will need. Right forward, and a
-hazard in reverse: `ReAnonymizeTentative` runs the map backwards and would
-replace a Real Value that was never in the document. Status "no match"
-documented the hazard without preventing it.
+only durable record of a binding a later filing will need. Such a row was moved
+off the main sheet for one era, on the ground that `ReAnonymizeTentative` runs
+the map backwards and would replace a Real Value that was never in the
+document. That is REVERSED at the owner's direction: the operator types a real
+value by hand in other programs and needs its stand-in back, and a binding
+parked on a tab nothing but this tool reads cannot answer. It sits on the main
+sheet now, under Status "no match" — which is what says, on the sheet itself,
+that no export ever carried it. What stays pinned is the OCR-fix row, whose
+Replacement is another row's (see `_PN_KEY_PINNED_SHEET`).
 
 D7. Two OCR-mangled values the detectors did not recognise: a phone number whose
 area-code brackets the scanner mangled, and an address whose "@" it read as
@@ -49,14 +53,22 @@ def _write(z, tmp_path):
 
 # ─────────────────── D8: the reverse pass sees only what shipped ────────────
 
-def test_a_binding_no_export_carries_is_off_the_macros_sheet(tmp_path):
+def test_a_binding_no_export_carries_is_on_the_main_sheet(tmp_path):
+    """It is on the sheet every reader reads, marked `no match`.
+
+    At the owner's direction: a real value typed by hand in another program has
+    to find its stand-in, and the main sheet is the one that answers. The row
+    says for itself that no export carried it."""
     z = _pz(names=["Helen Rasho", "Someone Neverpresent"])
     z.apply("Plaintiff Helen Rasho filed this action.")
     _p, macro, pinned = _write(z, tmp_path)
-    assert "Someone Neverpresent" not in {r[1] for r in macro}, (
-        "the reverse pass would rewrite a value that was never in the document")
-    assert "Someone Neverpresent" in {r[1] for r in pinned}, (
-        "the binding must still be pinned for the run that meets the party")
+    row = [r for r in macro if r[1] == "Someone Neverpresent"]
+    assert row, ("a binding no export carries must still be reachable from the "
+                 "main sheet")
+    _st = P._PN_KEY_HEADERS.index("Status")
+    assert row[0][_st] == "no match", row
+    assert not pinned, ("nothing but a scan-error correction is pinned now: "
+                        f"{pinned}")
 
 
 def test_a_pinned_binding_is_still_read_back(tmp_path):

@@ -364,6 +364,32 @@ def _save_with_tab_selected(key, title):
     assert openpyxl.load_workbook(key).active.title == title
 
 
+def _demote_no_match_rows(key):
+    """Rewrite `key` the way an OLDER version of this tool wrote it: every
+    unmatched binding on the second sheet.
+
+    That layout is what an operator's key on disk still carries — the rule was
+    reversed at the owner's direction and only a rewrite migrates a folder (see
+    `_PN_KEY_PINNED_SHEET`) — so it is what this pass has to be able to read."""
+    wb = openpyxl.load_workbook(key)
+    ws = wb[P._PN_KEY_MAIN_SHEET]
+    hdr = [c.value for c in ws[1]]
+    st = hdr.index("Status")
+    moved = [[c.value for c in row] for row in ws.iter_rows(min_row=2)
+             if row[st].value == "no match"]
+    assert moved, "nothing to demote — the fixture no longer has an unmatched row"
+    for row in reversed(list(ws.iter_rows(min_row=2))):
+        if row[st].value == "no match":
+            ws.delete_rows(row[0].row)
+    ps = wb.create_sheet(P._PN_KEY_PINNED_SHEET)
+    ps.append(hdr)
+    for r in moved:
+        ps.append(r)
+    wb.save(key)
+    return {r[hdr.index("Real Value")]: r[hdr.index("Replacement")]
+            for r in moved}
+
+
 def test_fix_leaks_keeps_every_binding_when_the_pinned_tab_was_left_active(
         tmp_path):
     # The key was saved with the "Pinned (never in text)" tab selected. Every
@@ -373,8 +399,8 @@ def test_fix_leaks_keeps_every_binding_when_the_pinned_tab_was_left_active(
     # that reverses the exports, emptied by a click on a tab.
     tdir = _setup(tmp_path)
     key = tmp_path / "pseudonym_key.xlsx"
-    before = openpyxl.load_workbook(key)
-    assert P._PN_KEY_PINNED_SHEET in before.sheetnames     # the case number
+    demoted = _demote_no_match_rows(key)                   # the case number
+    assert "24STCV24253" in demoted, demoted
     _save_with_tab_selected(key, P._PN_KEY_PINNED_SHEET)
 
     args = _Args()
@@ -382,12 +408,16 @@ def test_fix_leaks_keeps_every_binding_when_the_pinned_tab_was_left_active(
     assert P._fix_leaks_mode(tmp_path, args, {}, log) == 0
 
     wb = openpyxl.load_workbook(key)
-    main = [r[1] for r in wb[P._PN_KEY_MAIN_SHEET].iter_rows(
-        min_row=2, values_only=True)]
-    pinned = [r[1] for r in wb[P._PN_KEY_PINNED_SHEET].iter_rows(
-        min_row=2, values_only=True)]
+    hdr = [c.value for c in wb[P._PN_KEY_MAIN_SHEET][1]]
+    main = {r[hdr.index("Real Value")]: r[hdr.index("Replacement")]
+            for r in wb[P._PN_KEY_MAIN_SHEET].iter_rows(
+                min_row=2, values_only=True)}
     assert "Ford Motor Company" in main and "Ford" in main   # preserved
     assert "Gregory Yu" in main                              # and extended
-    assert "24STCV24253" in pinned and "24STCV24253" not in main
+    # …and the demoted rows are LIFTED onto the main sheet by the rewrite,
+    # each keeping the exact stand-in the older key pinned.
+    assert P._PN_KEY_PINNED_SHEET not in wb.sheetnames, wb.sheetnames
+    for real, fake in demoted.items():
+        assert main.get(real) == fake, (real, fake, main.get(real))
     assert wb.active.title == P._PN_KEY_MAIN_SHEET  # rewritten main-tab first
     assert "Yu" not in (tdir / "Motion.txt").read_text()

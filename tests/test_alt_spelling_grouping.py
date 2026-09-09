@@ -425,17 +425,18 @@ def test_the_starred_spelling_takes_the_tokens_slot_in_its_party(tmp_path):
     assert fakes["Vazqez"].lower() not in P._PN_POOL_WORDS
 
 
-def test_a_starred_spelling_no_document_carries_is_pinned_with_the_clean_word(
-        tmp_path):
-    """No export carries the correct spelling, so its row lives on the pinned
-    sheet (`_PN_KEY_PINNED_SHEET`) as every unmatched authoritative binding
-    does — holding the clean pool word the misspelling used to hold, while the
-    misspelling on the main sheet carries the slip."""
+def test_a_starred_spelling_no_document_carries_holds_the_clean_word(tmp_path):
+    """No export carries the correct spelling, and its row is on the MAIN
+    sheet with every other binding (`_PN_KEY_PINNED_SHEET`) — holding the
+    clean pool word the misspelling used to hold, while the misspelling
+    carries the slip. It is written where a reader looks precisely because
+    nothing in the folder spells the name that way: a real value typed by
+    hand elsewhere has to be able to find its stand-in."""
     sheets = _starred(tmp_path, "MANUEL VAZQEZ testified. Vazqez left.")
-    main, pinned = (dict(sheets[P._PN_KEY_MAIN_SHEET]),
-                    dict(sheets[P._PN_KEY_PINNED_SHEET]))
-    assert "Vazquez" in pinned and "Vazquez" not in main
-    assert pinned["Vazquez"].lower() in P._PN_POOL_WORDS
+    assert P._PN_KEY_PINNED_SHEET not in sheets, sorted(sheets)
+    main = dict(sheets[P._PN_KEY_MAIN_SHEET])
+    assert "Vazquez" in main
+    assert main["Vazquez"].lower() in P._PN_POOL_WORDS
     assert main["Vazqez"].lower() not in P._PN_POOL_WORDS
     assert P._pn_osa_distance(main["Vazqez"].lower(),
-                              pinned["Vazquez"].lower()) == 1
+                              main["Vazquez"].lower()) == 1

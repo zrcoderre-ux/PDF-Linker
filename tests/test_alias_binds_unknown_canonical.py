@@ -8,10 +8,10 @@ stand-in that says nothing about the name it replaced, and the next document to
 spell it RIGHT draws a second unrelated word.
 
 Binding it costs one pool word and lands where a declared-but-absent value
-belongs: `write_key` gives a binding no export carried Status `no match` and
-puts it on `_PN_KEY_PINNED_SHEET`, which `DeAnonymize` cannot reach — forward
-only, which is all this needs, while `_pn_load_key` reads both sheets so the
-pin waits for the run where a document finally spells the name out.
+belongs: `write_key` gives a binding no export carried Status `no match`, on
+the main sheet with every other binding, so the operator can look the stand-in
+up by hand before any document spells the name out, and `_pn_load_key` reads it
+back so the pin waits for the run where one finally does.
 
 What is given up is the refusal, which was the only screen on what was typed
 after the star. Two things hold it: the canonical clears the same shape screens
@@ -163,10 +163,11 @@ def test_the_stand_in_is_read_back_from_the_memo():
 
 # ── where the row goes ─────────────────────────────────────────────────────
 
-def test_the_bound_canonical_is_pinned_and_the_misspelling_is_not(tmp_path):
-    """A binding no export carried is right forward and a hazard in reverse, so
-    it goes to the sheet `DeAnonymize` cannot reach — while the misspelling,
-    which the export really does carry, stays on the main sheet."""
+def test_the_bound_canonical_is_written_marked_no_match(tmp_path):
+    """Both rows sit on the main sheet, and the canonical says for itself that
+    no export carried it: Status `no match`. It is there so the operator can
+    look its stand-in up by hand — the whole point of binding it — while the
+    misspelling, which the export really does carry, reads `replaced`."""
     import openpyxl
     log = logging.getLogger("test")
     reg = P._PnFakeRegistry()
@@ -182,15 +183,22 @@ def test_the_bound_canonical_is_pinned_and_the_misspelling_is_not(tmp_path):
     pz.write_key(kp, log)
 
     wb = openpyxl.load_workbook(kp)
-    where = {}
+    where, status = {}, {}
     for name in wb.sheetnames:
         ws = wb[name]
         hdr = [str(c.value or "").strip().lower() for c in ws[1]]
-        rv = hdr.index("real value")
+        rv, st = hdr.index("real value"), hdr.index("status")
         for row in ws.iter_rows(min_row=2, values_only=True):
             where.setdefault(str(row[rv]), set()).add(name)
+            status[str(row[rv])] = row[st]
     assert where["Vazqez"] == {P._PN_KEY_MAIN_SHEET}
-    assert where["Vazquez"] == {P._PN_KEY_PINNED_SHEET}
+    assert where["Vazquez"] == {P._PN_KEY_MAIN_SHEET}
+    # The pair is one name spelled two ways, so the row the export never
+    # carried is marked as the spelling it is; a canonical with no such
+    # partner reads `no match`, which is what says no export carried it.
+    assert status["Vazquez"] == P._PN_KEY_ALT_STATUS, status
+    assert status["Manuel Sarkisyan"] == "no match", status
+    assert P._PN_KEY_PINNED_SHEET not in wb.sheetnames, wb.sheetnames
 
 
 def test_a_fix_leaks_refusal_binds_nothing():

@@ -160,15 +160,25 @@ def test_a_never_phrase_is_verbatim_and_its_words_are_ordinary_elsewhere():
     assert "Mulliken alone" not in out, out
 
 
-def test_no_key_row_promises_a_fake_that_was_never_applied(tmp_path):
+def test_the_kept_phrase_earns_no_row_and_its_token_says_no_match(tmp_path):
+    """The KEPT value itself is never written — nothing faked it, so there is
+    nothing to reverse. Its bare token is a different binding: "Mulliken alone"
+    IS faked (above), so the row is a real one, and where this batch happened
+    not to exercise it the Status column says `no match`. That row sits on the
+    main sheet like every other, at the owner's direction — see
+    `_PN_KEY_PINNED_SHEET`."""
     d = _decision("Mulliken Medical Center", "never")
     pz = _pz(["Mulliken Medical Center"], d)
     pz.apply("Mulliken Medical Center answered.")
     key = tmp_path / "pseudonym_key.xlsx"
     pz.write_key(key, log)
-    rows = list(openpyxl.load_workbook(key).active.iter_rows(values_only=True))[1:]
-    assert not [r for r in rows
-                if "mulliken" in str(r[1]).lower() or "mulliken" in str(r[2]).lower()]
+    ws = openpyxl.load_workbook(key).active
+    hdr = [c.value for c in ws[1]]
+    rows = [r for r in ws.iter_rows(min_row=2, values_only=True) if r and r[0]]
+    assert not [r for r in rows if str(r[1]).lower() == "mulliken medical center"]
+    tok = [r for r in rows if str(r[1]) == "Mulliken"]
+    assert len(tok) == 1, rows
+    assert tok[0][hdr.index("Status")] == "no match", tok
 
 
 # ── the key ─────────────────────────────────────────────────────────────────

@@ -135,10 +135,10 @@ def test_public_email_providers_are_faked_like_any_host():
         assert P._pn_fake_domain(h) != h, f"public provider {h} passed through"
 
 
-# P2  The macro-reversible key must not carry rows that matched nothing.
-#   ReAnonymize runs the key in reverse and will replace a Real Value that was
-#   never in the documents. Build terms, apply to text that hits ONLY some of
-#   them, write the key, and assert no surviving "no match" rows.
+# P2  A "no match" row is AUTHORITATIVE or it is not written at all.
+#   Build terms, apply to text that hits ONLY some of them, write the key, and
+#   assert that what survives with count 0 came from the party template or a
+#   --term — never a spelling this tool invented to widen matching.
 def test_reversal_key_zero_occurrence_rows_are_authoritative_only(tmp_path):
     # A value the PARTY TEMPLATE names is authoritative: its row is written even
     # when this batch never mentioned it, so the fake is pinned for the run that
@@ -160,9 +160,11 @@ def test_reversal_key_zero_occurrence_rows_are_authoritative_only(tmp_path):
     assert all(r[stat_i] == "no match" for r in zero)
     reals = {str(r[real_i]) for r in rows}
     assert "Someone Neverpresent" in reals          # pinned though never seen
-    # …but OFF the sheet the reversal macro reads, or the reverse pass would
-    # rewrite a Real Value that was never in the document.
-    assert "Someone Neverpresent" not in {
+    # …and ON the sheet every reader reads, at the owner's direction: a real
+    # value typed by hand in another program has to find its stand-in, and the
+    # Status column is what says no export ever carried it
+    # (see `_PN_KEY_PINNED_SHEET`).
+    assert "Someone Neverpresent" in {
         str(r[real_i]) for r in ws.iter_rows(min_row=2, values_only=True)
         if r and r[0]}
     # every variant spelling of a name that matched nothing stays out

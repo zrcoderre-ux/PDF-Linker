@@ -25,6 +25,24 @@ def _batch(names=("Ernest N Ramirez", "Ford Motor Company",
     return P.Pseudonymizer(terms, DET, registry=reg)
 
 
+def _batch_with_pinned(**kw):
+    """A batch whose key will carry the SECOND sheet.
+
+    Only a scan-error correction is pinned now (`_PN_KEY_PINNED_SHEET`); an
+    unmatched authoritative binding sits on the main sheet with the rest. The
+    resolve-by-name rule these tests cover is about which sheet is the MAIN
+    one, so what matters is that the workbook has two of them."""
+    hdr = ("Value", "Fix? (yes/no)", "Type", "Notes", "Cases", "Origin")
+    dec = P._pn_parse_decision_rows(
+        [hdr, ("Ramlrez", "*Ramirez", "", "", "", "")])
+    names = kw.pop("names", ("Ernest N Ramirez", "Ford Motor Company",
+                             "BP Ford of Long Beach"))
+    reg = P._PnFakeRegistry()
+    terms = P._pn_build_terms(list(names), ["24STCV23198"], [], registry=reg)
+    terms = P._pn_apply_ocr_fixes(dec, terms, reg, log)
+    return P.Pseudonymizer(terms, DET, registry=reg)
+
+
 def _reuse(key_path):
     reg = P._PnFakeRegistry()
     terms, _ = P._pn_load_key(key_path, reg, log)
@@ -127,8 +145,8 @@ def test_key_is_read_by_sheet_name_not_by_the_tab_excel_left_selected(tmp_path):
     # the main one and lost every applied binding.
     import openpyxl
     key = tmp_path / "pseudonym_key.xlsx"
-    pz = _batch()
-    pz.apply(SAMPLE)
+    pz = _batch_with_pinned()
+    pz.apply(SAMPLE + "\nRamlrez signed.\n")
     pz.write_key(key, log)
     wb = openpyxl.load_workbook(key)
     assert P._PN_KEY_PINNED_SHEET in wb.sheetnames
@@ -147,8 +165,8 @@ def test_a_key_whose_main_sheet_carries_an_older_title_still_resolves(tmp_path):
     # the main one, whichever tab is active.
     import openpyxl
     key = tmp_path / "pseudonym_key.xlsx"
-    pz = _batch()
-    pz.apply(SAMPLE)
+    pz = _batch_with_pinned()
+    pz.apply(SAMPLE + "\nRamlrez signed.\n")
     pz.write_key(key, log)
     expected = _load(key)
     wb = openpyxl.load_workbook(key)

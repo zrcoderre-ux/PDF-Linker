@@ -193,13 +193,30 @@ from a written row — outright or word by word, which is what the macro can do.
 The end-of-run gate reports and exits non-zero; the exports are NOT quarantined,
 because they are not dangerous, they are unrestorable, and what the operator
 needs is to know.
-**A binding NO export has ever carried lives on its own sheet**
-(`_PN_KEY_PINNED_SHEET`). Keeping a row the template named but this batch never
-mentioned is right forward and a hazard in reverse — `ReAnonymizeTentative` runs
-the map backwards and would replace a Real Value that was never in the document
-(133 of the delivered key's 335 rows were of that kind). `DeAnonymize` reads the
-ACTIVE sheet and cannot reach the second one; `_pn_load_key` reads BOTH, so the
-pin still does its job.
+**A binding NO export has ever carried sits on the MAIN sheet, with every
+other binding** (`_PN_KEY_PINNED_SHEET`), at the owner's direction. It was
+parked on a second sheet for one era, on the ground that keeping a row the
+template named but this batch never mentioned is right forward and a hazard in
+reverse — `ReAnonymizeTentative` runs the map backwards and would replace a
+Real Value that was never in the document (133 of the delivered key's 335 rows
+were of that kind). That is REVERSED: the operator types a real value by hand
+in other programs and needs its stand-in back, and a binding parked on a tab
+nothing but this tool reads cannot answer. The row goes in its own party block
+under Status `no match`, which is what says, on the sheet itself, that no
+export carried it. The reverse hazard is accepted with that in view — a Real
+Value no document contained is matched by nothing, so the cost is a reverse
+pass carrying rows it will never fire.
+**…except an OCR-FIX row, which stays pinned for a reason that is not policy.**
+Its Replacement is the canonical value's OWN stand-in (or the correct word
+itself), so on the main sheet it would be the two-Real-Values-one-Replacement
+shape `DeAnonymize.bas` calls ambiguous — the macro retires the mapping and the
+canonical's real binding goes with it — or it would un-fix the corrected word in
+the tentative. The second sheet therefore keeps its NAME and every reader keeps
+reading it: `_pn_load_key` reads BOTH, so a key an older version wrote still
+hands back its pinned bindings, and the next `write_key` — a full run or
+`--fix-leaks` — lifts them onto the main sheet, the ordinary layout migration
+(`test_key_layout_migration.py`, `test_fix_leaks.py`). Renaming the tab would
+drop those rows on the next load, which is why it is not renamed.
 **…and every reader of the key finds the main sheet by NAME, never by
 `wb.active`** (`_PN_KEY_MAIN_SHEET`, `_pn_key_main_sheet`). The active sheet
 is not something the tool wrote: it is whichever TAB was selected when the
@@ -686,11 +703,11 @@ pool word. One party under a stand-in that says nothing about the name it
 replaced, and the next document to spell it RIGHT draws a second unrelated
 word. Binding it costs one pool word and lands where a declared-but-absent
 value already belongs: `write_key` gives a binding no export carried Status
-`no match` and puts it on `_PN_KEY_PINNED_SHEET`, which `DeAnonymize` cannot
-reach — FORWARD-only, which is all this needs, while `_pn_load_key` reads both
-sheets so the pin waits for the run where a document finally spells the name
-out. The misspelling itself, which the export really does carry, stays on the
-main sheet and reverses as always.
+`no match`, on the main sheet with every other binding
+(`_PN_KEY_PINNED_SHEET`), so the operator can look the stand-in up by hand
+before any document spells the name out, while `_pn_load_key` reads it back so
+the pin waits for the run where one finally does. The misspelling itself,
+which the export really does carry, reverses as always.
 What is GIVEN UP is the refusal, which was the only screen on what was typed
 after the star; three things hold it. The pair must be near enough to BE one
 misspelling — `fold_onto`'s own `_PN_FOLD_MAX_REPS` is a LENGTH-DELTA bound
@@ -808,8 +825,10 @@ corrected. `*David {said}` composes with a keep-spec as the alias does.
 `Smith -> <Smith's fake>` is the two-Real-Values-one-Replacement shape
 `DeAnonymize.bas` retires, and a row `cuve!nants -> covenants` would UN-FIX
 the word in the tentative. So every OCR-fix row (`_PnTerm.ocr_fix`, carried
-into the record) is written to `_PN_KEY_PINNED_SHEET` WHATEVER it matched,
-under Status `ocr fix`; the fake reverses to the CORRECT spelling through the
+into the record) is written to `_PN_KEY_PINNED_SHEET` WHATEVER it matched —
+now the ONLY thing that sheet holds, every unmatched authoritative binding
+having moved to the main one — under Status `ocr fix`; the fake reverses to
+the CORRECT spelling through the
 canonical's own row, which is what a reader wants of a scan error. The
 garble's words are never harvested as tokens, and the loader (`ocr_row`)
 builds the row back as a live term past every name screen and never seeds

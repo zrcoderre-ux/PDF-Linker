@@ -196,15 +196,52 @@ def test_fix_leaks_rewrites_an_older_layout(tmp_path):
 
 
 def test_the_pinned_sheet_takes_the_same_order(tmp_path):
-    """A binding no export carries lives on its own sheet, and it is written by
-    the same `_sheet_row` — so the two sheets can never disagree about layout."""
+    """The second sheet is written by the same `_sheet_row`, so the two can
+    never disagree about layout. Only a scan-error correction lives there now
+    (`_PN_KEY_PINNED_SHEET`)."""
+    hdr = ("Value", "Fix? (yes/no)", "Type", "Notes", "Cases", "Origin")
+    dec = P._pn_parse_decision_rows(
+        [hdr, ("Fcrd", "*Ford", "", "", "", "")])
     reg = P._PnFakeRegistry()
-    # An authoritative term that matches nothing is pinned rather than dropped.
-    pz = P.Pseudonymizer(
-        P._pn_build_terms(["Never Mentioned"], [], [], registry=reg), [], reg)
-    pz.apply("Nothing in this text names that party.")
+    terms = P._pn_build_terms(["Ford Motor Company"], [], [], registry=reg)
+    terms = P._pn_apply_ocr_fixes(dec, terms, reg, log)
+    pz = P.Pseudonymizer(terms, [], reg)
+    pz.apply("Fcrd Motor Company built it.")
     p = tmp_path / "pseudonym_key.xlsx"
     pz.write_key(p, log)
+    assert P._PN_KEY_PINNED_SHEET in openpyxl.load_workbook(p).sheetnames
+    assert _sheet(p, P._PN_KEY_PINNED_SHEET)[0] == P._PN_KEY_HEADERS
+
+
+def test_a_rewrite_lifts_an_older_keys_pinned_rows_onto_the_main_sheet(tmp_path):
+    """An unmatched authoritative binding used to be parked on the second
+    sheet, out of the reversal macro's reach. That is reversed at the owner's
+    direction — a real value typed by hand in another program has to find its
+    stand-in — and the rewrite is what migrates a key already on disk, exactly
+    as it migrates an older column order. The stand-in does not move: it is
+    read back off the pinned sheet and written out again."""
+    p = tmp_path / "pseudonym_key.xlsx"
+    _write_old_key(p, headers=P._PN_KEY_HEADERS, rows=[
+        ["entity", "Ford Motor Company", "Halloran Trading Company",
+         "Ford Motor Company built it.", "Motion.txt", "p.1:1",
+         "replaced", "template", 4]])
     wb = openpyxl.load_workbook(p)
-    if P._PN_KEY_PINNED_SHEET in wb.sheetnames:
-        assert _sheet(p, P._PN_KEY_PINNED_SHEET)[0] == P._PN_KEY_HEADERS
+    ps = wb.create_sheet(P._PN_KEY_PINNED_SHEET)
+    ps.append(list(P._PN_KEY_HEADERS))
+    ps.append(["person", "Never Mentioned", "Quillmark Selborne", "", "", "",
+               "no match", "template", 0])
+    wb.save(p)
+
+    reg = P._PnFakeRegistry()
+    terms, _d = P._pn_load_key(p, reg, log)[:2]
+    pz = P.Pseudonymizer(terms, [], reg)
+    pz.apply("Ford Motor Company built it.")
+    pz.write_key(p, log)
+
+    wb = openpyxl.load_workbook(p)
+    assert P._PN_KEY_PINNED_SHEET not in wb.sheetnames, wb.sheetnames
+    col = {h: i for i, h in enumerate(P._PN_KEY_HEADERS)}
+    rows = _sheet(p)
+    got = {r[col["Real Value"]]: r[col["Replacement"]] for r in rows[1:]}
+    assert got["Never Mentioned"] == "Quillmark Selborne", got
+    assert got["Ford Motor Company"] == "Halloran Trading Company", got

@@ -14012,19 +14012,36 @@ _PN_KEY_LOST_MSG = (
     "folder is left standing and untouched, but it cannot carry what this run "
     "minted — so the .txt exports hold pseudonyms NOTHING can restore. Do not "
     "send a draft written from them until this run is repeated successfully.")
-# A binding no export has EVER carried lives on its own sheet. `write_key`
-# deliberately keeps a row the party template or a --term named even when this
-# batch never mentioned the party: the fake is already minted, and the row is
-# the only durable record of a binding the case needs the moment a later filing
-# finally names them. Right forward, and a hazard in reverse — the macro runs
-# the map backwards and would replace a Real Value that was never in the
-# document. Status "no match" documented the hazard without preventing it, and
-# 133 of the delivered key's 335 rows were of this kind.
+# The second sheet, now holding SCAN-ERROR CORRECTIONS and nothing else.
 #
-# So they go on a second sheet: `DeAnonymize` reads the active one and cannot
-# reach them, while `_pn_load_key` reads BOTH and keeps pinning them. A row
-# earns its way onto the main sheet by being APPLIED — this run or any earlier
-# one, since a loaded row carries its occurrence count forward.
+# It was built for a different job. `write_key` deliberately keeps a row the
+# party template or a --term named even when this batch never mentioned the
+# party: the fake is already minted, and the row is the only durable record of
+# a binding the case needs the moment a later filing finally names them. Such a
+# row was held to be right forward and a hazard in reverse — the macro runs the
+# map backwards and would replace a Real Value that was never in the document —
+# so 133 of one delivered key's 335 rows were moved off the sheet every reader
+# reads. That is REVERSED at the owner's direction: the operator types a real
+# value by hand in other programs and needs its stand-in back, and a binding
+# parked on a tab nothing but this tool reads cannot answer. An unmatched
+# authoritative binding is written to `_PN_KEY_MAIN_SHEET` with the rest, in
+# its own party block, under Status "no match" — which is what says, on the
+# sheet itself, that no export ever carried it. The reverse hazard is accepted
+# with that in view: a Real Value no document contained is matched by nothing,
+# so the cost is a reverse pass carrying rows it will never fire.
+#
+# What STAYS here is the OCR-fix row, and for a reason that is not policy: its
+# Replacement is the canonical value's OWN stand-in (or the correct word
+# itself), so on the main sheet it would be the two-Real-Values-one-Replacement
+# shape `DeAnonymize.bas` calls ambiguous — the macro retires the mapping, and
+# the canonical's real binding goes with it — or it would un-fix the corrected
+# word in the tentative. See `_PN_OCR_MARK`.
+#
+# The sheet keeps its NAME, and every reader keeps reading it: a key written by
+# an older version carries unmatched bindings here, `_pn_load_key` reads BOTH
+# sheets, and renaming the tab would drop those rows on the next load. The
+# first full run or `--fix-leaks` in such a folder rewrites the key and lifts
+# them onto the main sheet, the ordinary layout migration.
 _PN_KEY_PINNED_SHEET = "Pinned (never in text)"
 # The sheet the APPLIED bindings sit on, named so a reader can ask for it.
 #
@@ -15041,11 +15058,13 @@ def _pn_load_key(path, registry, log, remint_recycled=False):
                  f"{wb.active.title!r} tab selected — reading the bindings "
                  f"from the {ws.title!r} sheet regardless.")
     rows = _pn_typed_rows(ws, typed.get(ws.title))
-    # A binding no export has ever carried sits on its own sheet, where the
-    # reversal macro cannot reach it (see `_PN_KEY_PINNED_SHEET`). It is still
-    # AUTHORITATIVE going forward — pinning it is the whole reason it was
-    # written — so it is read back here exactly like any other row. Both sheets
-    # share the header, so the body rows simply concatenate.
+    # The second sheet is read back too, exactly like any other row: today it
+    # holds the scan-error corrections, and a key written by an older version
+    # holds every unmatched authoritative binding there as well (see
+    # `_PN_KEY_PINNED_SHEET`). Both are AUTHORITATIVE going forward — pinning
+    # them is the whole reason they were written — and the next `write_key`
+    # lifts the unmatched ones onto the main sheet. Both sheets share the
+    # header, so the body rows simply concatenate.
     if (_PN_KEY_PINNED_SHEET in wb.sheetnames
             and ws.title != _PN_KEY_PINNED_SHEET):
         rows += _pn_typed_rows(wb[_PN_KEY_PINNED_SHEET],
@@ -23535,31 +23554,23 @@ class Pseudonymizer:
             self._check_key_completeness(keyrows, log)
             return
 
-        # A binding no export has ever carried goes on its own sheet, out of the
-        # reverse pass's reach — see `_PN_KEY_PINNED_SHEET`.
+        # An UNMATCHED authoritative binding sits on the MAIN sheet, with every
+        # other binding — at the owner's direction, reversing the older rule.
+        # See `_PN_KEY_PINNED_SHEET` for what that rule was and what replaces
+        # it: a real value the operator types by hand in another program has to
+        # find its stand-in, and the main sheet is the one every reader reads.
+        # Its Status still says `no match`, which is the sheet's own statement
+        # of which values never reached an export.
         #
-        # "Carried" is REACHABILITY, not this row's own occurrence count: the
-        # macro reverses a composed fake word by word, so the token rows of a
-        # party whose FULL name is the only form the export used are load-
-        # bearing even though they matched nothing themselves ("Gregory Yu" ->
-        # "Finnegan Harrell" is undone by the "Finnegan" and "Harrell" rows).
-        # Same rule the completeness gate applies, from the other side. The
-        # registry is injective, so a shared fake word is always the same
-        # word-level binding and never a coincidence.
-        live = {w for r in keyrows if r["count"] > 0
-                for w in _PN_FAKE_WORD_RE.findall(str(r["fake"]).lower())}
-
-        def in_play(r):
-            return (r["count"] > 0
-                    or any(w in live for w in
-                           _PN_FAKE_WORD_RE.findall(str(r["fake"]).lower())))
-
-        # An OCR-fix row is pinned WHATEVER it matched: its Replacement is
-        # another row's (or the correct word itself), so in reverse it would
-        # either make that fake ambiguous or un-fix the word — see
-        # `_PN_OCR_MARK`.
-        applied = [r for r in keyrows if in_play(r) and not r.get("ocr_fix")]
-        pinned = [r for r in keyrows if not in_play(r) or r.get("ocr_fix")]
+        # The one thing that STAYS pinned is an OCR-fix row, WHATEVER it
+        # matched: its Replacement is another row's (or the correct word
+        # itself), so in reverse it would either make that fake ambiguous —
+        # the two-Real-Values-one-Replacement shape `DeAnonymize.bas` retires,
+        # taking a real binding down with it — or un-fix the word in the
+        # tentative. That is a correctness rule about the map, not a policy
+        # about what is worth carrying, so it is untouched. See `_PN_OCR_MARK`.
+        applied = [r for r in keyrows if not r.get("ocr_fix")]
+        pinned = [r for r in keyrows if r.get("ocr_fix")]
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = _PN_KEY_MAIN_SHEET
@@ -23586,9 +23597,9 @@ class Pseudonymizer:
             ps.append(headers)
             for r in pinned:
                 ps.append(_sheet_row(r))
-            log.info(f"  Pseudonymize: {len(pinned)} binding(s) no export "
-                     f"carries moved to the '{_PN_KEY_PINNED_SHEET}' sheet — "
-                     f"still pinned for a later run, never applied in reverse")
+            log.info(f"  Pseudonymize: {len(pinned)} scan-error correction(s) "
+                     f"written to the '{_PN_KEY_PINNED_SHEET}' sheet — read "
+                     f"back by a later run, never applied in reverse")
         from openpyxl.utils import get_column_letter as _col
         for sheet in wb.worksheets:
             for i, w in enumerate(_PN_KEY_WIDTHS, start=1):
@@ -27594,10 +27605,10 @@ def _pn_alias_bind_canonical(registry, cword, cbase, vbase, log):
     the next document that spells it RIGHT draws a second unrelated word.
 
     Binding it costs one pool word and lands where a declared-but-absent value
-    belongs: `write_key` gives a binding no export carried Status `no match` and
-    puts it on `_PN_KEY_PINNED_SHEET`, which `DeAnonymize` cannot reach — so it
-    is FORWARD-only, which is all this needs. `_pn_load_key` reads both sheets,
-    so the pin is waiting on the run where a document finally spells it out.
+    belongs: `write_key` gives a binding no export carried Status `no match`,
+    on the main sheet with every other binding, so the operator can look the
+    stand-in up by hand before any document spells the name out. `_pn_load_key`
+    reads it back, so the pin is waiting on the run where one finally does.
 
     What is GIVEN UP, and the three things that hold it. The pair must be near
     enough to BE one misspelling, on `fold_onto`'s own bound. The refusal was the only
@@ -27660,8 +27671,8 @@ def _pn_alias_bind_canonical(registry, cword, cbase, vbase, log):
                  f"folder, so it is being BOUND on your say-so — it takes the "
                  f"stand-in {held!r} that {vbase!r} held, and {vbase!r} is "
                  f"re-drawn as a slip of it. Check the spelling after the '~'. "
-                 f"The row is written to the key's '{_PN_KEY_PINNED_SHEET}' "
-                 f"sheet, since no export carries it.")
+                 f"The row is written to the key under Status 'no match', "
+                 f"since no export carries it.")
         return held
     _pn_fake_name_token(cword, registry)
     # Read the binding back out of the MEMO rather than taking the draw's
@@ -27675,8 +27686,7 @@ def _pn_alias_bind_canonical(registry, cword, cbase, vbase, log):
     log.info(f"  ALIAS: {cword!r} is not spelled that way anywhere in this "
              f"folder, so it is being BOUND on your say-so and faked {fake!r} "
              f"— check the spelling after the '~'. The row is written to the "
-             f"key's '{_PN_KEY_PINNED_SHEET}' sheet, since no export carries "
-             f"it.")
+             f"key under Status 'no match', since no export carries it.")
     return fake
 
 
