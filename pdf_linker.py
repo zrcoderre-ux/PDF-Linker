@@ -26890,16 +26890,76 @@ _PN_ALIAS_FORMULA_CHARS = "()!&%*/+;:"
 # generic term, a city, a courthouse — so the correction is REMEMBERED: it is
 # written to the master workbook's KEEP sheet under `_PN_OCR_FIX_TYPE` and
 # applied in every folder from then on, wherever that exact garble stands
-# (`_pn_ocr_fix_durable`, at the owner's direction). A single star stays a
-# statement about one scan of one document and is never persisted. An
-# inherited fix mints nothing a folder does not carry: the term it builds
-# matches nothing where the garble is absent, and an unmatched OCR-fix row is
-# never written to the key (`write_key`'s `_reversible`), so a folder that
-# never met the garble is untouched by it.
+# (`_pn_ocr_fix_durable`, at the owner's direction). An inherited fix mints
+# nothing a folder does not carry: the term it builds matches nothing where
+# the garble is absent, and an unmatched OCR-fix row is never written to the
+# key (`write_key`'s `_reversible`), so a folder that never met the garble is
+# untouched by it.
+#
+# A SINGLE star still applies in its own case only — and is now RECORDED on
+# that same sheet anyway, under `_PN_OCR_FIX_CASE_TYPE`, at the owner's
+# direction. What it buys is EVIDENCE: which garbles a scan actually makes,
+# and which of them recur across matters often enough to be worth promoting.
+# Promotion is then a one-character edit — type the second star into the
+# row's instruction cell and the next run applies it everywhere — which is
+# what makes recording the observation worth anything.
+#
+# LOGGED, never OBEYED, and the distinction is the whole safety of it. A `*`
+# is a statement about one scan of one document: it says nothing about how
+# ANOTHER matter's scanner reads that word, and applying it there would be
+# the cross-case inference the closed-entity rule refuses. So
+# `_pn_read_master_keep` hands a plain single-star row back to NOBODY (see
+# `_pn_decision_is_ocr_log`) — it never becomes a decision, so it cannot be
+# applied, cannot pre-answer another folder's worksheet row with a fix that
+# folder will not make, and cannot carry a phantom "(no longer present)" row
+# into a worksheet that would otherwise not exist. Every folder behaves
+# exactly as it did before the row was written; the row is data for the
+# operator and for nothing else. `Cases` is the column that measures
+# recurrence — it is a set of matters, where `Times Seen` counts runs and so
+# climbs on a re-run of the folder that typed it.
 _PN_OCR_MARK = "*"
 _PN_OCR_STATUS = "ocr fix"
-# The master KEEP sheet's Type for a `**` correction.
+# The master KEEP sheet's Type for a `**` correction...
 _PN_OCR_FIX_TYPE = "OCR-FIX"
+# ...and for the `*` that is kept as an observation only.
+_PN_OCR_FIX_CASE_TYPE = "OCR-FIX-CASE"
+
+
+def _pn_ocr_fix_type_for(cell):
+    """The master KEEP sheet's Type for an OCR-fix instruction cell — OCR-FIX
+    for `**`, OCR-FIX-CASE for `*` — or None when the cell is not a plain OCR
+    fix at all (a keep-spec form carries a keep and is typed as one)."""
+    if not _pn_ocr_fix_target(str(cell or "")):
+        return None
+    return (_PN_OCR_FIX_TYPE if _pn_ocr_fix_durable(cell)
+            else _PN_OCR_FIX_CASE_TYPE)
+
+
+def _pn_decision_lives_on_master(d):
+    """True when a decision's durable home is the master KEEP sheet rather
+    than this folder's worksheet — a keep, a `phrase`, or an OCR fix.
+
+    It is what `_pn_write_leak_report` asks before carrying a decision whose
+    value did not recur: the worksheet is consumed once resolved, so a
+    decision that outlives it there needs no row here, and a row written for
+    one is worse than useless. It arrives as a `(no longer present)` line in
+    every folder the master sheet reaches — conjuring a worksheet, and an
+    Apply-Leak-Fixes launcher beside it, in a folder with nothing to triage.
+    An ALIAS is deliberately not one: `~` is a statement about two spellings
+    in THIS case, never reaches the master sheet, and so does need its row."""
+    return (_pn_decision_is_keep(d) or _pn_decision_is_phrase(d)
+            or bool(d.get("ocr_fix")))
+
+
+def _pn_decision_is_ocr_log(d):
+    """True for a decision that is a PLAIN single-star OCR fix — recorded on
+    the master KEEP sheet as evidence and never read back as an instruction.
+
+    The keep-spec form (`*David {said}`) is deliberately NOT one: its bracket
+    half is a durable keep that generalises like any other, and it earns its
+    row through `_pn_decision_is_keep` as it always has."""
+    return bool(d.get("ocr_fix")) and not d.get("ocr_durable") \
+        and not _pn_decision_is_keep(d)
 
 
 def _pn_ocr_fix_target(cell):
@@ -29286,7 +29346,13 @@ def _pn_read_master_keep(cfg, log=None):
     master workbook's KEEP sheet — the `no`/bracket instructions to re-apply on
     every run in every folder, the `phrase` decisions that override them
     inside a name, and the `**` OCR corrections remembered for every folder
-    (`_PN_OCR_FIX_TYPE`). Empty when the sheet is absent/unreadable."""
+    (`_PN_OCR_FIX_TYPE`). Empty when the sheet is absent/unreadable.
+
+    A plain SINGLE-star OCR row is dropped here and reaches no caller: that
+    sheet keeps it as evidence of what a scan misread, not as an instruction
+    to any other matter (`_pn_decision_is_ocr_log`). Dropped at the READER,
+    which is the one choke point every consumer of the master sheet goes
+    through, so no pass added later can quietly start obeying one."""
     path = _pn_master_path(cfg)
     if not path.exists():
         return {}
@@ -29297,7 +29363,8 @@ def _pn_read_master_keep(cfg, log=None):
         wb.close()
     except Exception:
         return {}
-    return _pn_parse_decision_rows(rows, log)
+    return {vl: d for vl, d in _pn_parse_decision_rows(rows, log).items()
+            if not _pn_decision_is_ocr_log(d)}
 
 
 def _pn_update_master_keep(cfg, record_map, case_name, today, log,
@@ -29333,10 +29400,17 @@ def _pn_update_master_keep(cfg, record_map, case_name, today, log,
         val = str(r[0])
         times = r[3] if len(r) > 3 else 1
         cases_raw = r[4] if len(r) > 4 else ""
+        instr = (str(r[1]) if len(r) > 1 and r[1] else "no")
         rows[val.lower()] = {
             "value": val,
-            "instruction": (str(r[1]) if len(r) > 1 and r[1] else "no"),
-            "type": (str(r[2]) if len(r) > 2 and r[2] else "KEEP"),
+            "instruction": instr,
+            # The INSTRUCTION CELL is what decides whether an OCR fix applies
+            # everywhere, so a row promoted by hand (`*` retyped as `**`) is
+            # re-typed here rather than left saying the opposite of what it
+            # now does. Plain OCR-fix cells only — a keep-spec form is a
+            # KEEP-ALWAYS and keeps whatever type it was written with.
+            "type": (_pn_ocr_fix_type_for(instr)
+                     or (str(r[2]) if len(r) > 2 and r[2] else "KEEP")),
             "times": int(times) if str(times).isdigit() else 1,
             "cases": _pn_case_migrate(
                 (c.strip() for c in str(cases_raw or "").split(";")
@@ -29366,6 +29440,11 @@ def _pn_update_master_keep(cfg, record_map, case_name, today, log,
             # A `**` correction: a scan's habitual garble of a generic term,
             # corrected in every folder it turns up in — see `_PN_OCR_MARK`.
             vtype = _PN_OCR_FIX_TYPE
+        elif d.get("ocr_fix"):
+            # A `*` correction: applied in the case that typed it and nowhere
+            # else, kept here as evidence of what this scan misread. Typing a
+            # second star into this row's instruction cell promotes it.
+            vtype = _PN_OCR_FIX_CASE_TYPE
         else:
             vtype = d.get("type") or ("KEEP-PART" if d.get("fake_values") else "KEEP")
         g = rows.get(vl)
@@ -29568,8 +29647,10 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
                      "present": True})
     # Persist a Fix?=yes/explicit decision whose value didn't recur this run, so
     # the fix keeps applying — but ONLY while nothing else already holds it.
-    # KEEP decisions are omitted (the master KEEP sheet holds them), and so is
-    # any value the pseudonym KEY has bound: a Fix?=yes mints a fake that the
+    # A decision that lives on the master KEEP sheet is omitted (that sheet
+    # holds it, and a `(no longer present)` row for one reaches every folder
+    # the sheet does — see `_pn_decision_lives_on_master`), and so is any
+    # value the pseudonym KEY has bound: a Fix?=yes mints a fake that the
     # key pins and every later run re-applies, so carrying the row forward
     # preserves nothing and regenerates LEAKS.xlsx on every clean run — a
     # worksheet whose only content is "(no longer present)", which reads as a
@@ -29579,7 +29660,7 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
         if vl in bound_low:
             continue
         if vl not in seen and d.get("fix") in ("yes", "no") \
-                and not _pn_decision_is_keep(d):
+                and not _pn_decision_lives_on_master(d):
             rows.append({"file": "—", "type": d.get("type") or "(decided)",
                          "value": d["value"], "where": _PN_LEAK_ABSENT,
                          "context": "", "scrubbed_context": "",
@@ -33897,9 +33978,13 @@ def _fix_leaks_mode(folder, args, cfg, log):
         pz._own_fakes.add(str(r["fake"]).lower().rstrip(" .,;:"))
     # Record this run's LOCAL keep decisions into the cross-folder master KEEP
     # sheet so a key/worksheet edit made here persists globally.
+    # A `*` OCR fix typed into THIS folder's worksheet is recorded beside
+    # them — evidence of what the scan misread, obeyed nowhere else (see
+    # `_PN_OCR_FIX_CASE_TYPE`). `ocr_fix` covers both star counts; the
+    # durable one is re-affirmed below even when it came from elsewhere.
     _keep_rec = {vl: d for vl, d in decisions.items()
                  if (_pn_decision_is_keep(d) or _pn_decision_is_phrase(d)
-                     or d.get("ocr_durable"))
+                     or d.get("ocr_fix"))
                  and vl in local_vls}
     # An INHERITED `**` OCR fix that corrected text here is re-affirmed on
     # the master sheet, as an inherited keep that protected text is.
@@ -35075,6 +35160,14 @@ def main():
                     | set(getattr(registry, "ocr_applied", ()) or ()))
         for vl, d in leak_decisions.items():
             if d.get("ocr_durable") and (vl in local_vls or vl in ocr_hits):
+                _record[vl] = d
+            elif d.get("ocr_fix") and vl in local_vls:
+                # A single `*`: LOCAL only — a correction typed in this
+                # folder's worksheet or key. Recorded as evidence of what the
+                # scan misread, and read back by nobody
+                # (`_pn_decision_is_ocr_log`), so no other folder's behaviour
+                # moves. An INHERITED one is another matter's observation and
+                # is never re-stamped with ours.
                 _record[vl] = d
         if _record:
             _pn_update_master_keep(cfg, _record, case_label,

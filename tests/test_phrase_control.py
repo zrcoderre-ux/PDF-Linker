@@ -291,6 +291,26 @@ def test_a_phrase_round_trips_through_the_master_keep_sheet(tmp_path, monkeypatc
     assert "river" in reg.keep_words
 
 
+def test_a_master_phrase_carries_no_row_into_another_folder(tmp_path):
+    """A `phrase` lives on the master KEEP sheet, so the worksheet needs no row
+    for it — and a row would arrive in every folder that sheet reaches, as a
+    `(no longer present)` line asking about a value the folder never carried.
+    Measured before the guard: one such row, in a folder whose worksheet would
+    otherwise not exist at all (`_pn_decision_lives_on_master`)."""
+    decisions = _decisions(("Cross River Bank", "phrase"),
+                           ("Raytheon's [Human Res]", "[Human Res]"),
+                           ("Smlth", "*Smith"))
+    P._pn_write_leak_report(tmp_path, [], log, decisions)
+    assert not (tmp_path / "LEAKS.xlsx").exists()
+    # …while an ALIAS still earns its row: `~` never reaches the master sheet,
+    # so this worksheet is the only thing that carries it.
+    P._pn_write_leak_report(tmp_path, [], log,
+                            _decisions(("Antiono", "~Antionio")))
+    vals = {str(r[0]) for r in openpyxl.load_workbook(tmp_path / "LEAKS.xlsx")
+            ["LEAKS"].iter_rows(min_row=2, values_only=True) if r and r[0]}
+    assert vals == {"Antiono"}
+
+
 def test_fix_leaks_refuses_a_phrase_typed_into_the_key():
     """Pinned on the SOURCE: the text-only pass never reopens the PDFs, so a
     phrase in the key (which re-composes a fake the exports already carry)

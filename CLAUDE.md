@@ -813,8 +813,9 @@ under Status `ocr fix`; the fake reverses to the CORRECT spelling through the
 canonical's own row, which is what a reader wants of a scan error. The
 garble's words are never harvested as tokens, and the loader (`ocr_row`)
 builds the row back as a live term past every name screen and never seeds
-the memo under it — it is nobody's binding. Not a KEEP and never persisted
-to the master sheet: a statement about one scan of one document.
+the memo under it — it is nobody's binding. Not a KEEP, and applied in its
+own case only: a statement about one scan of one document. It is RECORDED on
+the master KEEP sheet all the same — see the two-star rule below.
 `--fix-leaks` applies a WORKSHEET `*` (the value is a leak standing in the
 text) and refuses a KEY one, for the alias's reason; inside the worksheet
 pass a value already bound is left alone (`allow_rebind=False`). A worksheet
@@ -878,8 +879,7 @@ it came from — the one control that is applied INHERITED, because a scan's
 habitual misreading of a generic term is exactly the thing that generalises,
 where a `*` on a party's name is one matter's and the alias's remainder is
 never inherited for that reason. Meant for GENERIC terms only, which the
-operator chooses cell by cell: a single star stays a statement about one
-document and is never persisted. It costs a folder nothing where the garble
+operator chooses cell by cell. It costs a folder nothing where the garble
 is absent — the term matches nothing, an unmatched OCR-fix row is never
 written to the key (`write_key`'s `_reversible`: count 0, not loaded, not an
 authoritative source) and no worksheet row is carried for it — and where the
@@ -889,7 +889,49 @@ scrubbed (in the PDF's layer, the original copy or the Word body), so the
 export term's own count is 0 by then and cannot be the witness. A `**` typed
 into the KEY's Replacement column persists the same way; `--fix-leaks` applies
 an inherited fix to a leak as it applies a worksheet `*`, and still refuses a
-key one. And a worksheet row with NOTHING typed in it no longer shadows a
+key one.
+**…and a SINGLE star is RECORDED on that same sheet, and OBEYED nowhere**
+(`_PN_OCR_FIX_CASE_TYPE`, `_pn_decision_is_ocr_log`, `_pn_ocr_fix_type_for`),
+at the owner's direction. A `*` used to leave no trace outside the folder
+that typed it, so nothing anywhere said WHICH garbles a scan actually makes,
+or which of them recur across matters often enough to be worth a `**`. Now a
+LOCAL `*` — typed into this folder's worksheet or its key, never one read
+back — is written to the KEEP sheet under its own Type beside `OCR-FIX`,
+holding its instruction cell as typed. That makes promotion a one-character
+edit: type the second star into the cell and the next run applies it in every
+folder, `_pn_ocr_fix_type_for` re-typing the row from its own instruction
+cell so the Type column stops saying the opposite of what the row now does
+(the reverse too, and plain OCR-fix cells only — the `*David {said}` form
+carries a keep and is typed as one). LOGGED, never OBEYED, which is the whole
+safety of it: a `*` says nothing about how ANOTHER matter's scanner reads that
+word, and applying it there is the cross-case inference the closed-entity rule
+refuses. So `_pn_read_master_keep` — the one choke point every consumer of
+that sheet goes through, so no pass added later can quietly start obeying
+one — hands a plain single-star row back to nobody, and every folder behaves
+exactly as it did before the row existed. Withheld at the READER and not at
+the writer because a decision that reaches `leak_decisions` does three things
+beyond being applied, and all three are wrong here: it would pre-answer
+another folder's worksheet row with a fix that folder will not make (and
+`_pn_triage_pending` would read the row as decided), it would shadow an
+undecided row through `_pn_layer_decisions`, and — measured, before the
+filter — it carried a phantom `(no longer present)` row into every folder's
+`LEAKS.xlsx`, conjuring a worksheet, and an Apply-Leak-Fixes launcher beside
+it, in folders that had nothing to triage. Recurrence is read off `Cases`,
+which is a set of matters; `Times Seen` counts RUNS, so it climbs on a re-run
+of the folder that typed the fix.
+**…and the phantom row is closed for EVERY decision the master sheet holds**
+(`_pn_decision_lives_on_master`, in `_pn_write_leak_report`). The
+carry-forward loop persists a `fix=yes` decision whose value did not recur,
+so the fix keeps applying — right for a worksheet `yes` and for an ALIAS,
+which never reaches the master sheet and has nowhere else to live, and wrong
+for anything that sheet already carries. KEEPs were excluded by hand; a
+`phrase` was not, and (measured) an inherited one wrote a
+`Cross River Bank | phrase | (no longer present)` row into a folder that
+never mentioned the bank, conjuring the worksheet and its Apply-Leak-Fixes
+launcher out of nothing. The question is asked once now, of the decision's
+durable HOME — keep, `phrase`, or OCR fix — rather than three times by
+whoever remembers to.
+And a worksheet row with NOTHING typed in it no longer shadows a
 master decision (`_pn_layer_decisions`, for keeps too): a folder run before
 the `**` reached the master sheet carries the garble as an undecided row, and
 `{**master, **folder}` let that bare row hide the fix and ask the question
