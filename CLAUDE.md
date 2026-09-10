@@ -4319,6 +4319,46 @@ verification-link spans `_substitute` refuses were handed to neither cure
 appendix's `scholar?q=Posner%20v.%20Grunwald-Marx` came to be rewritten; all
 three take them now.
 
+**…and a SHORT FORM written without `supra` is a citation too** (`SHORT_CITE_RE`,
+`find_short_cite_citations`, `_PN_SHORT_CITE_TAIL`, `_pn_short_cite_follows`,
+`_pn_authority_guard_gate`). "(Greenspan, 191 Cal.App.4th at 511.)" is how a
+brief cites a decision it has already spelled out, and it carries neither of
+the two anchors everything above stands on: no " v. ", no "supra". So the
+full-cite parser read nothing, the supra resolver read nothing,
+`_PN_CITE_SHAPE_RE` matched nothing — and `_substitute`'s own gate, which ran
+the fail-closed guard only on a page carrying a " v. ", ran no guard at all.
+The cited decision's name was renamed by an ordinary party term, and where it
+was not, it stood for every name-shaped review tier as a value this case had
+failed to scrub: a row an operator can only answer wrong, since a `yes` mints
+the authority's party as an authoritative `--term`. Both halves, as everywhere
+else on this path. The PARSER resolves the short cite against the full cite the
+same text spells out — the name the supra resolver's way (suffixes of the run
+against each full cite's leading words, through the `_full_cite_leading_index`
+both now share, so a lead-in the run swept up is walked past and the name may
+carry its own " v. "), and then the REPORTER RUN must agree, because the volume
+and reporter are what say WHICH "Smith" it is and linking a reader to the wrong
+decision is worse than not linking. And the SHAPE guard protects the name
+whether or not anything parsed, since protection must never depend on a parser
+succeeding: the pinpoint "at" is the corroboration, being what a short cite has
+and a Bluebook full cite ("…, 123 F.3d 456 (9th Cir. 1999)") and a
+table-of-authorities line do not, and the anchor stands to the RIGHT alone —
+there is no " v. " in the shape to ask about, and a reporter run hard behind a
+comma is a thing ordinary prose does not write. Measured over this repo's own
+notes: zero rows. The cheap early-out both `_substitute` and
+`_surviving_records` read is one function now (`_pn_authority_guard_gate`) and
+admits a REPORTER beside the " v. ", which is what makes the guard reach a page
+of short cites at all; a page carrying a reporter is a page carrying citations,
+and the reporter alternation measures FOUR TIMES FASTER than the " v. " search
+already there. A short cite also DECLARES the short name the brief then uses
+bare ("Greenspan is distinguishable"), so it feeds `_pn_cite_short_names` /
+`_pn_cite_short_phrases` exactly as ", supra" does, `_tracked_real_words`
+keeping a party of this case who shares the name reportable and scrubbed
+everywhere but inside the cite. Residual, and stated: the caption exemption is
+not applied to a short cite — one side cannot corroborate what two do (a
+trusted-looking plaintiff is no proof, `Sanchez v. Valencia Holding Co.`) — so
+this case's own prior appellate decision, short-cited, leaves its party name
+standing at that one spot, which is the trade this guard has always made.
+
 **The party template is filtered to THIS folder's docket**
 (`_pn_folder_casenos`, `_pn_terms_from_xlsx(folder_casenos=…)`). An E-Court
 export is a CALENDAR: a sheet listing several matters, or last week's export

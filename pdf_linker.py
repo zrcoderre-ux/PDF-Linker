@@ -722,6 +722,30 @@ SUPRA_RE = re.compile(
     r",\s*supra\b"
 )
 
+# The SHORT FORM a California brief writes WITHOUT "supra": the case name, a
+# comma, and the volume and reporter of its own full cite with a pinpoint —
+# "(Greenspan, 191 Cal.App.4th at 511.)". Nothing read it: the full-cite
+# parser is anchored on " v. " and the supra resolver on the word "supra", so
+# the cite parsed as nothing at all, was linked nowhere, earned no protected
+# span, and the name in it was offered up to every name-shaped review tier as
+# a value this case had failed to scrub.
+#
+# The name may carry its own " v. " ("Kremerman v. White, 71 Cal.App.5th at
+# 362") — the resolver reads suffixes of the run, so the plaintiff still
+# resolves — and a lead-in the run swept up ("See Greenspan") is walked past
+# the same way. The tail is the corroboration and is deliberately the strict
+# one: the pinpoint "at" is what separates a short cite from a Bluebook full
+# cite whose year the parser is about to read ("…, 123 F.3d 456 (9th Cir.
+# 1999)") and from a table-of-authorities line.
+SHORT_CITE_RE = re.compile(
+    rf"\b((?:(?:{_NONV_PREFIX})\s+)?[A-Z][A-Za-z0-9.\-'&]+"
+    r"(?:\s+[A-Z][A-Za-z0-9.\-'&]+){0,3}"
+    r"(?:\s+v\.\s+[A-Z][A-Za-z0-9.\-'&]+"
+    r"(?:\s+[A-Z][A-Za-z0-9.\-'&]+){0,3})?)"
+    rf",\s+(\d{{1,4}})\s+({REPORTER_PATTERN})\s*,?\s+at\s+(?:pp?\.\s*)?"
+    r"\d{1,5}(?:\s*[-\u2013]\s*\d{1,5})?"
+)
+
 # Consolidated-litigation cases ending with the literal word "Cases", with no
 # "v." or "In re": "Ford Motor Warranty Cases (2025) 17 Cal.5th 1122",
 # "Gilead Tenofovir Cases (2024) 98 Cal.App.5th 911". Each prefix word must
@@ -1136,6 +1160,13 @@ def find_case_citations(text: str):
             "span": full_span,
             "match_text": text[full_span[0]: full_span[1]],
             "short": _short_name(plaintiff_clean),
+            # The reporter run, kept apart from the key so a SHORT cite can
+            # be matched against it: a brief's "Greenspan, 191 Cal.App.4th at
+            # 511" names the decision by the volume and reporter of its own
+            # full cite, and that pair is what says WHICH "Greenspan" it is.
+            # Absent for a WL/Lexis/slip cite, which has no reporter run.
+            "volume": vol if kind in ("csm", "bb", "flat") else None,
+            "reporter": rep_compact if kind in ("csm", "bb", "flat") else None,
             # Party sides kept separately so the pseudonymizer's citation-span
             # protection can apply the caption exemption: a "X v. Y" span is
             # replaced (not protected) only when BOTH sides name a trusted party.
@@ -1187,6 +1218,9 @@ def find_case_citations(text: str):
             "span": m.span(),
             "match_text": m.group(0),
             "short": _short_name(full_name),
+            "full_name": full_name,
+            "volume": None if wl_only else vol,
+            "reporter": None if wl_only else rep_compact,
             "wl_only": wl_only,
         })
 
@@ -1205,6 +1239,9 @@ def find_case_citations(text: str):
             "span": m.span(),
             "match_text": m.group(0),
             "short": name.split()[0],
+            "full_name": name,
+            "volume": vol,
+            "reporter": rep_compact,
         })
 
     return results
@@ -1323,6 +1360,83 @@ def _supra_word(w):
     return w.strip(",.;:()[]").lower()
 
 
+def _full_cite_leading_index(full_cites_in_order):
+    """{(leading words) -> [full cite, ...]} for every full case cite, one key
+    per length up to four, with and without the "In re" / "Estate of" lead a
+    brief drops in the short form.
+
+    Shared by the two short-form resolvers so they cannot disagree about what
+    a short form may name: `find_supra_citations` takes the first cite under a
+    key (the one the document spelled out first), and
+    `find_short_cite_citations` chooses among them on the reporter run its own
+    tail carries."""
+    leading = {}
+    for c in full_cites_in_order:
+        if c["kind"] != "case" or not c.get("short"):
+            continue
+        name = str(c.get("plaintiff") or c.get("full_name") or "")
+        stripped = re.sub(rf"^(?:(?:{_NONV_PREFIX})\s+|Ex parte\s+|People v\.\s+)+",
+                          "", name, flags=re.IGNORECASE)
+        for form in (name, stripped):
+            words = [w for w in (_supra_word(x) for x in form.split()) if w]
+            for k in range(1, min(4, len(words)) + 1):
+                bucket = leading.setdefault(tuple(words[:k]), [])
+                if not any(x is c for x in bucket):   # identity: a cite dict
+                    bucket.append(c)                  # is not cheap to compare
+    return leading
+
+
+def find_short_cite_citations(text: str, full_cites_in_order):
+    """Find the short-form cites written WITHOUT "supra" — "(Greenspan, 191
+    Cal.App.4th at 511.)" — and resolve each to the full cite it shortens.
+
+    The name is resolved the way a supra is (every suffix of the captured run
+    against the LEADING WORDS of each full cite, longest first, so a lead-in
+    the run swept up is walked past), and then the REPORTER RUN must agree:
+    the short cite carries the volume and reporter of its own full cite, so
+    two decisions sharing a first word are told apart by it and a resolution
+    that would link the reader to the wrong case is refused outright. A cite
+    whose full form is not in this text resolves to nothing and stays with the
+    shape guard (`_PN_CITE_SHAPE_RE`), which protects the name without
+    needing a parse."""
+    leading = _full_cite_leading_index(full_cites_in_order)
+    if not leading:
+        return []
+    results = []
+    for m in SHORT_CITE_RE.finditer(text):
+        vol, rep = m.group(2), _normalize_reporter(m.group(3))
+        pieces = list(re.finditer(r"\S+", m.group(1)))
+        words = [_supra_word(pc.group(0)) for pc in pieces]
+        full, start = None, m.start(1)
+        for i in range(len(words)):
+            for j in range(len(words), i, -1):
+                key = tuple(w for w in words[i:j] if w)
+                for c in leading.get(key, ()):
+                    if c.get("volume") == vol and c.get("reporter") == rep:
+                        full = c
+                        start = m.start(1) + pieces[i].start()
+                        break
+                if full is not None:
+                    break
+            if full is not None:
+                break
+        if full is None:
+            continue
+        results.append({
+            "kind": "case",
+            "key": full["key"],
+            "span": (start, m.end()),
+            "match_text": text[start:m.end()],
+            "short": full.get("short"),
+            "is_short_cite": True,
+            # Provider routing FOLLOWS the full cite, as the supra's does.
+            "wl_only": full.get("wl_only", False),
+            "lexis_only": full.get("lexis_only", False),
+            "slip_only": full.get("slip_only", False),
+        })
+    return results
+
+
 def find_supra_citations(text: str, full_cites_in_order):
     """Find supra cites and resolve each to the full cite it shortens.
 
@@ -1333,21 +1447,10 @@ def find_supra_citations(text: str, full_cites_in_order):
     walked past — and the span is cut back to the words that resolved. The
     one-word key (`_short_name`) stands as the fallback it always was."""
     seen = {}
-    # The leading words of every full cite's name, one key per length up to
-    # four, with and without the "In re" / "Estate of" lead a brief drops in
-    # the short form.
-    leading = {}
     for c in full_cites_in_order:
-        if c["kind"] != "case" or not c.get("short"):
-            continue
-        seen.setdefault(c["short"], c)
-        name = str(c.get("plaintiff") or c.get("full_name") or "")
-        stripped = re.sub(rf"^(?:(?:{_NONV_PREFIX})\s+|Ex parte\s+|People v\.\s+)+",
-                          "", name, flags=re.IGNORECASE)
-        for form in (name, stripped):
-            words = [w for w in (_supra_word(x) for x in form.split()) if w]
-            for k in range(1, min(4, len(words)) + 1):
-                leading.setdefault(tuple(words[:k]), c)
+        if c["kind"] == "case" and c.get("short"):
+            seen.setdefault(c["short"], c)
+    leading = _full_cite_leading_index(full_cites_in_order)
 
     results = []
     for m in SUPRA_RE.finditer(text):
@@ -1360,7 +1463,8 @@ def find_supra_citations(text: str, full_cites_in_order):
             for j in range(len(words), i, -1):
                 key = tuple(w for w in words[i:j] if w)
                 if key and key in leading:
-                    full, start = leading[key], m.start(1) + pieces[i].start()
+                    full = leading[key][0]
+                    start = m.start(1) + pieces[i].start()
                     break
             if full is not None:
                 break
@@ -1476,7 +1580,8 @@ def _citation_pass(norm: str):
     # Order full cases by position for supra resolution
     full_ordered = sorted(full_cases, key=lambda c: c["span"][0])
     supras = find_supra_citations(norm, full_ordered)
-    return full_cases + statutes + rules + supras
+    shorts = find_short_cite_citations(norm, full_ordered)
+    return full_cases + statutes + rules + supras + shorts
 
 
 def find_all_citations(text: str):
@@ -14605,6 +14710,19 @@ _PN_CITE_YEAR = r"\((?:[A-Z][\w.]*[ \t]+){0,4}(?:1[7-9]|20)\d\d\)"
 _PN_CITE_TAIL = (r"(?:,?" + _PN_CITE_TAIL_WS + r"|,?[ \t]*)(?:" + _PN_CITE_YEAR
                  + r"|\d{1,4}" + _PN_CITE_WS + r"(?:" + REPORTER_PATTERN
                  + r")|supra\b)")
+# The tail of a SHORT-FORM cite written without "supra": a comma, then the
+# volume and reporter of the decision's own full cite and a pinpoint —
+# "(Greenspan, 191 Cal.App.4th at 511.)". A brief writes far more short cites
+# than full ones, and this shape carried neither a " v. " nor a "supra", so
+# every branch above missed it: the name stood unmasked for every review tier
+# and unprotected on the write side, and a party of a published decision was
+# reported as a value this case had failed to scrub. The pinpoint "at" is the
+# corroboration — it is what a short cite has and a Bluebook full cite (whose
+# own year the branches above read) and a table-of-authorities line do not.
+_PN_SHORT_CITE_TAIL = (r"[ \t]*," + _PN_CITE_WS + r"\d{1,4}" + _PN_CITE_WS
+                       + r"(?:" + REPORTER_PATTERN + r")" + r"[ \t]*,?"
+                       + _PN_CITE_WS + r"at" + _PN_CITE_WS
+                       + r"(?:pp?\.[ \t]*)?\d")
 _PN_CITE_V = _PN_CITE_WS + r"vs?\.?" + _PN_CITE_WS
 # …and the " v. " of a TAIL-LESS run stays on the page with both its names.
 # The name runs were held to one page first and this was not, so a strung
@@ -14622,6 +14740,9 @@ _PN_CITE_SHAPE_RE = re.compile(
     r"|(?P<short>[A-Z][\w&'’.-]*(?:" + _PN_CITE_WS
     + r"[A-Z][\w&'’.-]*){0,3})"
     r"(?=[ \t]*,(?:" + _PN_CITE_WS + r")?supra\b)"
+    # The same short form written without "supra" (`_PN_SHORT_CITE_TAIL`).
+    r"|(?P<shortcite>[A-Z][\w&'’.-]*(?:" + _PN_CITE_WS
+    + r"[A-Z][\w&'’.-]*){0,3})(?=" + _PN_SHORT_CITE_TAIL + r")"
     # A name run with a " v. " in it and NO tail in reach, admitted only
     # where `_pn_string_cite_seam` finds it strung behind another cite — and
     # held to ONE PAGE (`_PN_CITE_NAME_RUN_SAMEPAGE`). Every other branch is
@@ -14687,6 +14808,32 @@ def _pn_cite_run_start(run):
     return toks[cut][1] if toks else None
 
 
+def _pn_authority_guard_gate(text):
+    """Whether the fail-closed authority guard has anything to look for in
+    `text` — the cheap early-out `_substitute` and `_surviving_records` share,
+    so the write side and the leak tier can only ever answer it one way.
+
+    It read a " v. " alone, which is every anchor the guard had until the
+    SHORT-FORM arm: a page whose only cites are short forms ("Greenspan, 191
+    Cal.App.4th at 511") carries no " v. " anywhere, so no guard ran on it at
+    all and the cited decision's name was renamed by an ordinary party term.
+    A page carrying a REPORTER is a page carrying citations."""
+    return bool(_PN_AUTHORITY_V_RE.search(text)
+                or _ANY_REPORTER_RE.search(text))
+
+
+def _pn_text_may_cite(text):
+    """Cheap early-out: does `text` carry anything `_PN_CITE_SHAPE_RE` could
+    anchor on at all? A declaration, an exhibit and a proof of service carry
+    none of it and pay one scan instead of the shape pattern.
+
+    The reporter is in the gate because a SHORT-FORM cite has neither a
+    " v. " nor a "supra" in it — the gate read those two and "In re" alone,
+    so on a page carrying only short cites the shape pattern never ran."""
+    return bool(_PN_AUTHORITY_V_RE.search(text) or "supra" in text
+                or "In re" in text or _ANY_REPORTER_RE.search(text))
+
+
 def _pn_cite_shape_spans(text):
     """[(s, e)] of every case NAME standing in the classic citation pattern,
     whether or not the citation parser could read the cite (see
@@ -14700,7 +14847,8 @@ def _pn_cite_shape_spans(text):
             continue
         if m.group("strung") and not _pn_string_cite_seam(text, s):
             continue
-        run = m.group("full") or m.group("strung") or m.group("short") or ""
+        run = (m.group("full") or m.group("strung") or m.group("short")
+               or m.group("shortcite") or "")
         head = run
         if m.group("full") or m.group("strung"):
             vm = re.search(_PN_CITE_V, run)
@@ -14712,14 +14860,27 @@ def _pn_cite_shape_spans(text):
     return spans
 
 
+def _pn_cite_short_run(m):
+    """The short-form NAME a `_PN_CITE_SHAPE_RE` match declares — the run
+    before ", supra", or the one before the reporter run of a short cite
+    written without it — with any lead-in the run captured trimmed off
+    ("See RGC Gaslamp"). "" for a match that declares no short form."""
+    run = m.group("short") or m.group("shortcite")
+    if not run:
+        return ""
+    at = _pn_cite_run_start(run)
+    return "" if at is None else run[at:]
+
+
 def _pn_cite_short_phrases(text):
-    """The short forms a brief declares with ", supra", whole — "RGC Gaslamp"
-    — as written, whitespace normalised. `_pn_cite_short_names` keeps the
-    first word of each for the mask; this is the phrase the write side
-    protects wherever the brief uses it bare."""
+    """The short forms a brief declares — with ", supra" or with the bare
+    reporter run of a short cite — whole, "RGC Gaslamp", as written and
+    whitespace normalised. `_pn_cite_short_names` keeps the first word of
+    each for the mask; this is the phrase the write side protects wherever
+    the brief uses it bare."""
     out = set()
     for m in _PN_CITE_SHAPE_RE.finditer(text):
-        run = m.group("short")
+        run = _pn_cite_short_run(m)
         if run:
             out.add(re.sub(r"\s+", " ", run).strip(" ,"))
     return out
@@ -14727,13 +14888,14 @@ def _pn_cite_short_phrases(text):
 
 def _pn_cite_short_names(text):
     """The SHORT names the document's own citations declare — the word in
-    front of ", supra" — which the brief then uses bare: "Sanders is
-    instructive", "the court in Sanders". `_pn_cite_shape_spans` blanks the
-    name where it stands in the cite, and every bare mention went on to the
-    name-shaped review tiers as an unscrubbed name."""
+    front of ", supra", or of a short cite's own reporter run — which the
+    brief then uses bare: "Sanders is instructive", "the court in Sanders".
+    `_pn_cite_shape_spans` blanks the name where it stands in the cite, and
+    every bare mention went on to the name-shaped review tiers as an
+    unscrubbed name."""
     out = set()
     for m in _PN_CITE_SHAPE_RE.finditer(text):
-        run = m.group("short")
+        run = _pn_cite_short_run(m)
         if run:
             out.add(_pn_word_base(run.split()[0]).lower())
     return out
@@ -14759,6 +14921,31 @@ def _pn_before_v(text, e):
 _PN_BEFORE_V_RE = re.compile(
     r"(?P<between>(?:,?" + _PN_CITE_WS + _PN_CITE_NAME_WORD + r"){0,6})"
     + _PN_CITE_WS + r"vs?\.?\s")
+
+
+_PN_SHORT_CITE_FOLLOW_RE = re.compile(
+    r"(?P<between>(?:,?" + _PN_CITE_WS + _PN_CITE_NAME_WORD + r"){0,6})"
+    + _PN_SHORT_CITE_TAIL)
+
+
+def _pn_short_cite_follows(text, e):
+    """True when the candidate ending at `e` is the NAME of a short-form cite
+    written without "supra" — nothing but more case name between it and the
+    comma, then the volume, reporter and pinpoint of the decision's own full
+    cite ("Greenspan, 191 Cal.App.4th at 511").
+
+    One anchor and it stands to the RIGHT, which is where a short cite keeps
+    all of its evidence: there is no " v. " in the shape at all, and the
+    reporter run hard behind the comma is a thing ordinary prose does not
+    write. A citation signal between the candidate and the comma means the
+    candidate closed the sentence before the cite (`_pn_before_v`'s rule)."""
+    m = _PN_SHORT_CITE_FOLLOW_RE.match(text, e)
+    if m is None:
+        return False
+    for w in m.group("between").replace(",", " ").split():
+        if w.lower().rstrip(".") in _PN_CITE_SIGNAL_WORDS:
+            return False
+    return True
 
 
 def _pn_in_case_name(text, s, e=None):
@@ -14794,7 +14981,10 @@ def _pn_in_case_name(text, s, e=None):
         pass                          # the nearest " v. " to the candidate
     if v is not None and not _PN_AUTHORITY_BREAK_RE.search(left[v.end():]):
         return True
-    return e is not None and _pn_before_v(text, e) is not None
+    if e is None:
+        return False
+    return (_pn_before_v(text, e) is not None
+            or _pn_short_cite_follows(text, e))
 # Only a NAME-shaped candidate can rename an authority. A detector hit (an SSN,
 # a phone number) inside a citation is not a thing, and refusing one would be
 # pure leak.
@@ -20059,9 +20249,14 @@ class Pseudonymizer:
         role word, never by "(2017)" or "13 Cal.App.5th". The caption exemption
         is applied anyway, for the inline recital ("this action, Rasho v.
         General Motors, LLC (2025)") where a year does follow — both sides
-        trusted means the parties are ours and the run is not an authority."""
+        trusted means the parties are ours and the run is not an authority.
+
+        A SHORT-FORM cite carries no " v. " at all ("Greenspan, 191
+        Cal.App.4th at 511"), so its own arm asks the question from the right
+        alone — see `_pn_short_cite_follows`."""
         return (self._after_v_context(text, s, e)
-                or self._before_v_context(text, s, e))
+                or self._before_v_context(text, s, e)
+                or _pn_short_cite_follows(text, e))
 
     def _before_v_context(self, text, s, e):
         """The PLAINTIFF's half of `_in_authority_context`: the candidate
@@ -20276,7 +20471,7 @@ class Pseudonymizer:
         # written with a capital; never where the words are this case's own
         # (`_tracked_real_words`, the mask's exception), so a template party
         # that shares a cited decision's name is still scrubbed.
-        if "supra" in text:
+        if _pn_text_may_cite(text):
             tracked = self._tracked_real_words()
             for phrase in _pn_cite_short_phrases(text):
                 words = phrase.split()
@@ -20620,7 +20815,7 @@ class Pseudonymizer:
         # a cite the parser could not read is a cite all the same, and the
         # plaintiff it names is no leak (`_pn_cite_shape_spans`).
         spans = list(self._protected_citation_spans(text))
-        if _PN_AUTHORITY_V_RE.search(text) or "supra" in text or "In re" in text:
+        if _pn_text_may_cite(text):
             spans += _pn_cite_shape_spans(text)
         # The bare SHORT NAME of a cited decision, wherever the brief uses
         # it: "(Sanders, supra, 119 Cal.App.2d at p. 365.)" declares
@@ -20629,7 +20824,7 @@ class Pseudonymizer:
         # value this case TRACKS — `_surviving_records` reads through this
         # mask, and a real party who shares a cited decision's name must
         # stay reportable where it survives.
-        if "supra" in text:
+        if _pn_text_may_cite(text):
             shorts = _pn_cite_short_names(text) - self._tracked_real_words()
             for w in shorts:
                 if len(w) < _PN_HARVEST_TOKEN_MIN:
@@ -20694,9 +20889,9 @@ class Pseudonymizer:
         ctx_a = getattr(self, "_ctx_after", "")
         gtext = (ctx_b + text + ctx_a) if (ctx_b or ctx_a) else text
         goff = len(ctx_b)
-        # Fail-closed authority guard, run only where the text has a "v." at all
-        # so an ordinary page pays one search.
-        guard = bool(_PN_AUTHORITY_V_RE.search(gtext))
+        # Fail-closed authority guard, run only where the text carries a "v."
+        # or a reporter at all, so an ordinary page pays two searches.
+        guard = _pn_authority_guard_gate(gtext)
         # Indexed, not walked: `scrub_survivors` hands this pass the whole export
         # and a candidate per surviving match, so the per-candidate scan over the
         # protected spans was a product of two numbers that both grow with the
@@ -20949,10 +21144,11 @@ class Pseudonymizer:
         # can never reveal anything, and the composing faker honours that inside
         # a party name too, so a survivor is the decision working — not a leak.
         nuclear = {str(v).lower() for v in self.keep_nuclear}
-        # Cheap gate for the authority mirror below: no "v." on the page, no
-        # citation-shaped context to be in. Asked of the UNMASKED body, since
-        # that is what the guard itself will read.
-        guard = bool(_PN_AUTHORITY_V_RE.search(guard_body))
+        # Cheap gate for the authority mirror below: nothing a citation
+        # anchors on, no citation-shaped context to be in. Asked of the
+        # UNMASKED body, since that is what the guard itself will read, and
+        # through the same function the write side asks.
+        guard = _pn_authority_guard_gate(guard_body)
         # The spans `_substitute` will REFUSE to touch. A value this scan
         # reports but that pass is required to leave alone is a leak nothing can
         # ever clear: the export is quarantined, the operator marks the row
