@@ -9954,6 +9954,11 @@ def _pn_authority_tokens(text):
     return set(_pn_authority_cite_index(text))
 
 
+# The memo `_pn_authority_cite_index` answers from — two entries, keyed on the
+# text, for the reason `_lead_words` and `_mask_protected_citations` are.
+_PN_AUTH_CITE_MEMO = []
+
+
 def _pn_authority_cite_index(text):
     """{party word base: {citation key}} for every YEAR-BEARING case citation in
     `text` — the same harvest `_pn_authority_tokens` reduces to a bare set, but
@@ -9962,7 +9967,19 @@ def _pn_authority_cite_index(text):
     That is what lets a triage row say why it is there. "Angela White" in a
     worksheet is a question the operator can only answer by already knowing the
     authorities; "cited authority: Kremerman v. White (2021) 71 Cal.App.5th 358"
-    beside it IS the answer."""
+    beside it IS the answer.
+
+    Memoized two entries deep, keyed on the text, because it runs the whole
+    citation parser and the pre-scan asks it TWICE about the same whole-folder
+    corpus — once to take the cited names out of the fake pools
+    (`reserve_authority_names`), once to drop a harvested name that is a cited
+    decision's party (`prune_authority_party_terms`). On a 15-file folder that
+    second parse was pure repetition of the first. Pure in `text`, so the memo
+    can only ever return what the parse would have; every caller READS the
+    index (`.items()`, `set(...)`) and none mutates it."""
+    for k, idx in _PN_AUTH_CITE_MEMO:
+        if k is text or k == text:
+            return idx
     out = {}
     try:
         cites = find_all_citations(text)
@@ -10006,6 +10023,8 @@ def _pn_authority_cite_index(text):
             continue
         for base in words:
             out.setdefault(base, set()).add(key)
+    _PN_AUTH_CITE_MEMO.insert(0, (text, out))
+    del _PN_AUTH_CITE_MEMO[2:]
     return out
 
 
@@ -17768,11 +17787,49 @@ _PN_CASE_PARTY_SITES = (
 )
 
 
-def _pn_case_party_evidence(masked, term):
+def _pn_case_party_shapes(masked):
+    """The `_PN_CASE_PARTY_SITES` that `masked` could possibly carry.
+
+    Each shape puts its fixed words HARD AGAINST the name — "Attorneys for
+    Defendant" in front, "; and DOES 1", ", an individual", "\u2019s Opposition"
+    behind — so each half is a necessary condition on its own, and a half that
+    stands nowhere in the corpus says the site is not in this folder at all.
+    Asked ONCE per masked corpus instead of re-scanned for every name: the
+    evidence loop runs a site regex over the whole folder per candidate, so a
+    site the folder does not use was three quarters of that cost on a batch
+    whose filings carry only the caption descriptor. A shape this cannot take
+    apart is kept, which only costs what it cost before."""
+    live = []
+    for label, shape in _PN_CASE_PARTY_SITES:
+        head, sep, tail = shape.partition("(?P<n>{term})")
+        if not sep:
+            live.append((label, shape))
+            continue
+        try:
+            # IGNORECASE, always: the full shape is compiled with the TERM's
+            # flags, and a case-sensitive term's match is a case-insensitive
+            # one too — so the loosest reading is the one that can only ever
+            # keep a site the strict reading would have kept. Asked case-
+            # sensitively, `['\u2019]s` missed the "\u2019S" of an all-caps filing
+            # title and dropped the site the caption itself carried.
+            ok = all(re.search(half, masked, re.IGNORECASE)
+                     for half in (head, tail) if half)
+        except re.error:
+            ok = True                 # a half that cannot stand alone screens nothing
+        if ok:
+            live.append((label, shape))
+    return live
+
+
+def _pn_case_party_evidence(masked, term, sites=None):
     """Why `term` (a `_PnTerm`) is a party of THIS case according to the
     citation-masked corpus `masked` — the name of the site that says so — or
-    "" when no such site carries it. See `_PN_CASE_PARTY_SITES`."""
-    for label, shape in _PN_CASE_PARTY_SITES:
+    "" when no such site carries it. See `_PN_CASE_PARTY_SITES`.
+
+    `sites` is `_pn_case_party_shapes(masked)`, the sites that corpus could
+    carry at all, passed in by a caller asking about many terms so the fixed
+    halves are searched for once rather than once per name."""
+    for label, shape in (_PN_CASE_PARTY_SITES if sites is None else sites):
         try:
             rx = re.compile(shape.format(term="(?:" + term.pattern + ")"),
                             term.flags)
@@ -18245,20 +18302,39 @@ class Pseudonymizer:
         self._pruned_reals = getattr(self, "_pruned_reals", set())
         doomed = []
         loaded = getattr(self, "_loaded_reals", ())
+        # A term whose lead word stands nowhere in the corpus matches nowhere,
+        # and a term that matches nowhere is never pruned here (`if ms and
+        # ...` below is False for it) — so skipping it changes nothing but the
+        # scan. See `_corpus_lead_skip`.
+        ws = self._corpus_lead_words(text)
+        span_idx = _PnSpanIndex(spans)
         for t in list(self.terms):
             if (t.source not in sources
                     or (only is not None and t.real.lower() not in only)
                     or t.real.lower() in loaded
                     or t.category not in ("person", "entity", "person-token",
-                                          "entity-token", "short-name")):
+                                          "entity-token", "short-name")
+                    or self._corpus_lead_skip(t, ws)):
                 continue
+            # Short-circuit at the FIRST match that stands OUTSIDE a citation:
+            # that one occurrence is the whole answer, and the term is kept.
+            # Listing every match first meant a party named on page 1 was
+            # scanned for over the entire folder anyway — and the overlap test
+            # then walked the whole span list per match, which on a brief that
+            # cites a decision a hundred times is a second product. `finditer`
+            # is lazy and `_PnSpanIndex` answers in log time, so both go.
             try:
-                ms = list(self._compiled(t.pattern, t.flags).finditer(text))
+                ms = self._compiled(t.pattern, t.flags).finditer(text)
+                seen = False
+                for m in ms:
+                    seen = True
+                    if not span_idx.overlaps(m.start(), m.end()):
+                        break
+                else:
+                    if seen:
+                        doomed.append(t)
             except re.error:
                 continue
-            if ms and all(any(m.start() < e and s < m.end() for s, e in spans)
-                          for m in ms):
-                doomed.append(t)
         for t in doomed:
             self.terms.remove(t)
             self.records.pop((t.category, t.real.lower()), None)
@@ -18344,6 +18420,7 @@ class Pseudonymizer:
         self._pruned_reals = getattr(self, "_pruned_reals", set())
         loaded = getattr(self, "_loaded_reals", ())
         covered = self._multiword_covered_words()
+        ws = self._corpus_lead_words(text)
         doomed = []
         for t in list(self.terms):
             # A DERIVED spelling is one this tool invented, so it is screened
@@ -18351,11 +18428,14 @@ class Pseudonymizer:
             # land on an ordinary word ("Silver" -> "Sliver"), and the corpus
             # writing it in lower-case is the proof. A bare TOKEN is screened for
             # the same reason — see `_corpus_prunable`.
-            if not self._corpus_prunable(t, loaded, covered):
+            if (not self._corpus_prunable(t, loaded, covered)
+                    # Nowhere in the corpus is nowhere: `low` stays 0, which is
+                    # under the two-hit floor, so the term was never doomed.
+                    or self._corpus_lead_skip(t, ws)):
                 continue
             low = cap = 0
-            for m in re.finditer(r"(?<!\w)" + re.escape(t.real) + r"(?!\w)",
-                                 text, re.IGNORECASE):
+            for m in self._compiled(r"(?<!\w)" + re.escape(t.real) + r"(?!\w)",
+                                    re.IGNORECASE).finditer(text):
                 if m.group(0).islower():
                     low += 1
                 else:
@@ -18417,18 +18497,29 @@ class Pseudonymizer:
         loaded = getattr(self, "_loaded_reals", ())
         lines = text.split("\n")
         prose_line = [_pn_line_is_prose(ln) for ln in lines]
+        # Where each line STARTS, so a match found in one pass over the whole
+        # corpus can be placed on its line by bisect. Scanning per LINE instead
+        # cost one regex call per (term, line) — the product of two numbers that
+        # both grow with the folder, which is the shape this file refuses
+        # everywhere else on the leak path. A match can never span a line
+        # anyway: `_corpus_prunable` admits only a single word of letters.
+        line_start = [0]
+        for ln in lines:
+            line_start.append(line_start[-1] + len(ln) + 1)
         covered = self._multiword_covered_words()
+        ws = self._corpus_lead_words(text)
         doomed = []
         for t in list(self.terms):
-            if not self._corpus_prunable(t, loaded, covered):
+            if (not self._corpus_prunable(t, loaded, covered)
+                    # Nowhere in the corpus: `seen` stays False, and a term with
+                    # no occurrence at all is left alone rather than dropped.
+                    or self._corpus_lead_skip(t, ws)):
                 continue
-            rx = re.compile(r"(?<!\w)" + re.escape(t.real) + r"(?!\w)",
-                            re.IGNORECASE)
+            rx = self._compiled(r"(?<!\w)" + re.escape(t.real) + r"(?!\w)",
+                                re.IGNORECASE)
             seen = False
-            for i, ln in enumerate(lines):
-                hits = rx.findall(ln)
-                if not hits:
-                    continue
+            for m in rx.finditer(text):
+                i = bisect.bisect_right(line_start, m.start()) - 1
                 seen = True
                 # Only a CAPITALISED occurrence is evidence of a name, and only
                 # on a prose line. The lower-case one is evidence the other way:
@@ -18437,7 +18528,7 @@ class Pseudonymizer:
                 # the argument's occurrence rescued the very word this exists
                 # to drop. (`prune_prose_word_terms` cannot reach it either —
                 # one lower-case occurrence is below its two-hit floor.)
-                if prose_line[i] and any(h[:1].isupper() for h in hits):
+                if prose_line[i] and m.group(0)[:1].isupper():
                     break
             else:
                 if seen:
@@ -18694,7 +18785,7 @@ class Pseudonymizer:
             return []
         self._pruned_reals = getattr(self, "_pruned_reals", set())
         loaded = getattr(self, "_loaded_reals", ())
-        doomed, masked = [], None
+        doomed, masked, masked_ws, sites = [], None, (), None
         spared, spared_words = [], set()
         for t in list(self.terms):
             if (t.source != "document"
@@ -18721,7 +18812,13 @@ class Pseudonymizer:
                 continue
             if masked is None:
                 masked = self._mask_uncached(text)
-            why = _pn_case_party_evidence(masked, t)
+                masked_ws = self._corpus_lead_words(masked)
+                sites = _pn_case_party_shapes(masked)
+            # Every site shape embeds the term's own pattern, so a term whose
+            # lead word the mask left nowhere cannot be found at any of them.
+            if self._corpus_lead_skip(t, masked_ws):
+                continue
+            why = _pn_case_party_evidence(masked, t, sites)
             if why:
                 doomed.remove(t)
                 spared.append((t.real, why))
@@ -18767,10 +18864,17 @@ class Pseudonymizer:
                     or t.category not in ("person", "entity", "person-token",
                                           "entity-token", "short-name")):
                 continue
+            # Compiled through the run's own cache, never `re`'s: that one
+            # evicts past 512 entries, which a large case blows through, so
+            # each of these was a fresh compile per term. NOT lead-screened,
+            # deliberately — this pass exists to find the term that stands
+            # only INSIDE a longer word ("RS" in "MOTORS"), where the lead is
+            # by construction not a word of the corpus at all.
             body = re.escape(t.real)
-            if re.search(r"(?<!\w)" + body + r"(?!\w)", text, re.IGNORECASE):
+            if self._compiled(r"(?<!\w)" + body + r"(?!\w)",
+                              re.IGNORECASE).search(text):
                 continue                       # it stands as a word somewhere
-            if re.search(body, text, re.IGNORECASE):
+            if self._compiled(body, re.IGNORECASE).search(text):
                 doomed.append(t)
         for t in doomed:
             self.terms.remove(t)
@@ -19657,6 +19761,72 @@ class Pseudonymizer:
             return list(items)
         ws = self._lead_words(text)
         return [it for it in items if (lead_of(it) is None or lead_of(it) in ws)]
+
+    def _corpus_lead_words(self, text):
+        """`_lead_words` for a CORPUS-WIDE pass: the distinct words of `text`
+        lower-cased, plus the capitalised tail of a word glued behind a
+        lower-case run ("ofQUILLMARK" -> "quillmark", the shape `glue_left`
+        admits) — WITHOUT the adjacent pairs.
+
+        The pairs are what keep `_lead_words` exact for a BREAK-TOLERANT
+        pattern, and they cost one set entry per word of the text. That is
+        right for a page and wrong for a whole folder: on a 3 MB corpus the
+        pair set is hundreds of thousands of strings held while the prunes
+        run, and this tool already dies of memory on a big folder often
+        enough to have a crash-line for it. So the pairs are left out and a
+        break-tolerant term is EXEMPTED from the screen instead
+        (`_corpus_lead_skip`) — a term that may match across a printed break
+        is always scanned, which is the safe direction and a small minority
+        of terms besides (only the operator's own template and `--term`
+        build one).
+
+        Two entries deep, keyed on the text, for the reason `_lead_words` is:
+        the prunes ask about the corpus and then about its citation-masked
+        twin."""
+        memo = getattr(self, "_corpus_lead_memo", None)
+        if memo is None:
+            memo = self._corpus_lead_memo = []
+        for k, ws in memo:
+            if k is text or k == text:
+                return ws
+        ws = set()
+        for m in _PN_LEAD_WORD_RE.finditer(text):
+            w = m.group(0)
+            ws.add(w.lower())
+            # Only a word carrying BOTH cases can be a glued one; the test is
+            # what keeps this off every ordinary word of the corpus.
+            if not (w.islower() or w.isupper()):
+                g = _PN_LEAD_GLUE_RE.search(w)
+                if g:
+                    ws.add(g.group(1).lower())
+        memo.insert(0, (text, ws))
+        del memo[2:]
+        return ws
+
+    def _corpus_lead_skip(self, t, ws):
+        """True when term `t` cannot match anywhere in the text whose words
+        `ws` are — so a corpus-wide prune may skip it without running its
+        pattern over the whole folder.
+
+        Exact, not a heuristic, and by the same argument `_pn_term_lead`
+        makes: a term matches WHOLE WORDS, so wherever its pattern can match,
+        its first word stands in the text as a word of its own (or, under
+        `glue_left`, as the capitalised tail of one — which `ws` indexes).
+        The one shape that argument does not cover is the break-tolerant
+        pattern, whose lead may be printed in two pieces, and that is exactly
+        what is exempted here.
+
+        A prune that builds its OWN literal pattern from `t.real` rather than
+        using `t.pattern` (`prune_prose_word_terms`,
+        `prune_heading_only_terms`) needs the lead literally in every case, so
+        the exemption merely scans a few terms it could have skipped. One
+        rule, asked by every corpus-wide pass, so no two of them can answer
+        it differently."""
+        if not _PN_LEAD_PREFILTER or t.lead is None:
+            return False
+        if _pn_term_is_breakable(t.category, t.source):
+            return False
+        return t.lead not in ws
 
     def _term_cands(self, text):
         out = []
@@ -30836,6 +31006,7 @@ def _pn_prescan_folder(pdfs, pseudonymizer, log, extra_texts=()):
     # Logged ahead of the work, the last line in the log names the file that
     # did it — which is the difference between a diagnosable crash and a run
     # that "just stops".
+    _read_t0 = time.time()
     for i, pdf in enumerate(pdfs, 1):
         log.info(f"    Pre-scan {i}/{total}: {pdf.name}")
         try:
@@ -30852,45 +31023,88 @@ def _pn_prescan_folder(pdfs, pseudonymizer, log, extra_texts=()):
     # cites are known before a single further stand-in is drawn — and while the
     # ones already drawn can still be moved (nothing is substituted yet).
     full = "\n\f\n".join(t for _stem, t in corpus)
+
+    # Every stage below reads the WHOLE folder at once, and each costs roughly
+    # (terms harvested) x (corpus size) — so on a big folder this block runs
+    # far longer than the per-file reads above it, and it used to log NOTHING
+    # until it was over: each stage speaks only when it finds something, and a
+    # folder that drops nothing went silent between the last "Pre-scan N/N"
+    # line and the first "Processing:" one. An operator with no other signal
+    # reads that as a hang — which is exactly what the per-file naming above
+    # was added to stop, one level further out.
+    #
+    # So each stage NAMES ITSELF BEFORE IT RUNS and reports its own elapsed
+    # time, the rule `process_pdf` already follows for the scrub and the leak
+    # scan. The entry line goes first because a line written afterwards is a
+    # line never written when the interpreter dies: the last line in the log
+    # names the stage that killed it.
+    if total:
+        log.info(f"  Pseudonymize: read {total} file(s) in "
+                 f"{time.time() - _read_t0:.0f}s ({len(full) // 1000} KB of "
+                 f"text); now learning from the corpus and pruning the harvest")
+
+    def _stage(label, fn):
+        log.info(f"    Pseudonymize: {label}")
+        t0 = time.time()
+        out = fn()
+        # The entry line is the diagnostic one — it names the stage that is
+        # running, and the stage that killed the interpreter. The elapsed time
+        # is only worth a second line where there was a wait to explain: the
+        # stages this exists for take minutes on a real folder, and printing
+        # "done in 0s" seven times on a small one is noise over the lines that
+        # matter.
+        secs = time.time() - t0
+        if secs >= 1:
+            log.info(f"    Pseudonymize: {label} — done in {secs:.0f}s")
+        return out
     # The case-type codes of this folder's dockets, learned before any file is
     # harvested: a caption states its number properly, and the exhibit page
     # whose text layer broke it apart is then still recognisable as carrying
     # the same docket rather than a code standing loose beside a name.
     pseudonymizer.note_docket_codes(full)
-    swaps = pseudonymizer.reserve_authority_names(full, log)
+    swaps = _stage("reserving the names of the authorities this batch cites",
+                   lambda: pseudonymizer.reserve_authority_names(full, log))
     if swaps:
         log.info(f"  Pseudonymize: {len(swaps)} stand-in(s) re-minted off the "
                  f"names of authorities this batch cites")
-    for stem, text in corpus:
-        _pn_learn_from_text(pseudonymizer, text, stem)
+    def _learn():
+        for stem, text in corpus:
+            _pn_learn_from_text(pseudonymizer, text, stem)
+    _stage(f"harvesting names, localities and identifiers from {total} file(s)",
+           _learn)
     added = len(pseudonymizer.terms) - before
     if added:
         log.info(f"  Pseudonymize: pre-scan of "
                  f"{len(pdfs) + len(extra_texts)} file(s) added "
                  f"{added} term(s) from names, localities and identifiers")
-    pruned = pseudonymizer.prune_citation_only_terms(full)
+    pruned = _stage("dropping names that stand only inside a citation",
+                    lambda: pseudonymizer.prune_citation_only_terms(full))
     if pruned:
         log.info(f"  Pseudonymize: dropped {len(pruned)} harvested name(s) "
                  f"that appear only inside case citations "
                  f"({', '.join(sorted(pruned)[:6])})")
-    prose = pseudonymizer.prune_prose_word_terms(full)
+    prose = _stage("dropping names the corpus writes as ordinary prose",
+                   lambda: pseudonymizer.prune_prose_word_terms(full))
     if prose:
         log.info(f"  Pseudonymize: dropped {len(prose)} harvested name(s) the "
                  f"corpus writes as ordinary lower-case prose "
                  f"({', '.join(sorted(prose)[:6])})")
-    headings = pseudonymizer.prune_heading_only_terms(full)
+    headings = _stage("dropping names nothing but a heading ever offered",
+                      lambda: pseudonymizer.prune_heading_only_terms(full))
     if headings:
         log.info(f"  Pseudonymize: dropped {len(headings)} harvested name(s) "
                  f"the corpus only ever writes inside a heading — a motion's "
                  f"own subject matter, not a party "
                  f"({', '.join(sorted(headings)[:6])})")
-    authors = pseudonymizer.prune_authority_party_terms(full, log)
+    authors = _stage("dropping names that are a cited decision's own party",
+                     lambda: pseudonymizer.prune_authority_party_terms(full, log))
     if authors:
         log.info(f"  Pseudonymize: dropped {len(authors)} harvested name(s) that "
                  f"name a party of an authority this batch CITES — public "
                  f"record, not this case's information "
                  f"({', '.join(sorted(authors)[:6])})")
-    frags = pseudonymizer.prune_fragment_terms(full)
+    frags = _stage("dropping names that only ever sit inside a longer word",
+                   lambda: pseudonymizer.prune_fragment_terms(full))
     if frags:
         log.info(f"  Pseudonymize: dropped {len(frags)} harvested name(s) that "
                  f"only ever appear inside a longer word — an OCR fragment, "
