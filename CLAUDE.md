@@ -4860,6 +4860,36 @@ survive to fail.
   never throttles the machine — and `_claim_ocr_priority` retries a few times
   for exactly that reason, since losing a claim to somebody's probe would
   silently demote the one run the operator asked to be fast.
+- **A worked case starting OVER must say so, because half its decisions die
+  there** (`_pn_warn_case_started_over`, `_pn_folder_was_processed`). A case's
+  answers live in two places and only one survives a lost key:
+  `no`/`never`/`phrase`/`**` go to the cross-folder master KEEP sheet and come
+  back on every run in every folder, while `yes`, a typed replacement, a `~`
+  alias and a `*` OCR fix are CASE-LOCAL — what persists each one is the
+  binding it minted, and that binding lives in this folder's
+  `pseudonym_key.xlsx` and nowhere else. So a folder that has plainly been
+  processed before, now minting fresh because there is no key to reuse,
+  discards every case-local answer before the run begins.
+  It used to announce that with one INFO line among hundreds —
+  `Pseudonymize: using E-Court export: ...`, indistinguishable from ordinary
+  input discovery — and a real run reached it, re-minted 14 parties from the
+  E-Court template and wrote a 126-row worksheet whose alias warnings
+  (`PLAYA LINCOIN | PLAYA LINCOLN | PLAYA LINCOLN,LP`) were the very spellings
+  an earlier pass had already been told about. The operator found out by
+  answering the same rows a second time. It is now a folder-level WARNING that
+  names what died and what did not, so nobody re-answers a `no` as well.
+  Silent on a FIRST run, where nothing is being discarded: the folder has to
+  carry a mark of an earlier pass — a triage worksheet, exports in the
+  configured text subfolder, or a DONE stamp — and metadata only, since
+  nothing here is worth opening a file for. It reports and never refuses: the
+  folder still has to be processed, and whether the key is recoverable is the
+  operator's question.
+  **The likeliest cause is not a deleted key but TWO copies of one case**, so
+  the message says so. `copy_to` puts a copy beside the original and the same
+  matter turns up under two names (`23STLC01807 Barry Rosen` in Downloads,
+  `23STLC01807 Barry Rosen 9.3.26` under `Demurrers`); the worksheet gets
+  filled in one and the re-run happens in the other, so the answers and the
+  run never meet.
 
 ## Diagnosing a run that just stops
 

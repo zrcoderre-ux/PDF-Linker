@@ -16033,6 +16033,61 @@ def _pn_supplement_key_terms(terms, folder, name_column, registry, log):
     return fresh
 
 
+# ── Starting a WORKED case over ───────────────────────────────────────────────
+# A case's decisions live in two places, and only one of them is durable across
+# a lost key. `no`/`never`/`phrase`/`**` go to the cross-folder master KEEP
+# sheet and come back on every run in every folder. But `yes`, a typed
+# replacement, a `~` alias and a `*` OCR fix are CASE-LOCAL: what persists them
+# is the binding each one minted, and that binding lives in this folder's
+# `pseudonym_key.xlsx` and nowhere else. Mint fresh and every one of them is
+# gone — the operator answers the same worksheet rows again, having no way to
+# know from the log that the answers were discarded before the run began.
+#
+# That is the state this warns about: a folder that has plainly been PROCESSED
+# BEFORE, now starting over with no key to reuse. On a genuine first run there
+# is nothing to lose and nothing is said. The commonest cause is not a deleted
+# key at all but two copies of one case — `copy_to` puts a copy beside the
+# original, the worksheet gets filled in one and the re-run happens in the
+# other, so the answers and the run never meet.
+#
+# It cannot fix it: whether that key is recoverable is the operator's to
+# answer. What it can do is say so ONCE, at the top of the run, in the register
+# a folder-level failure uses — instead of the one INFO line among hundreds
+# that "using E-Court export" used to be.
+def _pn_folder_was_processed(folder, text_subdir):
+    """True when this folder carries the marks of an earlier run: a triage
+    worksheet, exports, or a DONE stamp. Metadata only — nothing is opened."""
+    folder = Path(folder)
+    try:
+        if _pn_leak_xlsx_path(folder).is_file():
+            return True
+        exports = folder / text_subdir
+        if exports.is_dir() and any(exports.glob("*.txt")):
+            return True
+        return any(folder.glob(f"{_DONE_MARKER_PREFIX} *.txt"))
+    except OSError:
+        return False
+
+
+def _pn_warn_case_started_over(folder, text_subdir, key_path, warn):
+    """Say that a worked case is being re-pseudonymized from scratch, and what
+    that costs. Silent on a first run, and silent when a key was reused."""
+    if not _pn_folder_was_processed(folder, text_subdir):
+        return False
+    warn(f"Pseudonymize: STARTING THIS CASE OVER — no pseudonym_key.xlsx in "
+         f"{Path(folder).name}, so every party is being faked afresh"
+         + (f" from {Path(key_path).name}" if key_path else "")
+         + ". Any Fix?=yes, '~' alias, '*' OCR fix or typed replacement "
+           "recorded for this case is GONE: those live in that key and "
+           "nowhere else, and the worksheet will ask about them again. "
+           "(no/never/phrase/** keeps are unaffected — they come from the "
+           "master KEEP sheet.) If this case has a second folder — a copy_to "
+           "copy, or the same matter under another name — its key is the one "
+           "to run against; put it back beside these PDFs, or point --key at "
+           "it, before answering the worksheet again.")
+    return True
+
+
 def _pn_find_downloads_key(log):
     """Locate the key spreadsheet automatically: the most recently modified
     .xlsx in the user's Downloads folder. That's where the E-Court order-
@@ -35175,6 +35230,10 @@ def main():
                       f"Party names will NOT be pseudonymized in the .txt exports.")
         else:
             terms = _pn_build_terms([], [], extra_terms, registry)
+        # Said HERE, where the run has settled what it is faking against, so it
+        # cannot fire on a run that did reuse the key by another route.
+        if not reused_key:
+            _pn_warn_case_started_over(folder, text_subdir, key_path, _warn)
 
         # KEEP / KEEP-PART edits typed into the pseudonym key's Replacement
         # column ('no' or a [bracketed] keep-spec): a key edit is authoritative
