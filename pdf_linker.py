@@ -26935,6 +26935,22 @@ def _pn_ocr_fix_type_for(cell):
             else _PN_OCR_FIX_CASE_TYPE)
 
 
+def _pn_decision_lives_on_master(d):
+    """True when a decision's durable home is the master KEEP sheet rather
+    than this folder's worksheet — a keep, a `phrase`, or an OCR fix.
+
+    It is what `_pn_write_leak_report` asks before carrying a decision whose
+    value did not recur: the worksheet is consumed once resolved, so a
+    decision that outlives it there needs no row here, and a row written for
+    one is worse than useless. It arrives as a `(no longer present)` line in
+    every folder the master sheet reaches — conjuring a worksheet, and an
+    Apply-Leak-Fixes launcher beside it, in a folder with nothing to triage.
+    An ALIAS is deliberately not one: `~` is a statement about two spellings
+    in THIS case, never reaches the master sheet, and so does need its row."""
+    return (_pn_decision_is_keep(d) or _pn_decision_is_phrase(d)
+            or bool(d.get("ocr_fix")))
+
+
 def _pn_decision_is_ocr_log(d):
     """True for a decision that is a PLAIN single-star OCR fix — recorded on
     the master KEEP sheet as evidence and never read back as an instruction.
@@ -29631,8 +29647,10 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
                      "present": True})
     # Persist a Fix?=yes/explicit decision whose value didn't recur this run, so
     # the fix keeps applying — but ONLY while nothing else already holds it.
-    # KEEP decisions are omitted (the master KEEP sheet holds them), and so is
-    # any value the pseudonym KEY has bound: a Fix?=yes mints a fake that the
+    # A decision that lives on the master KEEP sheet is omitted (that sheet
+    # holds it, and a `(no longer present)` row for one reaches every folder
+    # the sheet does — see `_pn_decision_lives_on_master`), and so is any
+    # value the pseudonym KEY has bound: a Fix?=yes mints a fake that the
     # key pins and every later run re-applies, so carrying the row forward
     # preserves nothing and regenerates LEAKS.xlsx on every clean run — a
     # worksheet whose only content is "(no longer present)", which reads as a
@@ -29642,7 +29660,7 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
         if vl in bound_low:
             continue
         if vl not in seen and d.get("fix") in ("yes", "no") \
-                and not _pn_decision_is_keep(d):
+                and not _pn_decision_lives_on_master(d):
             rows.append({"file": "—", "type": d.get("type") or "(decided)",
                          "value": d["value"], "where": _PN_LEAK_ABSENT,
                          "context": "", "scrubbed_context": "",

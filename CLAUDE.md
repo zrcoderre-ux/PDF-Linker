@@ -918,10 +918,19 @@ filter — it carried a phantom `(no longer present)` row into every folder's
 `LEAKS.xlsx`, conjuring a worksheet, and an Apply-Leak-Fixes launcher beside
 it, in folders that had nothing to triage. Recurrence is read off `Cases`,
 which is a set of matters; `Times Seen` counts RUNS, so it climbs on a re-run
-of the folder that typed the fix. (Residual, pre-existing and stated: an
-inherited `phrase` row still carries such a phantom row, being a `fix=yes`
-decision that is not a keep and is applied only in its own folder — the same
-shape, left alone because it is not this change's.)
+of the folder that typed the fix.
+**…and the phantom row is closed for EVERY decision the master sheet holds**
+(`_pn_decision_lives_on_master`, in `_pn_write_leak_report`). The
+carry-forward loop persists a `fix=yes` decision whose value did not recur,
+so the fix keeps applying — right for a worksheet `yes` and for an ALIAS,
+which never reaches the master sheet and has nowhere else to live, and wrong
+for anything that sheet already carries. KEEPs were excluded by hand; a
+`phrase` was not, and (measured) an inherited one wrote a
+`Cross River Bank | phrase | (no longer present)` row into a folder that
+never mentioned the bank, conjuring the worksheet and its Apply-Leak-Fixes
+launcher out of nothing. The question is asked once now, of the decision's
+durable HOME — keep, `phrase`, or OCR fix — rather than three times by
+whoever remembers to.
 And a worksheet row with NOTHING typed in it no longer shadows a
 master decision (`_pn_layer_decisions`, for keeps too): a folder run before
 the `**` reached the master sheet carries the garble as an undecided row, and
