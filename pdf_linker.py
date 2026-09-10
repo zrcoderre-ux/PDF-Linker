@@ -2439,23 +2439,125 @@ def _overlay_ocr_layer(page, ocr_doc):
         page.show_pdf_page(page.rect, ocr_doc, 0, overlay=True)
 
 
+# Where an UNREAD page is remembered: {page number -> why it could not be
+# read}. Hung on the Document like `_LOW_DPI_ATTR`, and for the same reason.
+_UNREAD_ATTR = "_pdf_linker_unread_pages"
+# …and tallied for the RUN, as [(file name, page count, why)], because the
+# per-file warning is one line in a log that routinely runs to hundreds and the
+# operator reads the export, not the log. Reset by `main` at the start of a run.
+_UNREAD_RUN = []
+
+
+def _note_unread_pages(doc, pages, why):
+    """Remember that `pages` have NO text layer and OCR could not supply one.
+
+    **This is not an inferred reading; it is the ABSENCE of one, and it is
+    worse.** The low-dpi, rebuilt-layer and ink-form banners all exist because
+    a guess must never be presented as equal to a read — but a page nothing
+    read at all exports as an EMPTY PAGE, and an empty page in a 119-page
+    export reads as a page the document left blank. That is exactly how a
+    declaration went out with 113 pages of exhibits missing: the two lines
+    saying so sat at line 66 of a 535-line log, the export gave no sign, and
+    the run stamped the folder DONE.
+
+    Silent degradation here is also the whole document. A page nothing read
+    reaches nothing else either — not the export, not the scrub, not the leak
+    scans, not the citation parse, not the bookmark tree — so the file is
+    certified clean on the strength of never having been looked at."""
+    try:
+        pages = list(pages)
+        if not pages:
+            return
+        seen = getattr(doc, _UNREAD_ATTR, None)
+        if seen is None:
+            seen = {}
+            setattr(doc, _UNREAD_ATTR, seen)
+        for n in pages:
+            seen.setdefault(n, why)
+        _UNREAD_RUN.append((Path(getattr(doc, "name", "") or "?").name,
+                            len(pages), why))
+    except Exception:
+        pass          # instrumentation must never take a run down
+
+
+def _console_python():
+    """The interpreter to name in a `pip install` line, as a Path.
+
+    Shared by `_require_pymupdf` and `_ocr_pdf` because both answer the same
+    question and two answers would drift. Two things it settles. The message
+    must name THIS interpreter by full path: the launcher runs the `pythonw.exe`
+    beside `sys.executable`, a machine can easily have several Pythons, and a
+    bare `pip install` typed at whichever one is on PATH installs into the wrong
+    one — precisely how a folder ends up working on one machine and not another.
+    And it must name the CONSOLE build of it, since pip run under `pythonw.exe`
+    prints nothing at all."""
+    exe = Path(sys.executable)
+    if exe.name.lower().startswith("pythonw"):
+        cand = exe.with_name(exe.name.lower().replace("pythonw", "python", 1))
+        if cand.exists():
+            return cand
+    return exe
+
+
 def _ocr_pdf(doc, log):
     """OCR pages of a PyMuPDF doc that have no text. Adds an invisible text
-    layer using the recognised text. Modifies doc in place."""
+    layer using the recognised text. Modifies doc in place.
+
+    **Declining is REPORTED, in pages and by name** (`_note_unread_pages`).
+    Every route out of this function without a text layer leaves the page
+    blank in every copy of the document, so each one says how many pages that
+    cost, why, and — for the missing-dependency case, which is the common one —
+    the exact line to type."""
+    textless = [p.number for p in doc if not p.get_text("text").strip()]
+    if not textless:
+        return False
+
+    def _unread(why, banner, *lines):
+        """Decline the pass, and make the cost legible where it lands.
+
+        `why` is the log's sentence and `banner` the short form the page
+        carries: the header is repeated on every unread page — 113 of them on
+        the filing that produced this — so the reason there is a phrase, and
+        the log beside it is where the full one and the fix line live."""
+        _note_unread_pages(doc, textless, banner)
+        shown = ", ".join(str(n + 1) for n in textless[:12])   # as printed
+        if len(textless) > 12:
+            shown += f" (+{len(textless) - 12} more)"
+        log.warning(f"  {len(textless)} page(s) have NO text layer and CANNOT "
+                    f"BE READ: {why}. Those pages export BLANK — nothing on "
+                    f"them reaches the .txt, the scrub or the leak scans. "
+                    f"Page(s): {shown}")
+        for line in lines:
+            log.warning(line)
+        return False
+
     try:
         import pytesseract
         from PIL import Image
     except ImportError:
-        log.warning("pytesseract or Pillow not installed - skipping OCR")
-        return False
+        return _unread(
+            "pytesseract/Pillow is not installed for the interpreter this "
+            "tool runs on",
+            "pytesseract/Pillow not installed",
+            "    Install them with:",
+            f'    "{_console_python()}" -m pip install pytesseract pillow',
+            "    Run that line exactly as written — it targets THIS Python. A "
+            "bare `pip install` may install into a different Python on the "
+            "same machine, which leaves this failing in exactly the same way.",
+            "    Tesseract itself is a separate program and is needed too: "
+            "https://github.com/UB-Mannheim/tesseract/wiki")
 
     tess = _find_tesseract()
     if not tess:
-        log.warning("Tesseract not found - skipping OCR. Install from "
-                    "https://github.com/UB-Mannheim/tesseract/wiki")
-        return False
+        return _unread(
+            "Tesseract itself is not installed",
+            "Tesseract not installed",
+            "    Install it from "
+            "https://github.com/UB-Mannheim/tesseract/wiki")
     if not _tesseract_usable(tess, log):
-        return False
+        return _unread("Tesseract is installed but would not start "
+                       "(see the line above)",
+                       "Tesseract would not start")
     pytesseract.pytesseract.tesseract_cmd = tess
 
     import io
@@ -30681,8 +30783,21 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         # a signature block, an e-filing stamp — and the reader has to be able
         # to tell which is which.
         img_ocr = getattr(doc, _IMG_OCR_ATTR, {}).get(i)
+        # …and a page NOTHING READ AT ALL, which is the one the other three
+        # banners do not cover: not an inferred reading but the absence of one.
+        # The page has no text layer, the OCR pass that would have supplied it
+        # could not run, and what lands here is an empty page — indistinguishable
+        # from a page the document itself left blank. It leads the banner
+        # because it is the strongest thing that can be said about a page, and
+        # because the alternative is what happened: 113 pages of exhibits
+        # exported blank behind their `====== Page N ======` headers, read as a
+        # finished document, and the run stamped the folder DONE.
+        unread = getattr(doc, _UNREAD_ATTR, {}).get(i)
         header = (f"====== Page {i + 1}"
                   + (f" (printed p. {label})" if label else "")
+                  + (f" — REVIEW: NOT READ — no text layer, and OCR could "
+                     f"not run ({unread}); this page is BLANK below"
+                     if unread else "")
                   + (" — REVIEW: the text layer was unreadable and was REBUILT "
                      "by OCR; spellings, numbers and citations on this page are "
                      "GUESSES" if rebuilt else "")
@@ -33126,21 +33241,19 @@ def _require_pymupdf(log):
     other spreadsheet dependency, openpyxl, had always failed with a polite line
     naming its pip command. Same failure, two very different experiences.
 
-    The message names THIS interpreter by full path on purpose. The launcher
-    runs the `pythonw.exe` beside `sys.executable`, a machine can easily have
-    several Pythons, and a bare `pip install pymupdf` typed at whichever one is
-    on PATH installs into the wrong one — which is precisely how a folder ends
-    up working on one machine and not another."""
+    The message names THIS interpreter by full path on purpose, through
+    `_console_python` — the launcher runs the `pythonw.exe` beside
+    `sys.executable`, a machine can easily have several Pythons, and a bare
+    `pip install pymupdf` typed at whichever one is on PATH installs into the
+    wrong one, which is precisely how a folder ends up working on one machine
+    and not another."""
     try:
         import fitz              # noqa: F401
         return True
     except ImportError:
-        exe = Path(sys.executable)
-        # Name the CONSOLE interpreter: pip run under pythonw.exe prints nothing.
-        if exe.name.lower().startswith("pythonw"):
-            cand = exe.with_name(exe.name.lower().replace("pythonw", "python", 1))
-            if cand.exists():
-                exe = cand
+        # One answer to "which pip do I type", shared with `_ocr_pdf` — two
+        # would drift, and this is the line an operator copies verbatim.
+        exe = _console_python()
         log.error(
             "PyMuPDF is not installed for the interpreter this tool runs on, so "
             "no PDF can be opened and nothing below would work. Install it with:")
@@ -35456,6 +35569,10 @@ def main():
     _install_crash_logging(log)
     log.info("=" * 60)
     log.info(f"Run started for folder: {folder} (provider={args.provider})")
+    # The unread-page tally is per RUN, and `main` can be called more than once
+    # in a process (the tests do), so it starts empty rather than carrying the
+    # previous folder's misses into this folder's end-of-run summary.
+    _UNREAD_RUN.clear()
 
     # One run per folder — see _acquire_folder_lock. A second double-click while
     # the first is still working is not a second run, it is two runs fighting
@@ -36265,6 +36382,26 @@ def main():
                   "and re-run.")
 
     log.info(f"Done: {success} succeeded, {failed} failed")
+
+    # …and say, ONCE and at the end, how many pages of this folder nobody read.
+    # The per-file line is already loud, but it is one line among the hundreds a
+    # real run writes and it scrolls past minutes before the run finishes — which
+    # is how a folder was delivered with 113 pages of one declaration's exhibits
+    # and 66 of a petition never looked at. Grouped by CAUSE, because there is
+    # normally one cause for the whole folder and it is a machine to fix rather
+    # than a document to re-scan.
+    if _UNREAD_RUN:
+        by_why = {}
+        for name, count, why in _UNREAD_RUN:
+            hit = by_why.setdefault(why, [0, []])
+            hit[0] += count
+            hit[1].append(f"{name} ({count})")
+        for why, (pages, files) in by_why.items():
+            _warn(f"!! {pages} page(s) across {len(files)} file(s) were NEVER "
+                  f"READ — {why}. Those pages are BLANK in the export and each "
+                  f"one says so on its own page banner: {', '.join(files[:8])}"
+                  + (f" (+{len(files) - 8} more)" if len(files) > 8 else "")
+                  + ". Fix the install and re-run; nothing else recovers them.")
 
     # One-click re-run launcher (written before the leak gate can exit, so it's
     # there to apply Fix? decisions after a quarantine). --key points at the
