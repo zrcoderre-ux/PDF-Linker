@@ -4109,6 +4109,28 @@ just the id; and the body-reference search adds the unspaced `''5''`
 form only, since it searches fixed phrases and a spaced spelling is
 unbounded.
 
+**…and the run may WRAP THE WHOLE LABEL, not only the identifier**
+(the leading run in `_EXHIBIT_COVER_RE` and `_LABEL_JUST_EXHIBIT_RE`). A
+slip sheet is as often printed `"EXHIBIT K"` as `EXHIBIT "K"` — the
+typist quoted the label they were naming rather than the identifier
+inside it — and the `^EXHIBIT` anchor refused every one of them, so that
+exhibit earned no cover, no bookmark and no body link while its
+neighbours spelled the other way in the same set earned all three. The
+run is optional in front of the prefix word too. The closing half needs
+nothing: with no descriptor it is the run already allowed after the
+identifier, and with one it falls inside the descriptor that branch
+already takes (`"EXHIBIT K — Lease"`). Nothing else moves — the prefix
+word must still open the line, the identifier is still one to three
+digits or one or two capitals, and the letter branch still demands its
+separator — so the only line that starts matching is one that was a
+label already, in quotation marks. The numeric branch stays exactly as
+loose as it was, a wrapped body sentence included, and the lone-cover
+strictness gate is what holds there: `_EXHIBIT_QUOTE_LEAD_RE` strips the
+wrap's closing half off the remainder, so a wrapped bare label reads
+strict and `"Exhibit 3 hereto is…"` still reads loose. The
+body-reference search needs nothing either — it searches the bare phrase
+as a substring, which stands inside the wrap.
+
 **…and an OCR'd IDENTIFIER is read against the SERIES**
 (`_exhibit_ident_readings`, `_exhibit_series_numeric`,
 `_exhibit_resolve_ident`). The quotes are not all OCR mangles: it reads

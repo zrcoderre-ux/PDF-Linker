@@ -6041,6 +6041,26 @@ def _link_cover_to_causes(doc, cover_occurrences, body_occurrences,
 # for cause cannot start matching: the identifier is still one to three
 # digits or one or two capitals, and the letter branch still demands a
 # separator before any descriptor.
+#
+# ...and the quote may wrap the WHOLE LABEL, not only the identifier.
+# A slip sheet is as often printed “EXHIBIT K” as EXHIBIT “K” — the
+# quotation marks the typist put around the label they were naming — and
+# the ^EXHIBIT anchor refused every one of them, so that exhibit earned no
+# cover, no bookmark and no body link while its neighbours spelled the
+# other way earned all three. So the run is optional in front of the
+# prefix word too. The closing half needs nothing new: with no descriptor
+# it is the run already allowed after the identifier ("EXHIBIT K"), and
+# with one it falls inside the descriptor the branch already takes
+# ("EXHIBIT K — Lease"). Nothing else moves — the prefix word must still
+# follow immediately, the identifier is still one to three digits or one
+# or two capitals, and the letter branch still demands a separator before
+# a descriptor — so the only line that starts matching is one that was a
+# label already, in quotation marks. The numeric branch stays as loose as
+# it was (a quoted sentence opening "Exhibit 3 hereto is..." matches it,
+# exactly as the unquoted sentence always did), and the lone-cover
+# strictness gate is what holds there: _EXHIBIT_QUOTE_LEAD_RE strips the
+# wrap's closing half off the remainder, so a wrapped bare label reads
+# strict and a wrapped sentence still reads loose.
 _EXHIBIT_QUOTE_CHAR = "[\"'`\u00b4\u2018\u2019\u201a\u201b\u201c\u201d\u201e\u201f\u2032\u2033]"
 _EXHIBIT_QUOTE_RUN = _EXHIBIT_QUOTE_CHAR + r"(?:[ \t]*" + _EXHIBIT_QUOTE_CHAR + r")*"
 # The closing run, with the whitespace that may precede it — what
@@ -6073,6 +6093,7 @@ _EXHIBIT_BODY_REF_RE = re.compile(
 _EXHIBIT_COVER_RE = re.compile(
     r"""
     ^\s*
+    (?:""" + _EXHIBIT_QUOTE_RUN + r"""[ \t]*)?         # optional run WRAPPING the label
     (?:EXHIBIT|Exhibit|EX\.|Ex\.|EXH\.|Exh\.)
     \s+
     (?:""" + _EXHIBIT_QUOTE_RUN + r"""[ \t]*)?         # optional opening quote run
@@ -7488,12 +7509,14 @@ def _build_bookmark_tree(doc, toc_entries, exhibit_cover_map,
 # "Exhibit 5", "EXHIBIT 5", "Ex. 5", "Exhibit B", "EXHIBIT AA". Allows
 # optional trailing punctuation, and the identifier may sit inside the
 # same quote run the cover regex tolerates ('EXHIBIT "A"', "EXHIBIT ''A''"
-# off a scan) — a footer that repeats the slip sheet's own spelling is
-# still just the exhibit's id. The label has ALREADY been stripped of its
+# off a scan, or the run wrapping the whole label: '"EXHIBIT K"') — a
+# footer that repeats the slip sheet's own spelling is still just the
+# exhibit's id. The label has ALREADY been stripped of its
 # page-number tail by _clean_footer_label upstream, so this is purely a
 # label-shape match.
 _LABEL_JUST_EXHIBIT_RE = re.compile(
-    r"^\s*(?:Exhibit|EXHIBIT|Ex\.?|EX\.?|Exh\.?|EXH\.?)\s+"
+    r"^\s*(?:" + _EXHIBIT_QUOTE_RUN + r"[ \t]*)?"
+    r"(?:Exhibit|EXHIBIT|Ex\.?|EX\.?|Exh\.?|EXH\.?)\s+"
     r"(?:" + _EXHIBIT_QUOTE_RUN + r"[ \t]*)?"
     r"([A-Za-z0-9]+)"
     r"(?:[ \t]*" + _EXHIBIT_QUOTE_RUN + r")?"
