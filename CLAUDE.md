@@ -5145,6 +5145,20 @@ still carries the fake — and the FULL re-run is what restores the export,
 since the text-only pass never reverses a fake. Pinned in
 `test_new_real_values.py`, end to end through both passes and for a keep.
 
+**…and the reader ANSWERS `LEAKS.xlsx` too, in place.** The same text
+reader works the worksheet row by row above the text (the row's document
+opened at its page and line) and writes each decision into that row's
+`Fix?` cell — as an INLINE STRING (`t="inlineStr"`), the one sheet part
+edited by reference and every other part of the workbook copied through
+byte for byte, so the Context quotes, the widths and the dropdown are
+PDF-Linker's own and `_pn_read_leak_decisions` reads the cell exactly as
+one typed in Excel (`test_reader_leak_decisions.py` pins that, on a
+workbook rebuilt the way the reader rebuilds it). Nothing else changes:
+Apply Leak Fixes applies the cells as always, `_pn_triage_pending` reads an
+empty cell as undecided as always, and a `yes` made there is never ALSO
+written into `New Real Values.txt` — the reader keeps the two channels
+apart, since a `--term` is authoritative and a worksheet `yes` is screened.
+
 **A launcher RESOLVES its paths when it is clicked, and says so when it
 can't** (`_launcher_resolve_bat` / `_launcher_resolve_sh`). A launcher records
 the absolute interpreter and script paths of the machine that wrote it, and
