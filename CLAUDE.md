@@ -4732,6 +4732,53 @@ survive to fail.
   IDEMPOTENT, which matters because the tool replaces the source PDF: the
   overlay is in the file the next run opens, and until now nothing but our own
   OCR being deterministic stopped a re-run stacking another copy.
+- **A page nothing could READ is UNREAD, and every copy of it says so**
+  (`_note_unread_pages`, `_UNREAD_ATTR`, `_UNREAD_RUN`, the `_unread` decline
+  in `_ocr_pdf`). The low-dpi, rebuilt-layer and ink-form banners all exist
+  because an inferred reading must never be presented as equal to a read one.
+  This is the INVERSE and it is worse: there is no reading at all, and a page
+  with no text exports as an EMPTY PAGE — indistinguishable from a page the
+  document itself left blank, which is the most convincing-looking output
+  there is. A delivered folder shipped a 119-page declaration with 113 pages
+  of exhibits blank behind their own `====== Page N ======` headers, and a
+  66-page petition the same way; the whole of what the run said was two lines
+  at line 66 of a 535-line log — `pytesseract or Pillow not installed -
+  skipping OCR`, unprefixed, at WARNING among hundreds of INFO — after which
+  the run scrubbed, scanned, wrote the key and stamped the folder DONE. The
+  silence is the whole document, not just the export: a page nothing read
+  reaches nothing else either — not the scrub, not the leak scans, not the
+  citation parse, not the bookmark tree — so the file is certified clean on
+  the strength of never having been looked at.
+  Three places now say it. EVERY route out of `_ocr_pdf` without a text layer
+  goes through one `_unread` helper that records the pages on the Document
+  (like `_LOW_DPI_ATTR`, and for the same reason) and warns with the COUNT and
+  the page numbers as the operator counts them — the missing dependency, a
+  missing Tesseract, and a Tesseract that will not start, which cost the same
+  pages and reported three different amounts about it. The EXPORT's page
+  banner carries `NOT READ`, leading the header because it is the strongest
+  thing that can be said about a page; the reason there is a PHRASE and not
+  the log's sentence, since the banner is repeated on every unread page — 113
+  of them on the filing that produced this — and the fix line belongs beside
+  the sentence, in the log, once (`_PN_PAGE_HEADER_RE` already tolerates
+  any ` — …` clause, and a test pins that it still does — a header that fails
+  to match does not merely lose its own page, it reports every line after it
+  at the LAST page that matched). And the run says it ONCE at the end, grouped
+  by CAUSE, because there is normally one cause for the whole folder and the
+  per-file line scrolls past minutes before the run finishes. A document with
+  no textless page reports nothing at all, where the old code warned about the
+  missing dependency whether or not it had cost anything.
+  The dependency message names THIS interpreter and the exact pip line
+  (`_console_python`, factored out of `_require_pymupdf` so the two cannot
+  drift): the launcher runs the `pythonw.exe` beside `sys.executable`, a bare
+  `pip install` at whichever Python is on PATH installs into the wrong one,
+  and that is precisely how a folder comes to work on one machine and not
+  another. It names the CONSOLE build, since pip run under `pythonw.exe`
+  prints nothing. Tesseract is named beside it as the separate program it is.
+  NOT a gate: the pages are blank, not dangerous, and what the operator needs
+  is to know — the `unreversible_fakes` reasoning. Residual, and stated: a
+  page OCR really DID read and recovered nothing from is genuinely blank and
+  is not marked, since marking it would put a false banner on every separator
+  page in the batch.
 - `_ocr_pdf` OCRs pages with **no** text; `_reocr_garbled_pages` rebuilds pages
   whose text extracts as gibberish (bad encoding). Both **parallelize** render+
   OCR across worker threads (Tesseract is a subprocess → releases the GIL);
