@@ -4829,6 +4829,37 @@ survive to fail.
   run is made to wait, so a second run still starts immediately — it simply
   starts narrower. The lease is held across the stalled-page grind at the end
   of a pass, which is serial; bounded, and not worth a second lease to reclaim.
+- **…and fairness is not always what is wanted** (`--first`,
+  `_claim_ocr_priority`, `_another_run_holds_priority`). With two folders in
+  flight the objective is usually not "both finished soonest" but "THIS one
+  finished soonest" — the operator is waiting on a case with a hearing on it,
+  and the second folder finishing twenty minutes later costs them nothing.
+  Simulated against the 20 real clusters of overlapping full runs in the
+  ledger, no scheduling policy moves the first finish by more than about three
+  minutes; handing one folder the whole machine is worth several times that,
+  which is why the flag exists and a scheduler does not.
+  The claim is the SAME budget file, one byte past the last core, so it is the
+  lock discipline already there: the OS drops it however the run dies, and a
+  killed `--first` run cannot leave the other runs throttled. Held for the life
+  of the RUN and not per pass — that is the difference between it and a lease,
+  since the point is to hold the machine across a folder's passes rather than
+  within one. Every other run's OCR pass narrows to a single core while it
+  stands, and narrowed is not stopped: those folders keep working and get their
+  full width back on the pass after the priority run ends, so `--first` costs
+  them time and never progress.
+  **It is not PREEMPTIVE, and cannot be.** A lease already held is not taken
+  back, so a `--first` run starting while another folder's pass is mid-flight
+  gets one core until that pass ends. Passes are per-file, so it resolves
+  within a file rather than a folder — worth knowing before reading a slow
+  first minute as the flag not working.
+  Claimed after the `--fix-leaks` branch has exited, because that pass opens no
+  PDF and runs no OCR: it neither claims priority nor yields to it, and
+  `--first` alongside it SAYS so rather than doing nothing quietly. Only one
+  run can hold the claim; a second is told, and proceeds sharing the cores.
+  The probe takes the byte and gives it straight back, so a run merely asking
+  never throttles the machine — and `_claim_ocr_priority` retries a few times
+  for exactly that reason, since losing a claim to somebody's probe would
+  silently demote the one run the operator asked to be fast.
 
 ## Diagnosing a run that just stops
 

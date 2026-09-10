@@ -1928,9 +1928,9 @@ def _ocr_slot_handle():
             fh = open(_ocr_slot_path(), "a+b")
         except OSError:
             return None
-        try:                      # one byte per core, so the file describes itself
-            if fh.seek(0, os.SEEK_END) < _ocr_slot_capacity():
-                fh.write(b"." * (_ocr_slot_capacity() - fh.tell()))
+        try:                      # one byte per core, plus the priority byte
+            if fh.seek(0, os.SEEK_END) < _ocr_slot_capacity() + 1:
+                fh.write(b"." * (_ocr_slot_capacity() + 1 - fh.tell()))
                 fh.flush()
         except OSError:
             pass
@@ -1990,6 +1990,79 @@ class _OcrLease:
         self._held = []
 
 
+# ── --first: the folder the operator is actually waiting on ──────────────────
+# The budget above shares the machine fairly, and fairness is not always what is
+# wanted. The objective when two folders are in flight is usually not "both
+# finished soonest" but "THIS one finished soonest" — the operator is waiting on
+# a case with a hearing on it, and a second folder that finishes twenty minutes
+# later costs them nothing. `--first` says so: the run holding it keeps its full
+# pool and every other run narrows its OCR passes to a single core until the
+# priority run ends.
+#
+# It is the SAME budget file, one byte past the last core, so the whole
+# mechanism is the lock discipline already there — the OS drops the claim
+# however the run dies, and a `--first` run that is killed cannot leave the
+# other runs throttled. Held for the life of the run and not per pass, which is
+# the difference between it and a lease: the point is to hold the machine
+# ACROSS a folder's passes, not within one.
+#
+# Nothing is stopped or queued. A narrowed run keeps working, just on one core,
+# so `--first` costs the other folders time and never their progress — and a
+# text-only folder is unaffected either way, since it runs no OCR pass to
+# narrow. --fix-leaks opens no PDF and OCRs nothing, so it neither claims
+# priority nor yields to it.
+_OCR_PRIORITY_HELD = False
+
+
+def _ocr_priority_offset():
+    """The priority byte: one past the last core, in the same budget file."""
+    return _ocr_slot_capacity()
+
+
+def _claim_ocr_priority(log):
+    """Claim the machine's OCR cores for this run. True when the claim is ours.
+
+    Retries a few times because a run that is merely CHECKING for priority
+    holds the byte for the microseconds it takes to probe and release, and
+    losing a claim to a probe would silently demote the one run the operator
+    asked to be fast."""
+    global _OCR_PRIORITY_HELD
+    if _OCR_PRIORITY_HELD:
+        return True
+    fh = _ocr_slot_handle()
+    if fh is None:
+        return False
+    for attempt in range(4):
+        got = _ocr_slot_lock(fh, _ocr_priority_offset())
+        if got is None:
+            log.info("--first: this filesystem cannot lock, so the run cannot "
+                     "claim the machine's OCR cores — it proceeds sharing them")
+            return False
+        if got:
+            _OCR_PRIORITY_HELD = True
+            log.info("--first: this run holds the machine's OCR cores; any "
+                     "other PDF-Linker run narrows to one core until it ends")
+            return True
+        if attempt < 3:
+            time.sleep(0.05)
+    log.warning(
+        "--first: another run already holds the machine's OCR cores, so this "
+        "one proceeds sharing them. Only one run at a time can be first.")
+    return False
+
+
+def _another_run_holds_priority(fh):
+    """True when some OTHER run claimed the cores. Probes by taking the byte
+    and giving it straight back — we want the answer, not the claim."""
+    if _OCR_PRIORITY_HELD:
+        return False              # the claim is ours; we are not our own rival
+    got = _ocr_slot_lock(fh, _ocr_priority_offset())
+    if got:
+        _ocr_slot_lock(fh, _ocr_priority_offset(), release=True)
+        return False
+    return got is False           # None (unsupported) is not a claim
+
+
 def _ocr_lease(pages, log=None):
     """Lease cores for ONE OCR pass over `pages` pages and report how wide its
     pool may be. Always yields at least 1."""
@@ -2003,6 +2076,13 @@ def _ocr_lease(pages, log=None):
     fh = _ocr_slot_handle()
     if fh is None:
         return _OcrLease(want, [])
+    if _another_run_holds_priority(fh):
+        # Narrowed, not stopped: the folder still advances, on one core, and
+        # gets its full width back on the pass after the priority run ends.
+        if log is not None and want > 1:
+            log.info("  OCR: 1 core — another PDF-Linker run was started with "
+                     "--first and holds the rest until it finishes")
+        want = 1
     held = []
     for i in range(_ocr_slot_capacity()):
         if len(held) >= want:
@@ -34667,6 +34747,13 @@ def main():
         help="Where to write the real->fake key (default: "
              "<folder>/pseudonym_key.xlsx).",
     )
+    parser.add_argument(
+        "--first", action="store_true",
+        help="Finish THIS folder soonest: the run keeps the machine's OCR "
+             "cores and any other PDF-Linker run narrows to one core until "
+             "this one ends. The others keep working, just slower. No effect "
+             "with --fix-leaks, which does no OCR.",
+    )
     args = parser.parse_args()
 
     # Child processes (tesseract per OCR page) must fail into the log, never
@@ -34731,6 +34818,13 @@ def main():
     # directly and exit — no PDFs reopened, no linking. Fast follow-up path.
     if args.fix_leaks:
         log.info(f"--fix-leaks on folder: {folder}")
+        if args.first:
+            # Said rather than ignored: a flag that quietly does nothing reads
+            # as a flag that worked, and the operator would be waiting on a
+            # priority this pass never had.
+            log.info("--first has nothing to claim on a --fix-leaks pass: it "
+                     "opens no PDF and runs no OCR, so it never competes for "
+                     "the cores --first hands out.")
         try:
             rc = _fix_leaks_mode(folder, args, cfg, log)
         except BaseException:
@@ -34747,6 +34841,14 @@ def main():
     # without PyMuPDF.
     if not _require_pymupdf(log):
         sys.exit(1)
+
+    # Claimed HERE and not with the folder lock above: `--fix-leaks` exits in
+    # the block before this one, and a pass that never OCRs must not throttle
+    # the runs that do. Best-effort — a claim that cannot be taken says so and
+    # the run proceeds sharing the cores, since the folder still has to be
+    # processed either way.
+    if args.first:
+        _claim_ocr_priority(log)
 
     if args.pseudonymize is None:
         args.pseudonymize = _config_bool(cfg, "pseudonymize", True)
