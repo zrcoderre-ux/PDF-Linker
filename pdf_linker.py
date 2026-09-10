@@ -33870,6 +33870,136 @@ def _write_start_launcher(folder, provider, want_key, log):
     return _write_deferred_launcher(folder, provider, want_key, log)
 
 
+# ── A folder that is not there ───────────────────────────────────────────────
+# The one fatal path that ran BEFORE the log existed, and so said nothing at
+# all under the launcher's own interpreter. `main` checks the folder argument
+# and `print`s "Not a folder: X" — but the normal launch is `pythonw.exe`,
+# which has no stdout, and `pdf_linker.log` lives INSIDE the folder that is
+# missing, so nothing was written anywhere. The process started, printed into
+# the void and exited 1: from the outside, identical to Python never starting,
+# and it also defeats "is there a log?" as a diagnostic, since there is no log
+# either way. That is the failure `_install_crash_logging` exists to prevent,
+# arriving one step ahead of it.
+#
+# It is worth this much care because the commonest CAUSE is invisible too. A
+# shortcut records an absolute path, and Windows moves the folder underneath
+# it: OneDrive's known-folder redirection puts Desktop and Documents inside
+# the OneDrive folder, so `C:\Users\X\Desktop\Convert` becomes
+# `C:\Users\X\OneDrive\Desktop\Convert` and every launcher naming the old
+# path stops working, with no error anyone can see. The tool's own launchers
+# are immune (they pass `%~dp0.`, their own directory); a hand-made shortcut
+# is not.
+_MISSING_FOLDER_LOG = "pdf_linker.log"
+
+
+def _known_folder_redirects(missing):
+    """Existing folders `missing` may have MOVED to (or from) under Windows
+    known-folder redirection — the OneDrive twin of a path under the user's
+    profile, and the plain twin of a path already under OneDrive.
+
+    Both directions, because the shortcut can be stale either way: made before
+    the redirect and naming `~/Desktop/X`, or made after it and kept when the
+    folder was later moved back out."""
+    out = []
+    try:
+        home = Path.home().resolve()
+        rest = missing.resolve().relative_to(home)
+    except (OSError, ValueError, RuntimeError):
+        return out
+    parts = rest.parts
+    if not parts:
+        return out
+    try:
+        if parts[0].lower().startswith("onedrive"):
+            cand = [home.joinpath(*parts[1:])] if len(parts) > 1 else []
+        else:
+            # Every OneDrive root in the profile: personal is "OneDrive",
+            # a work/school tenant is "OneDrive - <Organisation>".
+            cand = [d / rest for d in home.iterdir()
+                    if d.is_dir() and d.name.lower().startswith("onedrive")]
+    except OSError:
+        return out
+    for c in cand:
+        try:
+            if c.is_dir() and c not in out:
+                out.append(c)
+        except OSError:
+            continue
+    return out
+
+
+def _missing_folder_message(missing):
+    """What to say when the folder argument names nothing — including where it
+    probably went, when that can be established rather than guessed at."""
+    lines = [f"Not a folder: {missing}"]
+    moved = _known_folder_redirects(missing)
+    if moved:
+        lines.append("This folder looks like it MOVED. It exists here:")
+        lines += [f"    {m}" for m in moved]
+        lines.append(
+            "Windows redirects Desktop and Documents into OneDrive, which "
+            "leaves a shortcut naming the old path pointing at nothing. Point "
+            "the shortcut at the path above — or use the launcher this tool "
+            "writes INTO the folder (Re-run PDF-Linker), which passes its own "
+            "location and cannot go stale.")
+    else:
+        lines.append(
+            "Check the path in the shortcut that started this. A folder on the "
+            "Desktop or in Documents may have been redirected into OneDrive, "
+            "which leaves a shortcut naming the old path pointing at nothing.")
+    return "\n".join(lines)
+
+
+def _missing_folder_log(missing):
+    """Where to write that message, given the folder it would normally go in
+    does not exist: the missing folder's PARENT if that is real (the Desktop
+    the folder was meant to be on), else beside the tool itself, else TEMP.
+    Returns the path written, or None."""
+    import tempfile
+    seen, cands = set(), []
+    for base in (missing.parent, Path(__file__).resolve().parent,
+                 Path(tempfile.gettempdir())):
+        try:
+            b = Path(base)
+        except (OSError, ValueError):
+            continue
+        if b in seen:
+            continue
+        seen.add(b)
+        cands.append(b)
+    for base in cands:
+        try:
+            if not base.is_dir():
+                continue
+            path = base / _MISSING_FOLDER_LOG
+            stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(f"{stamp} [ERROR] "
+                         + _missing_folder_message(missing).replace("\n",
+                                                                   "\n    ")
+                         + "\n")
+            return path
+        except OSError:
+            continue
+    return None
+
+
+def _report_missing_folder(missing):
+    """Say that the folder is not there, somewhere the operator can find it.
+
+    To the console when there is one, and ALWAYS to a log file — the launcher
+    runs `pythonw.exe`, which has no console at all, and this check runs before
+    the folder's own log can exist."""
+    msg = _missing_folder_message(missing)
+    where = _missing_folder_log(missing)
+    if where is not None:
+        msg += f"\n(This message was also written to {where})"
+    try:
+        print(msg)
+    except Exception:
+        pass
+
+
 def _write_deferred_launcher(folder, provider, want_key, log):
     """Write the deferred-run launcher — the whole output of a deferred start.
 
@@ -35100,7 +35230,10 @@ def main():
         parser.error("the following arguments are required: folder")
     folder = Path(args.folder)
     if not folder.is_dir():
-        print(f"Not a folder: {folder}")
+        # NOT a bare print: this runs before the folder's own log exists, and
+        # the normal launch has no console to print to. See
+        # `_report_missing_folder`.
+        _report_missing_folder(folder)
         sys.exit(1)
 
     log_path = folder / "pdf_linker.log"
