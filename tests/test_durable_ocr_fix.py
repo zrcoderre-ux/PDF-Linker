@@ -5,9 +5,12 @@ folder from then on. It is for a scan's habitual misreading of a GENERIC term
 — "SanDiega" for San Diego, a courthouse, a code name — that would otherwise
 be answered again in every folder it turns up in.
 
-A single star is a statement about one scan of one document and is never
-persisted. An inherited fix touches nothing where its garble is absent: the
-term matches nothing, and an unmatched OCR-fix row is never written to the key.
+A single star still applies in its own case only. It IS recorded on that same
+sheet, under `OCR-FIX-CASE`, as evidence of what a scan misreads — and is read
+back by nobody, so no other folder's behaviour moves; promoting it is a
+one-character edit of its instruction cell. An inherited fix touches nothing
+where its garble is absent: the term matches nothing, and an unmatched OCR-fix
+row is never written to the key.
 
 Run:  cd PDF-Linker && python3 -m pytest tests/test_durable_ocr_fix.py -v
 """
@@ -115,9 +118,11 @@ def test_a_durable_fix_lands_on_the_master_sheet_under_its_own_type(tmp_path):
     assert back["sandiega"]["ocr_durable"] is True
 
 
-def test_the_full_run_persists_two_stars_and_not_one(tmp_path, monkeypatch):
-    """A worksheet `**` reaches the master KEEP sheet; a worksheet `*` beside
-    it does not — one scan of one document is nobody else's business."""
+def test_the_full_run_persists_both_star_forms_under_their_own_types(
+        tmp_path, monkeypatch):
+    """Both reach the master KEEP sheet, and the sheet says which is which:
+    `**` as OCR-FIX (applied in every folder), `*` as OCR-FIX-CASE (this
+    case's own correction, kept as evidence of what the scan misread)."""
     case = _word_case(tmp_path / "Case A",
                       "Plaintiff Hollis Vantreight lives in SanDiega, near the "
                       "Superior Court. Defendant Marcus Smlth denies it.")
@@ -140,7 +145,10 @@ def test_the_full_run_persists_two_stars_and_not_one(tmp_path, monkeypatch):
     assert "Smith" in txt and "Smlth" not in txt
     rows = _master_rows(master)
     assert "SanDiega" in rows and rows["SanDiega"][2] == P._PN_OCR_FIX_TYPE
-    assert "Smlth" not in rows
+    assert "Smlth" in rows and rows["Smlth"][2] == P._PN_OCR_FIX_CASE_TYPE
+    # The instruction cell is kept exactly as typed — one star — which is what
+    # `_pn_read_master_keep` refuses and what promoting the row edits.
+    assert rows["Smlth"][1] == "*Smith"
 
 
 # ── 3. inheritance ───────────────────────────────────────────────────────────
@@ -296,3 +304,134 @@ def test_an_undecided_worksheet_row_does_not_shadow_the_inherited_fix():
     # …while a row the operator DID answer still wins locally.
     folder2 = P._pn_parse_decision_rows([HDR, ("SanDiega", "no", "", "", "", "")])
     assert P._pn_layer_decisions(master, folder2)["sandiega"]["fix"] == "no"
+
+
+# ── 4. the single star is evidence, not an instruction ───────────────────────
+
+def test_the_reader_hands_back_no_single_star_row(tmp_path):
+    """`_pn_read_master_keep` is the one choke point every consumer of the
+    master sheet goes through, and a plain `*` row does not get past it."""
+    master = tmp_path / "master.xlsx"
+    _master_with(master,
+                 ("SanDiega", "**San Diego", P._PN_OCR_FIX_TYPE),
+                 ("Smlth", "*Smith", P._PN_OCR_FIX_CASE_TYPE),
+                 ("Alder Law, P.C.", "[Law]", "KEEP-PART"),
+                 ("avidsaid", "*David {said}", P._PN_KEEP_NUCLEAR_TYPE))
+    back = P._pn_read_master_keep({"master_leaks_path": str(master)})
+    assert "smlth" not in back
+    # …while the durable fix, an ordinary keep-spec, and the keep-spec FORM of
+    # a single star (whose bracket half generalises like any other) all pass.
+    assert back["sandiega"]["ocr_durable"] is True
+    assert back["alder law, p.c."]["fake_values"]
+    assert back["avidsaid"]["fake_values"]
+
+
+def test_a_logged_single_star_changes_no_other_folder(tmp_path, monkeypatch):
+    """Case B carries the same garble Case A corrected with one star: it is
+    NOT corrected here, the worksheet does not arrive pre-answered with a fix
+    this folder will not make, and Case A's row is not re-stamped with ours."""
+    master = tmp_path / "master.xlsx"
+    _master_with(master, ("Smlth", "*Smith", P._PN_OCR_FIX_CASE_TYPE))
+    case = _word_case(tmp_path / "Case B",
+                      "Plaintiff Hollis Vantreight sues Marcus Smlth over the "
+                      "lease. Defendant Marcus Smlth denies it.")
+    # …and Case B makes a keep of its own, so it really does REWRITE the master
+    # sheet: a logged row has to survive another matter's write, and that is
+    # the one thing the read filter could have cost it.
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "LEAKS"
+    ws.append(list(LEAK_HDR))
+    ws.append(["Superior", "never", "Motion.docx", "name?", "p.1", ""])
+    wb.save(case / "LEAKS.xlsx")
+    monkeypatch.setenv("PDF_LINKER_MASTER", str(master))
+    monkeypatch.setattr(sys, "argv", ["pdf_linker.py", str(case)])
+    try:
+        P.main()
+    except SystemExit:
+        pass
+    txt = next((case / "Text Files").glob("*.txt")).read_text(encoding="utf-8")
+    assert "Smlth" in txt and "Smith" not in txt   # nothing corrected it here
+    leaks = case / "LEAKS.xlsx"
+    if leaks.exists():
+        for r in openpyxl.load_workbook(leaks)["LEAKS"].iter_rows(
+                min_row=2, values_only=True):
+            if r and str(r[0]).lower() == "smlth":
+                assert not r[1], f"pre-answered with {r[1]!r}"
+    rows = _master_rows(master)
+    assert "Superior" in rows            # the sheet really was rewritten
+    assert int(rows["Smlth"][3]) == 1 and rows["Smlth"][4] == "Case 0f0f0f0f"
+    assert rows["Smlth"][1] == "*Smith"
+    assert rows["Smlth"][2] == P._PN_OCR_FIX_CASE_TYPE
+
+
+def test_a_logged_single_star_carries_no_row_into_a_clean_folder(
+        tmp_path, monkeypatch):
+    """The row is data on a sheet, not a question: a folder that never met the
+    garble gets no '(no longer present)' worksheet row for it — and no
+    worksheet at all where it had nothing else to say."""
+    master = tmp_path / "master.xlsx"
+    _master_with(master, ("Smlth", "*Smith", P._PN_OCR_FIX_CASE_TYPE))
+    case = _word_case(tmp_path / "Case C",
+                      "Plaintiff Hollis Vantreight lives in Fresno.")
+    monkeypatch.setenv("PDF_LINKER_MASTER", str(master))
+    monkeypatch.setattr(sys, "argv", ["pdf_linker.py", str(case)])
+    try:
+        P.main()
+    except SystemExit:
+        pass
+    leaks = case / "LEAKS.xlsx"
+    if leaks.exists():
+        vals = {str(r[0]).lower() for r in
+                openpyxl.load_workbook(leaks)["LEAKS"]
+                .iter_rows(min_row=2, values_only=True) if r and r[0]}
+        assert "smlth" not in vals
+
+
+def test_typing_the_second_star_promotes_the_row(tmp_path, monkeypatch):
+    """Promotion is a one-character edit of the instruction cell: the fix then
+    applies in a folder that never typed it, and the Type column stops saying
+    the opposite of what the row now does."""
+    master = tmp_path / "master.xlsx"
+    _master_with(master, ("Smlth", "**Smith", P._PN_OCR_FIX_CASE_TYPE))
+    case = _word_case(tmp_path / "Case D",
+                      "Plaintiff Hollis Vantreight sues Marcus Smlth over the "
+                      "lease.")
+    monkeypatch.setenv("PDF_LINKER_MASTER", str(master))
+    monkeypatch.setattr(sys, "argv", ["pdf_linker.py", str(case)])
+    try:
+        P.main()
+    except SystemExit:
+        pass
+    txt = next((case / "Text Files").glob("*.txt")).read_text(encoding="utf-8")
+    assert "Smlth" not in txt
+    assert _master_rows(master)["Smlth"][2] == P._PN_OCR_FIX_TYPE
+
+
+def test_fix_leaks_records_a_worksheet_single_star(tmp_path, monkeypatch):
+    """The text-only pass records one too — the worksheet it was typed into is
+    consumed once resolved, so the master sheet is the only thing that outlives
+    it."""
+    td = tmp_path / "Text Files"
+    td.mkdir()
+    (td / "Brief.txt.LEAK").write_text(
+        "====== Page 1 ======\nThe hearing was set in SanDiega County.\n",
+        encoding="utf-8")
+    wb = openpyxl.Workbook(); ws = wb.active; ws.title = "Pseudonym Key"
+    ws.append(["Category", "Real Value", "Replacement", "Status", "Source",
+               "Occurrences"])
+    ws.append(["person", "Filler Party", "Fake Party", "replaced", "--term", "1"])
+    wb.save(tmp_path / "pseudonym_key.xlsx")
+    wb2 = openpyxl.Workbook(); w2 = wb2.active; w2.title = "LEAKS"
+    w2.append(["File", "Type", "Value", "Where (page:line)", "Fix? (yes/no)",
+               "Notes"])
+    w2.append(["Brief.txt.LEAK", "REVIEW", "SanDiega", "p.1:1", "*San Diego", ""])
+    wb2.save(tmp_path / "LEAKS.xlsx")
+    master = tmp_path / "master.xlsx"
+    monkeypatch.setenv("PDF_LINKER_MASTER", str(master))
+    args = types.SimpleNamespace(term=[], key=str(tmp_path / "pseudonym_key.xlsx"))
+    P._fix_leaks_mode(tmp_path, args, {}, log)
+    body = next(td.glob("Brief.txt*")).read_text(encoding="utf-8")
+    assert "San Diego County" in body
+    row = _master_rows(master)["SanDiega"]
+    assert row[1] == "*San Diego" and row[2] == P._PN_OCR_FIX_CASE_TYPE
