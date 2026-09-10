@@ -5239,6 +5239,65 @@ new file passes by construction — leaves it alone.
   full four. A prune that dropped one term MORE is a name left in the clear;
   one that dropped one FEWER is a cited authority renamed. Neither is a trade
   this project makes for time.
+- **The HARVEST is priced by the TERM LIST, which the harvest itself grows.**
+  The prunes above were the visible half; the real one was upstream. On a
+  15-file batch of scanned exhibits the folder READ itself in 2m16s and then
+  spent **54 minutes** between the last file and the "added 503 term(s)" line
+  — `reserve_authority_names` plus one `_pn_learn_from_text` per document —
+  with 503 terms, which is a small case. Two passes account for it, and both
+  have the same shape: their cost is (terms) x (documents) x (text), and the
+  term list is what the harvest is BUILDING, so it grows while they run.
+  Profiled over 15 documents of 763 KB: 51 s clean, 84 s on the degraded text
+  a fax-generation exhibit produces (which harvests half again as many terms
+  and is the shape a real folder's exhibits are in).
+  `register_short_names` was **32 of those 51 seconds**. It ran one regex scan
+  of the WHOLE document per person/entity term, and most terms are near-miss
+  spellings this tool minted (`_pn_name_variants`) that stand in no document
+  at all. It is screened now on EVERY word of the name — the only pass
+  screened that way, because it is the only one paying a whole-text scan per
+  term with the list still growing — which is exact by `_pn_term_lead`'s own
+  argument one word further: a term matches WHOLE WORDS joined on whitespace,
+  so wherever it can match, every letter run of its real value stands in the
+  text as a word, or as the two adjacent pieces `_lead_words` indexes for a
+  spelling broken by a kern gap. That is why it asks the PAGE screen, pairs
+  and all, where the corpus prunes ask the pair-free one. A name is several
+  words and any one of them refuses it, so this refuses far more than a lead
+  would: "Quillmark Builders LLC" needs all three. A document with no "("
+  defines nothing and returns at once.
+  `_pn_align_initials` was **47 of the degraded run's 84 seconds**, and it is
+  called from `_add_terms` — every time the term set grows, over the whole
+  set. Per call it sorted the ENTIRE person list inside a per-term loop (27.8
+  million key calls on one folder) to order a list a frozenset subset test
+  then threw nearly all of away, and re-split every sibling's words with two
+  regex findalls per comparison. Now the words are split once per term, the
+  siblings are chosen BEFORE they are sorted (same set, same order — `sorted`
+  is stable and the key is a total order), and they are found through an
+  inverted index: a sibling must contain every faked word of `mine`, so the
+  candidates are exactly the posting list of any one of them, and the shortest
+  is taken. The answer is unmoved, which matters more here than anywhere —
+  this mutates a stand-in, and a stand-in that moves is a delivered key
+  re-derived differently.
+  Measured after: clean 51 s -> 23 s, degraded 84 s -> 39 s, with
+  `_pn_align_initials` 47 -> 5. What remains is mostly `register_short_names`'
+  scan for the terms a document really does carry every word of. Both are
+  pinned differentially (`test_harvest_cost.py`): the screen against the same
+  pass with the screen bypassed, and the aligner against a verbatim copy of
+  the loop it replaced, over randomized term sets.
+  **Why not PARALLELISE it instead** (asked, and the answer is on the record):
+  the harvest is pure-Python regex work, so unlike the OCR pool — whose
+  Tesseract subprocesses release the GIL — threads buy nothing, and processes
+  would have to ship the corpus out and the harvested state back. That state
+  is the difficulty rather than the plumbing: `_PnFakeRegistry` is INJECTIVE
+  by construction, and two workers drawing from the pools independently can
+  and would hand one stand-in to two real values, which is precisely what
+  `DeAnonymize.bas` retires as ambiguous. It could be made to work — harvest
+  the NAMES per document in parallel, mint nothing, and draw every fake in one
+  serial pass afterwards, which is what the pre-scan's read-everything-then-
+  learn-everything seam already half is. But it multiplies a cost rather than
+  removing it: 4x on a pass that is (terms) x (text) still grows with the
+  folder on both axes, where the two screens above take it out of that class
+  and cost no determinism at all. Worth revisiting only once the passes are
+  linear and the machine is the limit.
 - **The long phases NAME themselves before they run** — the same rule the
   pre-scan follows for filenames, and for the same reason. Between "exporting
   text" and the first REVIEW warning the log said nothing for 82 minutes, so a

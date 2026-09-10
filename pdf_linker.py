@@ -9584,16 +9584,29 @@ def _pn_align_initials(terms, log=None):
               if t.category == "person" and not getattr(t, "loaded", False)]
     if not people:
         return []
-    # Every person term's faked words, as a set of fakes — the identity key.
-    faked = {}
+    # Split ONCE per term, not once per (term, sibling). `_add_terms` calls
+    # this on the whole term set every time the set grows, so what it does per
+    # call is multiplied by every harvest in the folder: on a 15-file batch of
+    # scanned exhibits it was 47 of the harvest's 84 seconds, and two regex
+    # findalls per sibling per term is most of that.
+    parts, faked, by_fake = {}, {}, {}
     for t in people:
         rw, fw = split(t)
         if rw is None:
             continue
-        faked[id(t)] = frozenset(f.lower() for r, f in zip(rw, fw) if r != f)
+        parts[id(t)] = (rw, fw)
+        # Every person term's faked words, as a set of fakes — the identity key.
+        fs = frozenset(f.lower() for r, f in zip(rw, fw) if r != f)
+        faked[id(t)] = fs
+        # …and the same key inverted: which terms carry each faked word. A
+        # sibling must contain EVERY word of `mine`, so it is in the posting
+        # list of each of them — which turns "scan every person term" into
+        # "walk the rarest of two or three short lists".
+        for w in fs:
+            by_fake.setdefault(w, []).append(t)
     changed = []
     for t in people:
-        rw, fw = split(t)
+        rw, fw = parts.get(id(t), (None, None))
         if rw is None:
             continue
         slots = [i for i, r in enumerate(rw) if len(r) == 1 and r == fw[i]]
@@ -9602,11 +9615,24 @@ def _pn_align_initials(terms, log=None):
             continue
         # Deterministic: whichever sibling sorts first by its real value wins,
         # so the alignment does not depend on the order names were harvested in.
+        #
+        # The SIBLINGS are chosen first and sorted after. Sorting `people`
+        # whole, inside this loop, was one O(n log n) pass per initialled name
+        # with a Python-level key — 27.8 million key calls on one folder — to
+        # order a list that a frozenset subset test then threw nearly all of
+        # away. Same set, same order, same winner: `sorted` is stable and the
+        # key is a total order, so ordering the survivors is ordering the
+        # survivors of the ordered list.
+        # Every superset of `mine` carries all of its words, so the candidates
+        # are exactly the posting list of any ONE of them — take the shortest
+        # and let the subset test decide. `mine` has at least two words (the
+        # test above), so this is never the whole set.
+        pool = min((by_fake.get(w, ()) for w in mine), key=len)
+        sibs = [u for u in pool
+                if u is not t and mine < faked.get(id(u), frozenset())]
         letters = {}
-        for u in sorted(people, key=lambda u: (str(u.real).lower(), id(u))):
-            if u is t or not (mine < faked.get(id(u), frozenset())):
-                continue
-            ru, fu = split(u)
+        for u in sorted(sibs, key=lambda u: (str(u.real).lower(), id(u))):
+            ru, fu = parts.get(id(u), (None, None))
             if ru is None:
                 continue
             for r, f in zip(ru, fu):
@@ -18230,8 +18256,39 @@ class Pseudonymizer:
         # can be pulled out.
         paren = (r"[\s,;]*(?:[A-Za-z0-9][A-Za-z0-9.,&\-' ]{0,70}?)?[\s,;]*"
                  r"\(\s*(?P<body>[^()]{0,160})\)")
+        # A definition needs a PARENTHETICAL, so a document with none defines
+        # nothing and every scan below is spent finding that out.
+        if "(" not in text:
+            return
+        # …and the pattern OPENS with the term's own, so it can only match
+        # where that term can.
+        #
+        # This pass was 32 of the 51 seconds the whole harvest took, measured
+        # over 15 documents, and the shape is why: it ran one scan of the
+        # WHOLE document per person/entity term, while the harvest itself
+        # keeps ADDING terms — so the cost is (terms) x (documents) x (text)
+        # and it grows as it runs. On a real 15-file folder the harvest took
+        # 54 minutes. Most of those terms are near-miss spellings this tool
+        # minted (`_pn_name_variants`), which stand in no document at all.
+        #
+        # Screened on EVERY word of the name rather than the lead alone — the
+        # only pass that does, because it is the only one paying a whole-text
+        # scan per term with the term list still growing. It is exact by the
+        # same argument `_pn_term_lead` makes, one word further: a term
+        # matches WHOLE WORDS joined on whitespace, so wherever it can match,
+        # every letter run of its real value stands in the text as a word (or,
+        # for a spelling broken by a kern gap or a speck, as the two adjacent
+        # pieces `_lead_words` also indexes — which is why the PAGE screen,
+        # pairs and all, is the one asked here). A name is several words and a
+        # rare one is enough to refuse it, so this refuses far more than the
+        # lead: "Quillmark Builders LLC" needs all three.
+        ws = self._lead_words(text)
         for t in list(self.terms):
             if t.category not in ("entity", "person"):
+                continue
+            if t.lead is not None and not all(
+                    w.lower() in ws
+                    for w in _PN_LEAD_WORD_RE.findall(str(t.real))):
                 continue
             real_words = t.real.split()
             fake_words = str(t.fake).split()
@@ -31068,7 +31125,11 @@ def _pn_prescan_folder(pdfs, pseudonymizer, log, extra_texts=()):
         log.info(f"  Pseudonymize: {len(swaps)} stand-in(s) re-minted off the "
                  f"names of authorities this batch cites")
     def _learn():
-        for stem, text in corpus:
+        # Named per document, like the read loop above and for the same
+        # reason: this is the longest stage of the block on a real folder, and
+        # one entry line for fifteen files still reads as a stall.
+        for i, (stem, text) in enumerate(corpus, 1):
+            log.info(f"      Harvest {i}/{len(corpus)}: {stem}")
             _pn_learn_from_text(pseudonymizer, text, stem)
     _stage(f"harvesting names, localities and identifiers from {total} file(s)",
            _learn)
