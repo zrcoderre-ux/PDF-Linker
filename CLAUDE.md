@@ -206,6 +206,21 @@ under Status `no match`, which is what says, on the sheet itself, that no
 export carried it. The reverse hazard is accepted with that in view — a Real
 Value no document contained is matched by nothing, so the cost is a reverse
 pass carrying rows it will never fire.
+**…and NO READER of the key asks that question**, at the owner's direction. What
+decides whether a row applies is the DOCUMENT IN HAND: if the Real Value is in
+the text, fake it; if the fake is in the text, reverse it. What the anonymized
+exports happened to carry is a fact about other files and is never asked. So
+Status `no match` is reporting only — `DeAnonymize.bas` and the Claude
+extension's `pseudo.js` read it for a tally and for nothing else. It could not
+decide anything even if it were asked, because it covers two shapes that pull
+opposite ways: a party's BARE TOKEN row reads `no match` whenever the export
+only ever spelled the full name (the longer term claimed the text), and that
+token's fake is standing in the export as a word of the composed name — the
+rows the macro's word-by-word reversal is built on
+(`test_a_no_match_rows_fake_can_be_standing_in_the_export`). What a reader DOES
+refuse is what the MAP cannot answer backward — `alt spelling` and `ocr fix`,
+two Real Values on one Replacement — which is a fact about the key and not
+about any batch of filings.
 **…except an OCR-FIX row, which stays pinned for a reason that is not policy.**
 Its Replacement is the canonical value's OWN stand-in (or the correct word
 itself), so on the main sheet it would be the two-Real-Values-one-Replacement

@@ -71,6 +71,40 @@ def test_a_binding_no_export_carries_is_on_the_main_sheet(tmp_path):
                         f"{pinned}")
 
 
+def test_a_no_match_rows_fake_can_be_standing_in_the_export(tmp_path):
+    """`no match` says the ROW'S OWN pattern matched nothing. It does NOT say
+    the fake is absent from the export, and a reader that treats it that way
+    breaks reversal.
+
+    The export spells the party's FULL name and nothing else, so the longer term
+    claims the text and the bare token rows match nothing themselves — count 0,
+    Status `no match`. Their fakes are standing in that export all the same, as
+    the words of the composed name, and `DeAnonymize.bas` reverses a composed
+    fake word by word off exactly those rows. So no reader may key "can this be
+    reversed?" on the Status word: at the owner's direction the question is only
+    ever what the document in hand contains — if the fake is there, reverse it.
+    What stays forward-only is what the MAP cannot answer (`alt spelling`,
+    `ocr fix`: two Real Values on one Replacement), never what the filings
+    happened to mention."""
+    z = _pz(names=["Gregory Yu", "Someone Neverpresent"])
+    out = z.apply("Gregory Yu signed the declaration.")
+    _p, macro, _pinned = _write(z, tmp_path)
+    _st = P._PN_KEY_HEADERS.index("Status")
+    _rp = P._PN_KEY_HEADERS.index("Replacement")
+    st = {r[1]: r[_st] for r in macro}
+    fake = {r[1]: str(r[_rp]) for r in macro}
+
+    assert st["Gregory"] == "no match" and st["Yu"] == "no match", st
+    assert fake["Gregory"] in out and fake["Yu"] in out, out
+    # The party nothing mentioned carries the same word and is a different
+    # thing — which is the whole reason the word cannot be the discriminator.
+    assert st["Someone Neverpresent"] == "no match", st
+    assert fake["Someone Neverpresent"] not in out
+    # ...and it still has a stand-in, minted and reserved. That is what makes it
+    # answerable when the operator types the real value in another program.
+    assert fake["Someone Neverpresent"]
+
+
 def test_a_pinned_binding_is_still_read_back(tmp_path):
     # The pin is the whole reason the row is written: a re-run must reuse the
     # exact stand-in the first run reserved.
