@@ -4794,6 +4794,41 @@ survive to fail.
   `preserve_interword_spaces=1` as **exactly neutral** on character
   recognition (identical error counts in every dpi × degradation cell); it
   buys the spacing it is there for and costs no accuracy.
+- **The cores are a MACHINE-wide resource, and every run claimed all of them**
+  (`_ocr_lease`, `_ocr_slot_*`, `_OCR_SLOT_FH`). `_ocr_workers` sizes one run's
+  pool at cores-1, which is right for one run and wrong for the second: two
+  folders started together spawned cores-1 Tesseracts EACH — 20 processes
+  against 12 cores — and both then took roughly twice as long apiece for no
+  extra work done. Measured over 96 logged full runs in
+  `pdf_linker_eta_history.csv`, two overlapping runs finished at about **1.45x**
+  the throughput of one rather than 2x, and the shortfall is that
+  oversubscription. Within repeated runs of the SAME folder at the same work
+  units — the only comparison that controls for how hard a folder is — a run
+  sharing the machine took 1.53x as long for 1.70x the concurrency.
+  The budget is the same OS-file-lock discipline as `_acquire_folder_lock`, one
+  byte-range per core in a TEMP file, for the same reasons: the OS drops the
+  lease however the process dies, so there is nothing to time out and no
+  staleness to guess at. A pass LEASES the cores that are free when it starts,
+  sizes its pool to what it got, and drops them when it ends — per PASS and not
+  per run, so a run holds cores only while it is using them. Two TEXT folders
+  never contend at all, because neither asks — a folder with a usable text
+  layer runs no OCR pass, which is the "cores to spare" case this exists to
+  leave alone.
+  The split between two SCANNED folders is first-come-first-served and
+  deliberately NOT even: the pass that starts first keeps its full width and
+  the second takes what is left. Sharing evenly would finish both folders at
+  about the same late moment, and the objective here is one FINISHED folder as
+  soon as possible — the operator is waiting on a case, not on a batch. Each
+  pass re-leases, so the width evens out on its own as folders finish.
+  It never blocks and never yields zero: a run finding every core leased takes
+  ONE and proceeds, since waiting for a core would trade a slow run for a
+  stopped one. Fails OPEN where byte-range locking is unsupported, and
+  `PDF_LINKER_NO_OCR_SLOTS=1` skips it; an explicit `PDF_LINKER_OCR_WORKERS` is
+  an operator's decision about their own machine and bypasses the budget rather
+  than being trimmed by it. Note what it does NOT do: nothing is queued and no
+  run is made to wait, so a second run still starts immediately — it simply
+  starts narrower. The lease is held across the stalled-page grind at the end
+  of a pass, which is serial; bounded, and not worth a second lease to reclaim.
 
 ## Diagnosing a run that just stops
 
@@ -4952,6 +4987,41 @@ new file passes by construction — leaves it alone.
   large case recompiled every pattern on every page (was ~75% of the scrub pass).
 - Files are processed **heaviest-first** by OCR-weighted cost; the one-click
   re-run launcher is written **up front** so an interrupted run still leaves one.
+- **A work unit must measure WALL CLOCK, or the rate it feeds describes the
+  FOLDER and not the machine** (`_work_ocr_page`, `_WORK_OCR_SERIAL`). The ETA
+  priced an OCR page at 40 text pages, which is the SINGLE-THREADED ratio — but
+  OCR pages run across `_ocr_workers()` Tesseracts at once while text pages run
+  one after another on the main thread, so on a 12-core box ten OCR pages
+  finish in the time the ratio charges for one. An all-scanned folder therefore
+  reported ~10x the units-per-second of an all-text folder on identical
+  hardware, `pdf_linker_eta_rate.txt` swung with whichever folder ran LAST, and
+  the next run was seeded from it: over 96 logged runs the seed rate spanned
+  **8x** between its 10th and 90th percentiles and the seeded ETA's median
+  error was **70% of the actual runtime** (only 6% of runs landed within 10%).
+  An OCR page is now priced at its serial share plus its Tesseract share
+  divided across the pool, so a unit costs about the same wall clock whatever
+  the mix. Only the Tesseract call is divided — the render and the overlay stay
+  on the main thread (PyMuPDF is not thread-safe), so no pool width makes them
+  cheaper and a page can never be priced below the serial share.
+  `_WORK_OCR_SERIAL` is that share and is the one number here nothing has
+  measured; it is deliberately conservative, since too high merely leaves some
+  mix-sensitivity in place while too low makes a scanned folder look cheaper
+  than it is. **The ledger now records what fits it** — `OCR Pages`,
+  `Text Pages` and `OCR Workers` beside `Elapsed (sec)` state the cost equation
+  for each run, so the constant can be solved from real runs instead of guessed
+  at a second time. The rate file names its unit (`_ETA_RATE_UNIT`): a rate
+  written under the old one is not this unit's rate and is ignored, so the
+  first run after the change estimates from scratch rather than projecting a
+  confident quarter of the truth.
+- **A column added to an append-only ledger mis-labels every row after it**
+  (`_retire_stale_eta_history`). `Folder` was added to
+  `pdf_linker_eta_history.csv` mid-file, so rows 2-81 of the live ledger carry
+  twelve fields under a thirteen-name header and every column after `Kind`
+  reads one place to the LEFT for the first two months of the history — the
+  ledger silently lying about the numbers it exists to audit. A ledger whose
+  header is not this build's is now retired under its own name
+  (`... through <date>.csv`) and a fresh one started, so both files parse and
+  neither is edited.
 - **Nothing on the leak path may be QUADRATIC in the document, and one line
   was.** A 130-page motion spent 82 minutes inside one file's scrub-and-scan
   block, wrote nothing to the log the whole time, and the run then stopped

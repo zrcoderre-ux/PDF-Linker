@@ -95,12 +95,55 @@ def test_work_weight_prices_ocr_pages_over_bytes(tmp_path):
     wn = P._pdf_work_weight(native)
     ws = P._pdf_work_weight(scanned)
     assert wn == 3 * P._WORK_TEXT_PAGE
-    assert ws == 5 * P._WORK_OCR_PAGE
-    assert ws > wn * 10                       # OCR cost dominates
+    assert ws == 5 * P._work_ocr_page()
+    assert ws > wn * 2                        # OCR cost still dominates
     # an unreadable file returns None so the caller can fall back to bytes
     bad = tmp_path / "bad.pdf"
     bad.write_text("not a pdf")
     assert P._pdf_work_weight(bad) is None
+
+
+def test_work_weight_counts_the_page_mix_for_the_ledger(tmp_path):
+    # The ledger's page-mix columns come from THIS pass, not from opening every
+    # PDF a second time to ask what it already counted.
+    doc = fitz.open()
+    for _ in range(3):
+        doc.new_page().insert_text((72, 100), "A real text layer with words.")
+    for _ in range(5):
+        doc.new_page()                        # no text -> will need OCR
+    mixed = tmp_path / "mixed.pdf"
+    doc.save(mixed)
+    doc.close()
+
+    mix = [0, 0]
+    P._pdf_work_weight(mixed, mix=mix)
+    assert mix == [5, 3]
+    P._pdf_work_weight(mixed, mix=mix)        # accumulates across the batch
+    assert mix == [10, 6]
+
+
+@pytest.mark.parametrize("workers,want", [
+    (1, 40.0),                                # the ratio's own measuring case
+    (2, 6.0 + 34.0 / 2),
+    (10, 6.0 + 34.0 / 10),
+])
+def test_an_ocr_page_is_priced_in_wall_clock_not_cpu(monkeypatch, workers, want):
+    # 40:1 is the SINGLE-THREADED ratio. OCR pages run across the pool while
+    # text pages run one after another, so pricing an OCR page at 40 made an
+    # all-scanned folder report ~10x the units-per-second of an all-text one on
+    # the same machine — and the stored rate then swung with the folder's mix
+    # rather than with the hardware it is supposed to describe.
+    monkeypatch.setattr(P, "_ocr_workers", lambda: workers)
+    assert P._work_ocr_page() == pytest.approx(want)
+
+
+def test_only_the_tesseract_share_is_divided(monkeypatch):
+    # The render and the overlay stay on the main thread (PyMuPDF is not
+    # thread-safe), so no pool width makes them cheaper — a page can never be
+    # priced below the serial share however many cores are thrown at it.
+    monkeypatch.setattr(P, "_ocr_workers", lambda: 10_000)
+    assert P._work_ocr_page() > P._WORK_OCR_SERIAL
+    assert P._work_ocr_page() < P._WORK_OCR_SERIAL + 1
 
 
 def test_eta_rate_round_trips_and_seeds_estimate(monkeypatch, tmp_path):
@@ -113,4 +156,11 @@ def test_eta_rate_round_trips_and_seeds_estimate(monkeypatch, tmp_path):
     P._save_eta_rate(0)
     assert P._load_eta_rate() == 2.5             # unchanged (0 not written)
     (tmp_path / "rate.txt").write_text("garbage")
+    assert P._load_eta_rate() is None
+    # A rate saved under the OLD work unit is not this unit's rate. Seeding
+    # from it projected a finish about a quarter of the truth on the first run
+    # after the unit changed, stated as confidently as any other estimate.
+    (tmp_path / "rate.txt").write_text("2.5")
+    assert P._load_eta_rate() is None
+    (tmp_path / "rate.txt").write_text("v1-cpu 2.5")
     assert P._load_eta_rate() is None

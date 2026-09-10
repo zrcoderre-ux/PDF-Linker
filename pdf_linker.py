@@ -1872,6 +1872,156 @@ def _ocr_workers():
     return _OCR_WORKERS
 
 
+# ── Machine-wide OCR core budget ─────────────────────────────────────────────
+# `_ocr_workers` above answers "how wide may THIS run's OCR pool be", and every
+# run answered it the same way — cores-1 — as though it were the only process on
+# the machine. Two folders started together therefore spawned cores-1 Tesseracts
+# EACH, 20 processes against 12 cores, and both runs then took about twice as
+# long apiece for no extra work done. Measured over 96 logged full runs, two
+# overlapping runs finished at ~1.45x the throughput of one rather than 2x, and
+# the shortfall is exactly this oversubscription.
+#
+# The budget is the same OS-file-lock discipline as `_acquire_folder_lock`, one
+# byte-range per core: a run LEASES the cores actually free when its OCR pass
+# starts, sizes its pool to what it got, and drops them when the pass ends. Two
+# scanned folders split the machine instead of fighting over it, and two TEXT
+# folders never contend at all — neither asks, because a folder with a usable
+# text layer runs no OCR pass and a run with cores to spare is the case this
+# whole mechanism exists to leave alone. Leased per PASS and not per run for
+# that reason: a run holds cores only while it is using them.
+#
+# Never blocks and never returns zero. A run that finds every core leased takes
+# ONE and proceeds — waiting for a core would trade a slow run for a stopped
+# one, and the folder lock's rule (a gate that cannot be taken must never stop
+# legitimate work) holds here for the same reason. Fails OPEN on a filesystem
+# that cannot do byte-range locks: the pass gets its nominal width, which is
+# exactly today's behaviour. `PDF_LINKER_NO_OCR_SLOTS=1` skips it entirely, and
+# an explicit `PDF_LINKER_OCR_WORKERS` is an operator's decision about their own
+# machine, so it bypasses the budget rather than being trimmed by it.
+_OCR_SLOT_FH = None            # module-level: closing it would drop every lease
+_OCR_SLOTS_OK = True           # cleared once, if this filesystem cannot lock
+
+
+def _ocr_slot_capacity():
+    """How many cores the machine may run Tesseract on at once — the same
+    cores-1 the single-run default uses, so ONE run alone leases everything it
+    would have taken anyway and is completely unaffected by the budget."""
+    return max(1, (os.cpu_count() or 2) - 1)
+
+
+def _ocr_slot_path():
+    """One budget file per machine, in TEMP for the reason the folder lock is:
+    the lock is the OS's, not the file's, so a stale one is harmless and nobody
+    has to look at it."""
+    import tempfile
+    return Path(tempfile.gettempdir()) / "pdf-linker-ocr-slots.lock"
+
+
+def _ocr_slot_handle():
+    """The process's single handle on the budget file, or None if it cannot be
+    opened. Opened ONCE and kept: POSIX record locks are released when the
+    process closes ANY descriptor for the file, so a second open() here would
+    silently drop the leases this one is holding."""
+    global _OCR_SLOT_FH
+    if _OCR_SLOT_FH is None:
+        try:
+            fh = open(_ocr_slot_path(), "a+b")
+        except OSError:
+            return None
+        try:                      # one byte per core, so the file describes itself
+            if fh.seek(0, os.SEEK_END) < _ocr_slot_capacity():
+                fh.write(b"." * (_ocr_slot_capacity() - fh.tell()))
+                fh.flush()
+        except OSError:
+            pass
+        _OCR_SLOT_FH = fh
+    return _OCR_SLOT_FH
+
+
+def _ocr_slot_lock(fh, i, release=False):
+    """Take (or drop) the one-byte lease at offset `i`. True when it changed
+    hands, False when another run holds it. Sets `_OCR_SLOTS_OK` False and
+    returns None where byte-range locking is not supported at all, so the
+    caller can fail open once instead of asking again per core."""
+    global _OCR_SLOTS_OK
+    try:
+        if os.name == "nt":
+            import msvcrt
+            fh.seek(i)
+            msvcrt.locking(fh.fileno(),
+                           msvcrt.LK_UNLCK if release else msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.lockf(fh.fileno(),
+                        fcntl.LOCK_UN if release else (fcntl.LOCK_EX | fcntl.LOCK_NB),
+                        1, i, 0)
+        return True
+    except OSError:
+        return False              # held by another run
+    except Exception:
+        _OCR_SLOTS_OK = False     # locking unsupported here: fail open
+        return None
+
+
+class _OcrLease:
+    """The cores one OCR pass may use, and the leases standing behind them.
+
+    A context manager so the leases are dropped however the pass ends — the
+    per-file loop in a full run CATCHES an exception and carries on to the next
+    file, so a pass that raised without releasing would hold those cores for
+    the rest of the run and starve every later pass in it."""
+
+    def __init__(self, workers, held):
+        self.workers = max(1, workers)
+        self._held = held
+
+    def __enter__(self):
+        return self.workers
+
+    def __exit__(self, *exc):
+        self.release()
+        return False
+
+    def release(self):
+        fh = _OCR_SLOT_FH
+        if fh is not None:
+            for i in self._held:
+                _ocr_slot_lock(fh, i, release=True)
+        self._held = []
+
+
+def _ocr_lease(pages, log=None):
+    """Lease cores for ONE OCR pass over `pages` pages and report how wide its
+    pool may be. Always yields at least 1."""
+    want = _ocr_workers()
+    if pages:
+        want = max(1, min(want, pages))   # never lease a core this pass cannot use
+    if (not _OCR_SLOTS_OK
+            or os.environ.get("PDF_LINKER_NO_OCR_SLOTS")
+            or os.environ.get("PDF_LINKER_OCR_WORKERS")):
+        return _OcrLease(want, [])
+    fh = _ocr_slot_handle()
+    if fh is None:
+        return _OcrLease(want, [])
+    held = []
+    for i in range(_ocr_slot_capacity()):
+        if len(held) >= want:
+            break
+        got = _ocr_slot_lock(fh, i)
+        if got is None:                   # unsupported: give back and fail open
+            for j in held:
+                _ocr_slot_lock(fh, j, release=True)
+            return _OcrLease(want, [])
+        if got:
+            held.append(i)
+    if log is not None and len(held) < want:
+        # Worth a line: it is the difference between "this run is slow" and
+        # "this run is sharing the machine", which the log could not tell apart.
+        log.info(f"  OCR: {len(held) or 1} of {want} core(s) — the rest are "
+                 f"leased to another PDF-Linker run")
+    return _OcrLease(len(held) or 1, held)
+
+
 def _chunked(seq, n):
     for i in range(0, len(seq), n):
         yield seq[i:i + n]
@@ -2142,55 +2292,55 @@ def _ocr_pdf(doc, log):
         except Exception as e:
             log.warning(f"  Could not overlay OCR text on page {page.number}: {e}")
 
-    workers = _ocr_workers()
-    if workers <= 1 or len(pages) <= 1:
-        # Sequential: render + OCR + grind, one page at a time.
-        for page in pages:
-            hocr = _ocr_page_to_pdf(page, pytesseract, Image, io, log, "OCR")
-            if hocr is not None:
-                _overlay(page, hocr)
-    else:
-        # Parallel: RENDER on the main thread (PyMuPDF is not thread-safe), OCR
-        # in a thread pool (each Tesseract subprocess runs on its own core, GIL
-        # released while it works), OVERLAY back on the main thread. Pages that
-        # stall at full resolution are collected and ground down sequentially
-        # afterwards, so grind-don't-skip is preserved.
-        from concurrent.futures import ThreadPoolExecutor
-        # One thread per worker keeps each Tesseract single-threaded, so N
-        # workers cleanly use N cores instead of oversubscribing.
-        os.environ.setdefault("OMP_THREAD_LIMIT", "1")
-        timeout = _ocr_page_timeout()
-        log.info(f"  OCR: {len(pages)} page(s) across {workers} workers")
-        stalled = []
-        with ThreadPoolExecutor(max_workers=workers) as ex:
-            for chunk in _chunked(pages, workers):
-                rendered = []
-                for page in chunk:
-                    try:
-                        pix = _ocr_pixmap(page)
-                        img = Image.open(io.BytesIO(pix.tobytes("png")))
-                    except Exception as e:
-                        log.warning(f"  OCR render failed on page {page.number}: {e}")
-                        continue
-                    rendered.append((page, img))
-                futs = [(page, ex.submit(
-                            pytesseract.image_to_pdf_or_hocr, img,
-                            extension="pdf", config=_OCR_CONFIG,
-                            timeout=timeout))
-                        for page, img in rendered]
-                for page, fut in futs:
-                    try:
-                        _overlay(page, fut.result())
-                    except Exception as e:
-                        log.warning(f"  OCR did not finish on page {page.number} at "
-                                    f"full resolution ({e}); will grind it down")
-                        stalled.append(page)
-        # Grind the stragglers on the main thread, resuming below the resolution
-        # that already stalled.
-        for page in stalled:
-            hocr = _ocr_page_to_pdf(page, pytesseract, Image, io, log, "OCR", start=1)
-            if hocr is not None:
-                _overlay(page, hocr)
+    with _ocr_lease(len(pages), log) as workers:
+        if workers <= 1 or len(pages) <= 1:
+            # Sequential: render + OCR + grind, one page at a time.
+            for page in pages:
+                hocr = _ocr_page_to_pdf(page, pytesseract, Image, io, log, "OCR")
+                if hocr is not None:
+                    _overlay(page, hocr)
+        else:
+            # Parallel: RENDER on the main thread (PyMuPDF is not thread-safe), OCR
+            # in a thread pool (each Tesseract subprocess runs on its own core, GIL
+            # released while it works), OVERLAY back on the main thread. Pages that
+            # stall at full resolution are collected and ground down sequentially
+            # afterwards, so grind-don't-skip is preserved.
+            from concurrent.futures import ThreadPoolExecutor
+            # One thread per worker keeps each Tesseract single-threaded, so N
+            # workers cleanly use N cores instead of oversubscribing.
+            os.environ.setdefault("OMP_THREAD_LIMIT", "1")
+            timeout = _ocr_page_timeout()
+            log.info(f"  OCR: {len(pages)} page(s) across {workers} workers")
+            stalled = []
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                for chunk in _chunked(pages, workers):
+                    rendered = []
+                    for page in chunk:
+                        try:
+                            pix = _ocr_pixmap(page)
+                            img = Image.open(io.BytesIO(pix.tobytes("png")))
+                        except Exception as e:
+                            log.warning(f"  OCR render failed on page {page.number}: {e}")
+                            continue
+                        rendered.append((page, img))
+                    futs = [(page, ex.submit(
+                                pytesseract.image_to_pdf_or_hocr, img,
+                                extension="pdf", config=_OCR_CONFIG,
+                                timeout=timeout))
+                            for page, img in rendered]
+                    for page, fut in futs:
+                        try:
+                            _overlay(page, fut.result())
+                        except Exception as e:
+                            log.warning(f"  OCR did not finish on page {page.number} at "
+                                        f"full resolution ({e}); will grind it down")
+                            stalled.append(page)
+            # Grind the stragglers on the main thread, resuming below the resolution
+            # that already stalled.
+            for page in stalled:
+                hocr = _ocr_page_to_pdf(page, pytesseract, Image, io, log, "OCR", start=1)
+                if hocr is not None:
+                    _overlay(page, hocr)
 
     if ocr_count:
         log.info(f"  OCR'd {ocr_count} page(s)")
@@ -2668,46 +2818,46 @@ def _reocr_garbled_pages(doc, log):
     # never affects another page's already-captured image. Stalled pages grind
     # down afterwards, so nothing is skipped.
     pages = [doc[n] for n in garbled]
-    workers = _ocr_workers()
     ocr_by_page = {}
-    if workers <= 1 or len(pages) <= 1:
-        for page in pages:
-            b = _ocr_page_to_pdf(page, pytesseract, Image, io, log, "Re-OCR")
-            if b is not None:
-                ocr_by_page[page.number] = b
-    else:
-        from concurrent.futures import ThreadPoolExecutor
-        os.environ.setdefault("OMP_THREAD_LIMIT", "1")
-        timeout = _ocr_page_timeout()
-        log.info(f"  Re-OCR: {len(pages)} page(s) across {workers} workers")
-        stalled = []
-        with ThreadPoolExecutor(max_workers=workers) as ex:
-            for chunk in _chunked(pages, workers):
-                rendered = []
-                for page in chunk:
-                    try:
-                        pix = _ocr_pixmap(page)
-                        img = Image.open(io.BytesIO(pix.tobytes("png")))
-                    except Exception as e:
-                        log.warning(f"  Re-OCR render failed on page {page.number}: {e}")
-                        continue
-                    rendered.append((page, img))
-                futs = [(page, ex.submit(
-                            pytesseract.image_to_pdf_or_hocr, img,
-                            extension="pdf", config=_OCR_CONFIG,
-                            timeout=timeout))
-                        for page, img in rendered]
-                for page, fut in futs:
-                    try:
-                        ocr_by_page[page.number] = fut.result()
-                    except Exception as e:
-                        log.warning(f"  Re-OCR did not finish on page {page.number} "
-                                    f"at full resolution ({e}); will grind it down")
-                        stalled.append(page)
-        for page in stalled:
-            b = _ocr_page_to_pdf(page, pytesseract, Image, io, log, "Re-OCR", start=1)
-            if b is not None:
-                ocr_by_page[page.number] = b
+    with _ocr_lease(len(pages), log) as workers:
+        if workers <= 1 or len(pages) <= 1:
+            for page in pages:
+                b = _ocr_page_to_pdf(page, pytesseract, Image, io, log, "Re-OCR")
+                if b is not None:
+                    ocr_by_page[page.number] = b
+        else:
+            from concurrent.futures import ThreadPoolExecutor
+            os.environ.setdefault("OMP_THREAD_LIMIT", "1")
+            timeout = _ocr_page_timeout()
+            log.info(f"  Re-OCR: {len(pages)} page(s) across {workers} workers")
+            stalled = []
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                for chunk in _chunked(pages, workers):
+                    rendered = []
+                    for page in chunk:
+                        try:
+                            pix = _ocr_pixmap(page)
+                            img = Image.open(io.BytesIO(pix.tobytes("png")))
+                        except Exception as e:
+                            log.warning(f"  Re-OCR render failed on page {page.number}: {e}")
+                            continue
+                        rendered.append((page, img))
+                    futs = [(page, ex.submit(
+                                pytesseract.image_to_pdf_or_hocr, img,
+                                extension="pdf", config=_OCR_CONFIG,
+                                timeout=timeout))
+                            for page, img in rendered]
+                    for page, fut in futs:
+                        try:
+                            ocr_by_page[page.number] = fut.result()
+                        except Exception as e:
+                            log.warning(f"  Re-OCR did not finish on page {page.number} "
+                                        f"at full resolution ({e}); will grind it down")
+                            stalled.append(page)
+            for page in stalled:
+                b = _ocr_page_to_pdf(page, pytesseract, Image, io, log, "Re-OCR", start=1)
+                if b is not None:
+                    ocr_by_page[page.number] = b
 
     # Phase 2 — strip the garbled text and overlay the fresh OCR (serial; mutates
     # the doc, which PyMuPDF requires single-threaded).
@@ -32801,13 +32951,48 @@ def _write_done_marker(folder):
 _WORK_OCR_PAGE = 40.0
 _WORK_TEXT_PAGE = 1.0
 
+# ...and a work unit must measure WALL CLOCK, or the rate it feeds is not a
+# property of the machine at all. 40:1 is the single-threaded ratio, but OCR
+# pages run across `_ocr_workers()` Tesseracts at once while text pages run one
+# after another on the main thread, so on a 12-core box ten OCR pages finish in
+# the time the ratio prices ONE. An all-scanned folder therefore reported ~10x
+# the units-per-second of an all-text folder for identical hardware, the stored
+# rate swung with each folder's MIX rather than with the machine, and the next
+# run was seeded from whichever folder happened to run last: measured over 96
+# logged full runs the seed rate spanned 8x between its 10th and 90th
+# percentiles and the seeded ETA's median error was 70% of the actual runtime.
+#
+# Only the Tesseract call parallelizes. The render and the overlay stay on the
+# main thread because PyMuPDF is not thread-safe (see `_ocr_pdf`), so a wider
+# pool never makes them cheaper and the serial share must NOT be divided.
+# `_WORK_OCR_SERIAL` is that share, and it is an ESTIMATE — the one number here
+# nothing has yet measured. It is deliberately conservative: too high merely
+# leaves some of the old mix-sensitivity in place, while too low over-corrects
+# and makes a scanned folder look cheaper than it is. The ledger's new page-mix
+# and worker columns record exactly what is needed to fit it from real runs,
+# which is how it should be set rather than guessed at again.
+_WORK_OCR_SERIAL = 6.0
 
-def _pdf_work_weight(pdf):
+
+def _work_ocr_page():
+    """What one OCR page costs in TEXT-PAGE units of wall clock on this machine
+    — the serial render/overlay share, plus the Tesseract share divided across
+    the pool that will run it. Equals `_WORK_OCR_PAGE` on a single-worker
+    machine, which is the case the 40:1 ratio was measured on."""
+    workers = max(1, _ocr_workers())
+    return _WORK_OCR_SERIAL + (_WORK_OCR_PAGE - _WORK_OCR_SERIAL) / workers
+
+
+def _pdf_work_weight(pdf, mix=None):
     """A cheap per-file cost weight for the ETA: count pages that will need OCR
     (empty or garbled text layer — the same test the re-OCR pass uses) heavily,
     text pages lightly. Metadata only — no rendering, no OCR — so it is fast
     even on a big scanned set. Returns None if the file can't be opened (caller
-    falls back to a bytes-based weight)."""
+    falls back to a bytes-based weight).
+
+    `mix` is an optional [ocr, text] accumulator the counts are added to, so the
+    batch's page mix reaches the ledger without opening every PDF a second time
+    to ask what this pass already counted."""
     try:
         import fitz
         ocr = text = 0
@@ -32818,7 +33003,10 @@ def _pdf_work_weight(pdf):
                     ocr += 1
                 else:
                     text += 1
-        return (ocr * _WORK_OCR_PAGE + text * _WORK_TEXT_PAGE) or _WORK_TEXT_PAGE
+        if mix is not None:
+            mix[0] += ocr
+            mix[1] += text
+        return (ocr * _work_ocr_page() + text * _WORK_TEXT_PAGE) or _WORK_TEXT_PAGE
     except Exception:
         return None
 
@@ -32835,9 +33023,23 @@ def _eta_rate_path():
     return _config_path().with_name(_ETA_RATE_FILE)
 
 
+# The rate is per WORK UNIT, so it means nothing once the unit is redefined —
+# and `_work_ocr_page` redefined it, from a page's single-threaded cost to its
+# wall-clock cost. A rate saved under the old unit reads about 4x high on this
+# machine, so the first run after an upgrade would have projected a finish time
+# roughly a quarter of the truth and looked confident doing it. The file now
+# names the unit it was written in, and a rate in any other unit is simply not
+# there: one run shows "(estimating...)" until its own throughput lands, which
+# is what that state is FOR, and the next run is seeded correctly.
+_ETA_RATE_UNIT = "v2-wallclock"
+
+
 def _load_eta_rate():
     try:
-        v = float(_eta_rate_path().read_text(encoding="utf-8").strip())
+        raw = _eta_rate_path().read_text(encoding="utf-8").strip().split()
+        if len(raw) != 2 or raw[0] != _ETA_RATE_UNIT:
+            return None               # no unit, or a unit this build cannot read
+        v = float(raw[1])
         return v if v > 0 else None
     except Exception:
         return None
@@ -32846,7 +33048,8 @@ def _load_eta_rate():
 def _save_eta_rate(rate):
     try:
         if rate and rate > 0:
-            _eta_rate_path().write_text(f"{rate:.6f}", encoding="utf-8")
+            _eta_rate_path().write_text(f"{_ETA_RATE_UNIT} {rate:.6f}",
+                                        encoding="utf-8")
     except Exception:
         pass
 
@@ -32896,7 +33099,8 @@ _ETA_HISTORY_FILE = "pdf_linker_eta_history.csv"
 _ETA_HISTORY_COLUMNS = (
     "Run Started", "Kind", "Folder", "Files", "Work Units", "Seed Rate",
     "Seeded ETA", "Last ETA", "Finished", "Elapsed (sec)", "Final Rate",
-    "Seeded ETA Error (sec)", "Last ETA Error (sec)")
+    "Seeded ETA Error (sec)", "Last ETA Error (sec)",
+    "OCR Pages", "Text Pages", "OCR Workers")
 
 
 def _eta_history_path():
@@ -32904,7 +33108,8 @@ def _eta_history_path():
 
 
 def _note_eta_accuracy(kind, folder, files, work, seed_rate, seeded_eta,
-                       last_eta, started, finished, elapsed, final_rate):
+                       last_eta, started, finished, elapsed, final_rate,
+                       ocr_pages=None, text_pages=None, workers=None):
     """Append one run's ETA predictions beside the outcome they predicted.
 
     `work` is in the kind's own unit (OCR-weighted work units for a full run,
@@ -32912,7 +33117,14 @@ def _note_eta_accuracy(kind, folder, files, work, seed_rate, seeded_eta,
     the same numbers the rate files carry, so the ledger audits exactly what
     seeds the next run. A positive error is a run that finished LATER than
     predicted. Empty cells mean the run had nothing to predict with (no stored
-    rate on a first run, no mid-run update on a single-file batch)."""
+    rate on a first run, no mid-run update on a single-file batch).
+
+    The last three are the batch's PAGE MIX and the pool width that priced it
+    (`_work_ocr_page`). They are what makes the serial share fittable from real
+    runs instead of guessed at: a row carrying OCR pages, text pages, workers
+    and elapsed states the cost equation for that run, and a week of them
+    solves for the one constant nothing has measured. Blank for --fix-leaks,
+    which opens no PDF and OCRs nothing."""
     def _clock(dt):
         return dt.strftime("%Y-%m-%d %H:%M:%S") if dt else ""
 
@@ -32920,10 +33132,15 @@ def _note_eta_accuracy(kind, folder, files, work, seed_rate, seeded_eta,
         return (f"{(finished - eta).total_seconds():.0f}"
                 if eta and finished else "")
 
+    def _count(n):
+        return "" if n is None else str(n)
+
     try:
         import csv
         path = _eta_history_path()
         fresh = not path.exists() or path.stat().st_size == 0
+        if not fresh:
+            fresh = _retire_stale_eta_history(path)
         with path.open("a", encoding="utf-8", newline="") as fh:
             w = csv.writer(fh)
             if fresh:
@@ -32934,9 +33151,42 @@ def _note_eta_accuracy(kind, folder, files, work, seed_rate, seeded_eta,
                 _clock(seeded_eta), _clock(last_eta), _clock(finished),
                 f"{elapsed:.0f}",
                 f"{final_rate:.6f}" if final_rate else "",
-                _err(seeded_eta), _err(last_eta)])
+                _err(seeded_eta), _err(last_eta),
+                _count(ocr_pages), _count(text_pages), _count(workers)])
     except Exception:
         pass
+
+
+def _retire_stale_eta_history(path):
+    """Move a ledger written to a DIFFERENT set of columns aside, and report
+    that a fresh header is now owed. True when the file was retired.
+
+    A column added to an append-only CSV makes every new row longer than the
+    header naming it, and the reader silently mis-labels the extra fields —
+    which is what happened when `Folder` was added: rows 2-81 of the live
+    ledger carry twelve fields under a thirteen-name header, so every column
+    after Kind reads one place to the left for the first two months of the
+    history. Retiring the old file keeps that data readable under its OWN
+    header instead of appending a second, incompatible shape beneath it."""
+    import csv
+    try:
+        with path.open(encoding="utf-8", newline="") as fh:
+            head = next(csv.reader(fh), [])
+    except OSError:
+        return False
+    if not head or head == list(_ETA_HISTORY_COLUMNS):
+        return False
+    stamp = datetime.datetime.now().strftime("%Y-%m-%d")
+    for n in range(1, 100):
+        suffix = "" if n == 1 else f" ({n})"
+        aside = path.with_name(f"{path.stem} through {stamp}{suffix}{path.suffix}")
+        if not aside.exists():
+            try:
+                path.replace(aside)
+            except OSError:
+                return False
+            return True
+    return False
 
 
 # ── One-click re-run launcher ────────────────────────────────────────────────
@@ -34937,8 +35187,9 @@ def main():
     # files and only reaching a monster at the very end (where a stall would cost
     # a whole night). Ties break on size, so order is deterministic.
     weights = {}
+    page_mix = [0, 0]                 # [OCR pages, text pages] over the batch
     for p in pdfs:
-        w = _pdf_work_weight(p)
+        w = _pdf_work_weight(p, mix=page_mix)
         weights[p] = w if w is not None else max(1.0, sizes[p] / 50000.0)
     pdfs = sorted(pdfs, key=lambda p: (-weights[p], -sizes[p], p.name))
     log.info(f"Found {len(pdfs)} PDF(s) to process (heaviest first)")
@@ -35090,7 +35341,9 @@ def main():
         _note_eta_accuracy(
             "full run", folder, len(pdfs), total_work, _seed_rate,
             _eta_seeded, _eta_last, _run_started, datetime.datetime.now(),
-            _elapsed, done_work / _elapsed if _elapsed > 0 else 0)
+            _elapsed, done_work / _elapsed if _elapsed > 0 else 0,
+            ocr_pages=page_mix[0], text_pages=page_mix[1],
+            workers=_ocr_workers())
 
     # Bulk Word→text conversion (gated above). Done after the PDFs so every leak
     # finding lands in the same worksheet and the same quarantine gate below.
