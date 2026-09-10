@@ -5173,6 +5173,72 @@ new file passes by construction — leaves it alone.
   scan (3 ms a row against 0.1 ms). The profiled file went from 276 s to
   65 s with the same output; what remains is the citation parse per page and
   the fuzzy sweep, which are the next two.
+- **The PRE-SCAN's corpus-wide block is the OTHER long silence, and it now
+  names its stages** (`_pn_prescan_folder`). The file loop names each document
+  before it opens it, so a folder being READ is legible. What follows it was
+  not: `reserve_authority_names`, one `_pn_learn_from_text` per document and
+  five corpus-wide prunes each run over the WHOLE folder at once, and each
+  speaks only when it FINDS something — so a folder that drops nothing says
+  nothing at all, and between the last `Pre-scan 15/15` line and the first
+  `Processing:` one the log went quiet for as long as that block took. The ETA
+  marker cannot cover for it: it is written up front and moves only when the
+  FIRST file finishes, which on a heaviest-first list is the slowest document
+  in the batch. So a real 15-file folder read itself in 2m16s, said so, and
+  then went silent — reported as a hang, which is exactly the failure the
+  per-file naming was added to stop, one level further out. Each stage now
+  names itself BEFORE it runs and reports its own elapsed time, the rule
+  `process_pdf` already follows for the scrub and the leak scan, so the last
+  line in the log names the stage that is running — or, when the interpreter
+  dies, the one that killed it.
+- **…and the same lead word that screens the scrub now screens those prunes**
+  (`_corpus_lead_words`, `_corpus_lead_skip`). Measured on a 755 KB corpus
+  with 760 harvested terms, that block was **154 s**, and it is (terms) x
+  (corpus) — it grows on both axes at once, which is the shape this file
+  refuses everywhere else on the leak path. Every prune scanned every
+  candidate term over the whole folder; the scrub has screened by lead word
+  since `_pn_term_lead`, and the argument carries over unchanged — a term
+  matches WHOLE WORDS, so a term whose first word stands nowhere in the corpus
+  matches nowhere, and a term that matches nowhere is one every one of these
+  prunes keeps anyway. Two differences from `_lead_words`, both forced by the
+  corpus being a folder rather than a page. The adjacent PAIRS are left out:
+  they are one set entry per word of the text, so on a 3 MB corpus they are
+  hundreds of thousands of strings held live while the prunes run, in a tool
+  that already carries a crash line for running out of memory — and a
+  BREAK-TOLERANT term (only the operator's own template and `--term` build
+  one) is therefore EXEMPTED from the screen and always scanned, which is the
+  safe direction. And the screen is asked at ONE function, so no two prunes
+  can answer it differently.
+  Three cuts beside it, all exact. `prune_heading_only_terms` stopped scanning
+  per LINE — one regex call per (term, line) — and finds the same matches in
+  ONE pass over the corpus, placed on their line by bisect (a match cannot
+  span a line: the prune admits only a single word of letters).
+  `prune_citation_only_terms` stops at the FIRST match standing outside a
+  citation, that one occurrence being the whole answer, and asks
+  `_PnSpanIndex` instead of walking every span per match — it had been
+  building the complete match list for a party named on page 1.
+  `_pn_case_party_shapes` drops a party-position site whose fixed words stand
+  nowhere in the folder, once per corpus rather than re-scanned per name: each
+  half of a site shape sits HARD AGAINST the name, so each is a necessary
+  condition on its own, and read case-INSENSITIVELY because the full shape is
+  compiled with the TERM's flags (read strictly, `['’]s` missed the "’S" of an
+  all-caps filing title and dropped the one site that caption carried). And
+  `_pn_authority_cite_index` is memoized, because the block ran the citation
+  parser over the whole corpus TWICE — once to keep the fake pools off the
+  cited names, once to drop a harvested name that is a cited decision's party.
+  Measured on that same corpus: the block **154 s -> 85 s**, and the five
+  prunes 114 s -> 46 s — headings 3.9 -> 0.02, prose 4.3 -> 0.5,
+  citation-only 37 -> 23, cited-party 59 -> 12. What is left is mostly the
+  citation parse itself over the joined folder, now paid once.
+  `prune_fragment_terms` is deliberately NOT screened: it exists to find the
+  term that stands only INSIDE a longer word ("RS" off "MOTORS"), where the
+  lead word is by construction not a word of the corpus at all — the one place
+  the screen would be exactly wrong, and it is pinned as such. All of it is
+  differential (`test_prescan_prune_equivalence.py`): the screened prunes
+  against themselves with `_PN_LEAD_PREFILTER` off, the heading prune against
+  a copy of the per-line loop it replaced, and the site screen against the
+  full four. A prune that dropped one term MORE is a name left in the clear;
+  one that dropped one FEWER is a cited authority renamed. Neither is a trade
+  this project makes for time.
 - **The long phases NAME themselves before they run** — the same rule the
   pre-scan follows for filenames, and for the same reason. Between "exporting
   text" and the first REVIEW warning the log said nothing for 82 minutes, so a
