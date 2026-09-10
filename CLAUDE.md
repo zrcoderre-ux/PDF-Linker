@@ -919,18 +919,27 @@ filter — it carried a phantom `(no longer present)` row into every folder's
 it, in folders that had nothing to triage. Recurrence is read off `Cases`,
 which is a set of matters; `Times Seen` counts RUNS, so it climbs on a re-run
 of the folder that typed the fix.
-**…and the phantom row is closed for EVERY decision the master sheet holds**
-(`_pn_decision_lives_on_master`, in `_pn_write_leak_report`). The
-carry-forward loop persists a `fix=yes` decision whose value did not recur,
-so the fix keeps applying — right for a worksheet `yes` and for an ALIAS,
-which never reaches the master sheet and has nowhere else to live, and wrong
-for anything that sheet already carries. KEEPs were excluded by hand; a
-`phrase` was not, and (measured) an inherited one wrote a
-`Cross River Bank | phrase | (no longer present)` row into a folder that
-never mentioned the bank, conjuring the worksheet and its Apply-Leak-Fixes
-launcher out of nothing. The question is asked once now, of the decision's
-durable HOME — keep, `phrase`, or OCR fix — rather than three times by
-whoever remembers to.
+**…and NO decision is carried forward for a value that no longer matches,
+and a worksheet is written only while some row still needs a look**
+(`_pn_write_leak_report`), at the owner's direction. The carry-forward loop
+used to persist a `fix=yes` (and an alias, and a typed replacement) whose
+value did not recur, as a `(no longer present)` row, so "the fix keeps
+applying" — and `LEAKS.xlsx` came back after Apply Leak Fixes holding the
+very rows the operator had just answered, which reads as work left to do
+and kept the Apply-Leak-Fixes launcher beside it. It preserved nothing: a
+`yes` that LANDED minted a fake the key pins and every later run re-applies,
+a `no`/`never`/`phrase`/OCR fix lives on the master KEEP sheet
+(`_pn_update_master_keep`, called at BOTH run sites, so a `no` typed in the
+worksheet reaches it from the text-only pass too), and a `yes` that never
+landed — the value stood nowhere the scrub could reach — had nothing to keep
+applying to; if the value ever returns it is asked about again, which is the
+honest question. The loop is gone (`bound` stays in the signature, unread),
+and the sheet's own rule follows: with no row needing attention — nothing
+flagged, or every flagged value already decided — the worksheet is REMOVED
+rather than rewritten with its settled rows, exactly as a run with nothing
+flagged removes it; a `yes` whose value is STILL standing is the fix having
+missed, needs the look, and keeps the sheet. `_pn_decision_lives_on_master`
+stays for the master-sheet consumers that ask it.
 And a worksheet row with NOTHING typed in it no longer shadows a
 master decision (`_pn_layer_decisions`, for keeps too): a folder run before
 the `**` reached the master sheet carries the garble as an undecided row, and

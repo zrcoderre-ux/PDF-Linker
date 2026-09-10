@@ -247,16 +247,18 @@ def test_leaving_the_cell_reads_back_as_the_alias(tmp_path):
 
 
 def test_a_prefilled_row_still_sorts_as_one_to_look_at(tmp_path):
-    """`fix` stays "" on a pre-filled row, so it sorts with the undecided
-    rows at the top rather than with the resolved ones at the bottom."""
+    """`fix` stays "" on a pre-filled row, so it counts as one to look at:
+    the row is written (a sheet of settled rows is not), and a resolved
+    decision whose value is gone earns no row beside it."""
     z = _pz("Michael Rodgers")
     P._pn_write_leak_report(tmp_path, [
         {"file": "Decl.txt", "type": "misspelled name?", "value": "Miachael",
          "where": "p.1:3", "context": "Miachael served it."}],
         log, decisions=_decision("Zed Quill", "yes"),      # resolved, absent
         suggest_for=z.alias_suggestion)
-    ordered = [r["Value"] for r in _rows(tmp_path / "LEAKS.xlsx")]
-    assert ordered.index("Miachael") < ordered.index("Zed Quill"), ordered
+    rows = _rows(tmp_path / "LEAKS.xlsx")
+    assert [r["Value"] for r in rows] == ["Miachael"], rows
+    assert str(rows[0]["Fix? (yes/no)"]).startswith("~")
 
 
 def test_the_alias_is_applied_the_way_a_typed_one_is():

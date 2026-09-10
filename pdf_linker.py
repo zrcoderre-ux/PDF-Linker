@@ -29519,13 +29519,17 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
     """Write/refresh the leak-triage worksheet 'LEAKS.xlsx'. Each DISTINCT
     flagged value is ONE row with a 'Fix?' column — the files and page:line
     locations it was found in are aggregated into that row, so a name that
-    leaked across nine files is decided once, not nine times. Prior yes/no
-    decisions are carried forward (and persisted even when the value no longer
-    appears, so the decision keeps applying on later runs). Rows needing
+    leaked across nine files is decided once, not nine times. A prior
+    decision is carried onto the row of a value that is STILL flagged; a
+    decision whose value no longer matches anything is written nowhere (its
+    durable home is the key or the master KEEP sheet, and a `yes` that never
+    landed is simply asked again if the value ever returns). Rows needing
     attention — undecided, or marked-yes-but-still-present — sort to the top;
-    resolved ones sink to the bottom. A run with no findings AND no prior
-    decisions removes the worksheet. Plain-text checklist fallback without
-    openpyxl."""
+    resolved ones sink to the bottom. A run in which NO row needs attention
+    — nothing flagged, or every flagged value already decided — removes the
+    worksheet rather than rewriting it, at the owner's direction: a sheet
+    that comes back holding only what was already answered reads as work
+    left to do. Plain-text checklist fallback without openpyxl."""
     decisions = decisions or {}
 
     def _notes(value, carried):
@@ -29645,30 +29649,19 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
                                  or d.get("fix", "") or cell),
                      "notes": notes,
                      "present": True})
-    # Persist a Fix?=yes/explicit decision whose value didn't recur this run, so
-    # the fix keeps applying — but ONLY while nothing else already holds it.
-    # A decision that lives on the master KEEP sheet is omitted (that sheet
-    # holds it, and a `(no longer present)` row for one reaches every folder
-    # the sheet does — see `_pn_decision_lives_on_master`), and so is any
-    # value the pseudonym KEY has bound: a Fix?=yes mints a fake that the
-    # key pins and every later run re-applies, so carrying the row forward
-    # preserves nothing and regenerates LEAKS.xlsx on every clean run — a
-    # worksheet whose only content is "(no longer present)", which reads as a
-    # leak to review when there is nothing to do.
-    bound_low = {str(b).strip().lower() for b in bound}
-    for vl, d in decisions.items():
-        if vl in bound_low:
-            continue
-        if vl not in seen and d.get("fix") in ("yes", "no") \
-                and not _pn_decision_lives_on_master(d):
-            rows.append({"file": "—", "type": d.get("type") or "(decided)",
-                         "value": d["value"], "where": _PN_LEAK_ABSENT,
-                         "context": "", "scrubbed_context": "",
-                         "fix": d["fix"],
-                         "fixcell": (d.get("fixcell") or d.get("replacement")
-                                     or d["fix"]),
-                         "notes": _notes(d["value"], d.get("notes", "")),
-                         "present": False})
+    # A decision whose value did NOT recur this run is written nowhere — at
+    # the owner's direction. This used to carry every such `yes` forward as a
+    # "(no longer present)" row so "the fix keeps applying", and a worksheet
+    # came back after Apply Leak Fixes holding the very rows the operator had
+    # just answered, reading as work left to do. Nothing is lost by not
+    # writing it: a `yes` that LANDED minted a fake the key pins and every
+    # later run re-applies (`_pn_load_key`), a `no`/`never`/`phrase`/OCR fix
+    # lives on the master KEEP sheet (`_pn_update_master_keep`, at both run
+    # sites), and a `yes` that never landed — the value stood nowhere the
+    # scrub could reach — had nothing to keep applying to; if the value ever
+    # returns it is asked about again, which is the honest question. `bound`
+    # is kept in the signature for the callers and is no longer consulted.
+    del bound
 
     def _remove(paths):
         for p in paths:
@@ -29733,6 +29726,17 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
 
     rows[:] = [r for _, r in sorted(enumerate(rows), key=_order)]
     active = sum(1 for r in rows if _attention(r) == 0)
+    # Nothing left to look at — every flagged value already carries its
+    # answer — is the same as nothing flagged: the worksheet goes, so the
+    # folder does not present a sheet of settled rows as triage pending.
+    # (The Apply-Leak-Fixes launcher is written beside a worksheet and
+    # removed with it at the end-of-run block.)
+    if not active:
+        _remove((xlsx, txt, *stale))
+        log.info(f"  Every flagged value ({len(rows)}) already carries a "
+                 f"decision — no review worksheet written.")
+        _clear_originals_cache(folder)
+        return
 
     try:
         import openpyxl
@@ -34138,8 +34142,25 @@ def _fix_leaks_mode(folder, args, cfg, log):
         survivors |= set(pz.surviving_reals_reduced(scrubbed, spliced=is_leak))
         pz.written.append(f)
         low = scrubbed.lower()
-        if any(v in low for v in rejected_low):
-            held.add(f)
+        # A rejected decision's value is a row the worksheet MUST keep: the
+        # fix was dropped, the file is held for it, and the cell is the one
+        # thing the operator has to correct. The scans below may not report
+        # the value (a typed replacement can name text nothing tracks), and
+        # the writer no longer carries a decision forward on its own, so the
+        # finding is put on the report here, under the row's own type.
+        for v, vl in zip(rejected, rejected_low):
+            if vl in low:
+                held.add(f)
+                pz.leak_report.append(
+                    dict(zip(("context", "scrubbed_context"),
+                              _pn_leak_quotes(orig_parsed,
+                                              _pn_body_lines(scrubbed), pz,
+                                              v, aligned=False)),
+                         **{"file": f.name,
+                            "type": decisions.get(vl, {}).get("type")
+                            or "LEAK",
+                            "value": v,
+                            "where": _pn_locate_export(scrubbed, v)}))
         if survivors:
             pz.leaked_by_file[f] = {s.lower() for s in survivors}
             pz.note_leaks(survivors)
