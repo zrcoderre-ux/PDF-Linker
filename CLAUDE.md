@@ -4922,6 +4922,32 @@ capped near 2 GB however much the machine has; split the folder or move to a
 OS kills outright leaves no line at all, which is why the long phases time
 themselves — see the performance notes.
 
+**A folder that is NOT THERE says so, somewhere it can be found**
+(`_report_missing_folder`, `_missing_folder_message`,
+`_known_folder_redirects`). `main` checks its folder argument before anything
+else and said so with a bare `print` — but the normal launch is `pythonw.exe`,
+which has no stdout, and `pdf_linker.log` lives INSIDE the folder that is
+missing. So the process started, printed into the void and exited 1: from the
+outside identical to Python never starting, and it defeats "is there a log?"
+as a diagnostic too, since there is no log either way. The failure
+`_install_crash_logging` exists to prevent, one step ahead of it. The message
+now goes to the console when there is one and ALWAYS to a log file — the
+missing folder's PARENT if that is real (the Desktop it was meant to be on),
+else beside the tool, else TEMP.
+**…and it names where the folder WENT.** The commonest cause is invisible: a
+shortcut records an absolute path and Windows moves the folder underneath it,
+OneDrive's known-folder redirection putting Desktop and Documents inside the
+OneDrive folder — so `C:\Users\X\Desktop\Convert` becomes
+`C:\Users\X\OneDrive\Desktop\Convert` and every launcher naming the old path
+stops working. `_known_folder_redirects` looks for the twin in BOTH directions
+(a shortcut can be stale either way) and across every OneDrive root in the
+profile, personal (`OneDrive`) and work (`OneDrive - <Organisation>`). It is
+named only when it is FOUND: with no twin the message says the path is wrong
+and names the redirect as a likely cause, never that the folder moved. The
+tool's own launchers are immune and the message says so — they pass `%~dp0.`,
+their own directory, which is exactly why a launcher written INTO the folder
+outlives a shortcut that names it.
+
 **A missing core dependency fails at STARTUP, by name**
 (`_require_pymupdf`). `fitz` is imported lazily at each use site, so its absence
 surfaced as a traceback 34 files into a run's setup — while openpyxl, the other
