@@ -224,14 +224,16 @@ def test_a_typed_alias_groups_with_the_prefilled_ones(tmp_path, pz):
 
 def test_an_undecided_row_never_sinks_to_sit_beside_a_resolved_sibling(
         tmp_path, pz):
-    """The attention tier still leads the order: a row needing a look stays at
-    the top even when a decided row names the same canonical."""
+    """A row needing a look is written; a decided sibling whose value no
+    longer stands is not carried onto the sheet beside it (nothing is carried
+    forward for a value that no longer matches), so the family it names is
+    exactly the rows still open."""
     rows = _leaks(tmp_path, ["Vazqez"], pz,
                   decisions={"vazqoe": {"value": "Vazqoe", "fix": "yes",
                                         "fixcell": "~Vazquez",
                                         "alias": "Vazquez"}})
     order = [r["Value"] for r in rows]
-    assert order.index("Vazqez") < order.index("Vazqoe"), order
+    assert order == ["Vazqez"], order
 
 
 @pytest.mark.parametrize("cell,canon", [

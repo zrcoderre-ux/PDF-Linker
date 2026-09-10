@@ -109,7 +109,7 @@ def test_decisions_read_back_from_annotated_worksheet(tmp_path):
     assert dec["worthington motors"]["fix"] == "no"
 
 
-def test_roundtrip_persists_yes_suppresses_no_and_surfaces_new(tmp_path):
+def test_roundtrip_drops_a_landed_yes_suppresses_no_and_surfaces_new(tmp_path):
     decisions = {
         "travelers": {"value": "Travelers", "type": "LEAK", "fix": "yes",
                       "notes": ""},
@@ -128,9 +128,9 @@ def test_roundtrip_persists_yes_suppresses_no_and_surfaces_new(tmp_path):
     P._pn_write_leak_report(tmp_path, entries, log, decisions)
     body = _sheet(tmp_path / "LEAKS.xlsx")
     by_val = {r["Value"]: r for r in body}
-    # a marked-yes value that's now gone is RETAINED so the term keeps applying
-    assert by_val["Travelers"]["Fix? (yes/no)"] == "yes"
-    assert by_val["Travelers"]["Where (page:line)"] == P._PN_LEAK_ABSENT
+    # a marked-yes value that's now gone is NOT carried forward: the fix
+    # landed, the key pins it, and a row for it would read as work to do
+    assert "Travelers" not in by_val
     # a marked-NO value is a KEEP: it moves to the cross-folder master KEEP
     # sheet (handled by the run), so it no longer clutters this transient
     # per-folder triage.
@@ -138,7 +138,7 @@ def test_roundtrip_persists_yes_suppresses_no_and_surfaces_new(tmp_path):
     # a new undecided finding is blank and sorts ABOVE the resolved rows
     assert by_val["New Corp"]["Fix? (yes/no)"] in (None, "")
     order = [r["Value"] for r in body]
-    assert order.index("New Corp") < order.index("Travelers")
+    assert order == ["New Corp"]
 
 
 def test_same_value_across_files_is_one_row(tmp_path):
@@ -233,7 +233,10 @@ def test_suppressed_value_excluded_from_gate():
 # A Fix?=yes mints a fake that the pseudonym KEY pins, and every later run
 # re-applies it — so the value is legitimately absent from then on. Carrying
 # the row forward preserved nothing and rebuilt LEAKS.xlsx on every clean run,
-# a sheet whose only content was "(no longer present)".
+# a sheet whose only content was "(no longer present)". At the owner's
+# direction NO decision is carried forward for a value that no longer
+# matches, bound or not, and a worksheet is written only while some row
+# still needs a look.
 
 def test_key_bound_decision_is_not_carried_forward(tmp_path):
     folder = tmp_path / "Case"
@@ -248,21 +251,42 @@ def test_key_bound_decision_is_not_carried_forward(tmp_path):
     assert not list(folder.glob("LEAKS.xlsx"))
 
 
-def test_unbound_decision_is_still_carried_forward(tmp_path):
+def test_a_decision_whose_value_is_gone_is_not_carried_forward(tmp_path):
     folder = tmp_path / "Case"
     folder.mkdir()
+    (folder / "LEAKS.xlsx").write_bytes(b"stale")
     decisions = {"travelers casualty": {
         "value": "TRAVELERS CASUALTY", "type": "unscrubbed name?", "fix": "yes",
         "replacement": None, "fake_values": None, "fixcell": "yes",
         "notes": ""}}
-    # nothing else holds it, so the instruction must survive in the worksheet
+    # The value stands nowhere this run: whether or not the key binds it,
+    # there is no row to write and the stale sheet goes.
     P._pn_write_leak_report(folder, [], log, decisions=decisions, bound=[])
-    sheet = folder / "LEAKS.xlsx"
-    assert sheet.is_file()
+    assert not (folder / "LEAKS.xlsx").exists()
+
+
+def test_a_sheet_of_settled_rows_is_not_written(tmp_path):
+    """Every flagged value already decided: nothing needs a look, so no
+    worksheet — the `no` lives on the master KEEP sheet and the value stays,
+    which is the decision working, not triage pending."""
+    folder = tmp_path / "Case"
+    folder.mkdir()
+    (folder / "LEAKS.xlsx").write_bytes(b"stale")
+    decisions = {"worthington motors": {
+        "value": "Worthington Motors", "type": "possible business",
+        "fix": "no", "notes": ""}}
+    entries = [{"file": "M.txt", "type": "possible business",
+                "value": "Worthington Motors", "where": "p.9:2"}]
+    P._pn_write_leak_report(folder, entries, log, decisions)
+    assert not (folder / "LEAKS.xlsx").exists()
+    # …while a `yes` whose value is STILL standing is the fix having missed,
+    # and that row is exactly what the sheet is for.
+    decisions["worthington motors"]["fix"] = "yes"
+    P._pn_write_leak_report(folder, entries, log, decisions)
     vals = [str(r[0]) for r in
-            openpyxl.load_workbook(sheet).active.iter_rows(min_row=2,
-                                                           values_only=True)]
-    assert "TRAVELERS CASUALTY" in vals
+            openpyxl.load_workbook(folder / "LEAKS.xlsx")["LEAKS"]
+            .iter_rows(min_row=2, values_only=True)]
+    assert vals == ["Worthington Motors"]
 
 
 # ───── a triage row names the authority it may have come from ───────────────

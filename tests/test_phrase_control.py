@@ -302,13 +302,12 @@ def test_a_master_phrase_carries_no_row_into_another_folder(tmp_path):
                            ("Smlth", "*Smith"))
     P._pn_write_leak_report(tmp_path, [], log, decisions)
     assert not (tmp_path / "LEAKS.xlsx").exists()
-    # …while an ALIAS still earns its row: `~` never reaches the master sheet,
-    # so this worksheet is the only thing that carries it.
+    # …and an ALIAS whose value no longer stands anywhere earns no row
+    # either, at the owner's direction: an alias that landed is a key row,
+    # and one that did not has nothing to keep applying to.
     P._pn_write_leak_report(tmp_path, [], log,
                             _decisions(("Antiono", "~Antionio")))
-    vals = {str(r[0]) for r in openpyxl.load_workbook(tmp_path / "LEAKS.xlsx")
-            ["LEAKS"].iter_rows(min_row=2, values_only=True) if r and r[0]}
-    assert vals == {"Antiono"}
+    assert not (tmp_path / "LEAKS.xlsx").exists()
 
 
 def test_fix_leaks_refuses_a_phrase_typed_into_the_key():
