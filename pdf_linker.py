@@ -7143,6 +7143,11 @@ def _link_exhibit_references(doc, log: logging.Logger):
 # and no pleading-paper paragraphs gets just "Contents"; a declaration
 # gets "Exhibits" and "Paragraphs"; a document with none of the three
 # yields no outline change at all (set_toc is not called).
+#
+# A branch header that separates nothing is not written. "Documents" over
+# a SINGLE sub-document, and "Exhibits" where the exhibits are the whole
+# tree, each cost the reader a click to reach a list they were already
+# looking at, so the header goes and its entries become the top level.
 
 
 def _exhibit_sort_key(ident: str):
@@ -7754,7 +7759,11 @@ def _build_bookmark_tree(doc, toc_entries, exhibit_cover_map,
     Hierarchy rules (from user spec):
       * Contents and Causes of Action are flat top-level branches.
       * Exhibits and Documents are top-level branches whose children are
-        the individual exhibit / sub-document entries.
+        the individual exhibit / sub-document entries — except where the
+        branch header names nothing: a Documents branch holding ONE
+        document, and an Exhibits branch that is the tree's only
+        category, drop their header and the entries become top-level
+        themselves (children rising a level with them).
       * Sections (when present) nest under whichever Document contains
         their page. If no Documents exist, sections become a top-level
         "Sections" branch. Sections inside an exhibit's page range are
@@ -8031,22 +8040,31 @@ def _build_bookmark_tree(doc, toc_entries, exhibit_cover_map,
                 if not _in_any(p_idx)]
 
     # ── Documents branch (top-level) ────────────────────────────────────
+    # A "Documents" header over a SINGLE document names nothing the entry
+    # under it does not: the file is that document, so the branch is one
+    # click of pure nesting. With one document the header is dropped and
+    # the document itself becomes the top-level bookmark, its sections and
+    # paragraphs rising with it. Two or more still earn the header, which
+    # is what says the file is a combined filing.
     if top_level_docs:
-        tree.append([1, "Documents", top_level_docs[0][1] + 1])
+        docs_flat = len(top_level_docs) == 1
+        if not docs_flat:
+            tree.append([1, "Documents", top_level_docs[0][1] + 1])
+        doc_lvl = 1 if docs_flat else 2
         for di, (lbl, start, end) in enumerate(top_level_docs):
-            tree.append([2, lbl, start + 1])
+            tree.append([doc_lvl, lbl, start + 1])
             sections_here = sections_in_doc.get(di, [])
             section_ranges = [(s, e) for (_, s, e) in sections_here]
             # Direct paragraphs of the Document: those not under any
             # section in this Document.
             for p_idx, num in _paragraphs_in_range_excluding(
                     start, end, section_ranges):
-                tree.append([3, f"\u00b6 {num}", p_idx + 1])
+                tree.append([doc_lvl + 1, f"\u00b6 {num}", p_idx + 1])
             # Sections under this Document, each with its paragraphs.
             for slbl, s_start, s_end in sections_here:
-                tree.append([3, slbl, s_start + 1])
+                tree.append([doc_lvl + 1, slbl, s_start + 1])
                 for p_idx, num in _paragraphs_in_range(s_start, s_end):
-                    tree.append([4, f"\u00b6 {num}", p_idx + 1])
+                    tree.append([doc_lvl + 2, f"\u00b6 {num}", p_idx + 1])
 
     # ── Sections branch (top-level, when no Documents) ──────────────────
     # Sections become a top-level branch only when there are no
@@ -8060,10 +8078,20 @@ def _build_bookmark_tree(doc, toc_entries, exhibit_cover_map,
                 tree.append([3, f"\u00b6 {num}", p_idx + 1])
 
     # ── Exhibits branch (top-level, with optional nested docs) ──────────
+    # The "Exhibits" header separates the exhibits from whatever else the
+    # tree holds — a Contents, a Documents branch, the causes of action.
+    # Where they are the ONLY category there is nothing to separate them
+    # from, so the header is dropped and each exhibit becomes a top-level
+    # bookmark, its own children rising with it. (The Paragraphs fallback
+    # below cannot co-occur: it fires only where there are no exhibits.)
     if exhibits_sorted:
-        tree.append([1, "Exhibits", exhibits_sorted[0][1] + 1])
+        exhibits_flat = not (valid_toc or valid_causes
+                             or top_level_docs or top_level_sections)
+        if not exhibits_flat:
+            tree.append([1, "Exhibits", exhibits_sorted[0][1] + 1])
+        ex_lvl = 1 if exhibits_flat else 2
         for ident, ex_start, ex_end in exhibit_ranges:
-            tree.append([2, f"Exhibit {ident}", ex_start + 1])
+            tree.append([ex_lvl, f"Exhibit {ident}", ex_start + 1])
             # Direct paragraphs of this exhibit: paragraphs whose page is
             # within the exhibit's range but NOT within any nested doc's
             # range. Per user spec, these come BEFORE the nested
@@ -8075,12 +8103,12 @@ def _build_bookmark_tree(doc, toc_entries, exhibit_cover_map,
             direct_paras = _paragraphs_in_range_excluding(
                 ex_start, ex_end, nested_page_ranges)
             for p_idx, num in direct_paras:
-                tree.append([3, f"\u00b6 {num}", p_idx + 1])
+                tree.append([ex_lvl + 1, f"\u00b6 {num}", p_idx + 1])
             # Nested sub-documents and their paragraphs.
             for nlbl, n_start, n_end in nested:
-                tree.append([3, nlbl, n_start + 1])
+                tree.append([ex_lvl + 1, nlbl, n_start + 1])
                 for p_idx, num in _paragraphs_in_range(n_start, n_end):
-                    tree.append([4, f"\u00b6 {num}", p_idx + 1])
+                    tree.append([ex_lvl + 2, f"\u00b6 {num}", p_idx + 1])
 
     # ── Paragraphs top-level fallback ───────────────────────────────────
     # If neither Documents nor Exhibits nor Sections exist but there
@@ -8150,12 +8178,13 @@ def _set_bookmarks(doc, toc_entries, exhibit_cover_map, paragraph_anchors,
         if not tree:
             return
         doc.set_toc(tree)
-        # Count second-level entries (the actual bookmarks; level 1 are
-        # the branch headers) for the log line.
-        n_leaves = sum(1 for entry in tree if entry[0] == 2)
-        branches = [entry[1] for entry in tree if entry[0] == 1]
-        log.info(f"  Bookmarks: {n_leaves} entry(ies) across "
-                 f"{', '.join(branches)}")
+        # Report the whole tree and its top level. Level 1 is NOT always a
+        # branch header — a lone Documents entry and an exhibits-only tree
+        # are written flat — so counting level-2 entries as "the actual
+        # bookmarks" would under-report exactly those trees.
+        tops = [entry[1] for entry in tree if entry[0] == 1]
+        log.info(f"  Bookmarks: {len(tree)} entry(ies), top level: "
+                 f"{', '.join(tops)}")
     except Exception as e:
         log.warning(f"  Bookmark generation failed (non-fatal): {e}")
 
