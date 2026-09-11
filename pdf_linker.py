@@ -32076,6 +32076,54 @@ def _remove_combined_text(folder, log, why, name=_COMBINED_TEXT_NAME):
         log.warning(f"  Could not remove {path.name}: {e}")
 
 
+def _pn_export_sources(folder, text_subdir, pz, log):
+    """`{export file name (lower): source document name}` — which document in
+    `folder` each `.txt` in `text_subdir` was written from.
+
+    An export is named for its source's SCRUBBED stem, on purpose: the `.txt`
+    is the artifact that gets shared, so a party or attorney name must not
+    survive in its filename (`_pn_scrubbed_stem`). The consequence is that the
+    export's name is a PSEUDONYM — `Feit Decl. ISO Mot..pdf` is written to
+    `Kingscote Decl. ISO Mot..txt` — and the operator has no document by that
+    name. This is the forward map, recomputed rather than reversed: every
+    source is put through the very function that named its export, so the two
+    cannot disagree and no fake has to be walked backwards (which is
+    `DeAnonymize.bas`' job, with its own ambiguity rules).
+
+    The map cannot be ambiguous: two sources whose stems scrub alike are given
+    DIFFERENT export names by `_pseudonymized_txt_path`, which appends a
+    per-source digest for exactly that reason ("Smith Decl.pdf" and
+    "Smith_Decl.pdf" both scrub to "Bennett Decl"). So going through that
+    function rather than `_pn_scrubbed_stem` is what makes one key one
+    source."""
+    text_dir = folder / text_subdir
+    if not text_dir.is_dir():
+        text_dir = folder
+    sources = list(_pdfs_in_folder(folder)) + [
+        q for q in sorted(folder.iterdir())
+        if q.is_file() and q.suffix.lower() in _WORD_DOC_SUFFIXES
+        and not q.name.startswith("~$")]
+    out = {}
+    for src in sources:
+        try:
+            out[_pseudonymized_txt_path(text_dir, src, pz, log)
+                .name.lower()] = src.name
+        except Exception:
+            continue
+    return out
+
+
+def _pn_export_source_name(export, sources):
+    """The source document `export` was written from, else its own name.
+
+    `export` may be a delivered `.txt` or the gate's `.txt.LEAK` quarantine of
+    one; both are the same document."""
+    stem = export.name
+    if stem.endswith(".LEAK"):
+        stem = stem[:-len(".LEAK")]
+    return sources.get(stem.lower(), export.name)
+
+
 def _orphan_exports(folder, text_subdir, pz, log):
     """The `.txt` exports in `text_subdir` that NO source document in `folder`
     would be written to — and, of those, the ones that DUPLICATE a live
@@ -32096,17 +32144,7 @@ def _orphan_exports(folder, text_subdir, pz, log):
     text_dir = folder / text_subdir
     if not text_dir.is_dir():
         text_dir = folder
-    sources = list(_pdfs_in_folder(folder)) + [
-        q for q in sorted(folder.iterdir())
-        if q.is_file() and q.suffix.lower() in _WORD_DOC_SUFFIXES
-        and not q.name.startswith("~$")]
-    expected = set()
-    for src in sources:
-        try:
-            expected.add(_pseudonymized_txt_path(text_dir, src, pz, log)
-                         .name.lower())
-        except Exception:
-            continue
+    expected = set(_pn_export_sources(folder, text_subdir, pz, log))
     if not expected:
         return set(), set()
     live, orphans = {}, {}
@@ -35443,6 +35481,16 @@ def _fix_leaks_mode(folder, args, cfg, log):
     # or tracked (only reachable in the old single-folder layout, where
     # text_dir falls back to the case folder itself).
     _orphans, stale_exports = _orphan_exports(folder, text_subdir, pz, log)
+    # A worksheet row NAMES THE SOURCE DOCUMENT, as the full run's rows do.
+    # An export is named for its source's SCRUBBED stem, so this pass — which
+    # works from the exports and never opens a PDF — had been writing the
+    # pseudonym into the File column: a folder whose `Feit Decl. ISO Mot..pdf`
+    # exports as `Kingscote Decl. ISO Mot..txt` came back with three rows
+    # naming a declaration the operator does not have. The worksheet is triage,
+    # lives in the case folder and already quotes whole sentences of the real
+    # document, so naming the real one costs nothing and is the only form the
+    # reader can act on.
+    export_sources = _pn_export_sources(folder, text_subdir, pz, log)
     files = sorted(p for p in text_dir.iterdir()
                    if p.is_file() and (p.suffix == ".txt"
                                        or p.name.endswith(".txt.LEAK"))
@@ -35584,7 +35632,8 @@ def _fix_leaks_mode(folder, args, cfg, log):
                               _pn_leak_quotes(orig_parsed,
                                               _pn_body_lines(scrubbed), pz,
                                               v, aligned=False)),
-                         **{"file": f.name,
+                         **{"file": _pn_export_source_name(
+                                f, export_sources),
                             "type": decisions.get(vl, {}).get("type")
                             or "LEAK",
                             "value": v,
@@ -35600,7 +35649,9 @@ def _fix_leaks_mode(folder, args, cfg, log):
                     dict(zip(("context", "scrubbed_context"),
                               _pn_leak_quotes(orig_parsed, scrub_parsed, pz,
                                               real, aligned=False)),
-                         **{"file": f.name, "type": "LEAK", "value": real,
+                         **{"file": _pn_export_source_name(
+                                f, export_sources),
+                            "type": "LEAK", "value": real,
                             "where": _pn_locate_export(scrubbed, real)}))
 
     # (The originals were read and noted BEFORE the loop above — the fresh
