@@ -233,3 +233,27 @@ def test_the_interpreter_named_is_a_console_build(monkeypatch, tmp_path):
 def test_a_plain_interpreter_is_named_as_it_stands(monkeypatch):
     monkeypatch.setattr(sys, "executable", "/usr/bin/python3")
     assert P._console_python() == Path("/usr/bin/python3")
+
+
+class TestTheLogSaysWhichMachineRanIt:
+    """A log records the folder and nothing about where it came from, so a log
+    read on one computer says nothing about the computer that produced it — and
+    a case folder routinely moves between two."""
+
+    def test_the_machine_is_named(self):
+        import platform
+        assert P._machine_name() == (platform.node() or "?")
+
+    def test_a_host_with_no_name_is_not_a_failed_run(self, monkeypatch):
+        import platform
+        monkeypatch.setattr(platform, "node", lambda: "")
+        assert P._machine_name() == "?"
+
+    def test_a_host_that_raises_is_not_a_failed_run(self, monkeypatch):
+        import platform
+
+        def boom():
+            raise OSError("no host")
+
+        monkeypatch.setattr(platform, "node", boom)
+        assert P._machine_name() == "?"
