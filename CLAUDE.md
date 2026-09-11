@@ -4220,6 +4220,27 @@ like bold on both heading paths, and centering alone carries an
 outline-label heading only when the label has its own text ("I.
 INTRODUCTION" yes; the caption's bare centered "V." no).
 
+**…and a branch header that SEPARATES NOTHING is not written**
+(`docs_flat` / `exhibits_flat` in `_build_bookmark_tree`), at the owner's
+direction. A category header earns its click by telling the reader which
+of several kinds of thing they are looking at. Two shapes give them
+nothing: `Documents` over a SINGLE sub-document — the file IS that
+document, so the header names nothing the one entry under it does not —
+and `Exhibits` where the exhibits are the tree's ONLY category, since
+there is nothing to separate them from. Both are dropped and their
+entries become the top level, each one's own children (sections,
+paragraphs, a nested sub-document) rising a level with it, so the tree
+below keeps exactly the shape it had. Everything else is unmoved: a
+SECOND document earns `Documents` back, because that header is what says
+the file is a combined filing, and a `Contents`, a `Causes of Action` or
+a document beside the exhibits earns `Exhibits` back for the same reason.
+The two questions are asked independently — a lone declaration in front
+of its exhibits loses its `Documents` header and keeps the `Exhibits`
+one. The run's own log line follows: level 1 is no longer always a
+branch header, so counting level-2 entries as "the bookmarks" would
+under-report precisely the flattened trees, and it reports the whole
+tree with its top level named.
+
 **An OCR'd slip sheet spells its quotes as APOSTROPHES, and a quote is a
 RUN** (`_EXHIBIT_QUOTE_CHAR` / `_EXHIBIT_QUOTE_RUN`). A scanned exhibit
 set came back as `EXHIBIT ''1''` and `EXHIBIT ' ' 2 ''` — OCR reads a
