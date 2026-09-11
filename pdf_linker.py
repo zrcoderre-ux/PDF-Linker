@@ -20966,6 +20966,67 @@ class Pseudonymizer:
             k += 1
         return k < j and _pn_is_name_word(text[k:j])
 
+    def leak_findings(self, body, source):
+        """Every REVIEW finding for one export, in the order the worksheet
+        ranks them — `body` is the written export, `source` the unscrubbed
+        text the definition tiers read.
+
+        **One callable because there are two export writers, and a tier
+        missing from one of them is invisible.** `_write_text_version` and
+        `_write_word_text_version` each carried their own copy of this
+        sequence — eleven tiers, listed twice — and the project has already
+        paid for that shape once: the Word path ran the whole scan battery
+        and NONE of the cures, so on a Word folder every value the cures
+        exist for was REPORTED rather than repaired, under a value the key
+        showed `replaced` (see the `scrub_survivors` note). Two lists that
+        must agree, kept in two places, is how a tier comes to be added to
+        one of them.
+
+        The ORDER is load-bearing and is why this is a list rather than a
+        set: `reid_scan` leads, because those shapes invert the map in one
+        lookup and outrank ordinary review; `fuzzy_survivor_scan` runs
+        BEFORE `half_scrubbed_scan` so the more specific class owns the row
+        when a mangled survivor also stands beside one of our fakes."""
+        # Open-world REVIEW scan: identifier shapes (licence/bar/reservation/
+        # file numbers, bare URLs) that must never ride along even without a
+        # key entry.
+        review = list(self.review_scan(body))
+        # Backstop: a party acronym defined in the source that survived the
+        # scrub (a definition shape `register_short_names` didn't anticipate).
+        review += self.review_definition_survivors(source, body)
+        # A name the document DEFINES for itself (`Susan Spellman
+        # ("Spellman")`) that no template named and no other anchor reached.
+        review += self.defined_name_scan(source, body)
+        # A capitalised run standing as the SUBJECT of a reporting verb
+        # ("Doe asked", "Spellman confirmed") — the one anchor that needs no
+        # label at all, and the only one a fact-section witness carries.
+        review += self.narrative_name_scan(body)
+        # A title in front of a word ("Mr. Spellman") and an e-mail header
+        # line ("From: Susan Spellman") — two anchors the role- and
+        # verb-anchored tiers are structurally blind to.
+        review += self.honorific_name_scan(body)
+        review += self.mail_header_name_scan(body)
+        # A name typed onto a form's fill-in rule, which no term can match.
+        review += self.form_rule_name_scan(body)
+        # A labelled phone/address the detectors could not read, on a page
+        # whose text layer is degraded.
+        review += self.degraded_contact_scan(body)
+        # High-recall tier: role-anchored name shapes in the output that are
+        # neither our fakes nor common words — the "unknown name" net.
+        review += self.unknown_name_scan(body)
+        # A word one OCR slip away from a real name this case tracks. Runs
+        # BEFORE the half-scrub scan so the more specific class owns the row
+        # when a mangled survivor also stands beside one of our fakes.
+        review += self.fuzzy_survivor_scan(body)
+        # A real name word standing beside one of our own person fakes — the
+        # half-scrub, which the scans above are structurally blind to.
+        review += self.half_scrubbed_scan(body)
+        # Adversarial re-identification pass: a bar number / VIN / reservation
+        # shape in the OUTPUT that isn't one of our own fakes. Sorted first —
+        # these invert the map in one lookup, so they outrank ordinary review.
+        return self.reid_scan(body) + review
+
+
     def _mask_protected_citations(self, text):
         """`text` with every protected citation span blanked to spaces, for the
         LEAK scans: a party name correctly preserved inside a cited authority
@@ -31148,43 +31209,7 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
 
         # Open-world REVIEW scan: identifier shapes (licence/bar/reservation/file
         # numbers, bare URLs) that must never ride along even without a key entry.
-        review = pseudonymizer.review_scan(body)
-        # Backstop: a party acronym defined in the source that survived the scrub
-        # (a definition shape register_short_names didn't anticipate).
-        review = list(review) + pseudonymizer.review_definition_survivors(
-            detect_full, body)
-        # A name the document DEFINES for itself (`Susan Spellman
-        # ("Spellman")`) that no template named and no other anchor reached.
-        review = list(review) + pseudonymizer.defined_name_scan(
-            detect_full, body)
-        # A capitalised run standing as the SUBJECT of a reporting verb
-        # ("Doe asked", "Spellman confirmed") — the one anchor that needs no
-        # label at all, and the only one a fact-section witness carries.
-        review = list(review) + pseudonymizer.narrative_name_scan(body)
-        # A title in front of a word ("Mr. Spellman") and an e-mail header line
-        # ("From: Susan Spellman") — two anchors the role- and verb-anchored
-        # tiers are structurally blind to.
-        review = list(review) + pseudonymizer.honorific_name_scan(body)
-        review = list(review) + pseudonymizer.mail_header_name_scan(body)
-        # A name typed onto a form's fill-in rule, which no term can match.
-        review = list(review) + pseudonymizer.form_rule_name_scan(body)
-        # A labelled phone/address the detectors could not read, on a page
-        # whose text layer is degraded.
-        review = list(review) + pseudonymizer.degraded_contact_scan(body)
-        # High-recall tier: role-anchored name shapes in the output that are
-        # neither our fakes nor common words — the "unknown name" net.
-        review = list(review) + pseudonymizer.unknown_name_scan(body)
-        # A word one OCR slip away from a real name this case tracks. Runs
-        # BEFORE the half-scrub scan so the more specific class owns the row
-        # when a mangled survivor also stands beside one of our fakes.
-        review = list(review) + pseudonymizer.fuzzy_survivor_scan(body)
-        # A real name word standing beside one of our own person fakes — the
-        # half-scrub, which the scans above are structurally blind to.
-        review = list(review) + pseudonymizer.half_scrubbed_scan(body)
-        # Adversarial re-identification pass: a bar number / VIN / reservation
-        # shape in the OUTPUT that isn't one of our own fakes. Sorted first —
-        # these invert the map in one lookup, so they outrank ordinary review.
-        review = pseudonymizer.reid_scan(body) + review
+        review = pseudonymizer.leak_findings(body, detect_full)
         if review:
             shown = "; ".join(f"{c}: {s}" for c, s in review[:8])
             log.warning(f"  Pseudonymization REVIEW on {pdf_path.name}: "
@@ -32367,18 +32392,7 @@ def _write_word_text_version(src_path, text, log, pseudonymizer=None,
                         f"value(s) still present in the .txt ({shown}). Review "
                         f"before sharing; add them with --term and re-run.")
 
-        review = list(pseudonymizer.review_scan(body))
-        review += pseudonymizer.review_definition_survivors(text, body)
-        review += pseudonymizer.defined_name_scan(text, body)
-        review += pseudonymizer.narrative_name_scan(body)
-        review += pseudonymizer.honorific_name_scan(body)
-        review += pseudonymizer.mail_header_name_scan(body)
-        review += pseudonymizer.form_rule_name_scan(body)
-        review += pseudonymizer.degraded_contact_scan(body)
-        review += pseudonymizer.unknown_name_scan(body)
-        review += pseudonymizer.fuzzy_survivor_scan(body)
-        review += pseudonymizer.half_scrubbed_scan(body)
-        review = pseudonymizer.reid_scan(body) + review
+        review = pseudonymizer.leak_findings(body, text)
         if review:
             shown = "; ".join(f"{c}: {s}" for c, s in review[:8])
             log.warning(f"  Pseudonymization REVIEW on {src_path.name}: "
