@@ -5393,16 +5393,32 @@ FOLDER and not in `Text Files`, at the owner's direction and for the reason
 `Authorities Cited.txt` does: that folder is the set of per-document exports,
 and a file holding all of them again beside them would upload the batch twice.
 It is built from the exports AS DELIVERED, on disk, after the leak gate — a
-`*.txt.LEAK` is never a member, and while one is held the file is withheld and
-a stale one removed, for the reason the copy waits: a combined file missing a
-document reads as complete, and one carrying the leak is a second copy of it
-outside the quarantine. `--fix-leaks` writes it when the last leak is released,
-the unreversible-fakes gate holds it the same way, and turning the setting OFF
+`*.txt.LEAK` is never a MEMBER, because that export is held back from delivery
+and this file is sometimes the thing uploaded.
+**…but the FILE is not gated on the hold**, at the owner's direction. It first
+shipped withheld while any export was quarantined (a stale one removed), the
+rule the COPY follows — and the two are not alike. The copy goes to the
+destination the case is worked from; this file sits in the CASE FOLDER, which
+is not where the batch is uploaded from, and is one of the things the operator
+READS while triaging `LEAKS.xlsx`. Withholding it took the eighteen clean
+documents of a nineteen-document folder away over the one held document, at
+exactly the moment they were wanted. So it is written whatever the gate decides
+— the leak gate, the unreversible-fakes gate (which quarantines nothing at all,
+so it never had a missing document to read as complete without) and
+`--fix-leaks`' nothing-applied branch alike — and the hazard the hold was
+standing in for, that a combined file missing a document reads as complete, is
+answered where it arises: the header NAMES the quarantined exports and says
+they are not in it. The names are read off the folder itself
+(`text_dir.glob("*.txt.LEAK")`), the one place the quarantine is recorded, so
+this and the gate that wrote it cannot disagree. Turning the setting OFF
 removes a file an earlier run wrote (recognised by its own header mark, so a
 file of the operator's is never touched). Byte-stable — no timestamp, name
-order case-folded, rewritten only when the content differs — and
-`_is_tool_txt_artifact` knows its name, so under the older single-folder
-layout `--fix-leaks` never scrubs it as an export or folds it into itself.
+order case-folded, rewritten only when the content differs, so releasing a leak
+rewrites it both to fold the released document in and to drop it from the held
+list — and `_is_tool_txt_artifact` knows its name, so under the older
+single-folder layout `--fix-leaks` never scrubs it as an export or folds it
+into itself. The COPY is unchanged and still waits: the destination must never
+receive a `*.LEAK`, and nothing in the case folder travels while one is held.
 
 **…and with the ORIGINALS kept as well, the same file of THOSE is written
 INSIDE the do-not-share subfolder** (`_COMBINED_ORIGINAL_NAME` =
@@ -5416,10 +5432,11 @@ the shareable writer so the two cannot disagree about what a member is —
 repeat downloads folded once, an older consolidation's file never nested).
 ONLY there, never the case folder and never `Text Files`: it carries every
 real name in the folder, and the subfolder's name is the one thing that says
-so; its own header says it too. NO leak hold, unlike the shareable file — an
-original is real names by design, is never gated and never quarantined, so
-this is written (or removed) at the point the individual originals are
-settled, BEFORE the gate, whatever the gate then decides about the exports;
+so; its own header says it too. Neither file is gated on the hold, and this
+one never was — an original is real names by design, is never quarantined and
+so has no held member to name, which is why it is written (or removed) at the
+point the individual originals are settled, BEFORE the gate, whatever the gate
+then decides about the exports;
 `--fix-leaks` rebuilds it after `_pn_correct_original_files` has moved the
 copies it is made of, and removes it when either setting is off. It is the
 tool's own artifact (`_is_tool_txt_artifact`), so `_pn_original_texts` never

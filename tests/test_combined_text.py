@@ -4,10 +4,14 @@
 document in full behind its own DOCUMENT banner. The individual exports are
 untouched; this adds a file.
 
-It is built from the exports as delivered: a quarantined *.LEAK is never in
-it, and while one is held the file is withheld (a stale one removed), the same
-rule the copy follows. Apply Leak Fixes writes it once the last leak is
-released. Off by default, and turning it off removes the file a run wrote.
+It is built from the exports as delivered: a quarantined *.LEAK is never in it
+— that export is held back from delivery and this file is sometimes the thing
+uploaded. But the FILE is not gated on the hold, at the owner's direction: it
+lives in the case folder, which is not where the batch is uploaded from, and is
+one of the things read while triaging LEAKS.xlsx, so withholding it took the
+eighteen clean documents away over the one held one. It is written whatever the
+gate decides, and its header NAMES the quarantined exports so it never reads as
+complete. Off by default, and turning it off removes the file a run wrote.
 
 Run:  cd PDF-Linker && python3 -m pytest tests/test_combined_text.py -v
 """
@@ -107,13 +111,42 @@ def test_it_is_byte_stable_and_not_rewritten_for_nothing(tmp_path):
     assert out.stat().st_mtime_ns == stamp          # untouched, not re-saved
 
 
-def test_a_hold_withholds_it_and_removes_a_stale_one(tmp_path):
-    _exports(tmp_path, **{"Brief.txt": "the brief"})
-    pl._write_combined_text(tmp_path, "Text Files", log)
-    assert (tmp_path / NAME).exists()
-    assert pl._write_combined_text(tmp_path, "Text Files", log,
-                                   hold="1 export(s) are quarantined") is None
-    assert not (tmp_path / NAME).exists()
+def test_a_quarantined_export_does_not_withhold_the_file(tmp_path):
+    """The rule the COPY follows and this file no longer does: withholding it
+    took the clean documents away at the moment they were wanted."""
+    _exports(tmp_path, **{"Brief.txt": "the brief",
+                          "Leaky.txt.LEAK": "Raytheon Technologies opposed"})
+    out = pl._write_combined_text(tmp_path, "Text Files", log)
+    assert out is not None and out.exists()
+    text = out.read_text(encoding="utf-8")
+    assert [n for n, _b in pl._combined_sections(text)] == ["Brief.txt"]
+    assert "Raytheon" not in text                  # still not a MEMBER
+
+
+def test_the_held_export_is_named_in_the_header(tmp_path):
+    """Or a combined file missing a document reads as complete — the hazard
+    the hold used to stand in for, answered where it arises."""
+    _exports(tmp_path, **{"Brief.txt": "the brief",
+                          "Leaky.txt.LEAK": "Raytheon Technologies opposed"})
+    head = pl._write_combined_text(tmp_path, "Text Files", log).read_text(
+        encoding="utf-8").split(pl._COMBINE_RULE)[1]
+    assert "NOT in this file" in head and "Leaky.txt.LEAK" in head
+
+
+def test_releasing_the_last_leak_rewrites_it(tmp_path):
+    """Byte-stability cuts both ways: the released document is folded in and
+    the held list goes with it."""
+    _exports(tmp_path, **{"Brief.txt": "the brief",
+                          "Leaky.txt.LEAK": "a leak"})
+    held = pl._write_combined_text(tmp_path, "Text Files", log).read_bytes()
+    td = tmp_path / "Text Files"
+    (td / "Leaky.txt.LEAK").rename(td / "Leaky.txt")
+    text = pl._write_combined_text(tmp_path, "Text Files", log).read_text(
+        encoding="utf-8")
+    assert text.encode("utf-8") != held
+    assert [n for n, _b in pl._combined_sections(text)] == ["Brief.txt",
+                                                            "Leaky.txt"]
+    assert "NOT in this file" not in text
 
 
 def test_nothing_to_combine_writes_nothing_and_drops_a_stale_one(tmp_path):
@@ -129,7 +162,7 @@ def test_a_file_of_the_operators_under_that_name_is_never_removed(tmp_path):
     # not carry it is somebody's, whatever it is called.
     (tmp_path / NAME).write_text("my own notes", encoding="utf-8")
     pl._combined_text_after_run(tmp_path, "Text Files", False, log)
-    pl._write_combined_text(tmp_path, "Text Files", log, hold="held")
+    pl._remove_combined_text(tmp_path, log, "why")
     assert (tmp_path / NAME).read_text(encoding="utf-8") == "my own notes"
 
 
@@ -257,16 +290,17 @@ def test_fix_leaks_writes_it_once_the_last_leak_is_released(tmp_path):
     assert "Raytheon" not in text                 # the released export is FIXED
 
 
-def test_fix_leaks_withholds_it_while_a_leak_stands(tmp_path):
+def test_fix_leaks_writes_it_while_a_leak_stands(tmp_path):
     # A typed replacement equal to the value fixes nothing, so the file stays
-    # quarantined — and a combined file must neither carry the leak nor read
-    # as complete without that document.
+    # quarantined — and this is exactly the state the operator is triaging in,
+    # so the clean documents are combined and the held one is named.
     args = _held_folder(tmp_path, "Raytheon Technologies")
-    (tmp_path / NAME).write_text(
-        f"{'#' * 78}\n# {pl._COMBINE_MARK} — stale\n", encoding="utf-8")
     pl._fix_leaks_mode(tmp_path, args, {"combined_text": "on"}, log)
     assert (tmp_path / "Text Files" / "Brief.txt.LEAK").exists()   # still held
-    assert not (tmp_path / NAME).exists()
+    text = (tmp_path / NAME).read_text(encoding="utf-8")
+    assert [n for n, _b in pl._combined_sections(text)] == ["Clean.txt"]
+    assert "Raytheon" not in text
+    assert "Brief.txt.LEAK" in text.split(pl._COMBINE_RULE)[1]
 
 
 def test_fix_leaks_leaves_it_alone_when_the_setting_is_off(tmp_path):

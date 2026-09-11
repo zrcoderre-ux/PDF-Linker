@@ -32302,14 +32302,26 @@ def _drop_superseded_combined_exports(folder, text_subdir, log):
 # them again beside them would ship twice over.
 #
 # Built from the exports AS DELIVERED, on disk, after the leak gate has had
-# its say: a quarantined `*.txt.LEAK` is never a member, and while one is
-# held the file is not written at all (a stale one is removed), for the
-# reason the copy waits — a combined file missing a document reads as
-# complete, and one carrying the leak would be a second copy of it outside
-# the quarantine. `--fix-leaks` writes it when the last leak is released.
+# its say: a quarantined `*.txt.LEAK` is never a member, because that export
+# is held back from delivery and this file is sometimes the thing uploaded.
+#
+# It is NOT itself gated on the hold, at the owner's direction. It first
+# shipped withheld while any export was quarantined — the rule the COPY
+# follows — and the two are not alike: the copy goes to the destination the
+# case is worked from, while this file sits in the CASE FOLDER, which is not
+# where the batch is uploaded from, and is one of the things the operator
+# READS while triaging `LEAKS.xlsx`. Withholding it took the eighteen clean
+# documents of a nineteen-document folder away over the one held document, at
+# exactly the moment they were wanted. So it is written whatever the gate
+# decides, and the hazard the hold was standing in for — a combined file
+# missing a document reads as complete — is answered where it arises: the
+# header NAMES the quarantined exports and says they are not in it. The
+# names are read off the folder itself, the one place the quarantine is
+# recorded, so this and the gate that wrote it cannot disagree.
 # Byte-stable, like everything else derived from the exports: no timestamp,
 # no count of anything but its own members, and rewritten only when its
-# content changes.
+# content changes — so releasing a leak rewrites it, both to fold the
+# released document in and to drop it from the held list.
 _COMBINED_TEXT_NAME = "Combined Text.txt"
 # …and, where the UNSCRUBBED copies are kept as well (`keep_original_text`),
 # the same file of THOSE, inside the do-not-share subfolder beside the
@@ -32436,11 +32448,13 @@ def _combine_doc_banner(i, n, name):
     return f"{'#' * 8} DOCUMENT {i} OF {n} IN THIS COMBINED FILE: {name} {'#' * 8}"
 
 
-def _combined_text_body(members, text_subdir, original=False):
+def _combined_text_body(members, text_subdir, original=False, held=()):
     """The combined file: a header naming every member, then each member's
     text behind its own DOCUMENT banner. `members` is `[(name, text), ...]`.
     `original` writes the header of the UNSCRUBBED file, which has to say
-    what it is."""
+    what it is. `held` is the quarantined exports standing in the same
+    folder — named in the header, since they are the one thing a reader of
+    this file would otherwise take it to contain."""
     n = len(members)
     head = [_COMBINE_RULE,
             f"# {_COMBINE_MARK} — {n} document{'' if n == 1 else 's'} in one "
@@ -32470,6 +32484,16 @@ def _combined_text_body(members, text_subdir, original=False):
     head += ["#",
              "# Documents in this file:"]
     head += [f"#   {i}. {name}" for i, (name, _t) in enumerate(members, 1)]
+    # A quarantined export is NOT a member — it is held back from delivery,
+    # and this file is sometimes the thing uploaded — but the file is written
+    # while one is held, so the header has to say which documents are not in
+    # it. Without that a combined file missing a document reads as complete.
+    if held:
+        head += ["#",
+                 f"# NOT in this file — quarantined for leak triage, still in "
+                 f"\"{text_subdir}\"",
+                 "# under its own name with a .LEAK extension:"]
+        head += [f"#   - {name}" for name in held]
     head += ["#",
              "# Page numbering restarts at every DOCUMENT banner: a 'p.3:7' "
              "cite means",
@@ -32647,26 +32671,22 @@ def _combined_members(text_dir, log, label="Combined text", skip=()):
     return members
 
 
-def _combined_text_after_run(folder, text_subdir, enabled, log, hold=None,
-                             skip=()):
+def _combined_text_after_run(folder, text_subdir, enabled, log, skip=()):
     """What a finishing run does about `Combined Text.txt`, in one place so
     the full run and `--fix-leaks` cannot answer differently: with the
-    setting ON it is written (or withheld, with `hold` saying why); with it
-    OFF a file an earlier run wrote is removed, so a stale one never ships
-    beside exports that have moved on."""
+    setting ON it is written; with it OFF a file an earlier run wrote is
+    removed, so a stale one never ships beside exports that have moved on."""
     if enabled:
-        return _write_combined_text(folder, text_subdir, log, hold=hold,
-                                    skip=skip)
+        return _write_combined_text(folder, text_subdir, log, skip=skip)
     _remove_combined_text(folder, log, "combined_text is off in "
                           "pdf_linker.config")
     return None
 
 
-def _write_combined_text(folder, text_subdir, log, hold=None, skip=()):
+def _write_combined_text(folder, text_subdir, log, skip=()):
     """Write `Combined Text.txt` into `folder` from the `.txt` exports in its
-    `text_subdir`, or — with `hold` naming why the folder is not deliverable,
-    or with nothing to combine — make sure no stale one is left. Returns the
-    path written, else None.
+    `text_subdir`, or — with nothing to combine — make sure no stale one is
+    left. Returns the path written, else None.
 
     Members are the delivered exports and nothing else: the tool's own
     `.txt` artifacts and a quarantined `*.txt.LEAK` are never read, and a
@@ -32674,20 +32694,30 @@ def _write_combined_text(folder, text_subdir, log, hold=None, skip=()):
     would nest inside this file's and confuse every reader of it). Name
     order, case-folded, so a re-run of an unchanged folder reproduces the
     file byte for byte; and it is rewritten only when the content differs,
-    so a synced folder is not touched for nothing."""
+    so a synced folder is not touched for nothing.
+
+    NOT gated on the leak hold, at the owner's direction: the file lives in
+    the CASE FOLDER, which is not the folder the batch is uploaded from, and
+    it is one of the things the operator reads while triaging `LEAKS.xlsx`.
+    Withholding it took the other eighteen clean documents away over one
+    held one, at exactly the moment they were wanted. What the hold still
+    costs is MEMBERSHIP — a quarantined export is held back from delivery
+    and this file is sometimes the thing uploaded — so the held documents are
+    NAMED in the header instead (read off the folder itself, the one place
+    the quarantine is recorded, so this cannot disagree with the gate that
+    wrote it)."""
     path = folder / _COMBINED_TEXT_NAME
-    if hold:
-        _remove_combined_text(folder, log, f"not written while {hold}")
-        return None
     text_dir = folder / text_subdir
     if not text_dir.is_dir():
         text_dir = folder            # older single-folder layout
     members = _combined_members(text_dir, log, skip=skip)
+    held = sorted((q.name for q in text_dir.glob("*.txt.LEAK") if q.is_file()),
+                  key=str.lower)
     if not members:
         _remove_combined_text(folder, log, "there are no text exports to "
                               "combine")
         return None
-    content = _combined_text_body(members, text_subdir)
+    content = _combined_text_body(members, text_subdir, held=held)
     try:
         if path.is_file() and path.read_text(encoding="utf-8") == content:
             log.info(f"  {path.name} is unchanged ({len(members)} "
@@ -32701,7 +32731,10 @@ def _write_combined_text(folder, text_subdir, log, hold=None, skip=()):
         log.warning(f"  Could not write {path.name}: {e}")
         return None
     log.info(f"  Wrote {path.name}: {len(members)} text export(s) in one "
-             f"file, in the case folder beside the {text_subdir!r} folder.")
+             f"file, in the case folder beside the {text_subdir!r} folder."
+             + (f" {len(held)} quarantined export(s) are NOT in it and are "
+                f"named in its header: " + ", ".join(held[:6]) + "."
+                if held else ""))
     return path
 
 
@@ -35818,13 +35851,14 @@ def _fix_leaks_mode(folder, args, cfg, log):
         # sheet comes back byte-identical to the one the operator just filled
         # in, with the reason in a log file they are not reading.
         _pn_note_refusals(folder, refusals, log)
-        # Nothing moved, so the folder is exactly as held as it was: the
-        # combined file and the copy wait here for the same reason they wait
-        # below, and say so rather than being silently skipped by an early
-        # return.
+        # Nothing moved, so the folder is exactly as held as it was: the COPY
+        # waits here for the same reason it waits below, and says so rather
+        # than being silently skipped by an early return. The combined file
+        # does NOT wait — it is read while triaging, and its header names the
+        # exports still quarantined.
         _combined_text_after_run(
-            folder, text_subdir, _config_bool(cfg, "combined_text", False), log,
-            hold="the export(s) are still quarantined — nothing was applied")
+            folder, text_subdir, _config_bool(cfg, "combined_text", False),
+            log)
         _copy_folder_after_run(
             folder, _copy_dest_root(cfg, args, log), log,
             provider=getattr(args, "provider", "lexis"),
@@ -36177,12 +36211,12 @@ def _fix_leaks_mode(folder, args, cfg, log):
              + (f"; {still} file(s) still carry a party-name leak — review "
                 f"LEAKS.xlsx." if still else "."))
 
-    # The combined file the full run held back for the same triage: rebuilt
-    # from the exports as they now stand, or still withheld while one is held.
+    # The combined file, rebuilt from the exports as they now stand — an
+    # export this pass released is in it, one still quarantined is named in
+    # its header instead.
     _combined_text_after_run(
         folder, text_subdir, _config_bool(cfg, "combined_text", False), log,
-        hold=(f"{still} export(s) still carry a party-name leak" if still
-              else None), skip=stale_exports)
+        skip=stale_exports)
 
     # The copy the full run held back for triage. This pass is the moment the
     # folder finally becomes what the run promised, so it is the moment the
@@ -37293,10 +37327,14 @@ def main():
               f"cannot be restored to the real values. Re-run after adding the "
               f"value(s) with --term, or clear the KEEP decision that dropped "
               f"the row.")
-        _combined_text_after_run(
-            folder, text_subdir, combined_text, log,
-            hold=(f"{len(pseudonymizer.unreversible)} replacement(s) in these "
-                  f"exports cannot be reversed; fix the key and re-run"))
+        # Written as on any other run: this gate quarantines NOTHING (the
+        # exports are unrestorable, not dangerous, and are delivered), so
+        # there was never a missing document for it to read as complete
+        # without.
+        _orphans, _stale = _orphan_exports(folder, text_subdir,
+                                           pseudonymizer, log)
+        _combined_text_after_run(folder, text_subdir, combined_text, log,
+                                 skip=_stale)
         _copy_folder_after_run(
             folder, copy_root, log, provider=args.provider,
             hold=(f"{len(pseudonymizer.unreversible)} replacement(s) in these "
@@ -37355,11 +37393,15 @@ def main():
                   f"*.LEAK and NOT delivered ({delivered} clean export(s) "
                   f"delivered).{extra} Add the survivor(s) with --term and "
                   f"re-run.")
-            _combined_text_after_run(
-                folder, text_subdir, combined_text, log,
-                hold=(f"{len(quarantined)} export(s) are quarantined for "
-                      f"triage; Apply Leak Fixes writes it once the last one "
-                      f"is released"))
+            # The clean exports are combined now rather than after the
+            # triage: this file is one of the things the operator reads while
+            # answering the worksheet, and it lives in the case folder, which
+            # is not where the batch is uploaded from. The quarantined ones
+            # are named in its header and are not in it.
+            _orphans, _stale = _orphan_exports(folder, text_subdir,
+                                               pseudonymizer, log)
+            _combined_text_after_run(folder, text_subdir, combined_text, log,
+                                     skip=_stale)
             _copy_folder_after_run(
                 folder, copy_root, log, provider=args.provider,
                 hold=(f"{len(quarantined)} export(s) are quarantined for "
