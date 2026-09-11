@@ -3051,6 +3051,205 @@ def _ocr_image_regions(doc, log):
     return done
 
 
+# ── The gutter a page-wide OCR pass threw away ──────────────────────────────
+# A pleading page's line numbers are a narrow column of one- and two-digit
+# numbers in the left margin, and a page-wide OCR pass routinely drops the
+# whole column: Tesseract's layout analysis reads a strip that far from the
+# block it is segmenting as furniture. Measured on a scanned third amended
+# complaint, the page's own OCR recovered every word of the caption — the
+# attorney block, both caption columns, the FILED stamp — and not ONE of the
+# numbers 1 through 28.
+#
+# What that costs is not the numbering. `_pleading_gutter` finding no column
+# makes `_page_lined_rows` decline the page, and with it goes everything the
+# pleading path does: the two-column caption split (`_split_row_columns`), the
+# firm-sidebar exclusion (`_sidebar_spans`) and the per-column scrub
+# (`_pn_apply_page_rows`). So the title page of that complaint exported as one
+# positional run with the rotated "Electronically Received" margin stamp laid
+# through the middle of the caption, the party column and the case-number
+# column collapsed together, and no "p.X:Y" to cite anything by — a scanned
+# pleading rendered as though it were an exhibit photograph.
+#
+# The numbers were legible the whole time. Read the STRIP ON ITS OWN and
+# Tesseract returns all 28: cropping to the margin removes the layout decision
+# that discarded them. So this pass re-reads that strip and lays the digits
+# into the page's text layer, where `_pleading_gutter` and every other reader
+# meets them through its own ordinary question — the discipline
+# `_ocr_image_regions` follows, and the reason no new plumbing is needed
+# downstream.
+#
+# ADDITIVE, like `_ocr_image_regions` and unlike `_reocr_garbled_pages`:
+# nothing is redacted, no existing text is replaced, and the worst case is a
+# wasted render. Digits only (`tessedit_char_whitelist`), so the pass cannot
+# put a WORD into the margin however it reads the sidebar's letters.
+_GUTTER_OCR_CONFIG = ("--psm 6 -c preserve_interword_spaces=1 "
+                      "-c tessedit_char_whitelist=0123456789")
+# A margin narrower than this holds no printed number, so there is nothing to
+# crop; and the crop stands clear of what is on either side of it — the
+# rotated sidebar's glyph box on the left, the body's leftmost word on the
+# right — since a probe that swallows either reads that instead of the column.
+_GUTTER_STRIP_MIN_PT = 12.0
+_GUTTER_STRIP_PAD = 2.0
+# Rows on the page before the strip is worth rendering at all. Pleading paper
+# carries 28 numbered lines; an exhibit photograph, a slip sheet and a cover
+# page carry a handful, and probing every scanned page of a 119-page exhibit
+# set would spend ~0.3 s a page to find nothing.
+_GUTTER_PROBE_MIN_ROWS = 12
+# …and the ADOPTION test, which is what lets the gate above stay loose: small
+# integers, ASCENDING down the page, that many of them, inside a strip the
+# width of a margin. Nothing but pleading-paper numbering is shaped like that,
+# so a probe that finds anything else is discarded and the page stands exactly
+# as it was — `_page_lined_rows`' own rule for the desplice retry. Five is
+# `_pleading_gutter`'s own floor, asked here of the same numbers.
+_GUTTER_OCR_MIN_RUN = 5
+
+
+def _span_is_sideways(sp):
+    """True when a span runs crosswise to the reading direction — a firm's mark
+    set up the side of the page, an e-filing stamp, a scan's rotated debris.
+    One definition, asked by the gutter probe and by the positional renderer
+    alike, so neither can decide "sideways" differently from the other."""
+    d = sp.get("_dir") or (1.0, 0.0)
+    return abs(d[0] - 1.0) > 0.05 or abs(d[1]) > 0.05
+
+
+def _gutter_probe_strip(page):
+    """The margin strip of `page` to re-read for line numbers, or None.
+
+    Bounded by what stands on either side of it: the right edge of any ROTATED
+    text (a firm's sidebar, an e-filing stamp set up the page) on the left, and
+    the leftmost HORIZONTAL word on the right. Both are measured off the page's
+    own text layer — the same two edges `_sidebar_spans` reasons about — so the
+    crop is the margin the numbers sit in and nothing else."""
+    import fitz
+
+    try:
+        spans = _page_text_spans(page)
+    except Exception:
+        return None
+    if not spans:
+        return None
+    upright = [sp for sp in spans if not _span_is_sideways(sp)]
+    if not upright or len(_cluster_rows(upright)) < _GUTTER_PROBE_MIN_ROWS:
+        return None
+    body_left = min(sp["bbox"][0] for sp in upright)
+    rot_right = max([sp["bbox"][2] for sp in spans
+                     if _span_is_sideways(sp)] or [0.0])
+    x0 = min(rot_right + _GUTTER_STRIP_PAD, body_left - _GUTTER_STRIP_PAD)
+    x1 = body_left - _GUTTER_STRIP_PAD
+    if x1 - max(x0, 0.0) < _GUTTER_STRIP_MIN_PT:
+        return None
+    return fitz.Rect(max(x0, 0.0), 0, x1, page.rect.height)
+
+
+def _gutter_probe_reads_as_numbering(probe_page):
+    """True when the strip `probe_page` holds pleading-paper NUMBERING: at
+    least `_GUTTER_OCR_MIN_RUN` small integers standing in ascending order
+    down the strip.
+
+    No x-clustering, unlike `_pleading_gutter`: the crop IS the column, so
+    every number the probe read is in one band by construction, and the two
+    are asking one question of one set of numbers. ASCENDING is the whole of
+    what separates a gutter from the other digits a margin can carry (a
+    stamp's date, a Bates number, a page fraction), which arrive in no
+    order."""
+    try:
+        blocks = probe_page.get_text("dict")["blocks"]
+    except Exception:
+        return False
+    found = []
+    for b in blocks:
+        if "lines" not in b:
+            continue
+        for ln in b["lines"]:
+            for sp in ln["spans"]:
+                t = sp["text"].strip()
+                if re.fullmatch(r"\d{1,2}", t) and 1 <= int(t) <= 30:
+                    found.append((_span_baseline(sp), int(t)))
+    if len(found) < _GUTTER_OCR_MIN_RUN:
+        return False
+    nums = [n for _y, n in sorted(found)]
+    best = run = 1
+    for a, b in zip(nums, nums[1:]):
+        run = run + 1 if b > a else 1
+        best = max(best, run)
+    return best >= _GUTTER_OCR_MIN_RUN
+
+
+def _ocr_gutter_column(doc, log):
+    """Re-read the line-number margin of any page that has text but no
+    recognisable gutter, and lay the numbers into its text layer.
+
+    See the note above: a page-wide OCR pass drops the column whole, and the
+    page then loses the entire pleading path — line numbering, the caption's
+    two columns, the sidebar exclusion and the per-column scrub. Returns the
+    number of pages whose gutter was recovered."""
+    try:
+        import pytesseract
+        from PIL import Image
+    except ImportError:
+        return 0
+    tess = _find_tesseract()
+    if not tess or not _tesseract_usable(tess, log):
+        return 0
+    pytesseract.pytesseract.tesseract_cmd = tess
+
+    import io
+    import fitz
+
+    done = 0
+    for page in doc:
+        if not page.get_text("text").strip():
+            continue                 # no text at all: `_ocr_pdf`'s page to take
+        if _pleading_gutter(page) is not None:
+            continue                 # the column is already there to read
+        rect = _gutter_probe_strip(page)
+        if rect is None:
+            continue
+        try:
+            clip = fitz.Rect(rect * page.rotation_matrix)
+            clip.normalize()
+            pix = page.get_pixmap(dpi=_ocr_base_dpi(page), clip=clip)
+            img = Image.open(io.BytesIO(pix.tobytes("png")))
+            ocr_bytes = pytesseract.image_to_pdf_or_hocr(
+                img, extension="pdf", config=_GUTTER_OCR_CONFIG,
+                timeout=_ocr_page_timeout())
+            with fitz.open(stream=ocr_bytes, filetype="pdf") as probe:
+                ok = _gutter_probe_reads_as_numbering(probe[0])
+        except Exception as e:
+            log.warning(f"  Gutter OCR: page {page.number + 1} margin could "
+                        f"not be read ({e}); leaving it")
+            continue
+        if not ok:
+            continue                 # not numbering: the page stands as it was
+        try:
+            with fitz.open(stream=ocr_bytes, filetype="pdf") as ocr_doc:
+                page.show_pdf_page(rect, ocr_doc, 0, overlay=True,
+                                   rotate=page.rotation)
+        except Exception as e:
+            log.warning(f"  Gutter OCR: could not overlay page "
+                        f"{page.number + 1} ({e})")
+            continue
+        found = _pleading_gutter(page)
+        if found is None:
+            # The probe read numbering and the page still has no column. Said
+            # out loud rather than passed over: the overlay landed, so the
+            # digits are in the layer, and a run that quietly did nothing
+            # about it is the silence this pass exists to break.
+            log.warning(f"  Gutter OCR: page {page.number + 1} margin read as "
+                        f"line numbering, but the page still shows no gutter "
+                        f"column")
+            continue
+        done += 1
+        log.info(f"  Gutter OCR: page {page.number + 1} recovered "
+                 f"{len(found[1])} line number(s) its page-wide OCR had "
+                 f"dropped")
+    if done:
+        log.info(f"  Gutter OCR: recovered the line-number column on {done} "
+                 f"page(s), which keeps their pleading-paper rendering")
+    return done
+
+
 def _reocr_garbled_pages(doc, log):
     """Rebuild the text layer of any page whose extracted text looks garbled.
 
@@ -3311,6 +3510,115 @@ _CAPTION_DIVIDER_RE = re.compile(r"^[)(|\]\[]+$")
 # separates them (") Case No.: 25STCV37838"). Only a CLOSING brace is stripped,
 # and only with whitespace after it — "(FAC, p. 8:17-18.)" must survive intact.
 _CAPTION_DIVIDER_LEAD_RE = re.compile(r"^[)\]|]+\s+")
+
+# …and on many title pages the box around the parties is not DRAWN at all: the
+# older California caption rules the party column's right edge with a run of
+# closing parentheses, one to a printed line, where another filing draws a
+# vertical rule. `_page_rules` reads LINE ART and sees nothing of it, so such a
+# page had no column boundary to split at: the party names and the case-number
+# column came apart only where the printed gap happened to exceed
+# `_COLUMN_GAP_MIN`, and where the brace sits hard against the right column
+# (")  Case No. 25STCV37838") there is no such gap — the two columns welded
+# into one run that no party term can match, which is the extraction failure
+# `_split_row_columns` exists to prevent, arriving from the one direction it
+# could not see.
+#
+# A brace column is the page saying where the column ends, exactly as a rule
+# does, so it is READ AS ONE and handed to `_split_row_columns` through the
+# same `rules=` seam — one definition of a column boundary, for the reason
+# `_weld_core` is shared.
+#
+# The corroboration is REPETITION AT ONE X. A lone ")" is punctuation; a
+# segment that is nothing but brace glyphs, standing within `_BRACE_RULE_X_TOL`
+# of the same x on `_BRACE_RULE_MIN_ROWS` distinct rows, with text somewhere to
+# its left and text somewhere to its right, is furniture. Text on BOTH SIDES is
+# what refuses a trailing ")" that closes every line of a parenthetical, and
+# the sides are asked of the COLUMN rather than of each row: a caption row
+# whose left half is blank ("        )  Case No. …") is the commonest row the
+# divider stands on.
+#
+# That repetition is also what lets the class admit the shapes a SCAN makes of
+# a parenthesis — "|", "J", "j", "l", "1", "I" — none of which is a word on its
+# own, and none of which repeats down one column of a page by accident. A
+# MAJORITY of the column must still be a true brace, so a column of "I" alone
+# never qualifies however often it repeats.
+_BRACE_RULE_CHARS = ")(][}{|"
+_BRACE_RULE_OCR_CHARS = "JjlI1!i/\\"
+_BRACE_RULE_MIN_ROWS = 4
+_BRACE_RULE_X_TOL = 4.0
+_BRACE_RULE_MAX_RUN = 3     # chars; ")))" is a scan's doubled edge, not a word
+
+
+def _brace_rule_segment(text):
+    """True when `text` is nothing but caption-divider glyphs — a short run of
+    braces, or of the shapes a scan reads one as. Says nothing on its own about
+    whether this is a divider; `_page_brace_rules` decides that from where the
+    segment stands and how often."""
+    t = (text or "").strip()
+    if not t or len(t) > _BRACE_RULE_MAX_RUN:
+        return False
+    return all(c in _BRACE_RULE_CHARS or c in _BRACE_RULE_OCR_CHARS for c in t)
+
+
+def _page_brace_rules(rows):
+    """The PRINTED caption dividers of a page as [(x0, x1)] — the merged glyph
+    extent of each brace column, read as the vertical rule it stands in for
+    (see the note above). `rows` is `_cluster_rows`' output; returns [] for the
+    ordinary page, which is every page that draws its caption box or has no
+    caption at all.
+
+    The EXTENT and not the centre, because both edges are boundaries: the
+    column's left edge parts it from the party names and its right edge from
+    the case-number column, so the brace comes out as a segment of its own and
+    is dropped whole. A centre alone lies inside the glyph, where no split can
+    fall, and would leave the brace welded to whichever side is nearer."""
+    cands = []             # (x0, x1, row index, is a true brace, left, right)
+    for i, row in enumerate(rows):
+        spans = sorted(row["spans"], key=lambda sp: sp["bbox"][0])
+        for k, sp in enumerate(spans):
+            t = sp["text"].strip()
+            if not _brace_rule_segment(t):
+                continue
+            cands.append((sp["bbox"][0], sp["bbox"][2], i,
+                          all(c in _BRACE_RULE_CHARS for c in t),
+                          k > 0, k < len(spans) - 1))
+    cands.sort()
+    out, i = [], 0
+    while i < len(cands):
+        j = i
+        while (j + 1 < len(cands)
+               and cands[j + 1][0] - cands[i][0] <= _BRACE_RULE_X_TOL):
+            j += 1
+        group = cands[i:j + 1]
+        i = j + 1
+        if len({g[2] for g in group}) < _BRACE_RULE_MIN_ROWS:
+            continue
+        if sum(1 for g in group if g[3]) * 2 <= len(group):
+            continue                # mostly OCR look-alikes: not a brace column
+        if not any(g[4] for g in group) or not any(g[5] for g in group):
+            continue                # nothing on one side of it: punctuation
+        out.append((min(g[0] for g in group), max(g[1] for g in group)))
+    return out
+
+
+def _brace_rule_edges(brace_rules):
+    """Both edges of every brace column, as `_split_row_columns` takes them: a
+    rule splits where it lies BETWEEN two spans, so a column that is itself a
+    span needs a rule on each side of it."""
+    return [x for x0, x1 in brace_rules for x in (x0 - 0.5, x1 + 0.5)]
+
+
+def _is_caption_divider(text, x=None, brace_rules=()):
+    """True when a row segment is the caption box's own EDGE rather than text —
+    a brace run outright, or one of the scan's look-alikes standing where
+    `_page_brace_rules` found a divider column. Asked at both sites that build
+    row segments, so the numbered rows and the out-of-band ones cannot answer
+    it differently."""
+    if _CAPTION_DIVIDER_RE.match(text):
+        return True
+    return (x is not None and brace_rules and _brace_rule_segment(text)
+            and any(x0 - _BRACE_RULE_X_TOL <= x <= x1 + _BRACE_RULE_X_TOL
+                    for x0, x1 in brace_rules))
 
 
 def _span_baseline(sp):
@@ -4145,6 +4453,61 @@ def _sidebar_image_rect(rect, line_col):
             and not (rect.y1 < band_top or rect.y0 > band_bot))
 
 
+def _pair_stacked_rows(stacks, tol):
+    """The printed lines of one gutter number's column stacks, top to bottom,
+    each as [(x0, row_y, text)].
+
+    `stacks` is {band: {row_y: [x0, text]}} — the number's segments bucketed
+    into page columns. Rows are paired on their BASELINE (see the note at the
+    call site): a row joins the line being built when it sits within the
+    pairing tolerance of it and its column has not already put a row on that
+    line, since two rows of one column are two lines of that column.
+
+    The tolerance is the gutter's own LEAD — twice `tol`, which is the whole
+    span a number's rows can occupy, since Step 4 admits a row only within half
+    a lead of the number. Two columns of a caption are set at their own
+    rhythms and their baselines routinely disagree by most of a line ("deceased;
+    and GABLE RAMSEY;" against "THIRD AMENDED COMPLAINT", 15.6 pt apart on a
+    measured title page), so a half-lead bound split the caption into a line
+    per column and read as though the page had twice the lines it has.
+
+    What keeps that wide tolerance honest is the same-column rule above, and
+    the narrowing under it: where any single column holds two rows under this
+    number, the tolerance drops to half the closest pair of them, so it can
+    never reach from one line of the densest column to the next.
+
+    …and a row of a column that ALREADY has one on this line joins it anyway
+    when it sits within `_cluster_rows`' own attachment slack: that close, it
+    is a raised or dropped FRAGMENT of the line (a superscript "5th", a
+    footnote mark) rather than a line of its own. `_cluster_rows` attaches such
+    a span to its base row by size, and the size test cannot always see one
+    here — the gutter numbers are set larger than the body and are excluded
+    from the body spans, so the median a superscript is measured against moves
+    with them. Same slack, same reason, asked one level out."""
+    leads = [b - a
+             for col in stacks.values()
+             for a, b in zip(sorted(col), sorted(col)[1:]) if b - a > 0]
+    pair_tol = min(2 * tol, min(leads) / 2) if leads else 2 * tol
+    frag_tol = _ROW_BASELINE_TOL + 2.0
+    at = {}                                   # row_y -> [(band, x, text)]
+    for band, col in stacks.items():
+        for row_y, (x, text) in col.items():
+            at.setdefault(row_y, []).append((band, x, text))
+    lines = []
+    for row_y in sorted(at):
+        bands_here = {b for b, _x, _t in at[row_y]}
+        gap = row_y - lines[-1]["top"] if lines else None
+        if lines and (gap <= pair_tol
+                      if not (lines[-1]["bands"] & bands_here)
+                      else gap <= frag_tol):
+            lines[-1]["bands"] |= bands_here
+            lines[-1]["segs"] += [(x, row_y, t) for _b, x, t in at[row_y]]
+        else:
+            lines.append({"top": row_y, "bands": set(bands_here),
+                          "segs": [(x, row_y, t) for _b, x, t in at[row_y]]})
+    return [ln["segs"] for ln in lines]
+
+
 def _detect_line_anchors(page, desplice=False, ink=None):
     """Per-page: find pleading-paper line numbers and gather body text on
     each numbered row.
@@ -4217,6 +4580,12 @@ def _detect_line_anchors(page, desplice=False, ink=None):
     rows = _cluster_rows(body_spans)
     if not rows:
         return []
+    # …and the dividers the page PRINTS rather than draws: an older caption
+    # rules its party column with a run of ")" down the page, which the line
+    # art above cannot see. Read as rules and merged with them, so every split
+    # below asks one question about one list (`_page_brace_rules`).
+    brace_rules = _page_brace_rules(rows)
+    vrules = sorted(vrules + _brace_rule_edges(brace_rules))
 
     # Step 4: assign every row to its nearest gutter line number.
     rows_by_num = defaultdict(list)
@@ -4245,7 +4614,7 @@ def _detect_line_anchors(page, desplice=False, ink=None):
     band_starts = []
     for num in rows_by_num:
         for row in rows_by_num[num]:
-            for x, _t in _split_row_columns(row["spans"]):
+            for x, _t in _split_row_columns(row["spans"], rules=vrules):
                 for bx in band_starts:
                     if abs(x - bx) <= _COLUMN_GAP_MIN:
                         seed_rows[bx].add(id(row))
@@ -4282,16 +4651,36 @@ def _detect_line_anchors(page, desplice=False, ink=None):
     #
     # So: bucket the number's row segments into page COLUMNS; within a column
     # keep an ordered stack of its distinct physical rows (same-row pieces
-    # joined). The number then emits `depth` lines, where depth is the tallest
-    # column's stack and line k pairs the k-th row of every column, left to
-    # right. The first line carries the gutter number; deeper lines are
+    # joined). The first line carries the gutter number; deeper lines are
     # continuations (line_num=None) so a pinpoint "p.X:Y" never lands on one.
+    #
+    # The lines are paired by BASELINE, not by INDEX within each column's
+    # stack. Index pairing — "line k is the k-th row of every column" — is
+    # right only while every column under the number has the same number of
+    # rows, and a title page is exactly where that fails: the e-filing FILED
+    # stamp beside the attorney block sets its own rows at its own lead, and
+    # under one gutter number the attorney block had ONE row where the stamp
+    # had TWO. The k-th rows then belonged to different printed lines, and a
+    # delivered export read
+    #
+    #    3  Los Angeles, California 90048   David W. Slayton, …Clerk of Court   M. Vermilye  Deputy
+    #       By:
+    #
+    # — the clerk's name lifted off the line it was signed on and the "By:"
+    # left alone underneath it. Paired on the baseline both come out on the
+    # line the page prints them on.
+    #
+    # Two rows of the SAME column are never one line however close they sit,
+    # which is what keeps a column's own consecutive lines apart; and the
+    # tolerance is bounded by half the densest column's lead, so a caption
+    # whose right column runs at 11 pt against a 24 pt gutter still pairs each
+    # of its lines with the party line beside it rather than the next one down.
     results = []
     for num in sorted(rows_by_num):
         stacks = {}                              # band -> {row_y: [x0, text]}
         for row in sorted(rows_by_num[num], key=lambda r: r["y"]):
             for x, text in _split_row_columns(row["spans"], rules=vrules):
-                if _CAPTION_DIVIDER_RE.match(text):
+                if _is_caption_divider(text, x, brace_rules):
                     continue
                 text = _CAPTION_DIVIDER_LEAD_RE.sub("", text)
                 if not text:
@@ -4304,20 +4693,27 @@ def _detect_line_anchors(page, desplice=False, ink=None):
                     col[row["y"]] = [x, text]
         if not stacks:
             continue
-        bands = sorted(stacks)
-        depth = max(len(col) for col in stacks.values())
-        for k in range(depth):
-            segs = []
-            for b in bands:
-                items = sorted(stacks[b].items())     # by row_y, top to bottom
-                if k < len(items):
-                    row_y, (x, text) = items[k]
-                    segs.append((x, row_y, text))
-            if not segs:
-                continue
-            segs.sort()                               # left to right by x0
+        lines = _pair_stacked_rows(stacks, tol)
+        # The number goes on the first line of its LEFTMOST column, not simply
+        # on the first line. A gutter number numbers a line of the pleading's
+        # BODY, and the body is the leftmost column: the furniture that shares
+        # a number with it — an e-filing stamp, a caption's case-number column
+        # — stands to its right. With the lines paired by baseline that
+        # furniture can now start ABOVE the body line (a small-type stamp sets
+        # three rows inside the half-lead of line 1), and numbering the topmost
+        # line put " 1" in front of the stamp's second line while the attorney
+        # line it numbers came out as a continuation under it. A number whose
+        # rows are ALL furniture keeps the first line, which is what it always
+        # had. Every other line is a continuation (line_num=None), so a
+        # pinpoint "p.X:Y" never lands on one — above the numbered line as
+        # readily as below it.
+        body_band = min(stacks)
+        best = next((k for k, line in enumerate(lines)
+                     if any(_band_of(x) == body_band for x, _y, _t in line)), 0)
+        for k, line in enumerate(lines):
+            segs = sorted(line)                       # left to right by x0
             results.append({
-                "line_num": num if k == 0 else None,
+                "line_num": num if k == best else None,
                 "body_text": " ".join(t for _x, _y, t in segs),
                 "segments": [(x, t) for x, _y, t in segs],
                 "y_mid": min(y for _x, y, _t in segs),
@@ -4393,7 +4789,7 @@ def _detect_line_anchors(page, desplice=False, ink=None):
     for row in _cluster_rows(stray):
         segs = []
         for x, text in _split_row_columns(row["spans"], rules=vrules):
-            if _CAPTION_DIVIDER_RE.match(text):
+            if _is_caption_divider(text, x, brace_rules):
                 continue
             text = _CAPTION_DIVIDER_LEAD_RE.sub("", text)
             if text:
@@ -25505,6 +25901,37 @@ _VIS_GAP_PT = 9.0
 _VIS_MAX_BLANKS = 8
 
 
+def _margin_sideways_dropped(spans):
+    """`spans` less the text printed SIDEWAYS IN THE LEFT MARGIN — a firm's
+    mark set up the side of the page, an e-filing "Electronically Received"
+    stamp, a scan's rotated debris.
+
+    `_sidebar_spans` states the rule and the pleading path applies it, measured
+    off the line-number gutter. A page that is NOT pleading paper — or one
+    whose gutter this run could not find — reaches the positional renderer
+    instead, which asked nothing: a title page whose numbering a page-wide OCR
+    pass had dropped exported with "Electronically / Received / 12/12/2022 /
+    11:04 / AM" laid word by word through the middle of its caption, each word
+    on a row of its own at the column its x dictated.
+
+    Here the gutter is not available to measure from, so the edge is the
+    leftmost DOMINANT-DIRECTION word: a span running crosswise that ends before
+    the page's own text begins is in the margin outside the document. Nothing a
+    filing wants read is printed sideways there — the rule `_sidebar_spans`
+    already states — and the reading frame has been settled by this point
+    (`_reading_frame_spans`), so "crosswise" means crosswise to the page's own
+    dominant direction rather than to the PDF's unrotated axes."""
+    if not spans:
+        return spans
+    upright = [sp["bbox"][0] for sp in spans if not _span_is_sideways(sp)]
+    if not upright:
+        return spans                 # a wholly sideways page is not a margin
+    left = min(upright) - _SIDEBAR_GUTTER_TOL
+    kept = [sp for sp in spans
+            if not (_span_is_sideways(sp) and sp["bbox"][2] <= left)]
+    return kept or spans
+
+
 def _page_visual_text(page):
     """Positional rendering of a page that is NOT pleading paper, a court form
     or a table — an exhibit, a cover letter, an order. Same character grid as
@@ -25522,8 +25949,8 @@ def _page_visual_text(page):
         # In the READING frame (see `_reading_frame_spans`): a rotated scan's
         # OCR layer runs up the unrotated page, and clustered as it lies
         # every word became a row of its own.
-        rows = _cluster_rows(_reading_frame_spans(
-            page, _drop_overdrawn_spans(spans)))
+        rows = _cluster_rows(_margin_sideways_dropped(_reading_frame_spans(
+            page, _drop_overdrawn_spans(spans))))
     except Exception:
         return None
     if not rows:
@@ -32883,6 +33310,17 @@ def process_pdf(pdf_path: Path, log: logging.Logger,
         ocr_changed = bool(_ocr_image_regions(doc, log)) or ocr_changed
     except Exception as e:
         log.warning(f"  Image-region OCR failed (non-fatal): {e}")
+
+    # …and put back the line-number GUTTER a page-wide OCR pass threw away.
+    # After `_ocr_pdf`, because the page it fixes is the page that pass has
+    # just supplied a text layer for, and before the export is extracted, so
+    # every reader downstream meets the numbers through its own ordinary
+    # question. Additive and non-fatal, like the pass above: nothing is
+    # redacted, and a probe that does not read as numbering is discarded.
+    try:
+        ocr_changed = bool(_ocr_gutter_column(doc, log)) or ocr_changed
+    except Exception as e:
+        log.warning(f"  Gutter-column OCR failed (non-fatal): {e}")
 
     # …and CORRECT the text layer where an operator `*` says a word is a scan
     # error (`_pn_fix_ocr_in_pdf`), BEFORE the export is extracted from it, so

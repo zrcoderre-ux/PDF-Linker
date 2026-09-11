@@ -202,3 +202,54 @@ class TestPlainPageVisualText:
         txt = (tmp_path / "Text Files" / "exhibit.txt").read_text("utf-8")
         line = next(l for l in txt.splitlines() if "EXHIBIT A" in l)
         assert line.index("EXHIBIT") == round((250 - 72) / P._VIS_CHAR_W)
+
+
+# ── and what is printed SIDEWAYS in the margin is not the document ──────────
+
+def _sideways_page():
+    """A page off pleading paper carrying a rotated e-filing stamp in its left
+    margin — the shape a title page takes when its gutter could not be read."""
+    doc = fitz.open()
+    pg = doc.new_page(width=612, height=792)
+    for i, line in enumerate(["SUPERIOR COURT OF THE STATE OF CALIFORNIA",
+                              "HELEN RASHO, an individual,",
+                              "         Plaintiff,",
+                              "    vs.",
+                              "QUILLMARK BUILDERS, LLC,"]):
+        pg.insert_text((72, 120 + 30 * i), line, fontsize=11)
+    pg.insert_text((14, 560), "Electronically Received 12/12/2022 11:04 AM",
+                   fontsize=9, rotate=90)
+    return doc
+
+
+def test_a_rotated_margin_stamp_never_reaches_the_positional_render():
+    """`_sidebar_spans` states the rule and the pleading path applies it,
+    measured off the line-number gutter. A page that reaches the positional
+    renderer instead asked nothing, so the stamp was laid word by word through
+    the middle of the caption, each word on a row of its own."""
+    text = P._page_visual_text(_sideways_page()[0])
+    assert "Electronically" not in text
+    assert "HELEN RASHO, an individual," in text
+
+
+def test_the_stamp_is_dropped_for_standing_in_the_margin_not_for_turning():
+    """Sideways is only half of it: the edge is the leftmost word of the page's
+    own text, so a rotated label INSIDE the body is still the document's."""
+    doc = fitz.open()
+    pg = doc.new_page(width=612, height=792)
+    pg.insert_text((72, 200), "HELEN RASHO, an individual,", fontsize=11)
+    pg.insert_text((300, 400), "EXHIBIT A", fontsize=11, rotate=90)
+    assert "EXHIBIT A" in (P._page_visual_text(pg) or "")
+
+
+def test_a_page_that_is_wholly_sideways_keeps_every_word():
+    """A landscape scan read upright is not a margin — and
+    `_reading_frame_spans` has already turned the frame by the time this is
+    asked, so "sideways" means sideways to the page's own dominant direction."""
+    doc = fitz.open()
+    pg = doc.new_page(width=612, height=792)
+    for i, line in enumerate(["FIRST LINE", "SECOND LINE", "THIRD LINE"]):
+        pg.insert_text((200 + 30 * i, 600), line, fontsize=11, rotate=90)
+    text = P._page_visual_text(pg) or ""
+    for line in ("FIRST LINE", "SECOND LINE", "THIRD LINE"):
+        assert line in text

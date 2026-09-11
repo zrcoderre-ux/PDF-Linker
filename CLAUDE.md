@@ -3895,7 +3895,17 @@ and the flowing text that drives citation detection still carries the
 sidebar, which is not the deliverable (the do-not-share original copy is
 built from the same rows as the export, so it loses the sidebar with it).
 A caption page with too few numbers for the pleading path is rendered by
-`_page_visual_text`, which has no gutter to measure and is unchanged.
+`_page_visual_text`, which has no gutter to measure — and which asked nothing
+at all until a scanned title page reached it: its numbering had been thrown
+away by the page-wide OCR pass (below), so it fell to the positional renderer,
+and the rotated "Electronically Received 12/12/2022 11:04 AM" stamp came out
+laid word by word through the middle of the caption, each word on a row of its
+own at the column its x dictated. `_margin_sideways_dropped` asks the same
+question there with the one edge that path HAS: a span running crosswise to the
+page's own dominant direction (the frame having already been settled by
+`_reading_frame_spans`) that ends before the leftmost upright word is in the
+margin outside the document. A rotated label INSIDE the body — an exhibit tab —
+is untouched, and a wholly sideways page is not a margin and keeps every word.
 **…and the mark that is a PICTURE is never READ** (`_sidebar_image_rect`,
 `_pleading_gutter`, in `_ocr_image_regions`). The firm that reported this
 prints its mark as an IMAGE — two image objects at x 25-54 pt beside numbers
@@ -3910,6 +3920,78 @@ the words never exist: `_pleading_gutter` is Steps 1-2 of
 measure the margin one way. A stamp pasted as a picture above line 1 and a
 signature image in the body are neither wholly left of the gutter nor
 beside the band, and are read as before.
+
+**A TITLE PAGE's caption box is whatever DRAWS it — a rule, or a column of
+RIGHT PARENTHESES** (`_page_brace_rules`, `_brace_rule_segment`,
+`_brace_rule_edges`, `_is_caption_divider`). The older California caption rules
+the party column's right edge with a run of closing parentheses, one to a
+printed line, where another filing draws a vertical rule. `_page_rules` reads
+LINE ART and sees nothing of it, so such a page had no column boundary at all:
+the party names and the case-number column came apart only where the printed
+gap happened to exceed `_COLUMN_GAP_MIN`, and a caption sets the brace hard
+against both — so on a measured page four rows of eight welded into runs that
+exist nowhere on it, the ")" riding along inside them ("in interest to THE
+ESTATE OF JEPHSON RASHO, ) Consolidated Case No. …"). That is the extraction
+failure `_split_row_columns` exists to prevent, arriving from the one direction
+it could not see, and a name spliced like that matches no pseudonymizer term,
+so it is a disclosure bug as well as an ugly export. A brace column is the page
+saying where its column ends, exactly as a rule does, so it is READ AS ONE and
+handed to `_split_row_columns` through the same `rules=` seam — one definition
+of a column boundary, for the reason `_weld_core` is shared — and to Step 5's
+band seeding with it, or the bands are drawn without the boundary the splits
+then use. Both EDGES of the column and not its centre, because both are
+boundaries: the left edge parts it from the party names and the right edge from
+the case-number column, so the brace comes out as a segment of its own and is
+dropped whole, where a centre lies inside the glyph and no split can fall
+there. The corroboration is REPETITION AT ONE X — a lone ")" is punctuation,
+while a segment that is nothing but brace glyphs, standing within
+`_BRACE_RULE_X_TOL` of one x on `_BRACE_RULE_MIN_ROWS` distinct rows with text
+somewhere to its left AND somewhere to its right, is furniture. Text on both
+sides is what refuses a trailing ")" closing every line of a parenthetical, and
+the sides are asked of the COLUMN rather than of each row, since a caption row
+whose left half is blank is the commonest row the divider stands on. That
+repetition is also what lets the class admit the shapes a SCAN makes of a
+parenthesis — "|", "J", "j", "l", "1", "I" — none of which is a word on its own
+and none of which repeats down one column by accident; a MAJORITY must still be
+a true brace, so a column of "I" never qualifies however often it repeats.
+
+**…and a gutter number's stacked rows are paired by BASELINE, not by INDEX**
+(`_pair_stacked_rows`). A dense letterhead or caption sets several physical rows
+under ONE gutter number, so Step 6 buckets the number's segments into page
+columns and emits a line per row of the stack. It paired them by INDEX — "line
+k is the k-th row of every column" — which is right only while every column
+under the number holds the same number of rows, and a title page is exactly
+where that fails: the e-filing FILED stamp beside the attorney block sets its
+own rows at its own lead, so under one number the attorney block had ONE row
+where the stamp had TWO, the k-th rows belonged to different printed lines, and
+a delivered export read `3  Los Angeles, California 90048   David W. Slayton,
+…Clerk of Court   M. Vermilye  Deputy` over a bare `By:` — the clerk's name
+lifted off the line it was signed on and the "By:" left alone underneath it.
+Paired on the baseline both come out on the line the page prints them on. Two
+rows of the SAME column are never one line, which keeps a letterhead's own
+consecutive rows apart ("Paul Green, Esq. (SBN 237707)" above "LAW OFFICE OF
+PAUL GREEN"); a row within `_cluster_rows`' own attachment slack of one is a
+raised FRAGMENT — a superscript "5th" the size test could not see, because the
+gutter numbers are set larger than the body and are excluded from the body
+spans, so the median a superscript is measured against moves with them — and
+joins it; and the tolerance is the gutter's whole LEAD, which is the whole span
+a number's rows can occupy, narrowed to half the closest pair of rows any
+single column holds. The wide bound is what a caption needs: its two columns
+run at their own rhythms and their baselines routinely disagree by most of a
+line (15.6 pt on a measured title page, "deceased; and GABLE RAMSEY;" against
+"THIRD AMENDED COMPLAINT"), so a half-lead bound read the page as having twice
+the lines it has. The narrowing is what keeps it honest.
+**…and the NUMBER goes on the first line of its LEFTMOST column.** A gutter
+number numbers a line of the pleading's BODY, and the body is the leftmost
+column — the furniture sharing a number with it (a stamp, a caption's
+case-number column) stands to its right. Paired by baseline that furniture can
+start ABOVE the body line, since a small-type stamp sets three rows inside the
+half-lead of line 1, and numbering the topmost line put " 1" in front of the
+stamp's second line while the attorney line it numbers came out as a
+continuation under it. A number whose rows are ALL furniture keeps the first
+line, which is what it always had; every other line is a continuation
+(`line_num=None`), so a pinpoint "p.X:Y" never lands on one — above the numbered
+line as readily as below it.
 
 **The export mirrors the page's GEOMETRY, so it reads SIDE BY SIDE with the
 PDF** (`_visual_row_text` / `_page_visual_text`). Joining a row's pieces with
@@ -4868,6 +4950,50 @@ survive to fail.
   IDEMPOTENT, which matters because the tool replaces the source PDF: the
   overlay is in the file the next run opens, and until now nothing but our own
   OCR being deterministic stopped a re-run stacking another copy.
+- **A page-wide OCR pass throws the line-number GUTTER away, and the TITLE PAGE
+  is what it costs** (`_ocr_gutter_column`, `_gutter_probe_strip`,
+  `_gutter_probe_reads_as_numbering`). A pleading's line numbers are a narrow
+  column of one- and two-digit numbers in the left margin, and Tesseract's
+  layout analysis reads a strip that far from the block it is segmenting as
+  furniture. Measured on a scanned third amended complaint, the page's own OCR
+  recovered every word of the caption — the attorney block, both caption
+  columns, the FILED stamp — and NOT ONE of the numbers 1 through 28.
+  What that costs is not the numbering. `_pleading_gutter` finding no column
+  makes `_page_lined_rows` decline the page, and with it goes the whole
+  pleading path: the two-column caption split (`_split_row_columns`), the
+  firm-sidebar exclusion (`_sidebar_spans`), the per-column scrub
+  (`_pn_apply_page_rows`) and any "p.X:Y" to cite the page by. So that title
+  page exported as one positional run with the rotated "Electronically
+  Received" margin stamp laid through the middle of its caption and the party
+  column welded to the case-number column — a scanned pleading rendered as
+  though it were an exhibit photograph, on the one page of a filing that states
+  who the parties are.
+  The numbers were legible the whole time: cropping to the margin removes the
+  layout decision that discarded them, and the strip reads back 1-28 at high
+  confidence. So the STRIP is re-read on its own and the digits are laid into
+  the page's text layer, where `_pleading_gutter` and every reader downstream
+  meets them through its own ordinary question — `_ocr_image_regions`'
+  discipline, and the reason no new plumbing is needed anywhere else.
+  ADDITIVE, like that pass and unlike `_reocr_garbled_pages`: nothing is
+  redacted, no existing text is replaced, and the worst case is a wasted
+  render. DIGITS ONLY (`tessedit_char_whitelist`), so the pass cannot put a
+  WORD into the margin however it reads the sidebar's letters. The strip is
+  bounded by what stands on either side of it — the right edge of any ROTATED
+  text, the leftmost HORIZONTAL word — the two edges `_sidebar_spans` already
+  reasons about, so the crop is the margin the numbers sit in and nothing else.
+  The GATE is cheap and the ADOPTION test is what lets it stay loose: a page
+  must have text (a textless one is `_ocr_pdf`'s), no gutter already, a margin
+  at least `_GUTTER_STRIP_MIN_PT` wide and `_GUTTER_PROBE_MIN_ROWS` rows — an
+  exhibit photograph and a slip sheet have a handful, and probing every scanned
+  page of a 119-page exhibit set would spend ~0.3 s a page to find nothing —
+  and then the probe is ADOPTED only where it reads as `_GUTTER_OCR_MIN_RUN`
+  small integers ASCENDING down the strip. Nothing but pleading-paper numbering
+  is shaped like that; a stamp's date, a Bates number and a page fraction all
+  put digits in a margin, in no order. No x-clustering, unlike
+  `_pleading_gutter`: the crop IS the column, so every number the probe read is
+  in one band by construction and the two are asking one question of one set of
+  numbers. Cost where it fires: ~0.08 s to render and ~0.22 s to read, against
+  the seconds of full-page OCR the page has already paid.
 - **A page nothing could READ is UNREAD, and every copy of it says so**
   (`_note_unread_pages`, `_UNREAD_ATTR`, `_UNREAD_RUN`, the `_unread` decline
   in `_ocr_pdf`). The low-dpi, rebuilt-layer and ink-form banners all exist
