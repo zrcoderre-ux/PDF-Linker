@@ -5009,6 +5009,19 @@ capped near 2 GB however much the machine has; split the folder or move to a
 OS kills outright leaves no line at all, which is why the long phases time
 themselves — see the performance notes.
 
+**The log's first line names the MACHINE and the PYTHON that wrote it**
+(`_machine_name`, in `main`'s run-started line). The log recorded the folder
+and nothing about where it came from — so a log read on one computer says
+nothing about the computer that produced it, and a case folder routinely moves
+between two. A run whose exhibits went unread cost three rounds of diagnosis
+for exactly that: the OCR dependency was missing on the machine that ran the
+folder and present on the machine the log was read on, and no line in the file
+could tell them apart. The INTERPRETER is the other half of one question, since
+a machine can easily have several Pythons and both `_ocr_pdf` and
+`_require_pymupdf` fail on the wrong one — which is why each names it in its own
+pip line (`_console_python`). Best effort: a host with no name to give yields
+"?" rather than failing a run.
+
 **A folder that is NOT THERE says so, somewhere it can be found**
 (`_report_missing_folder`, `_missing_folder_message`,
 `_known_folder_redirects`). `main` checks its folder argument before anything

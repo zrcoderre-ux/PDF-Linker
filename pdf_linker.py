@@ -2480,6 +2480,17 @@ def _note_unread_pages(doc, pages, why):
         pass          # instrumentation must never take a run down
 
 
+def _machine_name():
+    """This computer's name, for the line that opens the log. Best effort: a
+    host with no name to give is not a reason to fail a run, and "?" is still
+    the truth about what could be learned."""
+    try:
+        import platform
+        return platform.node() or "?"
+    except Exception:
+        return "?"
+
+
 def _console_python():
     """The interpreter to name in a `pip install` line, as a Path.
 
@@ -35568,7 +35579,18 @@ def main():
     log = logging.getLogger("pdf_linker")
     _install_crash_logging(log)
     log.info("=" * 60)
-    log.info(f"Run started for folder: {folder} (provider={args.provider})")
+    # …and say WHICH MACHINE and WHICH PYTHON, on the line that opens the log.
+    # A log records the folder and nothing about where it came from, so a log
+    # read on one computer says nothing about the computer that produced it —
+    # and a case folder routinely moves between two. That cost three rounds of
+    # diagnosis on a run whose exhibits went unread: the dependency was missing
+    # on the machine that ran it and present on the machine the log was read on,
+    # and nothing in the file could say so. The interpreter is the other half of
+    # the same question, because a machine can easily have several Pythons and
+    # `_ocr_pdf` and `_require_pymupdf` both fail on the wrong one — which is
+    # the whole reason those two messages name it in their pip lines.
+    log.info(f"Run started for folder: {folder} (provider={args.provider}) "
+             f"— on {_machine_name()} with {sys.executable}")
     # The unread-page tally is per RUN, and `main` can be called more than once
     # in a process (the tests do), so it starts empty rather than carrying the
     # previous folder's misses into this folder's end-of-run summary.
