@@ -5241,6 +5241,57 @@ new file passes by construction — leaves it alone.
   body: **274 s → 25 s**, with the quadratic term gone (`test_scan_cost.py`
   pins the shape, and the two rewritten primitives against the code they
   replaced).
+- **Nothing on the leak path may be QUADRATIC in the document — the
+  misspelling sweep was, twice** (`_pn_word_sites`, `_pn_word_occurrences`;
+  the `near_target` memo in `fuzzy_survivor_scan`'s second-degree loop). The
+  `_in_name_run` rule read back on the tier that had grown up since.
+  `_pn_full_name_intro` and `_pn_has_name_companion` each COMPILED a pattern
+  for their candidate word and ran `finditer` over the whole export, and the
+  sweep asks both of every near-miss it finds — so the cost was (candidate
+  words) x (length of the document), and both grow together. Profiled at four
+  times the body, `_pn_full_name_intro` alone was 2.44 s of a 5.94 s sweep,
+  the single largest consumer on the leak path. The second-degree loop had
+  the same shape one level out: it walks every candidate OCCURRENCE and asks
+  the distance question against a target set that grows with the document,
+  so a word printed fifty times paid for fifty identical sweeps of it
+  (675,797 comparisons on the big body against 78,947 on the small — x8.6
+  for x4 the text).
+  Both are indexes now. The word-site index holds every maximal run of the
+  characters the two lookarounds treat as inside a word, built ONCE per body
+  and keyed on the text itself, capped at the alternating PAIR for the reason
+  `_mask_protected_citations` is: every scan runs over the export body AND
+  its column-ordered twin. It is EXACT rather than an approximation, which is
+  the whole of why it may be used — `(?<![\w'’])X(?![\w'’])` can match only
+  where such a run begins, so the index enumerates precisely the sites the
+  per-word scan visited, in the same order. Two things that exactness cost,
+  both kept: a word carrying a HYPHEN ("Smith-Jones", which the sweep's own
+  candidate pattern admits) is looked up on its LEADING run and the remainder
+  verified against the text, right lookahead included; and a word that does
+  not OPEN on a word character cannot be in an index of word runs at all, so
+  it falls back to the original scan — no caller passes one, and narrowing
+  the function on that is the stacked guess `_pn_term_is_breakable` refuses,
+  where the cost of being wrong is a site going unasked.
+  Measured: the sweep 5.92 s -> 3.09 s on a 160 KB body and x2.5 -> x2.2 per
+  doubling, with the findings BYTE-IDENTICAL across six corpora and 7,847
+  rows. What remains is irreducible without indexing the second-degree target
+  set, which the first loop does through its 3-gram index and this one
+  deliberately does not.
+  **Why it was worth doing, from the operator's own ledger.** Fitting 78
+  `--fix-leaks` passes over 20 days, elapsed ~ bytes^1.42: each doubling of a
+  folder cost x2.67 instead of x2, so 65% of all time spent in that pass was
+  excess over a linear cost, and a 1 MB folder paid 11.8 minutes where 5.2
+  was the work. On one delivered folder the leak scans took 1206 s on a
+  218-page declaration and 1132 s on a 161-page RJN while the 84-page
+  declaration beside them took 52 s — 36 minutes of a 124-minute run, all of
+  it in two documents. The tax is invisible below about 100 pages and takes
+  over above it, which is why it arrived without anyone changing anything.
+  Pinned differentially (`test_name_site_index_equivalence.py`) against a
+  VERBATIM copy of the regex it replaced, over randomized bodies: a site the
+  index misses is a name reported as a party's misspelling when the document
+  says it is a different person — which the alias pre-fill then answers with
+  `~Party`, merging a stranger into the party on the next pass — and a site
+  it invents is a real leak going quiet. Neither is a trade this project
+  makes for time.
 - **A per-value quote must not re-read the document per value**
   (`_pn_context_prep`). `_pn_context` computed `off = len(" ".join(joined))` on
   every line — re-joining the whole export per line, quadratic in it, the same
