@@ -33762,6 +33762,32 @@ def _pn_original_texts(folder, cfg):
 _PN_VOCAB_WORD_RE = re.compile(r"(?<![\w'’])([A-Za-z][a-z'’-]{1,})(?![\w'’])")
 
 
+def _pn_yes_refusal(d, vocab_screen, log, pass_label):
+    """The reason this run refuses to mint a worksheet `yes` as a name, or "".
+
+    ONE function, asked by BOTH passes. The screen shipped in `--fix-leaks`
+    alone, so a `yes` the text-only pass refused was minted by the FULL run on
+    the very next click: two paths answering one question two ways, which is
+    the shape `Pseudonymizer.leak_findings` and `_weld_core` exist to refuse.
+    The direction is the safe one — a wrong refusal costs one worksheet row
+    the operator answers again with a replacement, where a wrong mint rewrites
+    the document's own vocabulary as a surname in every export.
+
+    The reason is also the ROW's (`_PN_REFUSED_VOCAB`), so the refusal reads
+    the same in the log and in `LEAKS.xlsx` whichever pass made it."""
+    # A `phrase` is the operator's deliberate statement about a name — it says
+    # those words TOGETHER are faked — and is never screened as a blanket yes.
+    if d.get("phrase"):
+        return ""
+    why = vocab_screen(d["value"])
+    if not why:
+        return ""
+    log.warning(f"  {pass_label}: {d['value']!r} is marked yes but {why} — "
+                f"not minting it as a name. Type a replacement, or ~CANONICAL "
+                f"if it misspells a tracked name, to apply it.")
+    return _PN_REFUSED_VOCAB.format(why=why)
+
+
 def _pn_vocabulary_screen(texts):
     """A function `why(value)` -> "" when `value` may be minted as a name off
     a worksheet `yes`, else the reason it may not.
@@ -35250,16 +35276,12 @@ def _fix_leaks_mode(folder, args, cfg, log):
                         f"equals the value itself — ignoring (a self-map never "
                         f"scrubs). Type a DIFFERENT replacement.")
         else:
-            # A `phrase` is the operator's deliberate statement about a name
-            # and is never screened as a blanket yes.
-            why = None if d.get("phrase") else orig_vocab(d["value"])
+            # Screened through the one helper the FULL run also asks, so the
+            # two passes cannot answer this differently — see `_pn_yes_refusal`.
+            why = _pn_yes_refusal(d, orig_vocab, log, "--fix-leaks")
             if why:
                 rejected.append(d["value"])
-                refusals[vl] = _PN_REFUSED_VOCAB.format(why=why)
-                log.warning(f"  --fix-leaks: {d['value']!r} is marked yes but "
-                            f"{why} — not minting it as a name. Type a "
-                            f"replacement, or ~CANONICAL if it misspells a "
-                            f"tracked name, to apply it.")
+                refusals[vl] = why
                 continue
             auto_terms.append(d["value"])
     auto_terms = _pn_drop_prior_fakes_from_terms(auto_terms, prior_fakes, log)
@@ -36150,7 +36172,17 @@ def main():
         # so a decision made here lives on only in the master sheet).
         ours = {vl for vl, d in leak_decisions.items()
                 if vl in folder_decisions or _pn_decision_is_ours(d, folder.name)}
-        fix_terms, weld_follows = [], {}
+        # A worksheet `yes` is screened against the ORIGINALS here exactly as
+        # `--fix-leaks` screens it (`_pn_yes_refusal`). It shipped in that pass
+        # alone, so a value the text-only pass refused — "NAN", "JTII" — was
+        # minted as a person by the FULL run on the very next click, and the
+        # operator's two buttons disagreed about one cell. The originals are
+        # the PREVIOUS run's (this run has read no document yet, and the terms
+        # are built before it does), which is the same corpus and the same
+        # source `--fix-leaks` reads; with none at all only the all-caps rule
+        # can be asked, and that is true of both passes alike.
+        orig_vocab = _pn_vocabulary_screen(_pn_original_texts(folder, cfg)[0])
+        fix_terms, weld_follows, leak_refusals = [], {}, {}
         for vl, d in leak_decisions.items():
             if d["fix"] != "yes" or vl not in ours:
                 continue
@@ -36168,6 +36200,14 @@ def main():
                         _pn_bracket_welds(d["value"], d.get("fixcell") or ""))
                 continue
             fv = d.get("fake_values")
+            if fv is None:
+                # A bracketed keep-spec is not screened, on either pass: the
+                # bracket already says which part is not a name, so what is
+                # left is the operator's own cut and not a blanket yes.
+                why = _pn_yes_refusal(d, orig_vocab, log, "Leak worksheet")
+                if why:
+                    leak_refusals[vl] = why
+                    continue
             fix_terms.extend(fv if fv is not None else [d["value"]])
             if fv is not None:
                 # A fragment the value WELDS to its kept text ("John Doeis"
@@ -36608,7 +36648,8 @@ def main():
                                      pseudonymizer.records.values()],
                               note_for=pseudonymizer.triage_note,
                               case_name=case_label, case_aliases=case_aliases,
-                              suggest_for=pseudonymizer.alias_suggestion)
+                              suggest_for=pseudonymizer.alias_suggestion,
+                              refusals=leak_refusals)
         # Record this run's KEEP decisions into the single cross-folder master
         # KEEP sheet: every LOCAL keep (made in this folder), plus any GLOBAL
         # keep that actually protected text here (a real hit) — so Times Seen /
