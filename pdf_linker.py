@@ -10820,6 +10820,22 @@ _PN_NEVER_FAKE = frozenset({
 _PN_FORM_ID_RE = re.compile(
     r"[A-Z]{2,4}(?:-[A-Z]{1,3})?-\d{3}(?:\(\d{1,2}\))?\Z")
 
+# ...and the same shape as a SPAN, so the id is protected where it STANDS and
+# not merely as a whole value. `_pn_is_never_fake` refuses to build a term FOR
+# "MC-025"; nothing stopped a shorter term matching INSIDE one, and a term
+# matches whole words — a hyphen is no word character, so a two-letter party
+# acronym "MC" is a whole-word match in "MC-025". A delivered cause-of-action
+# attachment came out footed "NG-025", the form no longer saying which form it
+# is, and the SAME occurrence was the whole of the evidence that minted the
+# acronym (see `register_entity_acronyms`). Protection-only, like
+# `_whitelisted_url_spans`: the worst case is a value left unfaked inside a
+# token the tool already refuses to fake as a whole. Case-SENSITIVE, for the
+# reason `_PN_FORM_ID_RE` is where `_JC_FORM_NO_RE` is not — a lower-case
+# "mc-025" in prose is not a form id — and bounded on BOTH sides so a longer
+# hyphenated stamp is never half-claimed.
+_PN_FORM_ID_SPAN_RE = re.compile(
+    r"(?<![\w-])" + _PN_FORM_ID_RE.pattern.replace(r"\Z", "") + r"(?![\w-])")
+
 
 # A generational suffix or a bare Roman numeral, standing ALONE. These are the
 # one shape that is never a party however authoritative the source, because a
@@ -10841,6 +10857,14 @@ def _pn_is_bare_suffix(value):
     enumeration, and "Do" is a real surname — refusing it would leave a party
     unscrubbed, which is the worse failure."""
     return re.sub(r"[^a-z0-9]", "", str(value).lower()) in _PN_NEVER_A_PARTY
+
+
+def _pn_span_in_form_id(text, s, e):
+    """True when [s,e) falls inside a Judicial Council form id in `text`."""
+    for m in _PN_FORM_ID_SPAN_RE.finditer(text):
+        if m.start() <= s and e <= m.end():
+            return True
+    return False
 
 
 def _pn_is_never_fake(value):
@@ -19358,7 +19382,17 @@ class Pseudonymizer:
                     or low in _PN_PARTY_ROLE_WORDS
                     or ("short-name", low) in self.records):
                 continue
-            if not re.search(rf"(?<!\w){re.escape(acr)}(?!\w)", text):
+            # ...and an occurrence inside a FORM ID is no evidence at all.
+            # A hyphen is not a word character, so "MC" stands as a whole word
+            # in "MC-025" — and on a cause-of-action attachment that footer was
+            # the ONLY standalone occurrence in the document, so the form
+            # number was both the reason the acronym was minted and the thing
+            # it then rewrote. The span protection below stops the rewrite; a
+            # term minted on that evidence would still carry a key row and fire
+            # wherever else those two letters happen to stand.
+            if not any(not _pn_span_in_form_id(text, m.start(), m.end())
+                       for m in re.finditer(rf"(?<!\w){re.escape(acr)}(?!\w)",
+                                            text)):
                 continue
             fake = initials(str(t.fake))
             # The acronym of the entity's own fake keeps the long and short
@@ -20761,6 +20795,23 @@ class Pseudonymizer:
                 spans.append(m.span())
         return spans
 
+    def _form_id_spans(self, text):
+        """Spans of Judicial Council FORM IDS in `text` ("MC-025", "PLD-PI-001(2)").
+
+        `_pn_is_never_fake` keeps the id from ever becoming a term; it says
+        nothing about a SHORTER term matching inside one. A term matches whole
+        words and a hyphen is not a word character, so a two-letter entity
+        acronym is a whole-word match in "MC-025" — and a delivered
+        cause-of-action attachment shipped footed "NG-025", with the form's own
+        identity gone and nothing flagging it. On these forms the id is what
+        says which pleading this is.
+
+        Protection-only, exactly as `_whitelisted_url_spans` is, and mirrored on
+        the read side for the reason that one is: a value standing where
+        `_substitute` refuses to touch must never be REPORTED, or the export is
+        quarantined by a leak no `--fix-leaks` pass can ever clear."""
+        return [m.span() for m in _PN_FORM_ID_SPAN_RE.finditer(text)]
+
     def _scan_state_key(self):
         """Everything besides the TEXT that a keep-span or survivor answer
         depends on — the memo key both of them extend.
@@ -21228,7 +21279,7 @@ class Pseudonymizer:
         return self._substitute(
             text, cands, count=count,
             protected=self._protected_citation_spans(text) + self._keep_spans(text)
-            + self._whitelisted_url_spans(text))
+            + self._whitelisted_url_spans(text) + self._form_id_spans(text))
 
     def apply_lines(self, bodies):
         """Pseudonymize a pleading page's line BODIES as one text, returning one
@@ -21260,7 +21311,8 @@ class Pseudonymizer:
             joined, cands, reflow=True,
             protected=self._protected_citation_spans(joined)
             + self._keep_spans(joined)
-            + self._whitelisted_url_spans(joined)).split("\n")
+            + self._whitelisted_url_spans(joined)
+            + self._form_id_spans(joined)).split("\n")
         # _pn_reflow preserves every newline, so this holds; fall back rather
         # than ever hand back the wrong number of lines.
         return out if len(out) == len(bodies) else [self.apply(b) for b in bodies]
@@ -21430,7 +21482,8 @@ class Pseudonymizer:
         # "Benz" inside the link was reported as a leak the write side had
         # refused (the URL is whitelisted there) and no pass could clear.
         keep = _PnSpanIndex(self._keep_spans(guard_body)
-                            + self._whitelisted_url_spans(guard_body))
+                            + self._whitelisted_url_spans(guard_body)
+                            + self._form_id_spans(guard_body))
         out = []
         for rec in self._leads_present(text, self.records.values(),
                                        lambda r: r.get("lead")):
@@ -21523,8 +21576,8 @@ class Pseudonymizer:
         return self._substitute(
             src, cands,
             protected=(self._protected_citation_spans(src) + self._keep_spans(src)
-                       + self._whitelisted_url_spans(src))
-            + self._whitelisted_url_spans(src))
+                       + self._whitelisted_url_spans(src)
+                       + self._form_id_spans(src)))
 
     def scrub_emails(self, text):
         """Write-side sweep for a tracked E-MAIL address the pattern pass left
@@ -21738,7 +21791,8 @@ class Pseudonymizer:
         # is silent.
         span_src = body if len(body) == len(masked) else masked
         keep = _PnSpanIndex(self._keep_spans(span_src)
-                            + self._whitelisted_url_spans(span_src))
+                            + self._whitelisted_url_spans(span_src)
+                            + self._form_id_spans(span_src))
         out = []
         for core, short, rec in cores:
             k = red.find(core)
@@ -21817,7 +21871,8 @@ class Pseudonymizer:
         # not report what this refuses to touch.
         protected = _PnSpanIndex(self._protected_citation_spans(src)
                                  + self._keep_spans(src)
-                                 + self._whitelisted_url_spans(src))
+                                 + self._whitelisted_url_spans(src)
+                                 + self._form_id_spans(src))
         cands.sort(key=lambda c: -len(c[0]))
         taken = [False] * len(reduced)
         repls = []
