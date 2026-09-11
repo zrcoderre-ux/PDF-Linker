@@ -107,8 +107,12 @@ def test_a_flagged_value_is_scrubbed_on_the_next_run(tmp_path, monkeypatch):
     assert "Rosa Delgado" in reals
     src = next(r for r in rows if str(r[1]) == "Rosa Delgado")
     assert "--term" in [str(c) for c in src]
-    # The list itself is left where the reader put it, untouched and unscrubbed.
-    assert (folder / NAME).read_text(encoding="utf-8").endswith("Rosa Delgado\n")
+    # …and the list is CONSUMED, like the worksheet it is the reader's
+    # counterpart to: the key now carries the binding, so a file still
+    # sitting there would read as names still to scrub — and the reader
+    # would show the flags again over text that already carries the
+    # stand-in.
+    assert not (folder / NAME).exists()
 
 
 def test_fix_leaks_reads_it_too(tmp_path, monkeypatch):
@@ -131,6 +135,35 @@ def test_fix_leaks_reads_it_too(tmp_path, monkeypatch):
     text = export.read_text(encoding="utf-8")
     assert "Rosa Delgado" not in text and "signed the lease" in text
     assert "Rosa Delgado" in {str(r[1]) for r in _key_rows(folder)}
+    assert not (folder / NAME).exists()          # consumed here too
+
+
+def test_a_file_of_nothing_but_comments_is_left_alone(tmp_path, monkeypatch):
+    # Nothing was spent, so there is nothing to consume — and removing a file
+    # the operator may be part-way through typing into says nothing true.
+    folder = tmp_path / "Smith v Jones"
+    folder.mkdir()
+    _docx(folder / "Filing.docx", "The tenant signed the lease in March.")
+    (folder / NAME).write_text("# nothing flagged yet\n\n", encoding="utf-8")
+    assert _run_main(folder, monkeypatch, "--pseudonymize") == 0
+    assert (folder / NAME).exists()
+
+
+def test_a_key_that_could_not_be_written_keeps_the_list(tmp_path, monkeypatch):
+    # The exports carry fakes and nothing pins them; the operator's flags are
+    # the one thing that could rebuild the binding, so they are not thrown
+    # away with the key.
+    folder = tmp_path / "Smith v Jones"
+    folder.mkdir()
+    _docx(folder / "Filing.docx", "The tenant Rosa Delgado signed the lease.")
+    (folder / NAME).write_text("Rosa Delgado\n", encoding="utf-8")
+
+    def _boom(self, path, log=None, **kw):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(pl.Pseudonymizer, "write_key", _boom)
+    _run_main(folder, monkeypatch, "--pseudonymize")
+    assert (folder / NAME).exists()
 
 
 # ── keeps ────────────────────────────────────────────────────────────────────
@@ -172,3 +205,11 @@ def test_a_kept_value_comes_back_unfaked_on_the_next_run(tmp_path, monkeypatch):
                      "--term", "Acme Widgets Inc", "--term", "Stockton Theatres") == 0
     text = export.read_text(encoding="utf-8")
     assert "Stockton Theatres" in text and "Acme Widgets" not in text
+    # The line is spent — it lives on the cross-folder master KEEP sheet now,
+    # under THIS folder's Origin, so a third run with no file at all still
+    # honours it as the LOCAL keep the line made it.
+    assert not (folder / NAME).exists()
+    assert _run_main(folder, monkeypatch, "--pseudonymize",
+                     "--term", "Acme Widgets Inc", "--term", "Stockton Theatres") == 0
+    again = export.read_text(encoding="utf-8")
+    assert "Stockton Theatres" in again and "Acme Widgets" not in again

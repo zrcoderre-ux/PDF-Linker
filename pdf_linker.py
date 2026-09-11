@@ -6225,11 +6225,13 @@ def _detect_section_headings(doc, log: logging.Logger,
     """Return [(label, page_index), ...] for every section heading
     found in the document, in document order.
 
-    Runs unconditionally on briefs (gated upstream by filename via
-    should_skip_linking). Pages identified as TOC pages by
-    _link_toc_entries are skipped — those headings are already
-    covered by the Contents branch and would otherwise double-up
-    in the outline.
+    The TOC FALLBACK: run on a brief (gated upstream by filename via
+    should_skip_linking) whose TOC parse yielded no entries, since a
+    document that HAS a Contents branch states these same headings
+    itself and does not take a second, detected list beside it.
+    Pages identified as TOC pages by _link_toc_entries are skipped —
+    a TOC heading can parse no entries and still occupy pages, and
+    every entry on them would otherwise read as a heading.
 
     Skips the first _HEADING_SKIP_LEAD_PAGES PDF pages to avoid
     misreading caption ALL-CAPS text ("SUPERIOR COURT OF...") as
@@ -7764,10 +7766,13 @@ def _build_bookmark_tree(doc, toc_entries, exhibit_cover_map,
         document, and an Exhibits branch that is the tree's only
         category, drop their header and the entries become top-level
         themselves (children rising a level with them).
-      * Sections (when present) nest under whichever Document contains
-        their page. If no Documents exist, sections become a top-level
-        "Sections" branch. Sections inside an exhibit's page range are
-        dropped — exhibits don't get section bookmarks.
+      * Sections are dropped entirely when a Contents branch is written:
+        that branch is the document's own list of the same headings, and
+        two overlapping lists of one structure is what the reader was
+        complaining about. Otherwise they nest under whichever Document
+        contains their page, or become a top-level "Sections" branch if
+        no Documents exist. Sections inside an exhibit's page range are
+        dropped either way — exhibits don't get section bookmarks.
       * Paragraphs nest under whichever Section, Document, or Exhibit
         owns their page, in that priority order. A paragraph at page P
         nests under the Section that contains P if any; else under the
@@ -7944,7 +7949,20 @@ def _build_bookmark_tree(doc, toc_entries, exhibit_cover_map,
     # are dropped — exhibits don't carry sections. Sections that fall
     # outside any Document range, when no Documents exist at all,
     # become top-level under a "Sections" branch.
-    valid_sections = sorted(
+    # A CONTENTS branch and a SECTIONS branch describe the same thing twice.
+    # Contents is the document's OWN table of contents — its headings, with
+    # the page targets the document itself states — while the section scan is
+    # a DETECTOR reading those same headings off the page, so with both
+    # written the reader gets one list of headings under "Contents" and a
+    # second, overlapping list beside it. The document's own statement wins:
+    # where a Contents branch is written, no section becomes a bookmark.
+    # (`_detect_section_headings` is not even run for such a document — see
+    # its call site — but the rule lives HERE, where "is there a Contents
+    # branch?" is already answered, so no caller can produce both.) The cost,
+    # stated: a heading the TOC omits — a "SUMMARY OF ARGUMENT" set before the
+    # formal Roman-numeral structure — no longer earns its own bookmark in a
+    # TOC-bearing brief.
+    valid_sections = [] if valid_toc else sorted(
         [(lbl, p) for (lbl, p) in (section_entries or [])
          if 0 <= p < n_pages],
         key=lambda x: x[1],
@@ -32473,6 +32491,51 @@ def _pn_with_reader_keeps(folder_decisions, folder, log=None):
     return out
 
 
+def _pn_consume_reader_file(folder, log=None):
+    """Remove `New Real Values.txt` once the run that read it has written the
+    key. True if a file carrying lines was removed.
+
+    The file is TRIAGE, like `LEAKS.xlsx`, and is consumed the same way: every
+    line it carries is spent the moment the run lands, so leaving it standing
+    reads as work still to do — the operator opens the folder and finds a list
+    of names apparently still unscrubbed, and the text reader shows the flags
+    again over a document that already carries their stand-ins. Each kind of
+    line is durable elsewhere by then, which is what makes removing it safe
+    rather than merely tidy:
+
+      * a VALUE is an authoritative `--term`, so `write_key` writes its row
+        whether or not it matched (`_PN_KEY_UNMATCHED_SOURCES`), and the next
+        run reuses that binding from the key;
+      * a `no:` / `never:` KEEP is on the cross-folder master KEEP sheet
+        (`_pn_update_master_keep`), under this folder's `Origin` — so it comes
+        back on the re-run as OURS, a LOCAL keep, exactly as the line made it.
+
+    Called only where the key was actually WRITTEN. A run whose `write_key`
+    raised has the exports carrying fakes and nothing pinning them, so the
+    operator's flags are the one thing that could rebuild the binding and must
+    not be thrown away with them; `--fix-leaks`' nothing-applied branch returns
+    before the file is even read, and leaves it standing for the same reason it
+    leaves the worksheet.
+
+    A file holding nothing but comments is not spent and is left alone.
+    """
+    terms, keeps = _pn_read_reader_file(folder)
+    if not terms and not keeps:
+        return False
+    path = Path(folder) / _NEW_REAL_VALUES_FILE
+    try:
+        path.unlink()
+    except OSError as e:
+        if log:
+            log.warning(f"  Could not remove {_NEW_REAL_VALUES_FILE}: {e}")
+        return False
+    if log:
+        log.info(f"  Removed {_NEW_REAL_VALUES_FILE}: its {len(terms)} "
+                 f"value(s) and {len(keeps)} keep(s) are applied and are "
+                 f"carried by the key and the master KEEP sheet now.")
+    return True
+
+
 def _combine_doc_banner(i, n, name):
     return f"{'#' * 8} DOCUMENT {i} OF {n} IN THIS COMBINED FILE: {name} {'#' * 8}"
 
@@ -33600,17 +33663,20 @@ def process_pdf(pdf_path: Path, log: logging.Logger,
         except Exception as e:
             log.warning(f"  TOC linking failed (non-fatal): {e}")
 
-    # Section-heading detection. Runs unconditionally on briefs (the
-    # same skip_links gate that excludes declarations and complaints
-    # excludes them here too). Always-on rather than a TOC fallback:
-    # a brief that HAS a TOC may also have pre-numbered headings
-    # ("SUMMARY OF ARGUMENT") that wouldn't appear in the TOC because
-    # they precede the formal Roman-numeral structure. Those still
-    # get bookmarked. The TOC page range is passed in so the scan
-    # skips TOC pages (which would otherwise produce phantom heading
-    # bookmarks for every TOC entry). Failure is non-fatal.
+    # Section-heading detection: the TOC FALLBACK it was written as, and
+    # nothing more. A document that parsed a TOC already states its own
+    # headings under "Contents", and a detected list of the same headings
+    # beside it is one structure bookmarked twice — so the scan is not run
+    # at all for such a document. `_build_bookmark_tree` is what DECIDES
+    # that (it is the one place that knows whether a Contents branch was
+    # written); skipping here only saves a page walk whose result it would
+    # discard, and a log line claiming headings that reach no bookmark.
+    # The TOC page range is still passed, for the document whose TOC
+    # heading parsed no entries: the scan runs there and must skip those
+    # pages, or every TOC entry becomes a phantom heading bookmark.
+    # Failure is non-fatal.
     section_entries: list = []
-    if not skip_links:
+    if not skip_links and not toc_entries:
         try:
             section_entries = _detect_section_headings(
                 doc, log, toc_page_range=toc_page_range)
@@ -36191,15 +36257,21 @@ def _fix_leaks_mode(folder, args, cfg, log):
             except OSError as e:
                 log.warning(f"  Could not un-quarantine {f.name}: {e}")
 
+    _key_written = True
     try:
         pz.write_key(key_path, log)                # loaded rows preserved
     except Exception as e:
+        _key_written = False
         # This pass rewrites the SAME key it loaded, so a failure here is the
         # one on the full run exactly: the exports carry fakes and the only
         # thing that reverses them did not land. `_pn_xl_save` leaves the key
         # already on disk intact, which is why the run continues to stamp DONE
         # — but it must not do so quietly.
         log.warning("  " + _PN_KEY_LOST_MSG.format(e=e))
+    if _key_written:
+        # This pass reads the reader's file too, so it consumes it too — the
+        # key it just rewrote carries the bindings those lines produced.
+        _pn_consume_reader_file(folder, log)
 
     # Record this pass's throughput so the next run's ETA is sharper, then
     # replace the ETA marker with a DONE stamp (the actual finish time) — and
@@ -37259,6 +37331,11 @@ def main():
             pseudonymizer.write_key(key_out, log)
         except Exception as e:
             _warn(_PN_KEY_LOST_MSG.format(e=e))
+        else:
+            # The key landed, so every line the text reader left in
+            # `New Real Values.txt` is now a row in it (or a keep on the
+            # master sheet) and the file has done its job.
+            _pn_consume_reader_file(folder, log)
 
         # Report (do NOT delete): if pseudonymization ran on some .txt but the
         # spreadsheet key produced NO primary matches (full party names /

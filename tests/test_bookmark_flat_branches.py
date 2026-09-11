@@ -134,3 +134,61 @@ def test_a_nested_subdocument_rises_with_its_flattened_exhibit():
     # exhibit's child — one level under it, and its paragraph under that.
     assert lv["DECLARATION OF JONES"] == 2
     assert lv["¶ 1"] == 3
+
+
+# ── Contents and Sections never describe the same headings twice ────────────
+# A Contents branch is the document's OWN table of contents; the section scan
+# is a detector reading those same headings off the page. Written together the
+# reader gets one list of headings and a second, overlapping one beside it.
+
+def test_a_contents_branch_suppresses_the_detected_sections():
+    doc = _doc(8)
+    tree = P._build_bookmark_tree(
+        doc, [("I. INTRODUCTION", 2), ("II. ARGUMENT", 4)], {}, [],
+        section_entries=[("I. INTRODUCTION", 2), ("II. ARGUMENT", 4),
+                         ("SUMMARY OF ARGUMENT", 1)])
+    titles = [t for _lvl, t, _pg in tree]
+    assert "Sections" not in titles
+    assert "SUMMARY OF ARGUMENT" not in titles
+    # The Contents branch itself is untouched.
+    lv = _levels(tree)
+    assert lv["Contents"] == 1
+    assert lv["I. INTRODUCTION"] == 2 and lv["II. ARGUMENT"] == 2
+
+
+def test_with_no_contents_the_sections_are_the_branch():
+    doc = _doc(8)
+    tree = P._build_bookmark_tree(
+        doc, [], {}, [(5, 3)],
+        section_entries=[("I. INTRODUCTION", 2), ("II. ARGUMENT", 4)])
+    lv = _levels(tree)
+    assert lv["Sections"] == 1
+    assert lv["I. INTRODUCTION"] == 2 and lv["II. ARGUMENT"] == 2
+    assert lv["¶ 3"] == 3
+
+
+def test_a_contents_branch_suppresses_the_sections_under_a_document():
+    # Sections nest under a Document when one exists — and are dropped there
+    # too, since the duplication is with Contents and not with the parent.
+    doc = _doc(8)
+    tree = P._build_bookmark_tree(
+        doc, [("I. INTRODUCTION", 2)], {}, [(3, 4)],
+        document_entries=[("MEMORANDUM OF POINTS AND AUTHORITIES", 0)],
+        section_entries=[("I. INTRODUCTION", 2)])
+    titles = [t for _lvl, t, _pg in tree]
+    assert titles.count("I. INTRODUCTION") == 1      # the Contents child
+    lv = _levels(tree)
+    assert lv["Contents"] == 1
+    assert lv["MEMORANDUM OF POINTS AND AUTHORITIES"] == 1
+    # The paragraph that would have nested under the section rises to the
+    # document it belongs to.
+    assert lv["¶ 4"] == 2
+
+
+def test_the_scan_is_not_even_run_for_a_toc_bearing_brief():
+    # The builder is what decides; skipping the walk only saves the cost and
+    # a log line claiming headings that reach no bookmark. Pinned on the
+    # SOURCE, because the cost is the whole point of the call-site gate.
+    import inspect
+    src = inspect.getsource(P.process_pdf)
+    assert "if not skip_links and not toc_entries:" in src
