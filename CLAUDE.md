@@ -2719,6 +2719,27 @@ the party), so its row stays reversible.
   dropped on the evidence that nothing but a heading ever offered it. Keep
   extending them anyway: the prune needs the word to APPEAR somewhere, and a
   list entry costs nothing.
+- **The REVIEW tiers are listed ONCE** (`Pseudonymizer.leak_findings`).
+  `_write_text_version` and `_write_word_text_version` each carried their own
+  copy of the sequence — eleven tiers, written out twice, identical in order
+  and differing only in which body the definition tiers read (the PDF path's
+  column-ordered `detect_full`, the Word path's `text`). Two lists that must
+  agree, kept in two places, is how a tier comes to be added to one of them,
+  and this project has already paid for that exact shape: the Word path ran
+  the whole scan battery and NONE of the cures, so on a Word folder every
+  value the cures exist for was REPORTED rather than repaired, under a value
+  the key showed `replaced`. One callable now, both writers through it, and
+  `test_leak_battery_is_one_list.py` fails if any tier is ever called from
+  anywhere else — the split is caught as it is made rather than when a folder
+  ships wrong. The ORDER is pinned with it, because it is load-bearing:
+  `reid_scan` leads (those shapes invert the map in one lookup, so they
+  outrank ordinary review) and the fuzzy sweep runs before the half-scrub
+  (the more specific class owns the row when a mangled survivor also stands
+  beside one of our fakes). Verified finding-for-finding across six corpora
+  and 7,847 rows. It is also the precondition for an INCREMENTAL re-run: a
+  document whose export provably cannot have changed still has to be
+  re-scanned against a term world that moved, and that third caller must read
+  the same list rather than becoming a third copy of it.
 - **A filing NAMES ITS OWN PARTIES, and nothing read the declaration**
   (`defined_name_scan`). A complaint introduces the people in it by declaring
   them: `Susan Spellman ("Spellman")`, `ACME CORPORATION, INC. ("Acme")`. The
