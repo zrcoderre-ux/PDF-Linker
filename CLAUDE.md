@@ -4241,6 +4241,32 @@ branch header, so counting level-2 entries as "the bookmarks" would
 under-report precisely the flattened trees, and it reports the whole
 tree with its top level named.
 
+**…and CONTENTS and SECTIONS never describe one structure twice**
+(`valid_sections` in `_build_bookmark_tree`; the `not toc_entries` gate at
+the call site), at the owner's direction. A delivered document came back
+with both branches over overlapping territory. `Contents` is the document's
+OWN table of contents — its headings, at the page targets the document
+itself states — while `_detect_section_headings` is a DETECTOR reading the
+same headings off the page, so a TOC-bearing brief got one list of its
+headings and a second, near-identical list beside it. The document's own
+statement wins: where a Contents branch is written, no section becomes a
+bookmark, wherever it would have nested (a top-level `Sections` branch, or
+under a Document), and a paragraph that would have sat under a section
+rises to the document it belongs to. That is the TOC FALLBACK the scan was
+written as and which its own header comment still described — "this
+fallback runs ONLY when TOC parsing produced no entries" — a scope the call
+site had drifted away from. The cost is the reason it drifted and is
+stated: a heading the TOC omits, a `SUMMARY OF ARGUMENT` set before the
+formal Roman-numeral structure, no longer earns its own bookmark in a
+TOC-bearing brief; the Contents branch is the document's own list and the
+reader reaches that heading by page. The RULE lives in the builder, which
+is the one place that knows whether a Contents branch was actually written,
+so no caller can produce both; the call site merely declines to pay for a
+page walk whose result would be discarded — and for a log line claiming
+headings that reach no bookmark. It still passes `toc_page_range`, for the
+document whose TOC heading parsed no entries: the scan runs there and must
+skip those pages, or every TOC entry reads as a heading.
+
 **An OCR'd slip sheet spells its quotes as APOSTROPHES, and a quote is a
 RUN** (`_EXHIBIT_QUOTE_CHAR` / `_EXHIBIT_QUOTE_RUN`). A scanned exhibit
 set came back as `EXHIBIT ''1''` and `EXHIBIT ' ' 2 ''` — OCR reads a
@@ -5886,6 +5912,27 @@ reader shows the keep at once — the highlight goes, the tooltip says the file
 still carries the fake — and the FULL re-run is what restores the export,
 since the text-only pass never reverses a fake. Pinned in
 `test_new_real_values.py`, end to end through both passes and for a keep.
+
+**…and the file is CONSUMED by the run that reads it**
+(`_pn_consume_reader_file`), at the owner's direction. It is TRIAGE, the
+reader's counterpart to `LEAKS.xlsx`, and is removed the same way that
+worksheet is once resolved: every line is spent the moment the run lands, so
+a file still standing reads as names still to scrub — the operator opens the
+folder and finds a list of values apparently unfaked, and the reader shows
+the flags again over text that already carries their stand-ins. Each kind of
+line is durable elsewhere by then, which is what makes removing it safe
+rather than merely tidy: a VALUE is an authoritative `--term`, so
+`write_key` writes its row whether or not it matched
+(`_PN_KEY_UNMATCHED_SOURCES`) and the next run reuses that binding; and a
+`no:` / `never:` KEEP is on the master KEEP sheet under THIS folder's
+`Origin`, so it comes back as OURS — a LOCAL keep, exactly as the line made
+it, and not the weaker inherited one. Removed only where the key was
+actually WRITTEN: a run whose `write_key` raised has the exports carrying
+fakes and nothing pinning them, and the operator's flags are then the one
+thing that could rebuild the binding. `--fix-leaks`' nothing-applied branch
+returns before the file is read at all, and leaves it standing for the
+reason it leaves the worksheet. A file holding nothing but comments is not
+spent and is left alone.
 
 **…and the reader ANSWERS `LEAKS.xlsx` too, in place.** The same text
 reader works the worksheet row by row above the text (the row's document
