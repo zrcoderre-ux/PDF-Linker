@@ -17306,6 +17306,92 @@ def _pn_name_companion_ok(comp, tracked, known, lower_words):
                 or _pn_is_protected_locality(comp))
 
 
+# Every maximal run of the characters the two lookarounds below treat as
+# "inside a word". `(?<![\w'’])W(?![\w'’])` can match ONLY where such a run
+# begins, so indexing these runs enumerates exactly the sites a per-word search
+# would have visited -- which is what makes the index below E’ACT rather than
+# an approximation of it.
+_PN_WORD_SITE_RE = re.compile(r"[\w'’]+")
+_PN_WORD_SITE_CHARS = re.compile(r"[\w'’]")
+
+
+def _pn_word_sites(text):
+    """{lower-cased leading run -> [start offset, ...]} for `text`, in order.
+
+    **Built ONCE per body, because the alternative is quadratic in the
+    document.** `_pn_full_name_intro` and `_pn_has_name_companion` each
+    compiled a pattern for their candidate word and ran `finditer` over the
+    WHOLE export, and both are asked of every near-miss the fuzzy sweep turns
+    up -- so the cost was (candidate words) x (length of the document), and
+    both of those grow together. Profiled on a body four times the size,
+    `_pn_full_name_intro` alone took 2.44 s of a 5.94 s sweep, the single
+    largest consumer on the leak path, and the sweep grew x2.5 for every
+    doubling of the body: the shape these notes refuse everywhere else (the
+    `_in_name_run` quadratic, `_pn_context_prep`, the corpus prunes). A
+    delivered folder paid 20 minutes of leak scans on one 218-page
+    declaration where the 84-page one beside it paid 52 seconds, and that
+    machine's own ETA ledger put 65% of every `--fix-leaks` pass in the
+    excess over a linear cost.
+
+    Keyed on the text itself and capped at the alternating PAIR -- the memo
+    `_mask_protected_citations` already uses, for the same reason: every scan
+    runs over the export body AND over its column-ordered twin, so a single
+    slot would be evicted before it was ever read."""
+    memo = _pn_word_sites.memo
+    sites = memo.get(text)
+    if sites is None:
+        sites = {}
+        for m in _PN_WORD_SITE_RE.finditer(text):
+            sites.setdefault(m.group().lower(), []).append(m.start())
+        if len(memo) >= 2:
+            memo.clear()
+        memo[text] = sites
+    return sites
+
+
+_pn_word_sites.memo = {}
+
+
+def _pn_word_occurrences(text, word):
+    r"""Every whole-word (start, end) of `word` in `text`, case-insensitively --
+    exactly what the per-word `(?<![\w'’])word(?![\w'’])` scan yielded, in the
+    same order, off the shared index.
+
+    The LOOKBEHIND is satisfied by construction: a candidate word opens on a
+    word character, so every match of it begins a maximal run. A word may
+    still carry a character the run class excludes -- a HYPHEN, which the
+    sweep's own candidate pattern admits ("Smith-Jones") -- so the index is
+    consulted on the word's LEADING run and the remainder is verified against
+    the text, the right lookahead included. Without that check a hyphenated
+    candidate would silently stop being asked about, which is a name left
+    standing rather than merely a slower scan."""
+    head = _PN_WORD_SITE_RE.match(word)
+    if not head:
+        # A word that does not OPEN on a word character cannot be found
+        # through an index of word RUNS: the lookbehind is then satisfied by
+        # a character the index never recorded, and the occurrence is real.
+        # No caller passes one — every candidate the sweep offers opens on a
+        # capital — but narrowing the function on that is the stacked guess
+        # these notes refuse everywhere, and the cost of being wrong is a
+        # site going unasked. The original scan answers it, the EMPTY word
+        # included: an empty pattern matches at every position the lookarounds
+        # allow, which is a regex artifact rather than an occurrence, and
+        # reproducing it costs nothing while an exception would need a reason.
+        rx = re.compile(r"(?<![\w'’])" + re.escape(word) + r"(?![\w'’])",
+                        re.IGNORECASE)
+        for m in rx.finditer(text):
+            yield m.start(), m.end()
+        return
+    low, n = word.lower(), len(word)
+    for s in _pn_word_sites(text).get(head.group().lower(), ()):
+        e = s + n
+        if text[s:e].lower() != low:
+            continue
+        if e < len(text) and _PN_WORD_SITE_CHARS.match(text, e):
+            continue                      # the pattern's own right lookahead
+        yield s, e
+
+
 def _pn_has_name_companion(text, word, tracked, known, lower_words):
     """True when `word` stands, at ANY occurrence, beside a capitalised name
     word nothing tracks — in front of it or behind it, across whitespace
@@ -17316,14 +17402,12 @@ def _pn_has_name_companion(text, word, tracked, known, lower_words):
     three slips from Vazquez, and a "Vatqual" that appears only alone or
     behind the tracked given name ("Manuel Vatqual") is the defendant; a
     "Robert Vatqual" is somebody else."""
-    rx = re.compile(r"(?<![\w'’])" + re.escape(word) + r"(?![\w'’])",
-                    re.IGNORECASE)
-    for m in rx.finditer(text):
-        f = _PN_INTRO_FOLLOW_RE.match(text, m.end())
+    for w_start, w_end in _pn_word_occurrences(text, word):
+        f = _PN_INTRO_FOLLOW_RE.match(text, w_end)
         if f and _pn_name_companion_ok(f.group("f"), tracked, known,
                                        lower_words):
             return True
-        pm = _PN_INTRO_PRECEDE_RE.search(text[max(0, m.start() - 48):m.start()])
+        pm = _PN_INTRO_PRECEDE_RE.search(text[max(0, w_start - 48):w_start])
         if pm and _pn_name_companion_ok(pm.group("p"), tracked, known,
                                         lower_words):
             return True
@@ -17353,10 +17437,8 @@ def _pn_full_name_intro(text, word, tracked, known, lower_words):
     nickname ("Mike Rodgerz") still has nothing after it and is still
     reported. Asked of EVERY occurrence, since evidence anywhere that the
     word names a different person settles it for the document."""
-    rx = re.compile(r"(?<![\w'’])" + re.escape(word) + r"(?![\w'’])",
-                    re.IGNORECASE)
-    for m in rx.finditer(text):
-        f = _PN_INTRO_FOLLOW_RE.match(text, m.end())
+    for _w_start, w_end in _pn_word_occurrences(text, word):
+        f = _PN_INTRO_FOLLOW_RE.match(text, w_end)
         if not f:
             continue
         follow = f.group("f")
@@ -23487,6 +23569,18 @@ class Pseudonymizer:
         # mangling: a spelling within the fold of an identified variant.
         if multi:
             targets = sorted({b for t in multi for b in variants[t]})
+            # The distance question is asked of the BASE against a target set
+            # that does not move inside this loop, so its answer is a property
+            # of the base alone — while the loop walks every OCCURRENCE. A
+            # word the document prints fifty times paid for fifty identical
+            # sweeps of the target list, and both the occurrence count and the
+            # target list grow with the document: the product is the
+            # second-degree tier's share of the super-linear cost (measured,
+            # 675,797 comparisons on a body four times the size against
+            # 78,947 on the small one — x8.6 for x4 the text). Memoised per
+            # base, which changes no answer: the control flow above still runs
+            # per occurrence, and only the arithmetic is reused.
+            near_target = {}
             for m in cand_re.finditer(src):
                 word = m.group(0)
                 base = _pn_word_base(word)
@@ -23494,10 +23588,14 @@ class Pseudonymizer:
                         or word[:1].islower() or _screened(word, base)
                         or urls.overlaps(m.start(), m.end())):
                     continue
-                if not any(_pn_ocr_distance_within(
-                        base, v, _pn_name_fold_dist(base, v),
-                        min_len=_PN_NAME_FOLD_MIN, ends=False)
-                           for v in targets):
+                hit = near_target.get(base)
+                if hit is None:
+                    hit = near_target[base] = any(
+                        _pn_ocr_distance_within(
+                            base, v, _pn_name_fold_dist(base, v),
+                            min_len=_PN_NAME_FOLD_MIN, ends=False)
+                        for v in targets)
+                if not hit:
                     continue
                 # The vocabulary screen the first loop applies: "Later" (one
                 # edit from the variant "Laker") and "Dates" (from "Rates")
