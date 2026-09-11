@@ -4450,6 +4450,37 @@ row binds as a slip of the tracked name and never as a fresh person. A CLI
 stated: a vocabulary word the documents only ever capitalise ("Enhanced
 Sealing" as a line item) passes, since without a dictionary the corpus is the
 only screen.
+**…and a refused row SAYS SO on the row** (`_PN_REFUSED_NOTE_LEAD`,
+`_PN_REFUSED_VOCAB`, `_PN_REFUSED_SELF_MAP`, `_pn_note_refusals`,
+`_pn_notes_drop_refusal`, `refusals` in `_pn_write_leak_report`). "A refused
+row is named" meant named in `pdf_linker.log` — and the operator is reading
+`LEAKS.xlsx`, not the log. So three rows were marked `yes`, Apply Leak Fixes
+was clicked, and the same three rows came back with nothing on them saying
+why; the reported symptom is "I keep getting residual yes in the Leaks". The
+reason goes in the row's own **Notes** cell now, beside the authority note and
+the pre-fill note, and it carries the REMEDY as well as the refusal — a row
+that only says no is one the operator answers the same way again. The log line
+stays, for the run's own narration.
+**Written under a fixed LEAD so a stale one is REMOVED before a fresh one is
+written.** A refusal describes what the LAST pass did with the cell as it then
+read, so a note left standing on a row the operator has since corrected is a
+live-looking objection to a cell that no longer says what it objects to — the
+"comes back looking like work left to do" failure the carry-forward rule above
+was deleted for. A pass that refuses nothing clears it and adds none, which is
+right for the FULL run: that path screens no `yes` at all, so its verdict is
+not one to leave standing. An operator's own note never begins with the lead
+and is carried through untouched.
+**And the one case the ordinary rewrite cannot reach is the one that matters
+most.** Where NOTHING applied, `--fix-leaks` deliberately leaves the folder
+untouched — quarantine, worksheet and launcher all stand — and returns before
+`pz.leak_report` exists, so there is no report to write a fresh sheet from.
+That is exactly the state the operator is stuck in: every row they answered was
+refused, and the sheet comes back byte-identical to the one they just filled
+in. `_pn_note_refusals` patches the Notes column of the workbook ALREADY on
+disk and changes nothing else — resolved by header NAME, like every other
+reader of these sheets — since saying why is not "resolving" anything and so
+does not reach past what that branch means to leave alone.
+
 **…and an occurrence inside an E-MAIL ADDRESS or a URL is not the documents
 writing the word in lower case.** That is the one place every word is lower
 case by CONVENTION, and a domain core is a firm's name far more often than a

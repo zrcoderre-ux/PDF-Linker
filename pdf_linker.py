@@ -30528,6 +30528,93 @@ _PN_PREFILL_NOTE = ("pre-filled: reads as a misspelling of {canon!r} — leave "
                     "answer")
 
 
+# The Notes text on a row whose decision `--fix-leaks` REFUSED to apply.
+#
+# The reason was a log line and nothing else — so the operator, who reads the
+# worksheet and not `pdf_linker.log`, marked three rows `yes`, clicked Apply
+# Leak Fixes, and got the same three rows back with nothing on them saying
+# why. The row is the one thing they are looking at and the one place the
+# explanation belongs; the log line stays, for the run's own narration.
+#
+# Written under a fixed LEAD so a stale one can be recognised and REMOVED
+# before this pass writes its own. That matters more than it looks: a refusal
+# describes what the LAST pass did, so a note left standing on a row the
+# operator has since corrected reads as a live objection to a cell that no
+# longer says what it objects to — the "comes back looking like work left to
+# do" failure `_pn_write_leak_report` already refuses elsewhere. An operator's
+# own note never begins this way and is carried through untouched.
+_PN_REFUSED_NOTE_LEAD = "not applied:"
+_PN_REFUSED_NOTE = _PN_REFUSED_NOTE_LEAD + " {why}"
+# The two refusals themselves, as the row states them. Each says what was
+# refused, why, AND what to type instead — a row that only says no is one the
+# operator answers the same way again.
+_PN_REFUSED_VOCAB = ("marked yes, but {why}, so it was not minted as a name — "
+                     "type a replacement, or ~CANONICAL if it misspells a "
+                     "tracked name")
+_PN_REFUSED_SELF_MAP = ("the typed replacement equals the value itself, and a "
+                        "self-map never scrubs — type a DIFFERENT replacement")
+# How the Notes cell joins its segments (the authority note, the pre-fill note,
+# this one, and whatever the operator typed).
+_PN_NOTE_SEP = " | "
+
+
+def _pn_notes_drop_refusal(notes):
+    """`notes` with any previously-written refusal segment removed."""
+    kept = [seg for seg in str(notes or "").split(_PN_NOTE_SEP)
+            if not seg.strip().lower().startswith(_PN_REFUSED_NOTE_LEAD)]
+    return _PN_NOTE_SEP.join(seg for seg in kept if seg.strip())
+
+
+def _pn_note_refusals(folder, refusals, log):
+    """Write this pass's refusal reasons into the Notes column of the worksheet
+    ALREADY on disk, leaving every other cell exactly as it stands.
+
+    For the one case the ordinary rewrite cannot reach: when NOTHING applied,
+    `--fix-leaks` deliberately leaves the folder untouched — quarantine,
+    worksheet and launcher all stand — and returns before `pz.leak_report` has
+    been built, so there is no report to write a fresh sheet from. That is also
+    the case where the explanation matters most: every row the operator
+    answered was refused, and the sheet comes back byte-identical to the one
+    they just filled in. Saying why is not "resolving" anything, so it does not
+    reach past what that branch means to leave alone."""
+    if not refusals:
+        return False
+    xlsx = _pn_existing_leak_xlsx(folder)
+    if not xlsx.is_file():
+        return False
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(xlsx)
+        ws = wb[_PN_LEAK_SHEET] if _PN_LEAK_SHEET in wb.sheetnames else wb.active
+        head = [str(c.value or "").strip().lower() for c in ws[1]]
+        # By NAME, like every other reader of these sheets: a column inserted
+        # since must never silently shift what is read or written.
+        vcol = head.index("value") + 1
+        ncol = head.index("notes") + 1
+    except Exception:
+        return False
+    touched = 0
+    for r in range(2, ws.max_row + 1):
+        why = refusals.get(str(ws.cell(r, vcol).value or "").strip().lower())
+        note = _pn_notes_drop_refusal(ws.cell(r, ncol).value)
+        if why:
+            fresh = _PN_REFUSED_NOTE.format(why=why)
+            note = f"{note}{_PN_NOTE_SEP}{fresh}" if note else fresh
+        if note != (ws.cell(r, ncol).value or ""):
+            ws.cell(r, ncol).value = _pn_xl_text(note)
+            touched += 1
+    if not touched:
+        return False
+    try:
+        _pn_xl_save(wb, xlsx, "leak-review worksheet")
+    except Exception as e:
+        log.warning(f"  Could not annotate {xlsx.name}: {e}")
+        return False
+    log.info(f"  --fix-leaks: wrote why into the Notes column of {xlsx.name} "
+             f"for {touched} row(s).")
+    return True
+
+
 def _pn_leak_alias_canon(cell):
     """The Real Value a Fix? cell names with `*ANOTHER REAL VALUE`, case-folded
     for grouping — "" when the cell is not an alias.
@@ -30550,7 +30637,7 @@ def _pn_leak_alias_canon(cell):
 
 def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
                           bound=(), note_for=None, case_name=None,
-                          case_aliases=(), suggest_for=None):
+                          case_aliases=(), suggest_for=None, refusals=None):
     """Write/refresh the leak-triage worksheet 'LEAKS.xlsx'. Each DISTINCT
     flagged value is ONE row with a 'Fix?' column — the files and page:line
     locations it was found in are aggregated into that row, so a name that
@@ -30567,13 +30654,28 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
     left to do. Plain-text checklist fallback without openpyxl."""
     decisions = decisions or {}
 
-    def _notes(value, carried):
+    refusals = refusals or {}
+
+    def _notes(value, carried, vl):
         """The Notes cell: whatever a prior decision carried, plus the cited
-        authority this value shares a party word with. Appended, never
-        replaced — an operator's own note must survive."""
+        authority this value shares a party word with, plus the reason this
+        pass REFUSED to apply the row's decision. Appended, never replaced —
+        an operator's own note must survive.
+
+        The refusal is the exception, and has to be: it describes what the
+        last pass did with the cell as it then read, so a stale one is dropped
+        before a fresh one is written (`_pn_notes_drop_refusal`). A caller
+        that refused nothing — the full run, which screens no `yes` — clears
+        it and adds none, which is right: the note would then be a fix-leaks
+        pass's verdict standing beside a folder that has been re-run since."""
+        carried = _pn_notes_drop_refusal(carried)
         extra = note_for(value) if note_for else ""
         if extra and extra not in str(carried):
-            return f"{carried} | {extra}" if carried else extra
+            carried = f"{carried}{_PN_NOTE_SEP}{extra}" if carried else extra
+        why = refusals.get(vl)
+        if why:
+            fresh = _PN_REFUSED_NOTE.format(why=why)
+            carried = f"{carried}{_PN_NOTE_SEP}{fresh}" if carried else fresh
         return carried
 
     xlsx = _pn_leak_xlsx_path(folder)
@@ -30672,9 +30774,10 @@ def _pn_write_leak_report(folder, entries, log, decisions=None, cfg=None,
         # `fixcell` is what the Fix? cell shows: an operator-typed replacement is
         # carried back verbatim (NOT collapsed to "yes"), so a re-run re-reads
         # the exact instruction instead of re-deriving an auto fake.
-        notes = _notes(g["value"], d.get("notes", ""))
+        notes = _notes(g["value"], d.get("notes", ""), vl)
         if prefill_note:
-            notes = f"{notes} | {prefill_note}" if notes else prefill_note
+            notes = (f"{notes}{_PN_NOTE_SEP}{prefill_note}" if notes
+                     else prefill_note)
         rows.append({"file": file_cell, "type": g["type"], "value": g["value"],
                      "where": _pn_merge_where(g["wheres"]),
                      "context": g.get("context", ""),
@@ -35086,6 +35189,10 @@ def _fix_leaks_mode(folder, args, cfg, log):
     # must not release their quarantine or delete the worksheet, or a typo in
     # one cell is silently converted into a delivered leak.
     rejected = []
+    # ...and WHY each was dropped, keyed on the lower-cased value, so the
+    # worksheet row can say it. The log line alone is not read by the operator
+    # who is looking at the sheet, and the row comes back either way.
+    refusals = {}
     auto_terms, explicit, weld_follows = [], {}, {}
     # The originals are read FIRST, because a worksheet `yes` is screened
     # against them: a value every word of which the documents write in lower
@@ -35138,6 +35245,7 @@ def _fix_leaks_mode(folder, args, cfg, log):
                     f"the un-scrubbed part.")
         elif repl:
             rejected.append(d["value"])
+            refusals[vl] = _PN_REFUSED_SELF_MAP
             log.warning(f"  --fix-leaks: typed replacement for {d['value']!r} "
                         f"equals the value itself — ignoring (a self-map never "
                         f"scrubs). Type a DIFFERENT replacement.")
@@ -35147,6 +35255,7 @@ def _fix_leaks_mode(folder, args, cfg, log):
             why = None if d.get("phrase") else orig_vocab(d["value"])
             if why:
                 rejected.append(d["value"])
+                refusals[vl] = _PN_REFUSED_VOCAB.format(why=why)
                 log.warning(f"  --fix-leaks: {d['value']!r} is marked yes but "
                             f"{why} — not minting it as a name. Type a "
                             f"replacement, or ~CANONICAL if it misspells a "
@@ -35206,6 +35315,11 @@ def _fix_leaks_mode(folder, args, cfg, log):
         log.warning("--fix-leaks: nothing applied — correct the Fix? cell(s) "
                     "for " + ", ".join(rejected[:6]) + " and click again. The "
                     "export(s) stay quarantined until a fix actually applies.")
+        # ...and say it ON THE ROW as well. This branch leaves the worksheet
+        # standing precisely because nothing was resolved, so without this the
+        # sheet comes back byte-identical to the one the operator just filled
+        # in, with the reason in a log file they are not reading.
+        _pn_note_refusals(folder, refusals, log)
         # Nothing moved, so the folder is exactly as held as it was: the
         # combined file and the copy wait here for the same reason they wait
         # below, and say so rather than being silently skipped by an early
@@ -35533,7 +35647,8 @@ def _fix_leaks_mode(folder, args, cfg, log):
                               bound=[r["real"] for r in pz.records.values()],
                               note_for=pz.triage_note,
                               case_name=case_label, case_aliases=case_aliases,
-                              suggest_for=pz.alias_suggestion)
+                              suggest_for=pz.alias_suggestion,
+                              refusals=refusals)
     else:
         # Every LEAK file is fixed: the worksheet and the Apply-Leak-Fixes
         # launcher have done their job — remove them instead of leaving stale
