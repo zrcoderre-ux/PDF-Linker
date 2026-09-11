@@ -4450,6 +4450,18 @@ row binds as a slip of the tracked name and never as a fresh person. A CLI
 stated: a vocabulary word the documents only ever capitalise ("Enhanced
 Sealing" as a line item) passes, since without a dictionary the corpus is the
 only screen.
+**…and an occurrence inside an E-MAIL ADDRESS or a URL is not the documents
+writing the word in lower case.** That is the one place every word is lower
+case by CONVENTION, and a domain core is a firm's name far more often than a
+common noun — so counted, the screen ran BACKWARDS: `Email: rch@rchobbs.com`
+and a link beside it out-voted the `RCHOBBS` standing in the exhibit's own
+letterhead, and the `yes` on the firm was refused as vocabulary. The row then
+came back on every pass, which is what the operator sees: a decision typed,
+applied to nothing, re-asked. The tally skips those spans (the `email` and
+`url` detectors' own, so there is one definition of what an address is). It
+costs the screen nothing real — a word that IS vocabulary is written lower
+case in ordinary prose too, and only a word whose ONLY lower-case evidence was
+a domain changes answer.
 
 **An export of NO source document is named, and a stale copy is left alone**
 (`_orphan_exports`, `skip` on the combined writer). An export is named for

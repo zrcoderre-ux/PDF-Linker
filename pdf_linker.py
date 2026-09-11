@@ -33669,13 +33669,28 @@ def _pn_vocabulary_screen(texts):
     the worksheet's rows are the review tiers' guesses and a blanket `yes`
     mints every one. A lone all-caps token of four letters or fewer is OCR
     debris or an agency's initials. With no originals to read, only the
-    second rule can be asked."""
+    second rule can be asked. An occurrence inside an e-mail address or a URL
+    is not counted: a domain is lower case by convention, and a domain core is
+    a firm's name far more often than a common noun."""
     lower, upper = {}, {}
     for text in texts:
+        # An occurrence inside an E-MAIL ADDRESS or a URL is not the document
+        # writing the word in lower case — it is the one place every word is
+        # lower case by convention, and a domain core is far more often a
+        # firm's name than a common noun. Counted, it ran the screen
+        # BACKWARDS: "Email: rch@rchobbs.com" and a link beside it out-voted
+        # the "RCHOBBS" standing in the exhibit's own letterhead, so a
+        # worksheet `yes` on the firm was refused as vocabulary and the row
+        # came back on every pass. A word that really is vocabulary is written
+        # lower case in ordinary prose too, so the screen still catches it.
+        skip = _PnSpanIndex([m.span() for m in _PN_DETECTORS["email"][0].finditer(text)]
+                            + [m.span() for m in _PN_DETECTORS["url"][0].finditer(text)])
         for m in _PN_VOCAB_WORD_RE.finditer(text):
             w = m.group(1)
             base = w.lower().strip("'’-")
             if not base:
+                continue
+            if skip.overlaps(*m.span()):
                 continue
             tally = lower if w[:1].islower() else upper
             tally[base] = tally.get(base, 0) + 1
