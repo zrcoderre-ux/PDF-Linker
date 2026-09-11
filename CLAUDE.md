@@ -4450,6 +4450,24 @@ row binds as a slip of the tracked name and never as a fresh person. A CLI
 stated: a vocabulary word the documents only ever capitalise ("Enhanced
 Sealing" as a line item) passes, since without a dictionary the corpus is the
 only screen.
+**…and BOTH PASSES ask that screen, through one function**
+(`_pn_yes_refusal`). It shipped in `--fix-leaks` alone, so a value the
+text-only pass refused as vocabulary — "NAN", "JTII" — was minted as a person
+by the FULL run on the very next click: the operator's two buttons disagreed
+about one cell, and the disagreement was silent on the path that acted. Two
+paths answering one question two ways is the shape
+`Pseudonymizer.leak_findings` and `_weld_core` exist to refuse, and the same
+one that cost this project the Word path's cures. One helper decides it now
+and both call it, with the same reason text so the log and the row cannot say
+different things; `test_yes_screen_both_passes.py` fails if the screen is ever
+consulted anywhere else. The direction is the safe one — a wrong refusal costs
+one worksheet row the operator answers again with a replacement, where a wrong
+mint rewrites the document's own vocabulary as a surname in every export.
+The full run screens against the PREVIOUS run's originals: it has read no
+document yet (its terms are built before it does), and that is the same corpus
+from the same source `--fix-leaks` reads. With no originals at all only the
+all-caps rule can be asked, which is true of both passes alike.
+
 **…and a refused row SAYS SO on the row** (`_PN_REFUSED_NOTE_LEAD`,
 `_PN_REFUSED_VOCAB`, `_PN_REFUSED_SELF_MAP`, `_pn_note_refusals`,
 `_pn_notes_drop_refusal`, `refusals` in `_pn_write_leak_report`). "A refused
