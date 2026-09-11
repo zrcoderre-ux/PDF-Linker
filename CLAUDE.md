@@ -4512,6 +4512,31 @@ costs the screen nothing real — a word that IS vocabulary is written lower
 case in ordinary prose too, and only a word whose ONLY lower-case evidence was
 a domain changes answer.
 
+**A worksheet row names the SOURCE DOCUMENT, on both passes**
+(`_pn_export_sources`, `_pn_export_source_name`). An export is named for its
+source's SCRUBBED stem, deliberately — the `.txt` is the artifact that gets
+shared, so a party or attorney name must not survive in its filename
+(`_pn_scrubbed_stem`). The consequence is that the export's own name is a
+PSEUDONYM: `Feit Decl. ISO Mot..pdf` is written to
+`Kingscote Decl. ISO Mot..txt`. The FULL run's rows named the source PDF all
+along (`pdf_path.name`), while `--fix-leaks` — which works from the exports and
+never opens a PDF — wrote `f.name`, the pseudonym. So a delivered folder came
+back with three rows naming a declaration the operator does not have, reported
+as "there is no Kingscote decl.": one column, two passes, two answers, and the
+answer on the pass the operator clicks most is the unusable one. Naming the
+real document costs NOTHING here, which is what settles it — the worksheet is
+triage, lives in the case folder, never ships, and already quotes whole
+sentences of the unscrubbed body; the EXPORT's own name is untouched, since
+that is the file that leaves. The mapping is the FORWARD one, recomputed: every
+source is put through the very function that named its export
+(`_pseudonymized_txt_path`), so the two cannot disagree and no fake is walked
+backwards — which is `DeAnonymize.bas`' job and carries its ambiguity rules.
+Going through that function rather than `_pn_scrubbed_stem` is also what makes
+one key one source, since it is where two stems that scrub alike are given
+different names by a per-source digest. `_orphan_exports` reads the same map,
+so "which source writes which export" has one definition. An export of no
+source keeps its own name: there is nothing truer to say about it.
+
 **An export of NO source document is named, and a stale copy is left alone**
 (`_orphan_exports`, `skip` on the combined writer). An export is named for
 its source's scrubbed stem, so one an earlier run wrote under an earlier
