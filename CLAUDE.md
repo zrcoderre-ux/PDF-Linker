@@ -3688,6 +3688,35 @@ answerable at the top of the page.
   default-judgment packet carries several and the complaint forms carry a
   numbered attachment per cause of action — and a form number faked as a case
   number is a nonsense stamp that destroys the form's identity.
+- **…and it is protected where it STANDS, not merely as a whole VALUE**
+  (`_PN_FORM_ID_SPAN_RE`, `_form_id_spans`, `_pn_span_in_form_id`). The rule
+  above refuses to build a term FOR "MC-025" and says nothing about a SHORTER
+  term matching INSIDE one — and a term matches WHOLE WORDS, where a hyphen is
+  no word character, so a two-letter entity acronym "MC" is a whole-word match
+  in "MC-025". A delivered cause-of-action attachment shipped footed "NG-025":
+  the form no longer saying which form it is, on a page where the form id is
+  the one thing that says what the pleading is, and with no leak reported,
+  since nothing tracked was left standing. The whole id joins the protected set
+  at every `_substitute` site — PROTECTION-ONLY, exactly as
+  `_whitelisted_url_spans` is, so the worst case is a value left unfaked inside
+  a token the tool already refuses to fake as a whole — and is MIRRORED on the
+  read side (`_surviving_records`, `surviving_reals_reduced`) for that rule's
+  own reason: a value standing where the write side refuses to touch must never
+  be REPORTED, or the export is quarantined by a leak no `--fix-leaks` pass can
+  clear. Case-SENSITIVE and bounded on BOTH sides, where `_JC_FORM_NO_RE` is
+  neither: that one only LABELS a rendering, so a scan's "l" for "I" costs it a
+  discarded pass, while a lower-case "mc-025" in prose is not a form id and a
+  longer stamp ("RAM-000013") must never be half-claimed.
+- **…and the acronym that rewrote it was minted BY it**
+  (`register_entity_acronyms`' occurrence gate). That pass binds a tracked
+  entity's initialism only where the document ACTUALLY USES it standalone —
+  and the attachment's footer was the only standalone "MC" in the document, so
+  the form number was both the whole of the evidence for the term and the thing
+  the term then rewrote. An occurrence inside a form id is no evidence at all
+  now. The span protection alone would have stopped the rewrite; the gate is
+  what stops the term existing, which matters because a term minted on that
+  evidence still earns a key row and still fires wherever else those two
+  letters happen to stand.
 - **Nor are the form's own FIELD LABELS.** A form prints the label hard against
   the answer it asks for, so a harvest that reads the pair as one run offers the
   label up as a name and the tool then rewrites the form's furniture: "CITY AND
