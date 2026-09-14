@@ -2877,6 +2877,21 @@ def _image_ocr_rects(page):
 # on purpose: two OCR engines never agree on every word, and it is the bulk
 # agreeing that says the layer is a reading of this same image.
 _IMG_OCR_READ_MIN = 0.5
+# …and the same question asked WITHOUT reference to the words, because on the
+# page this matters most the two readings agree on almost nothing. A fax
+# generation's own text layer is mangled — that is the whole reason a second
+# reading looked worth having — so "Cuore reusr ise:" meets "Customer trust is"
+# and the agreement arm above measures 0.25 where it wants 0.5. What does NOT
+# move is the COUNT: both engines are reading the same printed words, so they
+# produce comparably many tokens however they read them. A region the page
+# already covers with that much text of its own is a region already read.
+_IMG_OCR_COVER_MIN = 0.5
+# Coverage is evidence only where there is enough of it. A signature-block image
+# whose rect clips two words of a neighbouring paragraph would otherwise read as
+# "already covered" against the three words the OCR found in it, and the one
+# thing this pass exists to recover would be dropped. A re-read page carries
+# hundreds of words inside the image; nothing else comes near this floor.
+_IMG_OCR_COVER_FLOOR = 20
 
 
 def _image_ocr_already_read(page, rect, found):
@@ -2897,7 +2912,23 @@ def _image_ocr_already_read(page, rect, found):
     words are echoed elsewhere on the page and there is nothing under the seal,
     while a re-read scan's words are already exactly where we are about to put
     them again. So both rules apply, each to its own failure — the page-wide
-    newness test refuses the seal, this refuses the second reading."""
+    newness test refuses the seal, this refuses the second reading.
+
+    Asked TWO ways, because word agreement fails on exactly the page that needs
+    this most. The region is worth re-reading when the layer under it is bad,
+    and a layer bad enough to be worth re-reading is one our reading will not
+    agree with: a fax generation extracts as "Cuore reusr ise: the (He fee
+    brisiness", our 300-dpi pass reads "Customer trust is at the heart of our
+    business", and the two share a quarter of their words where the agreement
+    arm wants half. So the overlay landed, and the page shipped carrying BOTH
+    readings interleaved word for word — "Customer Cuore reusr trust ise: is at
+    the (He Hee heart fee of our brisiness business" — which is worse than the
+    bad layer alone: a whole-word term cannot match a doubled run, so the
+    parties rode through the scrub, and the harvester minted the wreckage.
+    The second arm asks the question the disagreement cannot spoil: is the page
+    already carrying a comparable BODY of text in this rect? Both engines read
+    the same printed words, so they return comparably many tokens whatever they
+    make of them — the count holds where the spellings do not."""
     words = _IMG_OCR_WORD_RE.findall(found or "")
     if not words:
         return False
@@ -2905,11 +2936,15 @@ def _image_ocr_already_read(page, rect, found):
         inside = page.get_text("text", clip=rect)
     except Exception:
         return False
-    have = {w.lower() for w in _IMG_OCR_WORD_RE.findall(inside)}
-    if not have:
+    mine = _IMG_OCR_WORD_RE.findall(inside)
+    if not mine:
         return False
+    have = {w.lower() for w in mine}
     same = sum(1 for w in words if w.lower() in have)
-    return same >= _IMG_OCR_READ_MIN * len(words)
+    if same >= _IMG_OCR_READ_MIN * len(words):
+        return True
+    return (len(mine) >= _IMG_OCR_COVER_FLOOR
+            and len(mine) >= _IMG_OCR_COVER_MIN * len(words))
 
 
 def _image_ocr_new_words(found, have_low):
@@ -3754,6 +3789,157 @@ def _spans_overdrawn(a, b):
     return w * h >= _SPAN_OVERDRAW_MIN * smaller
 
 
+# Two spans are two READINGS of one printed run when each covers this much of
+# the other's ink. MUTUAL, not "half the smaller": a page-wide stamp swallows a
+# body word's box whole while covering almost none of its own, so the mutual
+# form refuses there what `_SPAN_OVERDRAW_MIN` cannot. Two genuinely different
+# words cannot overlap at all without the page being unreadable — spans on a
+# line abut, they do not sit on each other — so this fires only where one
+# printed thing was read twice.
+_SPAN_REREAD_MIN = 0.5
+# …and the two must be the same SIZE of type, being two readings of one printed
+# line. A stamp, a heading or a watermark over body text is many times its
+# height; two renderings of one line differ only by the metrics of two fonts.
+_SPAN_REREAD_HEIGHT = 1.6
+# …and the PAGE must plainly be carrying itself twice before any of it goes.
+# This tier deletes text that is nowhere else on the page, which neither tier
+# above it does, so it is gated on a COUNT read comparatively — the doctrine
+# `_page_weld_score` states, that a count may use evidence a per-item verdict
+# cannot afford. A doubled page pairs nearly every span and scores in the
+# hundreds; on a clean page two same-size spans sharing half of each other's
+# ink do not occur. Nothing real sits between the two.
+_SPAN_REREAD_MIN_PAIRS = 8
+# …and the pairs must account for this share of the page's spans, which is the
+# half of the gate that does not grow with the page. Eight coincidences among
+# four hundred spans is a page that is not doubled; eight among twenty is. A
+# page really carrying two readings pairs nearly all of them, so a quarter sits
+# far below anything that shape produces and far above any coincidence.
+_SPAN_REREAD_MIN_SHARE = 0.25
+# {page number: pairs collapsed}. Hung on the Document like `_REOCR_ATTR`, and
+# for the same reason.
+_DOUBLED_ATTR = "_pdf_linker_doubled_pages"
+
+
+def _note_doubled_page(page, pairs):
+    """Record that `page` carried two readings of itself and one was dropped, so
+    the export's own banner can say so. The tool chose between two readings of
+    the same ink, and a choice is an inference: it is never presented as equal
+    to a reading nothing had to choose."""
+    try:
+        doc = page.parent
+        seen = getattr(doc, _DOUBLED_ATTR, None)
+        if seen is None:
+            seen = {}
+            setattr(doc, _DOUBLED_ATTR, seen)
+        # The LARGEST collapse seen, never a running total: the export, the
+        # detection copy and the citation parse each render a page through
+        # this, and they describe ONE doubling rather than three.
+        seen[page.number] = max(seen.get(page.number, 0), pairs)
+    except Exception:
+        pass
+
+
+def _spans_reread(a, b):
+    """True when `a` and `b` are two READINGS of one printed run: the same ink,
+    the same size of type, and text that does not agree."""
+    ta, tb = str(a.get("text", "")).strip(), str(b.get("text", "")).strip()
+    if not ta or not tb or ta == tb:
+        return False
+    ax0, ay0, ax1, ay1 = a["bbox"]
+    bx0, by0, bx1, by1 = b["bbox"]
+    w = min(ax1, bx1) - max(ax0, bx0)
+    h = min(ay1, by1) - max(ay0, by0)
+    if w <= 0 or h <= 0:
+        return False
+    ha, hb = ay1 - ay0, by1 - by0
+    if max(ha, hb) > _SPAN_REREAD_HEIGHT * max(min(ha, hb), 0.001):
+        return False
+    inter = w * h
+    return (inter >= _SPAN_REREAD_MIN * max((ax1 - ax0) * ha, 1e-6)
+            and inter >= _SPAN_REREAD_MIN * max((bx1 - bx0) * hb, 1e-6))
+
+
+def _drop_reread_spans(spans):
+    """`spans` with a second READING of the page collapsed away — the tier the
+    two above it cannot reach, for the page carrying two text layers that do not
+    agree about the words.
+
+    `_drop_overdrawn_spans` compares on exact TEXT and `_span_is_redraw_fragment`
+    on containment, and a re-read scan satisfies neither: the two engines read
+    the same printed word differently, so "Customer" meets "Cuore" and nothing
+    matches. The row then joins left to right into the shape the operator
+    reports as doubling, each word twice, one spelling right and one wrong:
+
+        Customer Cuore reusr trust ise: is at the (He Hee heart fee of our
+        brisiness business dnd and never bevel worth Werth pronrorminen
+
+    That is the `_drop_overdrawn_spans` failure exactly, one notch out, and it
+    costs the same three things: a whole-word term cannot match a doubled run,
+    so the parties ride through the scrub untouched; the harvester reads the
+    welds as names and mints them; and `_pn_context` quotes the wreckage into
+    the worksheet, where it reads as an unrelated extraction failure.
+
+    The safety argument CHANGES here and is worth stating plainly. The two tiers
+    above it can only ever remove a piece the page also has somewhere else; this
+    one removes a reading that is nowhere else, so it is gated four ways — the
+    ink must be MUTUALLY covered (a stamp over a word covers none of its own
+    box), the type must be the same SIZE, and the PAGE must carry both
+    `_SPAN_REREAD_MIN_PAIRS` such pairs and enough of them to be a share of
+    itself. A lone coincidence never deletes a word, and neither does a handful
+    of them on a busy page.
+
+    The LATER reading is kept, where the exact-text tier keeps the first. With
+    identical text there is nothing to choose and keeping the first preserves
+    the order; with two spellings there is, and a second text layer exists
+    because somebody — a filer's re-OCR, or this tool's own image pass — judged
+    the first inadequate and laid a remedial reading over it. The later layer is
+    that judgment. Which reading is actually right is not something any shape
+    measure can settle: "Cuore" is as word-shaped as "Customer", and the run
+    says on the page's own banner that it had to choose.
+
+    Residual, and stated: where the two layers split the row differently — one
+    span per styled run against one per word — the boxes do not mutually cover
+    and nothing is collapsed. That shape is `_span_is_redraw_fragment`'s while
+    the two readings agree, and out of reach of both when they do not."""
+    if len(spans) < 2:
+        return spans, 0
+    bands = {}
+    for i, sp in enumerate(spans):
+        y0, y1 = sp["bbox"][1], sp["bbox"][3]
+        for b in range(int(y0 // _SPAN_BAND_PT), int(y1 // _SPAN_BAND_PT) + 1):
+            bands.setdefault(b, []).append(i)
+    # Banded by row, then each band walked in x order and BROKEN OUT OF at the
+    # first span that starts past the one in hand: sorted by x0, nothing
+    # further along can overlap it either. On an ordinary page spans abut, so
+    # that break falls on the first comparison and the scan is linear — which
+    # is the whole cost of this tier on the pages that do not need it.
+    touching = set()
+    for members in bands.values():
+        if len(members) < 2:
+            continue
+        order = sorted(members, key=lambda i: spans[i]["bbox"][0])
+        for a, i in enumerate(order):
+            x1 = spans[i]["bbox"][2]
+            for j in order[a + 1:]:
+                if spans[j]["bbox"][0] >= x1:
+                    break
+                touching.add((i, j) if i < j else (j, i))
+    pairs = sorted(p for p in touching
+                   if _spans_reread(spans[p[0]], spans[p[1]]))
+    involved = {i for pair in pairs for i in pair}
+    if (len(pairs) < _SPAN_REREAD_MIN_PAIRS
+            or len(involved) < _SPAN_REREAD_MIN_SHARE * len(spans)):
+        return spans, 0
+    drop = set()
+    for i, j in pairs:
+        # Never erode a span that is already standing in for one that went, or
+        # a row would come apart a piece at a time.
+        if i in drop or j in drop:
+            continue
+        drop.add(i)
+    return [sp for i, sp in enumerate(spans) if i not in drop], len(drop)
+
+
 def _page_is_overdrawn(page):
     """True when this page's own spans carry a redundant RE-DRAW.
 
@@ -4098,7 +4284,7 @@ def _page_flowing_text(page):
         spans = _page_text_spans(page)
     except Exception:
         return text
-    kept = _drop_overdrawn_spans(spans)
+    kept = _drop_overdrawn_spans(spans, page)
     if len(kept) == len(spans):
         return text
     rows = _cluster_rows(_reading_frame_spans(page, kept))
@@ -4109,7 +4295,7 @@ def _page_flowing_text(page):
         for r in sorted(rows, key=lambda r: r["y"]))
 
 
-def _drop_overdrawn_spans(spans):
+def _drop_overdrawn_spans(spans, page=None):
     """`spans` with every redundant RE-DRAW removed — a page whose text layer is
     drawn TWICE yields each piece once.
 
@@ -4140,7 +4326,14 @@ def _drop_overdrawn_spans(spans):
     to compare against, so it is collapsed first, per span, by
     `_undouble_strike`. Before the dedup, deliberately: a struck span and a
     plain re-draw of the same line then agree on their text and the equality
-    comparison can collapse them."""
+    comparison can collapse them.
+
+    Then `_drop_reread_spans`, for the copies that do NOT agree about the words
+    — a second OCR reading laid over a mangled one, where "Customer" meets
+    "Cuore" and neither text equality nor containment can see it. That tier
+    deletes a reading the page has nowhere else, so it carries its own gates and
+    its own page-level floor; `page`, where a caller has one, is what lets the
+    export say on its banner that a choice was made."""
     kept, out = {}, []
     for sp in spans:
         halved = _undouble_strike(sp["text"])
@@ -4151,6 +4344,9 @@ def _drop_overdrawn_spans(spans):
             continue
         same.append(sp)
         out.append(sp)
+    out, dropped = _drop_reread_spans(out)
+    if dropped and page is not None:
+        _note_doubled_page(page, dropped)
     return _drop_redrawn_fragments(out)
 
 
@@ -4576,7 +4772,7 @@ def _detect_line_anchors(page, desplice=False, ink=None):
     # A page whose text layer is drawn twice yields each piece twice, and this
     # path welds the copies together — see `_drop_overdrawn_spans`. After the
     # desplice branch, so both span sources are covered by the one call.
-    body_spans = _ink_state_spans(_drop_overdrawn_spans(body_spans), ink)
+    body_spans = _ink_state_spans(_drop_overdrawn_spans(body_spans, page), ink)
     rows = _cluster_rows(body_spans)
     if not rows:
         return []
@@ -4782,7 +4978,7 @@ def _detect_line_anchors(page, desplice=False, ink=None):
     # right margin, which is a coincidence of one firm's layout. The e-filing
     # stamp above line 1 keeps its place: it is horizontal, and its text
     # reaches past the gutter into the page.
-    margin = _drop_overdrawn_spans(margin)
+    margin = _drop_overdrawn_spans(margin, page)
     sidebar = _sidebar_spans(margin + stray, line_col, tol)
     margin = [sp for sp in margin if id(sp) not in sidebar]
     stray = stray + margin
@@ -25997,7 +26193,7 @@ def _page_visual_text(page):
         # OCR layer runs up the unrotated page, and clustered as it lies
         # every word became a row of its own.
         rows = _cluster_rows(_margin_sideways_dropped(_reading_frame_spans(
-            page, _drop_overdrawn_spans(spans))))
+            page, _drop_overdrawn_spans(spans, page))))
     except Exception:
         return None
     if not rows:
@@ -31595,6 +31791,13 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         # exported blank behind their `====== Page N ======` headers, read as a
         # finished document, and the run stamped the folder DONE.
         unread = getattr(doc, _UNREAD_ATTR, {}).get(i)
+        # …and a page that carried TWO readings of itself, of which one is
+        # shown. Unlike the three above, nothing here was recognised badly:
+        # the page arrived with two text layers that disagree about the words,
+        # and the tool kept the later one. Which spelling is right is not
+        # something any shape measure can settle, so the banner says a choice
+        # was made rather than implying there was nothing to choose.
+        doubled = getattr(doc, _DOUBLED_ATTR, {}).get(i)
         header = (f"====== Page {i + 1}"
                   + (f" (printed p. {label})" if label else "")
                   + (f" — REVIEW: NOT READ — no text layer, and OCR could "
@@ -31607,6 +31810,10 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
                      f"READ BY OCR; those words are guesses" if img_ocr else "")
                   + (f" — REVIEW: recognised at only {low_dpi} dpi, "
                      f"text is LOW CONFIDENCE" if low_dpi else "")
+                  + (f" — REVIEW: this page carried TWO text layers that "
+                     f"disagree; {doubled} piece(s) of the earlier reading "
+                     f"were dropped and the later one is shown"
+                     if doubled else "")
                   + " ======")
         page_blocks.append((header, rows if rows is not None else display))
         block_pages.append(len(detect_pages) - 1)   # its detection text
