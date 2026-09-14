@@ -21785,7 +21785,7 @@ class Pseudonymizer:
             k += 1
         return k < j and _pn_is_name_word(text[k:j])
 
-    def leak_findings(self, body, source):
+    def leak_findings(self, body, source, log=None):
         """Every REVIEW finding for one export, in the order the worksheet
         ranks them — `body` is the written export, `source` the unscrubbed
         text the definition tiers read.
@@ -21805,45 +21805,82 @@ class Pseudonymizer:
         set: `reid_scan` leads, because those shapes invert the map in one
         lookup and outrank ordinary review; `fuzzy_survivor_scan` runs
         BEFORE `half_scrubbed_scan` so the more specific class owns the row
-        when a mangled survivor also stands beside one of our fakes."""
+        when a mangled survivor also stands beside one of our fakes.
+
+        **And it SAYS which tier cost what**, past `_LEAK_SLOW_SEC` and
+        given a `log`. This block is the longest silence left in a run:
+        the tiers are a dozen scans of the same export, they differ by an
+        order of magnitude in cost, and the one line at the end named the
+        TOTAL alone. On a 70-page declaration of fax exhibits that told
+        the operator the leak scans were slow and nothing about WHY —
+        where the answer is a property of the document (a degraded page
+        turns on the fuzzy sweep's debris tier, which compares every
+        debris word against every tracked token with no 3-gram screen)
+        and is exactly what decides whether the next fix is algorithmic
+        or the filing is simply big. Measured with `_phase_clock` and
+        reported through `_phase_summary`, so this and the export walk
+        cannot describe the same thing two ways."""
         # Open-world REVIEW scan: identifier shapes (licence/bar/reservation/
         # file numbers, bare URLs) that must never ride along even without a
         # key entry.
+        mark, spent, started = _phase_clock()
         review = list(self.review_scan(body))
+        mark('review')
         # Backstop: a party acronym defined in the source that survived the
         # scrub (a definition shape `register_short_names` didn't anticipate).
         review += self.review_definition_survivors(source, body)
+        mark('definitions')
         # A name the document DEFINES for itself (`Susan Spellman
         # ("Spellman")`) that no template named and no other anchor reached.
         review += self.defined_name_scan(source, body)
+        mark('defined names')
         # A capitalised run standing as the SUBJECT of a reporting verb
         # ("Doe asked", "Spellman confirmed") — the one anchor that needs no
         # label at all, and the only one a fact-section witness carries.
         review += self.narrative_name_scan(body)
+        mark('narrative')
         # A title in front of a word ("Mr. Spellman") and an e-mail header
         # line ("From: Susan Spellman") — two anchors the role- and
         # verb-anchored tiers are structurally blind to.
         review += self.honorific_name_scan(body)
+        mark('honorifics')
         review += self.mail_header_name_scan(body)
+        mark('mail headers')
         # A name typed onto a form's fill-in rule, which no term can match.
         review += self.form_rule_name_scan(body)
+        mark('form rules')
         # A labelled phone/address the detectors could not read, on a page
         # whose text layer is degraded.
         review += self.degraded_contact_scan(body)
+        mark('degraded contacts')
         # High-recall tier: role-anchored name shapes in the output that are
         # neither our fakes nor common words — the "unknown name" net.
         review += self.unknown_name_scan(body)
+        mark('unknown names')
         # A word one OCR slip away from a real name this case tracks. Runs
         # BEFORE the half-scrub scan so the more specific class owns the row
         # when a mangled survivor also stands beside one of our fakes.
         review += self.fuzzy_survivor_scan(body)
+        mark('fuzzy sweep')
         # A real name word standing beside one of our own person fakes — the
         # half-scrub, which the scans above are structurally blind to.
         review += self.half_scrubbed_scan(body)
+        mark('half-scrub')
         # Adversarial re-identification pass: a bar number / VIN / reservation
         # shape in the OUTPUT that isn't one of our own fakes. Sorted first —
         # these invert the map in one lookup, so they outrank ordinary review.
-        return self.reid_scan(body) + review
+        try:
+            return self.reid_scan(body) + review
+        finally:
+            # In a `finally` so the reid tier is measured and the line
+            # written on the way OUT, past the one `return` this has.
+            mark('reid')
+            elapsed = time.monotonic() - started
+            if log is not None and elapsed >= _LEAK_SLOW_SEC:
+                where = _phase_summary(spent)
+                log.info(f"  Pseudonymize: review tiers in "
+                         f"{elapsed:.0f}s"
+                         + (f" — {where}" if where else ""))
 
 
     def _mask_protected_citations(self, text):
@@ -31807,6 +31844,43 @@ def _pn_drop_superseded_quarantine(txt_path, src_path, log):
 # and only the page can say which one it is paying for.
 _EXPORT_ANNOUNCE_PAGES = 5
 _EXPORT_SLOW_SEC = 5.0
+# …and the LEAK path's own floor. That block is the other long silence: the
+# run says "running the leak scans over the export" and then nothing, and on a
+# 70-page declaration of fax exhibits it stayed there for longer than every
+# other phase of the file put together. One line at the end named the total
+# and nothing else, which leaves a reader exactly where the silence did —
+# the block is a dozen REVIEW tiers behind four cures and two survivor scans,
+# and they differ by an order of magnitude in cost.
+_LEAK_SLOW_SEC = 5.0
+
+
+def _phase_summary(spent, floor=0.5):
+    """`{step: seconds}` as "name 12s, name 4s", largest first.
+
+    ONE formatting rule for every "where did the time go" line, so the export
+    walk and the leak path cannot report the same thing two ways. Steps under
+    `floor` are left out: an ordinary document's line is then one number, and
+    the reader's eye goes to the step that actually cost something."""
+    return ", ".join(f"{name} {secs:.0f}s" for name, secs
+                     in sorted(spent.items(), key=lambda kv: -kv[1])
+                     if secs >= floor)
+
+
+def _phase_clock():
+    """A stopwatch for a SEQUENCE of named steps: `mark("x")` attributes
+    everything since the last mark to "x". Returns `(mark, spent, started)`.
+
+    The export walk wraps each rendering in a call because its stages
+    interleave under conditions; a straight-line block like the leak battery
+    reads better marked between statements, and both feed `_phase_summary`."""
+    spent, last = {}, [time.monotonic()]
+
+    def mark(name):
+        now = time.monotonic()
+        spent[name] = spent.get(name, 0.0) + (now - last[0])
+        last[0] = now
+
+    return mark, spent, last[0]
 
 
 def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
@@ -31978,9 +32052,7 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
 
     elapsed = time.monotonic() - started
     if elapsed >= _EXPORT_SLOW_SEC and spent:
-        where = ", ".join(f"{name} {secs:.0f}s" for name, secs
-                          in sorted(spent.items(), key=lambda kv: -kv[1])
-                          if secs >= 0.5)
+        where = _phase_summary(spent)
         log.info(f"  Extracted {len(doc)} page(s) in {elapsed:.0f}s"
                  + (f" — {where}" if where else ""))
 
@@ -32157,17 +32229,23 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         log.info(f"  Pseudonymize: scrubbed in {time.time() - _pn_t0:.0f}s; "
                  f"running the leak scans over the export")
         _pn_t0 = time.time()
+        # …and the block is measured step by step, because "the leak scans"
+        # is four cures, two survivor scans and a dozen REVIEW tiers, and the
+        # one line at the end named their SUM. See `leak_findings`.
+        _leak_mark, _leak_spent, _ = _phase_clock()
         # Report (but do NOT withhold) any real value that survived the scrub —
         # the .txt is still written; the log flags it for review. Check the
         # column-ordered rendering as well as the display text: a name that the
         # page wrapped mid-name is only contiguous down its own column, so the
         # display text alone would report a page like that as clean.
         scrubbed_detect = pseudonymizer.apply(detect_full, count=False)
+        _leak_mark("column copy")
 
         # An e-mail is always faked, so cure any address the pattern pass left
         # standing rather than asking about it in the worksheet.
         body = pseudonymizer.scrub_emails(body)
         scrubbed_detect = pseudonymizer.scrub_emails(scrubbed_detect)
+        _leak_mark("email cure")
 
         # Column-splice check: if a page's extraction is corrupted, the whole-
         # word patterns match nothing, so also scan the alphanumeric reduction of
@@ -32187,12 +32265,14 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         body = pseudonymizer.scrub_welded(body, spliced=bool(spliced))
         scrubbed_detect = pseudonymizer.scrub_welded(scrubbed_detect,
                                                      spliced=bool(spliced))
+        _leak_mark("weld cure")
         # ...and the plain survivor: a tracked value standing in ordinary,
         # unprotected text that the main pass never claimed. Its fake is already
         # minted and already in the key, so this is not a question for the
         # worksheet — apply the binding rather than asking about it.
         body = pseudonymizer.scrub_survivors(body)
         scrubbed_detect = pseudonymizer.scrub_survivors(scrubbed_detect)
+        _leak_mark("survivor cure")
         if spliced:
             log.warning(f"  Pseudonymization REVIEW on {pdf_path.name}: caption "
                         f"on page(s) {spliced} appears column-spliced; term "
@@ -32204,6 +32284,7 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
             body, spliced=bool(spliced)))
         survivors |= set(pseudonymizer.surviving_reals_reduced(
             scrubbed_detect, spliced=bool(spliced)))
+        _leak_mark("survivor scan")
 
         if survivors:
             pseudonymizer.note_leaks(survivors)
@@ -32214,7 +32295,8 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
 
         # Open-world REVIEW scan: identifier shapes (licence/bar/reservation/file
         # numbers, bare URLs) that must never ride along even without a key entry.
-        review = pseudonymizer.leak_findings(body, detect_full)
+        review = pseudonymizer.leak_findings(body, detect_full, log=log)
+        _leak_mark("review tiers")
         if review:
             shown = "; ".join(f"{c}: {s}" for c, s in review[:8])
             log.warning(f"  Pseudonymization REVIEW on {pdf_path.name}: "
@@ -32226,8 +32308,11 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
             log.warning(f"  Pseudonymization REVIEW on {pdf_path.name}: "
                         f"{degraded}")
 
+        _leak_where = _phase_summary(_leak_spent)
         log.info(f"  Pseudonymize: leak scans done in "
-                 f"{time.time() - _pn_t0:.0f}s; locating findings")
+                 f"{time.time() - _pn_t0:.0f}s"
+                 + (f" — {_leak_where}" if _leak_where else "")
+                 + "; locating findings")
 
         # Collect every finding into the run-wide triage worksheet, each located
         # to its printed page and gutter line so it can be found and judged.
@@ -33513,7 +33598,7 @@ def _write_word_text_version(src_path, text, log, pseudonymizer=None,
                         f"value(s) still present in the .txt ({shown}). Review "
                         f"before sharing; add them with --term and re-run.")
 
-        review = pseudonymizer.leak_findings(body, text)
+        review = pseudonymizer.leak_findings(body, text, log=log)
         if review:
             shown = "; ".join(f"{c}: {s}" for c, s in review[:8])
             log.warning(f"  Pseudonymization REVIEW on {src_path.name}: "
