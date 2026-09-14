@@ -253,3 +253,63 @@ def test_already_read_is_measured_inside_the_rect(found, expected):
     doc = _scanned_doc()
     rect = fitz.Rect(0, 0, 612, 792)
     assert P._image_ocr_already_read(doc[0], rect, found) is expected
+
+
+# ── …and a page THIS RUN already read is not read again ────────────────────
+# The cost this closes, measured on a delivered folder: a 70-page scanned
+# declaration had each of its images rendered at 300 dpi and OCR'd a SECOND
+# time, and ~130 of ~180 regions were then thrown away by
+# `_image_ocr_already_read` as a reading of text already there — thirteen and
+# a half minutes of one file, all of it after the work it exists to avoid.
+
+def test_a_page_this_run_ocrd_is_not_read_again(monkeypatch):
+    """`_ocr_pdf` reads the WHOLE page, so an image on it has been read as part
+    of it — at the same dpi, with the same config. A second reading cannot find
+    a word the first missed, and the check that said so was asked only after
+    the render and the Tesseract call."""
+    calls = _stub_tesseract(monkeypatch, SIGNATURE)
+    doc = _doc()
+    P._note_ocr_read_page(doc[0])
+    assert P._ocr_image_regions(doc, log) == 0
+    assert calls == []                       # nothing was rendered at all
+
+
+def test_a_rebuilt_page_is_not_read_again(monkeypatch):
+    """`_reocr_garbled_pages` is a page-wide reading too."""
+    calls = _stub_tesseract(monkeypatch, SIGNATURE)
+    doc = _doc()
+    P._note_rebuilt_page(doc[0], "")
+    assert P._ocr_image_regions(doc, log) == 0
+    assert calls == []
+
+
+def test_a_page_the_grind_ground_down_is_still_read(monkeypatch):
+    """The one exception. A page the grind settled below `_OCR_LOW_DPI` was
+    read at a resolution this pass can beat, so a region of it may genuinely
+    carry more — it is left to the ordinary checks."""
+    _stub_tesseract(monkeypatch, SIGNATURE)
+    doc = _doc()
+    P._note_ocr_read_page(doc[0])
+    P._note_low_confidence(doc[0], 99)
+    assert P._ocr_image_regions(doc, log) == 1
+    assert "Mackenzie" in doc[0].get_text("text")
+
+
+def test_a_page_nothing_read_is_untouched_by_the_skip(monkeypatch):
+    """The ordinary case — a born-digital page with a pasted signature block —
+    is exactly as it was."""
+    _stub_tesseract(monkeypatch, SIGNATURE)
+    doc = _doc()
+    assert P._ocr_image_regions(doc, log) == 1
+    assert "Mackenzie" in doc[0].get_text("text")
+
+
+def test_the_record_survives_a_failed_overlay(monkeypatch):
+    """Noted only once the layer has landed: a page whose overlay failed still
+    has no reading of its own, and skipping it would leave the image unread by
+    anything."""
+    doc = _doc()
+    pg = doc[0]
+    assert not P._page_read_by_this_run(pg)
+    P._note_ocr_read_page(pg)
+    assert P._page_read_by_this_run(pg)
