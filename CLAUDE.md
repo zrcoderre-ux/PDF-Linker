@@ -5159,9 +5159,9 @@ survive to fail.
   (`_page_text_is_ocr`). The gate above is about the page's SHAPE and admits
   any page with a margin and enough rows, so the pass was probing every page of
   every folder — a render and a Tesseract call apiece — where the population it
-  exists for is the page a page-wide OCR wrote. A born-digital page either
-  prints its numbers, in which case `_pleading_gutter` reads them off the layer
-  and this never runs, or has none to recover; either way the probe buys
+  exists for is the page a page-wide OCR pass wrote. A born-digital page
+  either prints its numbers, in which case `_pleading_gutter` reads them off
+  the layer and this never runs, or has none to recover; either way the probe buys
   nothing. The evidence is this run's own record (`_OCR_READ_ATTR`,
   `_REOCR_ATTR`) or Tesseract's invisible font in the page's font table — the
   same test `_page_text_layer_is_sound` REFUSES a page on, asked here for the
@@ -5937,7 +5937,7 @@ new file passes by construction — leaves it alone.
   scrub and the leak scan each announce themselves and then report their
   elapsed time; a line written afterwards is a line never written when the
   interpreter dies.
-- **…and the EXPORT WALK says WHERE its time went** (`_write_text_version`'s
+- **…and the export walk says WHERE its time went** (`_write_text_version`'s
   `_timed`, `_EXPORT_ANNOUNCE_PAGES`, `_EXPORT_SLOW_SEC`). That walk puts every
   page through several renderings — the flowing text, the form probe, the
   pleading rows, the table finder, the positional layout and the detection copy
@@ -5950,6 +5950,28 @@ new file passes by construction — leaves it alone.
   next slow run diagnosable without a profiler. Sub-half-second stages are left
   out, so an ordinary document's line is one number and a short document gets
   no line at all.
+- **…and so does the LEAK BLOCK, which is the longest silence left**
+  (`_phase_clock`, `_phase_summary`, `_LEAK_SLOW_SEC`, the marks in
+  `_write_text_version` and in `Pseudonymizer.leak_findings`). A run says
+  "running the leak scans over the export" and then nothing until they are
+  over, and on a delivered folder's 70-page declaration of fax exhibits it sat
+  there longer than every other phase of that file put together — the operator
+  read it as a hang, which is what an unmoving log looks like whatever is
+  happening. One line at the end named the TOTAL, and "the leak scans" is not
+  one thing: four cures, two survivor scans and a dozen REVIEW tiers, each
+  over the whole export. Both halves are marked now — the cures and survivor
+  scans in the writer, the tiers inside the battery so the Word path reports
+  them too — and each says where its own time went. What that buys is the
+  DIAGNOSIS rather than the symptom: the cost of this block is a property of
+  the document, since a degraded page turns on the fuzzy sweep's debris tier
+  (every debris word against every tracked token, no 3-gram screen) and a
+  large master KEEP sheet grows `_keep_spans`, so knowing which of the
+  fourteen steps ran long is what separates "this filing is big" from a pass
+  that wants an algorithmic fix. The battery reports through the same
+  `_phase_summary` the export walk uses, so the two cannot describe one thing
+  two ways, and `_phase_clock` is the straight-line form of the same
+  stopwatch. Both are silent under their own floor, so an ordinary document's
+  log does not move.
 
 **A Context cell BOLDS the value it is quoting** (`_pn_rich_context`, an
 openpyxl `CellRichText`). The cell is a whole sentence and the value is a word
