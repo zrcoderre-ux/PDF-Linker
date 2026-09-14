@@ -5085,6 +5085,32 @@ survive to fail.
   three words the OCR found in it, and the judge's name this pass exists to
   recover would be dropped. A re-read page carries hundreds of words inside the
   image; nothing else comes near the floor.
+  **…and BOTH of those are asked too late for the page THIS RUN read itself**
+  (`_OCR_READ_ATTR`, `_note_ocr_read_page`, `_page_read_by_this_run`). The two
+  rules above are measured on what the OCR CAME BACK WITH, so the render and
+  the Tesseract call are spent before either can refuse the region — and on a
+  scanned filing every page reaching this pass is a page `_ocr_pdf` or
+  `_reocr_garbled_pages` has just written the text layer of. Measured on a
+  delivered folder, a 70-page declaration rendered each of its images at 300
+  dpi a SECOND time and threw ~130 of ~180 readings away as text already
+  there: thirteen and a half minutes of one file, all of it after the work the
+  check exists to avoid. Our OWN reading is the one thing that can be ruled
+  out without measuring it — same page, same dpi, same config, so a second
+  reading cannot find a word the first missed — so a page this run read whole
+  is skipped before anything is rendered, and the pass says how many. The
+  exception is a page the GRIND settled below `_OCR_LOW_DPI`: there the first
+  reading was made at a resolution this pass can beat, so a region of it may
+  genuinely carry more and it is left to the ordinary checks. It buys nothing
+  on a born-digital page, which is the case the pass was written for and is
+  untouched.
+  **…and the pass NAMES ITSELF and reports what it cost**, whatever it found.
+  It collects its pages first — the page's own text and its image rectangles
+  are both cheap — says how many regions it is about to read, and reports the
+  elapsed time at the end even when the count is zero: a pass that found
+  nothing has still spent every render, and on the folder above it was silent
+  for thirteen minutes between two log lines that named neither end of it,
+  which reads exactly like a hang. The convention `_pn_prescan_folder` already
+  follows for its own stages.
 - **A page-wide OCR pass throws the line-number GUTTER away, and the TITLE PAGE
   is what it costs** (`_ocr_gutter_column`, `_gutter_probe_strip`,
   `_gutter_probe_reads_as_numbering`). A pleading's line numbers are a narrow
@@ -5129,6 +5155,21 @@ survive to fail.
   in one band by construction and the two are asking one question of one set of
   numbers. Cost where it fires: ~0.08 s to render and ~0.22 s to read, against
   the seconds of full-page OCR the page has already paid.
+  **…and only a page whose text layer CAME FROM OCR is probed at all**
+  (`_page_text_is_ocr`). The gate above is about the page's SHAPE and admits
+  any page with a margin and enough rows, so the pass was probing every page of
+  every folder — a render and a Tesseract call apiece — where the population it
+  exists for is the page a page-wide OCR wrote. A born-digital page either
+  prints its numbers, in which case `_pleading_gutter` reads them off the layer
+  and this never runs, or has none to recover; either way the probe buys
+  nothing. The evidence is this run's own record (`_OCR_READ_ATTR`,
+  `_REOCR_ATTR`) or Tesseract's invisible font in the page's font table — the
+  same test `_page_text_layer_is_sound` REFUSES a page on, asked here for the
+  opposite purpose: there it says the layer is not a source text layer, here
+  that it is exactly the kind a page-wide pass drops a gutter from. And the
+  pass names itself and reports its elapsed time whatever it adopted, for
+  `_ocr_image_regions`' reason — a probe that adopts nothing has still spent
+  every render, and this one was silent either way.
 - **A page nothing could READ is UNREAD, and every copy of it says so**
   (`_note_unread_pages`, `_UNREAD_ATTR`, `_UNREAD_RUN`, the `_unread` decline
   in `_ocr_pdf`). The low-dpi, rebuilt-layer and ink-form banners all exist
@@ -5896,6 +5937,19 @@ new file passes by construction — leaves it alone.
   scrub and the leak scan each announce themselves and then report their
   elapsed time; a line written afterwards is a line never written when the
   interpreter dies.
+- **…and the EXPORT WALK says WHERE its time went** (`_write_text_version`'s
+  `_timed`, `_EXPORT_ANNOUNCE_PAGES`, `_EXPORT_SLOW_SEC`). That walk puts every
+  page through several renderings — the flowing text, the form probe, the
+  pleading rows, the table finder, the positional layout and the detection copy
+  — and on a delivered folder's 70-page declaration it ran for ten and a half
+  minutes between two log lines that named neither end of it. Naming the phase
+  is half the answer and not the useful half: the renderings differ by an order
+  of magnitude in cost, so "the export walk was slow" leaves the next reader
+  exactly where the silence did. Past `_EXPORT_SLOW_SEC` the walk reports the
+  seconds each rendering accumulated, largest first, which is what makes the
+  next slow run diagnosable without a profiler. Sub-half-second stages are left
+  out, so an ordinary document's line is one number and a short document gets
+  no line at all.
 
 **A Context cell BOLDS the value it is quoting** (`_pn_rich_context`, an
 openpyxl `CellRichText`). The cell is a whole sentence and the value is a word

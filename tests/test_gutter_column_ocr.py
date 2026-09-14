@@ -41,7 +41,7 @@ RIGHT = ["Case No. 25STCV37838", "", "COMPLAINT FOR DAMAGES", "",
          "", ""]
 
 
-def _page(numbers=False, sideways=True, rows=len(LEFT)):
+def _page(numbers=False, sideways=True, rows=len(LEFT), ocr_read=True):
     """A scanned pleading page as its page-wide OCR left it: body text, a
     rotated e-filing stamp in the margin, and — unless `numbers` — no gutter."""
     doc = fitz.open()
@@ -57,6 +57,12 @@ def _page(numbers=False, sideways=True, rows=len(LEFT)):
     if sideways:
         pg.insert_text((14, 560), "Electronically Received 12/12/2022",
                        fontsize=9, rotate=90)
+    # …and as a page THIS RUN's `_ocr_pdf` just supplied the text layer for,
+    # which is the population the pass is scoped to: a born-digital page either
+    # prints its numbers, where `_pleading_gutter` reads them already, or has
+    # none to recover, and probing it spends a render to find nothing.
+    if ocr_read:
+        P._note_ocr_read_page(pg)
     return doc
 
 
@@ -195,3 +201,41 @@ def test_without_tesseract_the_pass_does_nothing(monkeypatch):
     monkeypatch.setattr(P, "_find_tesseract", lambda: None)
     doc = _page()
     assert P._ocr_gutter_column(doc, log) == 0
+
+
+# ── …and only where the layer came from OCR ────────────────────────────────
+
+def test_a_born_digital_page_is_not_probed(monkeypatch):
+    """The pass is for a layer a page-wide OCR wrote, and it was probing every
+    page that had text — a render and a Tesseract call per page of a folder,
+    to find nothing. A born-digital page either prints its numbers, where
+    `_pleading_gutter` reads them off the layer already and this never runs, or
+    has none to recover."""
+    calls = _stub_tesseract(monkeypatch, range(1, 15))
+    assert P._ocr_gutter_column(_page(ocr_read=False), log) == 0
+    assert calls == []
+
+
+def test_a_page_this_run_read_is_probed(monkeypatch):
+    """…and the page the pass exists for still is."""
+    calls = _stub_tesseract(monkeypatch, range(1, 15))
+    assert P._ocr_gutter_column(_page(), log) == 1
+    assert calls
+
+
+def test_a_filers_own_ocr_layer_counts_as_one():
+    """Tesseract's invisible font says the layer is a reading whoever made it —
+    the same font test `_page_text_layer_is_sound` refuses a page on, asked for
+    the opposite purpose."""
+    class _Pg:
+        number = 0
+        parent = object()
+
+        def __init__(self, fonts):
+            self._fonts = fonts
+
+        def get_fonts(self, full=True):
+            return self._fonts
+
+    assert P._page_text_is_ocr(_Pg([(1, "n", "Type1", "GlyphLessFont")]))
+    assert not P._page_text_is_ocr(_Pg([(1, "n", "Type1", "Times-Roman")]))

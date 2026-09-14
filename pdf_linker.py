@@ -2439,6 +2439,80 @@ def _overlay_ocr_layer(page, ocr_doc):
         page.show_pdf_page(page.rect, ocr_doc, 0, overlay=True)
 
 
+# Where a page THIS RUN read for itself is remembered: the numbers of the pages
+# a page-wide OCR pass supplied — or rebuilt — a text layer for. Hung on the
+# Document like `_LOW_DPI_ATTR`, and for the same reason.
+#
+# **A page this run has just read is not read again.** `_ocr_image_regions` and
+# `_ocr_gutter_column` both run AFTER the page-wide passes, and both ask their
+# question of "a page that has text" — which, on a scanned filing, is every
+# page those passes have just written. So a 70-page scan had each of its images
+# rendered at 300 dpi and OCR'd a SECOND time, and the result thrown away by
+# `_image_ocr_already_read` as a reading of text already there: measured on a
+# delivered folder, ~130 of ~180 regions, thirteen and a half minutes of one
+# file. That check was right and it was asked too late — after the render and
+# the Tesseract call it exists to avoid.
+#
+# Our own reading is the one thing that can be ruled out without measuring it:
+# it was taken from the same page at the same dpi with the same config, so a
+# second reading of it cannot find a word the first missed. The exception is a
+# page the GRIND settled below `_OCR_LOW_DPI` — there the first reading was
+# made at reduced resolution, so reading a region of it at full dpi may
+# genuinely recover more, and such a page is left to the ordinary checks.
+_OCR_READ_ATTR = "_pdf_linker_ocr_read_pages"
+
+
+def _note_ocr_read_page(page):
+    """Remember that a page-wide OCR pass of THIS RUN wrote `page`'s text."""
+    try:
+        doc = page.parent
+        seen = getattr(doc, _OCR_READ_ATTR, None)
+        if seen is None:
+            seen = set()
+            setattr(doc, _OCR_READ_ATTR, seen)
+        seen.add(page.number)
+    except Exception:
+        pass          # instrumentation must never take a run down
+
+
+def _page_read_by_this_run(page):
+    """True when this run's own page-wide OCR produced `page`'s text layer, at
+    full resolution. See `_OCR_READ_ATTR`.
+
+    A page the grind settled below `_OCR_LOW_DPI` answers False: its text is
+    still our reading, but at a resolution a later pass can beat."""
+    try:
+        doc = page.parent
+        if page.number in getattr(doc, _LOW_DPI_ATTR, {}):
+            return False
+        return (page.number in getattr(doc, _OCR_READ_ATTR, set())
+                or page.number in getattr(doc, _REOCR_ATTR, {}))
+    except Exception:
+        return False
+
+
+def _page_text_is_ocr(page):
+    """True when `page`'s text layer came out of an OCR pass — this run's, or
+    the filer's, recognised by Tesseract's own invisible font.
+
+    The same font test `_page_text_layer_is_sound` REFUSES a page on, asked
+    here for the opposite purpose: there it says the layer is not a source text
+    layer and must not be vouched for as one, here that it is exactly the kind
+    of layer a page-wide OCR drops a line-number gutter from. A born-digital
+    page needs no gutter probe at all — either it prints its numbers, where
+    `_pleading_gutter` reads them off the layer already, or it has none to
+    recover."""
+    try:
+        doc = page.parent
+        if (page.number in getattr(doc, _OCR_READ_ATTR, set())
+                or page.number in getattr(doc, _REOCR_ATTR, {})):
+            return True
+        return any("GlyphLess" in str(f[3])
+                   for f in page.get_fonts(full=True) if len(f) > 3)
+    except Exception:
+        return False
+
+
 # Where an UNREAD page is remembered: {page number -> why it could not be
 # read}. Hung on the Document like `_LOW_DPI_ATTR`, and for the same reason.
 _UNREAD_ATTR = "_pdf_linker_unread_pages"
@@ -2586,6 +2660,10 @@ def _ocr_pdf(doc, log):
             ocr_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
             _overlay_ocr_layer(page, ocr_doc)
             ocr_doc.close()
+            # Noted only once the layer has actually landed: a page whose
+            # overlay failed still has no reading of its own, so the passes
+            # below must not take it for one.
+            _note_ocr_read_page(page)
             ocr_count += 1
         except Exception as e:
             log.warning(f"  Could not overlay OCR text on page {page.number}: {e}")
@@ -2991,7 +3069,12 @@ def _ocr_image_regions(doc, log):
     render. The result is kept only when it carries words the page does not
     already have (`_image_ocr_new_words`), so a logo's letter-soup and a court
     seal's echo of the caption are both discarded, and the page is banner-marked
-    so an inferred reading is never presented as equal to a read one."""
+    so an inferred reading is never presented as equal to a read one.
+
+    A page THIS RUN has already read whole is skipped before any of that
+    (`_page_read_by_this_run`) — the render and the Tesseract call included,
+    which is the point. `_image_ocr_already_read` was discarding those regions
+    correctly and only after they had been paid for; see `_OCR_READ_ATTR`."""
     try:
         import pytesseract
         from PIL import Image
@@ -3005,14 +3088,34 @@ def _ocr_image_regions(doc, log):
     import io
     import fitz
 
+    # Collect first, so the pass can SAY what it is about to do. It is minutes
+    # long on a scanned filing and said nothing at all until it was over, which
+    # leaves a reader of the log unable to tell where the run is — the silence
+    # `_pn_prescan_folder` names each of its stages to break. Nothing here
+    # renders: the page's own text and its image rectangles are both cheap.
     done = 0
+    already = 0
+    todo = []
     for page in doc:
         text = page.get_text("text")
         if not text.strip():
             continue                 # no text at all: `_ocr_pdf`'s page to take
+        if _page_read_by_this_run(page):
+            already += 1
+            continue                 # our own reading — see `_OCR_READ_ATTR`
         rects = _image_ocr_rects(page)
-        if not rects:
-            continue
+        if rects:
+            todo.append((page, text, rects))
+    if already:
+        log.info(f"  Image OCR: {already} page(s) left unread — this run's own "
+                 f"page-wide OCR wrote their text, so reading an image of the "
+                 f"same page again at the same resolution can add nothing")
+    if not todo:
+        return 0
+    log.info(f"  Image OCR: reading {sum(len(r) for _p, _t, r in todo)} image "
+             f"region(s) on {len(todo)} page(s)")
+    started = time.monotonic()
+    for page, text, rects in todo:
         # A picture in the margin OUTSIDE a pleading's gutter is a firm's
         # mark, set up the side of the page hard against the line numbers,
         # and reading it puts the firm's name — or, read upside down, a
@@ -3080,9 +3183,12 @@ def _ocr_image_regions(doc, log):
         if kept:
             _note_img_ocr(page, kept)
             done += kept
-    if done:
-        log.info(f"  Image OCR: read {done} image region(s) whose text the "
-                 f"page's own layer did not carry")
+    # Reported whatever the count, elapsed included: a pass that found nothing
+    # still SPENT the renders, and a cost that leaves no trace is a cost nobody
+    # can find later.
+    log.info(f"  Image OCR: read {done} image region(s) whose text the page's "
+             f"own layer did not carry, in "
+             f"{time.monotonic() - started:.1f}s")
     return done
 
 
@@ -3218,7 +3324,14 @@ def _ocr_gutter_column(doc, log):
     See the note above: a page-wide OCR pass drops the column whole, and the
     page then loses the entire pleading path — line numbering, the caption's
     two columns, the sidebar exclusion and the per-column scrub. Returns the
-    number of pages whose gutter was recovered."""
+    number of pages whose gutter was recovered.
+
+    Only a page whose text layer CAME FROM OCR is probed (`_page_text_is_ocr`
+    — this run's reading, or the filer's). That is the whole population this
+    pass is for, and it was probing every page with text instead: a born-
+    digital page either prints its numbers, where `_pleading_gutter` reads
+    them off the layer already and this never runs, or has none to recover,
+    and either way the render and the Tesseract call bought nothing."""
     try:
         import pytesseract
         from PIL import Image
@@ -3232,15 +3345,29 @@ def _ocr_gutter_column(doc, log):
     import io
     import fitz
 
+    # Collect first — nothing here renders — so the pass can name itself before
+    # it runs and report what it cost after. It was silent either way, and on a
+    # scanned filing it is minutes long: a gap in the log that reads exactly
+    # like a hang.
     done = 0
+    todo = []
     for page in doc:
         if not page.get_text("text").strip():
             continue                 # no text at all: `_ocr_pdf`'s page to take
+        if not _page_text_is_ocr(page):
+            continue                 # a born-digital margin holds no numbers
+                                     # `_pleading_gutter` cannot already read
         if _pleading_gutter(page) is not None:
             continue                 # the column is already there to read
         rect = _gutter_probe_strip(page)
-        if rect is None:
-            continue
+        if rect is not None:
+            todo.append((page, rect))
+    if not todo:
+        return 0
+    log.info(f"  Gutter OCR: probing the line-number margin of {len(todo)} "
+             f"page(s) whose text layer came from OCR")
+    started = time.monotonic()
+    for page, rect in todo:
         try:
             clip = fitz.Rect(rect * page.rotation_matrix)
             clip.normalize()
@@ -3279,9 +3406,11 @@ def _ocr_gutter_column(doc, log):
         log.info(f"  Gutter OCR: page {page.number + 1} recovered "
                  f"{len(found[1])} line number(s) its page-wide OCR had "
                  f"dropped")
-    if done:
-        log.info(f"  Gutter OCR: recovered the line-number column on {done} "
-                 f"page(s), which keeps their pleading-paper rendering")
+    # Reported whatever the count, elapsed included, for `_ocr_image_regions`'
+    # reason: a probe that adopts nothing has still spent every render.
+    log.info(f"  Gutter OCR: probed {len(todo)} page(s) in "
+             f"{time.monotonic() - started:.1f}s; recovered the line-number "
+             f"column on {done}, which keeps their pleading-paper rendering")
     return done
 
 
@@ -31664,6 +31793,22 @@ def _pn_drop_superseded_quarantine(txt_path, src_path, log):
                         f"{p.name}: {e}")
 
 
+# The text export walks every page through several renderings — the flowing
+# text, the form probe, the pleading rows, a table finder, the positional
+# layout and the detection copy — and on a big scanned filing that walk runs to
+# minutes with nothing said about it at all. Measured on a delivered folder, a
+# 70-page declaration spent ten and a half of them here, between two log lines
+# that named neither end of it, which reads exactly like a hang.
+#
+# So the walk NAMES ITSELF past this many pages and, past this many seconds,
+# says WHERE the time went — the convention `_pn_prescan_folder` and the scrub
+# already follow. The breakdown is what makes the next slow run diagnosable
+# without a profiler: the renderings differ by an order of magnitude in cost
+# and only the page can say which one it is paying for.
+_EXPORT_ANNOUNCE_PAGES = 5
+_EXPORT_SLOW_SEC = 5.0
+
+
 def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
                         pseudonymizer=None, text_subdir="Text Files",
                         original_subdir=None, authorities=None) -> bool:
@@ -31693,8 +31838,20 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
     block_pages = []  # for each block, the index of its `detect_pages` entry
     has_fields = _doc_has_form_fields(doc)
     forms_seen, ink_seen, tables_seen = [], [], []
+    spent = {}          # rendering -> seconds, for the breakdown below
+
+    def _timed(name, fn, *a, **kw):
+        t0 = time.monotonic()
+        try:
+            return fn(*a, **kw)
+        finally:
+            spent[name] = spent.get(name, 0.0) + (time.monotonic() - t0)
+
+    if len(doc) >= _EXPORT_ANNOUNCE_PAGES:
+        log.info(f"  Extracting {len(doc)} page(s) for the text export")
+    started = time.monotonic()
     for i, page in enumerate(doc):
-        raw = _page_flowing_text(page)
+        raw = _timed("flowing text", _page_flowing_text, page)
         # Drop our invisible citation markers (present when re-processing an
         # already-linked PDF) so the export is clean prose.
         clean = _MARKER_DETECT_RE.sub("", raw)
@@ -31718,13 +31875,13 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         # PAGE, only where the page is form-shaped by more than the one box
         # (`_form_displaces_rows`). A pleading with a box or two keeps its rows
         # and gets the states laid into them.
-        render = _form_page_render(page)
+        render = _timed("form probe", _form_page_render, page)
         ink = None
-        rows = _page_lined_rows(page)
+        rows = _timed("pleading rows", _page_lined_rows, page)
         if render is not None and rows is not None and not _form_displaces_rows(render):
             if render["ink"] is not None and _form_has_state_boxes(render["text"]):
                 ink = render["ink"]
-                rows = _page_lined_rows(page, ink=ink)
+                rows = _timed("pleading rows", _page_lined_rows, page, ink=ink)
             render = None
         form = None if render is None else render["text"]
         display = clean
@@ -31740,7 +31897,7 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
             # longer sits beside the entry it belongs to. Only where the page
             # is neither pleading paper nor a form: both have their own
             # rendering, and neither would be worth a grid.
-            table = _page_table_text(page, clean)
+            table = _timed("table finder", _page_table_text, page, clean)
             if table is not None:
                 tables_seen.append(i + 1)
                 clean = display = table
@@ -31750,13 +31907,14 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
                 # the PDF (see _page_visual_text). Display only: `clean` still
                 # drives citation detection, whose regexes were tuned on the
                 # flowing rendering.
-                vis = _page_visual_text(page)
+                vis = _timed("visual layout", _page_visual_text, page)
                 if vis is not None:
                     display = _MARKER_DETECT_RE.sub("", vis).rstrip()
         orig_pages.append(clean)
         # Pass the DECIDED form text (None when this page's form rendering was
         # suppressed above), so detection reads exactly what the export writes.
-        detect_pages.append(_page_detect_text(page, form=form, ink=ink))
+        detect_pages.append(_timed("detection copy", _page_detect_text,
+                                   page, form=form, ink=ink))
         # Header carries the printed (footer) page number when present, so the
         # page half of a pinpoint cite is unambiguous too.
         label = _footer_page_label(page)
@@ -31817,6 +31975,14 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
                   + " ======")
         page_blocks.append((header, rows if rows is not None else display))
         block_pages.append(len(detect_pages) - 1)   # its detection text
+
+    elapsed = time.monotonic() - started
+    if elapsed >= _EXPORT_SLOW_SEC and spent:
+        where = ", ".join(f"{name} {secs:.0f}s" for name, secs
+                          in sorted(spent.items(), key=lambda kv: -kv[1])
+                          if secs >= 0.5)
+        log.info(f"  Extracted {len(doc)} page(s) in {elapsed:.0f}s"
+                 + (f" — {where}" if where else ""))
 
     def _pages(nums):
         return (", ".join(str(p) for p in nums[:12])
