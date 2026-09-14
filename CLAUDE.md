@@ -3394,6 +3394,71 @@ the party), so its row stays reversible.
   Compared on exact text, so an OCR layer that MISREAD a word is left alone:
   this can only ever remove a piece the page also has somewhere else. A copy far
   enough away to be a real second column is untouched.
+  **…and the copies do not always AGREE about the words, which is the shape
+  that reached the operator** (`_drop_reread_spans`, `_spans_reread`). The
+  sentence above is the trade, and it was the wrong way round: leaving a
+  misread copy alone leaves BOTH copies standing, and the two then weld into
+  the run this whole section exists to prevent. A delivered batch of fax-
+  generation exhibits came back reading `Customer Cuore reusr trust ise: is at
+  the (He Hee heart fee of our brisiness business dnd and never bevel worth
+  Werth pronrorminen compromlslng` — every word twice, one spelling right and
+  one wrong, which is how the operator reported it. Neither tier above can see
+  it: exact-text equality needs the two readings to agree and the fragment rule
+  needs one text INSIDE the other, and "Customer" is neither "Cuore" nor inside
+  it. The cost is the section's own: a whole-word term cannot match a doubled
+  run, so the parties rode through the scrub; the harvester read the welds as
+  names and minted them; and `_pn_context` quoted the wreckage into the
+  worksheet.
+  **The safety argument CHANGES here, and that is the whole of what is new.**
+  The two tiers above can only ever remove a piece the page has somewhere else;
+  this one removes a READING that is nowhere else, so it is gated four ways
+  where they need one. The ink must be MUTUALLY covered
+  (`_SPAN_REREAD_MIN`) — half of EACH box, not half of the smaller, because a
+  stamp swallows a body word's box whole while covering almost none of its own,
+  which is the case `_SPAN_OVERDRAW_MIN` could only refuse on its text. The
+  type must be the same SIZE (`_SPAN_REREAD_HEIGHT`), two readings of one
+  printed line differing only by the metrics of two fonts where a heading or a
+  watermark is many times the body height. And the PAGE must carry both
+  `_SPAN_REREAD_MIN_PAIRS` such pairs AND enough of them to be a SHARE of
+  itself (`_SPAN_REREAD_MIN_SHARE`) — a COUNT read comparatively, the doctrine
+  `_page_weld_score` states, so a lone coincidence never deletes a word and
+  neither does a handful of them on a busy page. A doubled page pairs nearly
+  every span and scores in the hundreds; a clean page scores zero, because
+  spans on a line abut and do not sit on each other.
+  **The LATER reading is kept, where the exact-text tier keeps the FIRST.**
+  With identical text there is nothing to choose and keeping the first
+  preserves the order; with two spellings there is. A second text layer exists
+  because somebody judged the first inadequate and laid a remedial reading over
+  it — a filer's re-OCR, or this tool's own image pass, which appends with
+  `overlay=True` and so lands second (verified, not assumed: the overlaid
+  reading comes back second in span order). Which spelling is actually RIGHT is
+  not something any shape measure can settle, and that was measured before
+  being given up on: `_pn_token_is_mangled`, the alnum ratio
+  `_text_looks_garbled` reads, interior case flips and letter/digit welds all
+  score the real garbled halves EQUAL to the clean ones — "Cuore" is as
+  word-shaped as "Customer", "Callabarstian" as "Collaboration". So the run
+  does not pretend: the page says on its own banner that it carried two
+  readings and that one was dropped (`_DOUBLED_ATTR`, `_note_doubled_page`),
+  the same voice as the low-dpi and rebuilt-layer banners, because a choice
+  between two readings is an inference and an inference is never presented as
+  equal to a reading nothing had to choose. The note records the LARGEST
+  collapse seen and never a running total — the export, the detection copy and
+  the citation parse each render a page through the dedupe, and they describe
+  one doubling rather than three.
+  Residuals, and stated. Where the two layers split the row differently — one
+  span per styled run against one per word — the boxes do not mutually cover
+  and nothing is collapsed; that shape is `_span_is_redraw_fragment`'s while
+  the readings agree and out of reach of both when they do not. A reading that
+  recovered less than half the printed run's ink ("documentation" read as
+  "req") is refused by the same mutual-coverage rule that refuses the stamp,
+  which costs a word left doubled where the alternative costs real text
+  deleted. And two readings the extractor MERGED into one run ("atat", "is1s")
+  have no second span to compare and are nobody's — `_undouble_strike` reads
+  per-character doubling, not per-word.
+  The scan is banded by row and each band walked in x order, broken out of at
+  the first span starting past the one in hand: on an ordinary page spans abut,
+  so that break falls on the first comparison. Measured on a dense 660-span
+  page, ~1.7 ms against the pass's own ~6.5 ms.
   **…and the copies routinely do NOT split their row the same way**
   (`_span_is_redraw_fragment`). Exact-text equality collapses two copies only
   when both cut the row into the same pieces, and an OCR layer emits one span
@@ -4997,6 +5062,29 @@ survive to fail.
   IDEMPOTENT, which matters because the tool replaces the source PDF: the
   overlay is in the file the next run opens, and until now nothing but our own
   OCR being deterministic stopped a re-run stacking another copy.
+  **…and that rule is asked TWO ways, because word AGREEMENT fails on exactly
+  the page it is needed for** (`_IMG_OCR_COVER_MIN`, `_IMG_OCR_COVER_FLOOR`).
+  It shipped measuring agreement alone at `_IMG_OCR_READ_MIN` — half the words
+  the OCR read already standing in the page's own text inside the rect — which
+  is right for the `foregolng`/`foregoing` case above and useless for the one
+  that reaches the operator. The region worth re-reading is the region whose
+  layer is BAD, and a layer bad enough to be worth re-reading is one our
+  reading will not agree with: a fax generation extracts as `Cuore reusr ise:
+  the (He fee brisiness`, the 300-dpi pass reads `Customer trust is at the
+  heart of our business`, and the two share a QUARTER of their words where the
+  guard wants half. So the guard stood aside, the overlay landed, and the
+  export shipped both readings interleaved word for word — which is worse than
+  the bad layer alone, since a doubled run matches no term at all. The second
+  arm asks what the disagreement cannot spoil: is the page already carrying a
+  comparable BODY of text in this rect? Both engines are reading the same
+  printed words, so they return comparably many tokens whatever they make of
+  them — the COUNT holds where the spellings do not. Floored at
+  `_IMG_OCR_COVER_FLOOR` words, because coverage is evidence only where there
+  is enough of it: a signature-block image whose rect clips two words of a
+  neighbouring paragraph would otherwise read as "already covered" against the
+  three words the OCR found in it, and the judge's name this pass exists to
+  recover would be dropped. A re-read page carries hundreds of words inside the
+  image; nothing else comes near the floor.
 - **A page-wide OCR pass throws the line-number GUTTER away, and the TITLE PAGE
   is what it costs** (`_ocr_gutter_column`, `_gutter_probe_strip`,
   `_gutter_probe_reads_as_numbering`). A pleading's line numbers are a narrow
