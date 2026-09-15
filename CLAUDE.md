@@ -6271,21 +6271,33 @@ here survives the sync and is processed by the run that follows. The stale
 local run stamp IS cleared first, because the copy's is coming with it and two
 stamps in one folder say two different things about one run.
 
-**The party spreadsheet travels with a DEFERRED copy** (`_copy_party_template`).
-The launcher names no spreadsheet, so the run at the destination resolves its
-own: the folder first, then "the newest `Order*.xlsx` in Downloads". That
-fallback is right only until the NEXT case is downloaded — which is exactly the
-window a deferred folder sits in, since the point of deferring is that the work
-happens later — so the copy would be scrubbed against a stranger's party list:
-this case's parties in the clear, another matter's names hunted for, and its key
-written full of values that were never here. A template INSIDE the folder is
-unambiguous and beats the guess, so copying it in is what makes the copy able to
-do the full run. Nothing is copied when the folder already carries its own
-inputs (`_pn_find_folder_key`, which now takes `log=None` for a caller asking
-only WHETHER it does — one definition of that question, not two), and the
-Downloads guess is withheld for an ALL-WORD folder exactly as the run withholds
-it: there it would not merely be a guess but an AUTHORITATIVE one, since a
-folder-local template wins.
+**A DEFERRED folder is PINNED to its own party spreadsheet**
+(`_copy_party_template`). A launcher names no spreadsheet, so the run it starts
+resolves its own: the folder first, then "the newest `Order*.xlsx` in
+Downloads". That fallback is right only until the NEXT case is downloaded —
+which is exactly the window a deferred folder sits in, since the point of
+deferring is that the work happens later — so the run would be scrubbed against
+a stranger's party list: this case's parties in the clear, another matter's
+names hunted for, and its key written full of values that were never here. A
+template INSIDE the folder is unambiguous and beats the guess, so copying it in
+is what makes a deferred folder able to do the full run.
+**Into the CASE FOLDER, whatever `copy_to` says, and BEFORE the copy is made**
+— so the copy inherits it exactly as it inherits the launcher. It shipped on the
+copy path ALONE for one release, which is the same gap one folder further out:
+with no destination configured nothing travelled at all, and a folder deferred
+on Monday and clicked on Thursday took whatever Wednesday put in Downloads,
+which is the very failure the copy path was written to prevent. The `copy_to`
+call stays as the belt for a folder whose own pin could not be written. Nothing
+is copied when the folder already carries its own inputs (`_pn_find_folder_key`,
+which takes `log=None` for a caller asking only WHETHER it does — one definition
+of that question, not two), so an operator's own spreadsheet is never
+overwritten; nothing is copied when pseudonymization is off, there being no
+party list to want; and the Downloads guess is withheld for an ALL-WORD folder
+exactly as the run withholds it: there it would not merely be a guess but an
+AUTHORITATIVE one, since a folder-local template wins. Where no spreadsheet can
+be found the run SAYS so and defers anyway — the fallback is still there, and
+whether the newest download is this case is the operator's question, not the
+tool's.
 
 **ETA accuracy is LEDGERED, because the marker dance destroys each prediction
 at the moment its outcome becomes known** (`_note_eta_accuracy`,

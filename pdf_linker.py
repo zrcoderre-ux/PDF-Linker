@@ -34303,6 +34303,11 @@ _CONFIG_BLOCKS = (
      "# always runs the folder it SITS IN, so it survives the move, and a\n"
      "# double-click always means RUN NOW -- every launcher overrides this\n"
      "# setting. --fix-leaks is never deferred.\n"
+     "#\n"
+     "# This case's Order*.xlsx party spreadsheet is copied INTO the folder\n"
+     "# when the run is deferred, so the deferred run scrubs against THIS\n"
+     "# case's parties rather than whatever is newest in Downloads by the time\n"
+     "# you click -- which, the longer you leave it, is another case.\n"
      "defer_run = off\n"
      "\n"
      ),
@@ -34319,9 +34324,7 @@ _CONFIG_BLOCKS = (
      "#                    A quarantined export makes the copy WAIT, so the\n"
      "#                    destination never receives a *.LEAK; Apply Leak\n"
      "#                    Fixes makes it once the last leak is resolved.\n"
-     "#   defer_run = on   copied at the START, with the case's Order*.xlsx\n"
-     "#                    party spreadsheet, so the copy can do the full run\n"
-     "#                    rather than guessing at the newest one in Downloads.\n"
+     "#   defer_run = on   copied at the START, so either folder can be run.\n"
      "#\n"
      "# The copy can also be the folder that is AHEAD: run the case on the\n"
      "# other computer, come back here, and starting the tool BRINGS THAT RUN\n"
@@ -36325,49 +36328,61 @@ def _sync_back_from_copy(folder, dest_root, log):
 
 
 def _copy_party_template(folder, dest, args, log):
-    """Put this case's party spreadsheet INTO a deferred copy, so the copy can
-    do a FULL run on its own. Returns the file written, or None.
+    """Put this case's party spreadsheet INTO `dest` — the case folder itself
+    when a run is deferred, and a deferred COPY when there is one — so the run
+    that eventually happens there resolves THIS case's parties. Returns the file
+    written, or None.
 
-    The launcher in the copy names no spreadsheet, so the run there resolves
-    its own: the folder first, then "the newest Order*.xlsx in Downloads". That
-    fallback is right only until the NEXT case is downloaded — which is exactly
-    the window a deferred folder sits in, because the whole point of deferring
-    is that the work happens later. Left to the guess, the copy would be
-    scrubbed against a stranger's party list: this case's parties in the clear,
-    another matter's names hunted for, and its key written full of values that
-    were never here. A template INSIDE the folder is unambiguous and beats the
-    guess, so copying it in is what makes the copy self-sufficient.
+    A launcher names no spreadsheet, so the run it starts resolves its own: the
+    folder first, then "the newest Order*.xlsx in Downloads". That fallback is
+    right only until the NEXT case is downloaded — which is exactly the window a
+    deferred folder sits in, because the whole point of deferring is that the
+    work happens later. Left to the guess, the run is scrubbed against a
+    stranger's party list: this case's parties in the clear, another matter's
+    names hunted for, and its key written full of values that were never here. A
+    template INSIDE the folder is unambiguous and beats the guess, so pinning it
+    there is what makes a deferred folder self-sufficient.
 
-    Nothing is copied when the folder already carries its own inputs (they
-    travelled with it), and the Downloads guess is withheld for an ALL-WORD
-    folder exactly as the run withholds it — there it would not merely be a
-    guess but an authoritative one, since a folder-local template wins."""
+    It goes into the CASE FOLDER whatever `copy_to` says, and before the copy is
+    made, so the copy inherits it exactly as it inherits the launcher. Doing it
+    only on the copy path was the same gap one folder further out: with no
+    destination configured nothing travelled at all, and a folder deferred on
+    Monday and clicked on Thursday took whatever Wednesday put in Downloads.
+
+    Nothing is copied when the folder already carries its own inputs, and the
+    Downloads guess is withheld for an ALL-WORD folder exactly as the run
+    withholds it — there it would not merely be a guess but an authoritative
+    one, since a folder-local template wins."""
     import shutil
     if not args.pseudonymize:
         return None                      # no party list is needed at all
+    dest = Path(dest)
+    here = dest == Path(folder)
+    # Where it is going, for the messages: the two callers differ only in that.
+    place = "this folder" if here else "the copy"
     if _pn_find_folder_key(dest, None) is not None:
-        return None                      # it came with the folder
+        return None                      # it is already there
     sheet = Path(args.key) if args.key else None
     if sheet is None:
         if _is_word_only_folder(folder):
             # Saying "it will fall back to Downloads" would be false here: the
-            # run withholds that guess for an all-Word folder, so what the copy
+            # run withholds that guess for an all-Word folder, so what it
             # actually faces is having NO party list at all.
             log.warning("  This all-Word folder carries no party list, and the "
                         "Downloads guess is deliberately not used for one — it "
                         "belongs to whichever case was downloaded last. Put "
                         "this case's Order*.xlsx in the folder (or pass --key) "
-                        "before deferring, or the run at the destination will "
-                        "have only the detectors and the document pre-scan to "
-                        "work with.")
+                        "before deferring, or the deferred run will have only "
+                        "the detectors and the document pre-scan to work with.")
             return None
         sheet = _pn_find_downloads_key(log)
     if sheet is None or not Path(sheet).is_file():
-        log.warning("  No party spreadsheet could be found to travel with the "
-                    "copy, so the run there will resolve its own — whatever is "
-                    "newest in Downloads by the time it is clicked, which may "
-                    "be another case. Put this case's Order*.xlsx in the folder "
-                    "(or pass --key) and start the run again.")
+        log.warning(f"  No party spreadsheet could be found to pin into "
+                    f"{place}, so the deferred run will resolve its own — "
+                    f"whatever is newest in Downloads by the time the launcher "
+                    f"is clicked, which may be another case. Put this case's "
+                    f"Order*.xlsx in the folder (or pass --key) and start the "
+                    f"run again.")
         return None
     target = dest / Path(sheet).name
     if target.exists():
@@ -36375,12 +36390,12 @@ def _copy_party_template(folder, dest, args, log):
     try:
         shutil.copy2(sheet, target)
     except OSError as e:
-        log.warning(f"  Could not copy the party spreadsheet {Path(sheet).name} "
-                    f"into {dest}: {e}. The run there will fall back to the "
-                    f"newest Order*.xlsx in Downloads, which may be another "
-                    f"case.")
+        log.warning(f"  Could not copy the party spreadsheet "
+                    f"{Path(sheet).name} into {place}: {e}. The deferred run "
+                    f"will fall back to the newest Order*.xlsx in Downloads, "
+                    f"which may be another case.")
         return None
-    log.info(f"  Copied the party spreadsheet {target.name} into the copy, so "
+    log.info(f"  Copied the party spreadsheet {target.name} into {place}, so "
              f"the run there scrubs against THIS case's parties rather than "
              f"whatever is newest in Downloads by then.")
     return target
@@ -37479,6 +37494,13 @@ def main():
             _start_launcher_want_key(folder, args.pseudonymize), log)
         if not ok:
             sys.exit(1)
+        # BEFORE the copy, and whatever `copy_to` says. The launcher names no
+        # spreadsheet, so the run it starts resolves its own — and "the newest
+        # Order*.xlsx in Downloads" is right only until the next case is
+        # downloaded, which is precisely the window a deferred folder sits in.
+        # Pinning the template here makes THIS folder self-sufficient, and the
+        # copy made below inherits it exactly as it inherits the launcher.
+        _copy_party_template(folder, folder, args, log)
         target = None
         if synced_back is not None:
             # We took that folder's files a moment ago and have processed

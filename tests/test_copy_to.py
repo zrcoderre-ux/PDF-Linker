@@ -310,6 +310,99 @@ def test_the_order_spreadsheet_travels_with_a_deferred_copy(tmp_path,
     assert (downloads / "Order_Template_Input.xlsx").exists()
 
 
+def test_the_order_spreadsheet_is_pinned_with_NO_copy_destination(tmp_path,
+                                                                  monkeypatch):
+    """The gap the copy path hid. With no `copy_to` set, nothing travelled at
+    all — so a folder deferred on Monday and clicked on Thursday resolved
+    whatever Wednesday put in Downloads: this case's parties in the clear and a
+    stranger's names hunted for. Deferring is precisely the window in which
+    "newest in Downloads" stops being this case."""
+    downloads = tmp_path / "Downloads"
+    downloads.mkdir()
+    (downloads / "Order_Template_Input.xlsx").write_bytes(b"PK stub")
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    _config(tmp_path, monkeypatch, "defer_run = on\n")      # no copy_to
+    folder = tmp_path / "Smith v Jones"
+    folder.mkdir()
+    (folder / "Motion.pdf").write_bytes(b"%PDF-1.4 stub")
+    assert _run_main(folder, monkeypatch) == 0
+    assert (folder / "Order_Template_Input.xlsx").exists()
+    # ...copied, not moved out of the case it came from.
+    assert (downloads / "Order_Template_Input.xlsx").exists()
+    # ...and the folder now resolves it itself, with no Downloads guess left.
+    assert pl._pn_find_folder_key(folder, None) == \
+        folder / "Order_Template_Input.xlsx"
+
+
+def test_the_pinned_template_is_inherited_by_the_copy(tmp_path, monkeypatch):
+    # It is pinned BEFORE the copy is made, so the copy carries it exactly as
+    # it carries the launcher — one spreadsheet, not two copies of the guess.
+    downloads = tmp_path / "Downloads"
+    downloads.mkdir()
+    (downloads / "Order_Template_Input.xlsx").write_bytes(b"PK stub")
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    _config(tmp_path, monkeypatch,
+            f"defer_run = on\ncopy_to = {tmp_path / 'dest'}\n")
+    folder = tmp_path / "Smith v Jones"
+    folder.mkdir()
+    (folder / "Motion.pdf").write_bytes(b"%PDF-1.4 stub")
+    _run_main(folder, monkeypatch)
+    copy = tmp_path / "dest" / folder.name
+    assert (folder / "Order_Template_Input.xlsx").exists()
+    assert (copy / "Order_Template_Input.xlsx").exists()
+
+
+def test_a_folder_that_already_has_a_template_is_left_alone(tmp_path,
+                                                            monkeypatch):
+    # Its own inputs beat the Downloads guess, so nothing is fetched and the
+    # operator's own spreadsheet is never overwritten.
+    downloads = tmp_path / "Downloads"
+    downloads.mkdir()
+    (downloads / "Order Somebody Else.xlsx").write_bytes(b"WRONG CASE")
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    _config(tmp_path, monkeypatch, "defer_run = on\n")
+    folder = tmp_path / "Smith v Jones"
+    folder.mkdir()
+    (folder / "Motion.pdf").write_bytes(b"%PDF-1.4 stub")
+    (folder / "Order Smith.xlsx").write_bytes(b"RIGHT CASE")
+    _run_main(folder, monkeypatch)
+    assert (folder / "Order Smith.xlsx").read_bytes() == b"RIGHT CASE"
+    assert not (folder / "Order Somebody Else.xlsx").exists()
+
+
+def test_nothing_is_pinned_when_pseudonymization_is_off(tmp_path, monkeypatch):
+    downloads = tmp_path / "Downloads"
+    downloads.mkdir()
+    (downloads / "Order_Template_Input.xlsx").write_bytes(b"PK stub")
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    _config(tmp_path, monkeypatch, "defer_run = on\n")
+    folder = tmp_path / "Smith v Jones"
+    folder.mkdir()
+    (folder / "Motion.pdf").write_bytes(b"%PDF-1.4 stub")
+    _run_main(folder, monkeypatch, "--no-pseudonymize")
+    assert not (folder / "Order_Template_Input.xlsx").exists()
+
+
+def test_no_spreadsheet_to_pin_is_SAID_not_swallowed(tmp_path, monkeypatch,
+                                                     caplog):
+    # A warning is the whole of what is left to do: the run at the destination
+    # will take the Downloads guess, and the operator is the only one who can
+    # say whether that is this case.
+    downloads = tmp_path / "Downloads"
+    downloads.mkdir()                                   # empty
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    folder = _case(tmp_path)
+    with caplog.at_level("WARNING"):
+        assert pl._copy_party_template(folder, folder, _args(), log) is None
+    said = " ".join(r.message for r in caplog.records)
+    assert "newest in Downloads" in said and "another case" in said
+
+
 def test_a_failed_copy_falls_back_to_a_plain_deferred_run(tmp_path,
                                                           monkeypatch):
     # A copy that could not be made is simply a run with no destination: the
