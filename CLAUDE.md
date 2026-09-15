@@ -3771,6 +3771,15 @@ answerable at the top of the page.
   `_form_page_text` is unchanged for every other caller; the render carries
   its source, box count and form id beside the text because the text alone
   cannot say whether it earns the page.
+- **A form page takes the re-draw dedupe every other rendering takes**
+  (`_drop_overdrawn_spans`, in `_form_page_cells`). `_page_flowing_text` and
+  `_detect_line_anchors` both pass their spans through it; this path read
+  `get_text("dict")` raw, so a form page carrying its text twice exported it
+  twice. The copy the tool makes ITSELF is the one that reached a delivered
+  folder: `_ocr_image_regions` re-reads the printed caption inside its own
+  rect and lays a second copy over the first, and a CIV-110's signature block
+  came out `(SIGNATURE) (SIGNATURE)` — collapsed on any other page, and not
+  on this one.
 - **Detection reads what the export writes.** `_page_detect_text` takes the
   DECIDED form text via the `_FORM_UNDECIDED` sentinel — distinct from `None`,
   which means "decided against it" — because a page whose form rendering was
@@ -5114,6 +5123,57 @@ survive to fail.
   three words the OCR found in it, and the judge's name this pass exists to
   recover would be dropped. A re-read page carries hundreds of words inside the
   image; nothing else comes near the floor.
+  **…and a word the recogniser has NO CONFIDENCE in is not a recovery**
+  (`_IMG_OCR_MIN_CONF`, `_image_ocr_read`, `_strip_weak_ocr_words`). Both rules
+  above ask whether the region's words are NEW; neither asks whether they are
+  WORDS. The commonest image on a page whose own text is sound is a SIGNATURE,
+  which is the one thing on a filing that is not text at all — so a delivered
+  CIV-110 carrying an e-signature over its signature line cleared every guard:
+  the reading was four tokens the page did not have, and `PUTTTE THU UG
+  CUTTINICLOU.` went into the export AND into the PDF's own text layer, where
+  (the pass being additive, and the tool replacing the source) it survived
+  every later run. It then fed the harvest and the review tiers as capitalised
+  name-shaped debris — a worksheet row no answer clears.
+  No SHAPE measure reaches it, and this file already records why: those tokens
+  carry vowels, no five-consonant run and no interior mark, so
+  `_pn_token_is_mangled` calls every one of them a word and `_text_looks_garbled`
+  calls the region clean (checked, not assumed). The RECOGNISER'S OWN
+  confidence is the measure that does reach it, and it was the one signal this
+  pass threw away. Measured on the delivered region at `_ocr_base_dpi`,
+  Tesseract 5.3.4, `_OCR_CONFIG`: every junk token scored **0** while
+  `(SIGNATURE)` — real print inside the SAME region — scored 96, and a printed
+  name in an image (the judge's signature block this pass EXISTS for) scored
+  95-96 and held there blurred and downsampled threefold to fax grade. The
+  floor sits in the middle of that gap rather than near either edge.
+  Asked at the NEWNESS filter, which is where the defect was: the signature's
+  junk was the whole of the evidence for reading the region, so with it gone
+  the region has nothing new and refuses itself through the floor already
+  there — no new region-level gate. `_image_ocr_already_read` keeps the FULL
+  text, its two arms being tuned against it: a garbled re-read of a page's own
+  layer is exactly the low-confidence text this removes, and hiding it there
+  would cost that guard the evidence it counts.
+  **…and the OVERLAY is stripped too**, because the region this pass was
+  WRITTEN for is a signature block carrying a scrawl AND a printed name: it
+  passes on the name and would carry the scrawl's junk in with it, which the
+  gate cannot reach. Matched by TEXT — `image_to_data` and the overlay PDF
+  return identical word sets (verified on the delivered region) — so no
+  coordinate mapping is guessed at, and the embedded image is kept
+  (`PDF_REDACT_IMAGE_NONE`). A redaction removes every glyph its rect touches,
+  so one laid over a word can nibble the word NEXT to it: where the lines are
+  set tight enough that two words' boxes overlap, dropping "PUTTTE" took
+  "Macken" off "Mackenzie". So the strip must PROVE it cost nothing, the rule
+  `_reocr_improves` states for the destructive rebuild — the words are read
+  back, and unless what remains is the reading MINUS the weak words exactly,
+  the strip is ABANDONED and Tesseract's output is overlaid whole. Residual,
+  and stated: a region whose lines are that tight keeps its junk, which is
+  what shipped before and is the right way to be wrong here.
+  Reading through `image_to_data` INSTEAD of `image_to_pdf_or_hocr` is what
+  keeps this free: it runs the same recognition for the same cost (measured
+  0.154 s against 0.147 s) and returns the confidences beside the text, so the
+  gate is paid for exactly once and the PDF is built only for a region that
+  PASSED — a refused region, which is most of them, costs exactly what it did.
+  A word reporting NO confidence is kept: no confidence is not evidence of a
+  bad reading.
   **…and BOTH of those are asked too late for the page THIS RUN read itself**
   (`_OCR_READ_ATTR`, `_note_ocr_read_page`, `_page_read_by_this_run`). The two
   rules above are measured on what the OCR CAME BACK WITH, so the render and

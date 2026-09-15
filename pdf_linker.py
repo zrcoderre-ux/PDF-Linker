@@ -3046,6 +3046,105 @@ def _image_ocr_new_words(found, have_low):
     return out
 
 
+# A word Tesseract has NO CONFIDENCE in is not a recovery. This pass reads an
+# image on a page whose own text is sound, and the commonest such image is a
+# SIGNATURE — which is the one thing on a filing that is not text at all. A
+# delivered CIV-110 carried an e-signature over its signature line, and the
+# region cleared every guard: the reading was four words the page did not have,
+# so `PUTTTE THU UG CUTTINICLOU.` was written into the export AND into the PDF's
+# own text layer, where (the pass being additive, and the tool replacing the
+# source) it then survived every later run.
+#
+# No SHAPE measure reaches it, and this file already records why: `PUTTTE` and
+# `CUTTINICLOU` carry vowels, no five-consonant run and no interior mark, so
+# `_pn_token_is_mangled` calls them words, `_text_looks_garbled` calls the
+# region clean, and a word list would have to hold every string a pen makes.
+# The recogniser's own confidence is the measure that does reach it, and it is
+# the one signal this pass was throwing away. Measured on the delivered region
+# at `_ocr_base_dpi`, Tesseract 5.3.4, `_OCR_CONFIG`: every junk token scored
+# **0** while `(SIGNATURE)` — real print inside the SAME region — scored 96, and
+# a printed name in an image (the judge's signature block this pass exists for)
+# scored 95-96 and stayed there when blurred and downsampled threefold to fax
+# grade. The floor sits in the middle of that gap rather than near either edge.
+_IMG_OCR_MIN_CONF = 60
+
+
+def _image_ocr_read(img):
+    """`(found, weak)` for one rendered region: all the text Tesseract read, and
+    the set of word texts it had no confidence in.
+
+    `image_to_data` is asked INSTEAD of `image_to_pdf_or_hocr`, not beside it —
+    it runs the same recognition for the same cost (measured 0.154s against
+    0.147s on the delivered region) and returns the confidences as well, so the
+    gate is paid for exactly once and the PDF is built only for a region that
+    passed. The two calls return identical word sets, which is what lets the
+    weak words be matched back by TEXT when the overlay is stripped."""
+    import pytesseract
+    data = pytesseract.image_to_data(img, config=_OCR_CONFIG,
+                                     timeout=_ocr_page_timeout(),
+                                     output_type=pytesseract.Output.DICT)
+    found, weak = [], set()
+    for txt, conf in zip(data["text"], data["conf"]):
+        txt = (txt or "").strip()
+        if not txt:
+            continue
+        found.append(txt)
+        try:
+            c = int(float(conf))
+        except (TypeError, ValueError):
+            continue                 # no confidence reported: not evidence
+        if 0 <= c < _IMG_OCR_MIN_CONF:
+            weak.add(txt)
+    return " ".join(found), weak
+
+
+def _strip_weak_ocr_words(ocr_bytes, weak, log):
+    """`ocr_bytes` with the `weak` word texts removed from its text layer, or
+    `ocr_bytes` unchanged where that could not be done without cost.
+
+    A redaction removes every glyph its rect touches, so one laid over a word
+    can nibble the word NEXT to it — and the neighbour here is the printed name
+    this pass exists to recover ("Mackenzie" came back "zie" in a fixture that
+    set the two on one line). So the strip must PROVE it cost nothing, the rule
+    `_reocr_improves` states for the destructive rebuild: the page's words are
+    read back, and unless what remains is exactly the reading MINUS the weak
+    words, the strip is abandoned and Tesseract's own output is overlaid whole.
+    That fallback is what shipped before this screen existed, so the worst case
+    is the junk it is trying to drop — never a name silently cut in half.
+
+    Matched by TEXT, since `image_to_data` and the overlay PDF return identical
+    word sets (verified on the delivered region), so no coordinate mapping is
+    guessed at. The image Tesseract embeds is kept (`PDF_REDACT_IMAGE_NONE`);
+    only the invisible text laid over it moves."""
+    if not weak:
+        return ocr_bytes
+    try:
+        import fitz
+        with fitz.open(stream=ocr_bytes, filetype="pdf") as doc:
+            page = doc[0]
+            before = [w for w in ((w[4] or "").strip()
+                                  for w in page.get_text("words")) if w]
+            want = [w for w in before if w not in weak]
+            if len(want) == len(before):
+                return ocr_bytes               # none of them is on this page
+            for w in page.get_text("words"):
+                if (w[4] or "").strip() in weak:
+                    page.add_redact_annot(fitz.Rect(w[:4]))
+            page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
+            after = [w for w in ((w[4] or "").strip()
+                                 for w in page.get_text("words")) if w]
+            if after != want:
+                log.info("  Image OCR: dropping a region's low-confidence "
+                         "words would have cut into the rest of the reading; "
+                         "keeping it whole")
+                return ocr_bytes
+            return doc.tobytes()
+    except Exception as e:
+        log.warning(f"  Image OCR: could not drop {len(weak)} low-confidence "
+                    f"word(s) from a region's reading ({e}); keeping them")
+        return ocr_bytes
+
+
 def _ocr_image_regions(doc, log):
     """Read the text inside an IMAGE sitting on a page whose OWN text layer is
     sound — a signature block, an e-filing stamp, a scanned exhibit pasted into
@@ -3145,25 +3244,46 @@ def _ocr_image_regions(doc, log):
                 clip.normalize()
                 pix = page.get_pixmap(dpi=_ocr_base_dpi(page), clip=clip)
                 img = Image.open(io.BytesIO(pix.tobytes("png")))
-                ocr_bytes = pytesseract.image_to_pdf_or_hocr(
-                    img, extension="pdf", config=_OCR_CONFIG,
-                    timeout=_ocr_page_timeout())
-                with fitz.open(stream=ocr_bytes, filetype="pdf") as probe:
-                    found = probe[0].get_text("text")
+                found, weak = _image_ocr_read(img)
             except Exception as e:
                 log.warning(f"  Image OCR: page {page.number + 1} region "
                             f"({rect.width:.0f}x{rect.height:.0f} pt) could not "
                             f"be read ({e}); leaving it")
                 continue
-            new = _image_ocr_new_words(found, have_low)
+            # A word Tesseract has no confidence in cannot be the thing that
+            # earns the region its reading. Asked of the NEWNESS filter, which
+            # is where the defect was: the signature's four junk tokens were
+            # the whole of the evidence for reading it, and with them gone the
+            # region is left with nothing new and refuses itself through the
+            # floor that was already here.
+            confident = " ".join(w for w in found.split() if w not in weak)
+            new = _image_ocr_new_words(confident, have_low)
             if len(new) < _IMG_OCR_MIN_NEW:
-                continue             # a logo, a seal, or a picture of the text
+                continue             # a logo, a seal, a picture of the text,
+                                     # or a signature: nothing READ to add
+            # `already_read` keeps the FULL text, its own two arms being tuned
+            # against it — a garbled re-read of a page's own layer is exactly
+            # the low-confidence text the screen above removes, and hiding it
+            # here would cost that guard the evidence it counts.
             if _image_ocr_already_read(page, rect, found):
                 log.info(f"  Image OCR: page {page.number + 1} region already "
                          f"carries the page's own text — a second reading of "
                          f"one already there, not read again")
                 continue
             try:
+                # Built only NOW, for a region that passed: the gate above read
+                # the same recognition and this is the one call the overlay
+                # itself needs, so a refused region costs exactly what it did.
+                ocr_bytes = pytesseract.image_to_pdf_or_hocr(
+                    img, extension="pdf", config=_OCR_CONFIG,
+                    timeout=_ocr_page_timeout())
+                # …and the words Tesseract had no confidence in are cut out of
+                # it. The gate refuses a region whose ONLY new words are weak,
+                # which is the signature standing alone — but the region this
+                # pass was WRITTEN for is a signature block carrying a scrawl
+                # AND a printed name, so it passes on the name and would carry
+                # the scrawl's junk in with it.
+                ocr_bytes = _strip_weak_ocr_words(ocr_bytes, weak, log)
                 with fitz.open(stream=ocr_bytes, filetype="pdf") as ocr_doc:
                     # The OCR page is display-oriented (it was recognised from
                     # the rotated render), and the target rect is unrotated —
@@ -27069,23 +27189,33 @@ def _form_page_cells(page):
         blocks = page.get_text("dict").get("blocks", [])
     except Exception:
         return None            # no static layer to place the widgets against
-    for blk in blocks:
-        for line in blk.get("lines", []):
-            for sp in line.get("spans", []):
-                bb = sp["bbox"]
-                mid = fitz.Point((bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2)
-                # Painted by a widget's appearance stream — the widget object is
-                # re-emitted below and is authoritative, so this copy (a check
-                # glyph, or a value with no label beside it) is dropped.
-                if any(r.contains(mid) for r in rects):
-                    continue
-                text = _MARKER_DETECT_RE.sub("", sp["text"])
-                parts = text.split("\n")
-                h = max((bb[3] - bb[1]) / max(len(parts), 1), 1.0)
-                for k, part in enumerate(parts):
-                    if part.strip():
-                        cells.append(_form_cell(bb[1] + h * (k + 0.5), h / 2,
-                                                bb[0], part.strip()))
+    # A form page is a RENDERING of a page like any other, so it takes the
+    # re-draw dedupe every other rendering takes. It was the one that did not:
+    # `_page_flowing_text` and `_detect_line_anchors` both pass their spans
+    # through `_drop_overdrawn_spans`, and this path read `get_text("dict")`
+    # raw — so a form page carrying its text twice exported it twice. The copy
+    # this tool makes ITSELF is the one that reached a delivered folder: an
+    # image region read by `_ocr_image_regions` re-reads the printed caption
+    # inside its own rect and lays a second copy of it over the first, and a
+    # CIV-110's signature block came out `(SIGNATURE) (SIGNATURE)`. Off a form
+    # page that duplicate is collapsed; on one it was not.
+    static = [sp for blk in blocks for line in blk.get("lines", [])
+              for sp in line.get("spans", [])]
+    for sp in _drop_overdrawn_spans(static, page):
+        bb = sp["bbox"]
+        mid = fitz.Point((bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2)
+        # Painted by a widget's appearance stream — the widget object is
+        # re-emitted below and is authoritative, so this copy (a check
+        # glyph, or a value with no label beside it) is dropped.
+        if any(r.contains(mid) for r in rects):
+            continue
+        text = _MARKER_DETECT_RE.sub("", sp["text"])
+        parts = text.split("\n")
+        h = max((bb[3] - bb[1]) / max(len(parts), 1), 1.0)
+        for k, part in enumerate(parts):
+            if part.strip():
+                cells.append(_form_cell(bb[1] + h * (k + 0.5), h / 2,
+                                        bb[0], part.strip()))
     choice = (fitz.PDF_WIDGET_TYPE_CHECKBOX, fitz.PDF_WIDGET_TYPE_RADIOBUTTON)
     boxes = checked = 0
     for w, r in zip(widgets, rects):
