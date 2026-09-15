@@ -2274,6 +2274,43 @@ the party), so its row stays reversible.
   which a whitespace split reads as one token and whose period then dissolves
   into the name). `_pn_load_key` seeds the memo with the NAME alone, reducing a
   key written when the whole composed street was stored.
+- **…and a STREET NAME that is also a PARTY's word is ONE word in the export**
+  (`_pn_addr_name_word`, `_PnFakeRegistry.street`, `_NAME_ENTITY_TAGS`). A
+  real-estate entity is named after its own address, so the same word arrives
+  down two paths: "15200 Sunset Blvd." was faked to "15200 Marjoram Blvd."
+  while "15200 Sunset LLC" — the party that owns the building — came out
+  "15200 Beacon, LLC", and the export hid the relationship the filing states.
+  That is ONE WORD, ONE FAKE failing across a POOL boundary: the person and
+  entity token paths already share a memo slot for exactly this reason
+  ("whichever path binds the word first wins"), and the street pool was a
+  third path nothing had joined to it. The street's name draws through that
+  same slot now, from the STREET pool when nothing has bound the word — so a
+  street no party carries is faked exactly as before, and where a party bound
+  it first the address takes the party's word, which is the shared-slot rule
+  already stated. The street IDENTITY is consulted FIRST and the fold never
+  writes to it, so a fake a reused key pinned does not move; `_pn_load_key`
+  seeds the WORD too (LAST, and only by `setdefault`, so a person/entity-token
+  row always owns the slot — its fake is what stands in the delivered export
+  under the word alone), or a document added later would draw a second word
+  for a party the key already names. Scoped to a name that is a SINGLE word
+  and the WHOLE of the identity, on both counts deliberately. A multi-word
+  name ("pacific coast highway") is drawn whole, since folding word for word
+  would change the shape of every street fake in every folder. And a
+  DIRECTIONAL disqualifies it ("s maple avenue"), because the composed fake
+  keeps no directional: fold "S Maple Ave" and "N Maple Ave" onto "maple" and
+  both come out "414 Hickory Ave.", two real addresses on one fake, which is
+  the collapse the kept house number exists to prevent, arrived at from the
+  other end. The BINDINGS stay one-to-one — the address row and the bare token
+  row carry different Replacements ("8721 Marjoram Blvd." beside "Marjoram"),
+  so nothing is ambiguous to `DeAnonymize.bas`. Cost, stated: the street's
+  fake is now keyed on the WORD rather than on the street identity, so a
+  folder re-run WITHOUT its key draws a different street word than it used to
+  (with its key nothing moves, and "Sunset Blvd." and "Sunset Ave." now share
+  one fake word, each still keeping its own suffix and its own row). Residual,
+  stated: a party sharing one word of a MULTI-word street name is still two
+  stand-ins, and a delivered folder already carrying the split keeps it —
+  correcting the key in place is the remedy, since a delivered fake never
+  moves.
 - **A CASE NUMBER keeps its filing year, fakes its digits, and takes a court
   code no court issues** (`_pn_fake_caseno`, `_pn_caseno_template`,
   `_PN_CASENO_MARK` = "STZV"). The year is printed beside the number in every

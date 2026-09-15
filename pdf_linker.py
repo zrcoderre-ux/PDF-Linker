@@ -9273,7 +9273,17 @@ class _PnFakeRegistry:
     # single memo slot; whichever path binds the word first wins, and the other
     # reuses it — so a bare "Azul Concreto" met on the person path renders with
     # the same words as the entity "Azul Concreto, Inc."
-    _NAME_ENTITY_TAGS = frozenset({"nametok", "enttok"})
+    #
+    # A STREET NAME is the third path to the same word, and a real-estate
+    # entity is routinely named for its own address: "15200 Sunset Blvd."
+    # faked to "15200 Marjoram Blvd." while "15200 Sunset LLC" — the party
+    # that owns it — came out "15200 Beacon, LLC", so one word read as two
+    # unrelated things and the export hid the very relationship the filing
+    # states. `street()` therefore draws through this slot too, where the
+    # street's name is a single word (see `_pn_addr_name_word`); it draws
+    # from the STREET pool when nothing has bound the word, so an address
+    # met first still reads as an address.
+    _NAME_ENTITY_TAGS = frozenset({"nametok", "enttok", "streettok"})
 
     @classmethod
     def _memo_tag(cls, seed_tag):
@@ -9806,6 +9816,41 @@ class _PnFakeRegistry:
             if cand.lower() not in self._used:
                 return self._take(key, cand)
         return self._take(key, cand)  # give up after 10k tries; keep it stable
+
+    def street(self, core, word=None):
+        """The stand-in for a street's NAME — the only part of an address this
+        tool fakes — keyed on the street identity `core` so every spelling of
+        one parcel shares it.
+
+        `word` is that name where it is a SINGLE word and the whole of the
+        identity (`_pn_addr_name_word`). Given one, the draw goes through the
+        SHARED name/entity token slot, so ONE WORD, ONE FAKE holds across the
+        address and the party: "15200 Sunset Blvd." and the "15200 Sunset LLC"
+        that owns it read as the same word in the export instead of as two
+        unrelated things. The pool is still the STREET pool, so a street the
+        case names and no party carries is faked exactly as before; where a
+        party bound the word first, the address takes that party's word, which
+        is the `_NAME_ENTITY_TAGS` rule — whichever path binds it first wins.
+
+        The street identity is consulted FIRST and the fold never writes to it:
+        a fake a reused key pinned must not move, and leaving the word slot the
+        single place a folded binding lives is what keeps `avoid()`'s re-mint
+        from moving one of the two and not the other.
+
+        A name of several words ("s maple avenue", "pacific coast highway") is
+        drawn whole, as it always was. Folding it word for word would change
+        the shape of every street fake, and folding on the name alone would
+        collapse "S Maple Ave" and "N Maple Ave" onto one fake street — the
+        composed fake carries no directional, so two real addresses would come
+        out identical, which is the many-reals-one-fake collapse the registry
+        exists to prevent."""
+        key = ("street", str(core).lower())
+        if key in self._memo:
+            return self._memo[key]
+        if word:
+            return self.token(word, _PN_STREET_NAMES, "streettok")
+        return self.unique(core, "street",
+                           lambda rng: rng.choice(_PN_STREET_NAMES))
 
 
 def _pn_fake_name_token(word, registry):
@@ -12051,6 +12096,32 @@ def _pn_addr_name_of(street):
                  out).strip()
     out = re.sub(rf"[ \t]+{_PN_ADDR_SUFFIX}\b\.?[ \t]*$", "", out).strip()
     return out
+
+
+# The shortest street name that may join the shared name/entity token slot.
+# A two-letter word is OCR debris far more often than a street, and binding
+# one in the slot every party token is drawn from is not worth the reach.
+_PN_STREET_WORD_MIN = 3
+
+
+def _pn_addr_name_word(core):
+    """The street NAME inside a street identity, where that name is a SINGLE
+    word and the whole of the identity — "sunset boulevard" -> "sunset" — else
+    None.
+
+    This is what lets an address and a party share one stand-in for one word
+    (`_PnFakeRegistry.street`). It is deliberately narrow on both counts. A
+    multi-word name ("pacific coast highway") is drawn whole, as it always
+    was. And a DIRECTIONAL disqualifies the identity ("s maple avenue"),
+    because the composed fake keeps no directional: fold "S Maple Ave" and
+    "N Maple Ave" onto the one word "maple" and both come out "414 Hickory
+    Ave.", two real addresses on one fake, which the reversal answers by
+    restoring neither. `core` is already canonical (lower-cased, suffix and
+    directional expanded), so a leftover word in front of the name is one of
+    those cases by construction."""
+    name = _pn_addr_name_of(str(core)).lower()
+    ok = re.fullmatch(rf"[a-z]{{{_PN_STREET_WORD_MIN},}}", name)
+    return name if ok else None
 
 
 def _pn_addr_street_key(real):
@@ -15329,6 +15400,15 @@ _PN_KEY_MAIN_SHEET = "Pseudonym Key"
 _PN_KEY_TOKEN_CATS = frozenset({"person-token", "entity-token", "short-name",
                                 "address_fragment"})
 
+# The categories whose value is a STREET — the detected address and the two
+# fragments `register_addresses` learns from it ("8721 Sunset", "Sunset Blvd.").
+# All three carry the same street identity and the same faked street NAME, so
+# all three seed the registry's street slot on the way back in; a key whose
+# address was only ever matched through a fragment (the suffix wrapped onto the
+# next line) otherwise seeded nothing at all.
+_PN_KEY_ADDRESS_CATS = frozenset({"address", "address_fragment",
+                                  "address_street"})
+
 # Categories whose ALPHANUMERIC core is a genuine welded PARTY NAME worth
 # recovering from a column-spliced caption (the reduced-substring passes below).
 # A structured identifier — a domain/email/address/phone — must NOT take part:
@@ -16508,6 +16588,7 @@ def _pn_load_key(path, registry, log, remint_recycled=False):
                  + (" …" if len(phrased) > 6 else ""))
 
     terms, seen, key_decisions, reminted = [], set(), {}, []
+    street_words = []
     for row in rows[1:]:
         def cell(name):
             i = idx.get(name)
@@ -16787,7 +16868,7 @@ def _pn_load_key(path, registry, log, remint_recycled=False):
             if rm and fm:
                 registry._memo.setdefault(
                     ("department", rm.group(1).lower()), fm.group(1))
-        elif cat == "address":
+        elif cat in _PN_KEY_ADDRESS_CATS:
             core = _pn_addr_street_key(real)[0]
             # The memo holds the street NAME alone (the only part faked), so a
             # key written when the whole "<number> <name> <suffix>" was stored
@@ -16796,6 +16877,14 @@ def _pn_load_key(path, registry, log, remint_recycled=False):
             if core and fake_name:
                 registry._memo.setdefault(("street", core.lower()), fake_name)
                 registry._used.add(fake_name.lower())
+                # …and the WORD, so a document added later that names the
+                # party after this street ("15200 Sunset LLC" beside "15200
+                # Sunset Blvd.") composes onto the binding the key already
+                # carries instead of drawing a second word for it. Held back
+                # until every row has been read — see below.
+                word = _pn_addr_name_word(core)
+                if word and re.fullmatch(r"[A-Za-z]+", fake_name):
+                    street_words.append((word, fake_name))
 
         # A person-token row DERIVED from the judge's (or a staff member's)
         # full name exists for the reversal macro only. Loading it as a match
@@ -16884,6 +16973,15 @@ def _pn_load_key(path, registry, log, remint_recycled=False):
         t.derived = status == _PN_KEY_ALT_STATUS
         terms.append(t)
     wb.close()
+
+    # The street words held back above. Seeded LAST, and with `setdefault`, so
+    # a person/entity-token row always owns the shared slot: that row's fake is
+    # what stands in the delivered export under the word ALONE, and a key
+    # written before the two paths shared a slot can carry a different one for
+    # the street. The street's own binding is pinned on its own key either way,
+    # so nothing that has been delivered moves.
+    for word, fake_name in street_words:
+        registry._memo.setdefault(("name_or_entity", word), fake_name)
 
     # A POSSESSIVE row that drew its own unrelated fake — "Rasho -> ARCLIGHT"
     # beside "RASHO'S -> BALFOUR" — is one party reading as two, and a loaded
@@ -20884,8 +20982,11 @@ class Pseudonymizer:
         street = street or real
         suffix = _pn_addr_suffix_of(real)
         core, _nums = _pn_addr_street_key(real)
-        name = self.registry.unique(
-            core, "street", lambda rng: rng.choice(_PN_STREET_NAMES))
+        # Through the registry's `street`, which folds a single-word street
+        # name onto the fake a party of the same word already carries (and
+        # vice versa): a building's address and the LLC named after it are
+        # one word in the source and must be one word in the export.
+        name = self.registry.street(core, _pn_addr_name_word(core))
         lead = re.match(r"[\s]*([\d][\d\-\u2013\u2014]*)", street)
         number = (lead.group(1) + " ") if lead else ""
         return f"{number}{name} {suffix}".strip()
