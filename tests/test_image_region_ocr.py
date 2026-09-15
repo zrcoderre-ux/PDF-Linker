@@ -53,23 +53,47 @@ def _doc(img_rect=fitz.Rect(300, 500, 520, 590), with_text=True):
     return doc
 
 
-def _stub_tesseract(monkeypatch, recognised):
-    """Stand in for Tesseract, returning an overlay PDF that carries
-    `recognised` as its text — the shape `image_to_pdf_or_hocr` returns."""
+def _stub_tesseract(monkeypatch, recognised, conf=None):
+    """Stand in for Tesseract: an overlay PDF carrying `recognised` as its text
+    (the shape `image_to_pdf_or_hocr` returns) and the per-word confidences
+    `image_to_data` reports beside it.
+
+    `conf` maps a word to its confidence; anything unnamed is read with full
+    confidence, so a test that says nothing about confidence gets the behaviour
+    the pass had before there was one."""
     calls = []
+    conf = conf or {}
 
     def _to_pdf(img, extension="pdf", config=None, timeout=None):
         calls.append(config)
         out = fitz.open()
         pg = out.new_page(width=220, height=90)
-        pg.insert_text((5, 40), recognised, fontsize=9)
+        # One text object per word, WRAPPED and spaced so the extractor reads
+        # them back as separate words — which is what a real Tesseract page
+        # gives (verified on the delivered CIV-110: `image_to_data` and the
+        # overlay PDF return identical word sets). A fixture that welds two
+        # words into one is testing PyMuPDF's span joining, not this pass.
+        x, y = 5, 14
+        for word in recognised.split():
+            w = fitz.get_text_length(word, fontsize=9)
+            if x + w > 215:
+                x, y = 5, y + 16          # real leading: at 11pt for 9pt type
+            pg.insert_text((x, y), word, fontsize=9)   # the word boxes of two
+            x += w + 6                    # lines overlap, and a redaction on
+                                          # one reaches the other
         data = out.tobytes()
         out.close()
         return data
 
+    def _to_data(img, config=None, timeout=None, output_type=None):
+        words = recognised.split()
+        return {"text": words, "conf": [conf.get(w, 96) for w in words]}
+
     fake = types.ModuleType("pytesseract")
     fake.pytesseract = types.SimpleNamespace(tesseract_cmd=None)
     fake.image_to_pdf_or_hocr = _to_pdf
+    fake.image_to_data = _to_data
+    fake.Output = types.SimpleNamespace(DICT="dict")
     monkeypatch.setitem(sys.modules, "pytesseract", fake)
 
     pil = types.ModuleType("PIL")
@@ -80,6 +104,119 @@ def _stub_tesseract(monkeypatch, recognised):
     monkeypatch.setattr(P, "_find_tesseract", lambda: "/usr/bin/tesseract")
     monkeypatch.setattr(P, "_tesseract_usable", lambda t, l: True)
     return calls
+
+
+# ── a word the recogniser has no confidence in is not a recovery ────────────
+#
+# The commonest image on a page whose own text is sound is a SIGNATURE, and a
+# signature is the one thing on a filing that is not text. A delivered CIV-110
+# carried an e-signature over its signature line; Tesseract read the cursive as
+# `PUTTTE THU UG CUTTINICLOU.`, which is four words the page did not have, so
+# every guard passed and the junk went into the export AND into the PDF's own
+# text layer, where — the pass being additive and the tool replacing the source
+# — it survived every later run.
+#
+# No shape measure reaches it (`_pn_token_is_mangled` calls every one of those
+# tokens a word, `_text_looks_garbled` calls the region clean); the recogniser's
+# own confidence does. Measured on that region: every junk token scored 0 while
+# `(SIGNATURE)`, real print in the SAME region, scored 96, and a printed name in
+# an image held 95-96 blurred and downsampled to fax grade.
+
+SCRAWL = "PUTTTE THU CUTTINICLOU"
+_NO_CONF = {w: 0 for w in SCRAWL.split()}
+
+
+def test_a_signature_is_not_read_into_the_page(monkeypatch):
+    # The delivered failure: the region's only new words are ones Tesseract had
+    # no confidence in, so nothing is left to earn it a reading and it refuses
+    # itself through the floor that was already here.
+    _stub_tesseract(monkeypatch, SCRAWL, conf=_NO_CONF)
+    doc = _doc()
+    assert P._ocr_image_regions(doc, log) == 0
+    text = doc[0].get_text("text")
+    assert not any(w in text for w in SCRAWL.split())
+
+
+def test_a_confident_reading_is_still_recovered(monkeypatch):
+    # The screen must not cost the pass the case it exists for.
+    _stub_tesseract(monkeypatch, SIGNATURE)
+    doc = _doc()
+    assert P._ocr_image_regions(doc, log) == 1
+    assert "Mackenzie" in doc[0].get_text("text")
+
+
+def test_the_scrawl_beside_a_printed_name_is_dropped_from_the_overlay(monkeypatch):
+    # The region this pass was WRITTEN for is a signature block carrying a
+    # scrawl AND a printed name, so it passes on the name — and would carry the
+    # scrawl's junk in with it. The gate alone cannot reach that; the overlay is
+    # stripped of the weak words too.
+    _stub_tesseract(monkeypatch, SIGNATURE + " " + SCRAWL, conf=_NO_CONF)
+    doc = _doc()
+    assert P._ocr_image_regions(doc, log) == 1
+    text = doc[0].get_text("text")
+    assert "Mackenzie" in text
+    assert not any(w in text for w in SCRAWL.split()), text
+
+
+def test_a_word_with_no_confidence_reported_is_kept(monkeypatch):
+    # No confidence is not evidence of a bad reading, so a reading that reports
+    # none behaves exactly as it did before the screen existed.
+    _stub_tesseract(monkeypatch, SIGNATURE, conf={w: -1 for w in SIGNATURE.split()})
+    doc = _doc()
+    assert P._ocr_image_regions(doc, log) == 1
+    assert "Mackenzie" in doc[0].get_text("text")
+
+
+def test_the_pdf_is_built_only_for_a_region_that_passed(monkeypatch):
+    # The gate reads through `image_to_data`, which runs the same recognition
+    # for the same cost, so a REFUSED region pays exactly what it paid before.
+    calls = _stub_tesseract(monkeypatch, SCRAWL, conf=_NO_CONF)
+    P._ocr_image_regions(_doc(), log)
+    assert calls == []
+    calls = _stub_tesseract(monkeypatch, SIGNATURE)
+    P._ocr_image_regions(_doc(), log)
+    assert len(calls) == 1
+
+
+def _overlay(words, step=16):
+    """An overlay PDF laying `words` out at `step` leading — the shape
+    `image_to_pdf_or_hocr` returns."""
+    out = fitz.open()
+    pg = out.new_page(width=220, height=90)
+    x, y = 5, 14
+    for word in words:
+        w = fitz.get_text_length(word, fontsize=9)
+        if x + w > 215:
+            x, y = 5, y + step
+        pg.insert_text((x, y), word, fontsize=9)
+        x += w + 6
+    data = out.tobytes()
+    out.close()
+    return data
+
+
+def test_the_strip_is_abandoned_rather_than_cut_into_the_reading():
+    # A redaction removes every glyph its rect touches, so where the lines are
+    # set tight enough that two words' boxes overlap, dropping one takes part of
+    # the other: "Mackenzie" came back "zie". The strip proves it cost nothing
+    # or it does not happen — the fallback being the junk this is trying to
+    # drop, never a name silently cut in half.
+    words = ["Alison", "Mackenzie", "/", "Judge"] + SCRAWL.split()
+    weak = set(SCRAWL.split())
+    tight = P._strip_weak_ocr_words(_overlay(words, step=11), weak, log)
+    got = [w[4] for w in fitz.open(stream=tight, filetype="pdf")[0].get_text("words")]
+    assert got == words                       # kept WHOLE, junk and all
+
+    roomy = P._strip_weak_ocr_words(_overlay(words, step=16), weak, log)
+    got = [w[4] for w in fitz.open(stream=roomy, filetype="pdf")[0].get_text("words")]
+    assert got == ["Alison", "Mackenzie", "/", "Judge"]
+
+
+def test_the_strip_leaves_a_reading_it_has_nothing_to_say_about():
+    same = P._strip_weak_ocr_words(_overlay(SIGNATURE.split()), {"nothere"}, log)
+    # nothing of ours on the page: handed back exactly as given
+    got = [w[4] for w in fitz.open(stream=same, filetype="pdf")[0].get_text("words")]
+    assert got == SIGNATURE.split()
 
 
 # ── the name is recovered ───────────────────────────────────────────────────

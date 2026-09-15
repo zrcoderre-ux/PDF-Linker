@@ -119,9 +119,21 @@ def _stub_tesseract(monkeypatch, recognised):
         out.close()
         return data
 
+    def _to_data(img, config=None, timeout=None, output_type=None):
+        # The same recognition, reported the way `image_to_data` reports it:
+        # the gate reads through this call, so a stub that answers one and not
+        # the other leaves the pass unable to read anything at all. Full
+        # confidence throughout — this fixture is about geometry, not quality.
+        pix = fitz.Pixmap(img.getvalue())
+        gray = fitz.Pixmap(fitz.csGRAY, pix) if pix.n > 2 else pix
+        words = recognised.split() if any(b < 128 for b in gray.samples) else []
+        return {"text": words, "conf": [96] * len(words)}
+
     fake = types.ModuleType("pytesseract")
     fake.pytesseract = types.SimpleNamespace(tesseract_cmd=None)
     fake.image_to_pdf_or_hocr = _to_pdf
+    fake.image_to_data = _to_data
+    fake.Output = types.SimpleNamespace(DICT="dict")
     monkeypatch.setitem(sys.modules, "pytesseract", fake)
     pil = types.ModuleType("PIL")
     pil.Image = types.SimpleNamespace(open=lambda b: b)

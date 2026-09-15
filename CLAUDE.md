@@ -3704,11 +3704,40 @@ answerable at the top of the page.
   label, so a fixed centre tolerance either splits a printed row or welds two.
   Each cell's extent is capped to a nominal text line (`_FORM_CELL_HALF`) so one
   tall field box (a three-line attorney block) cannot annex the rows below it.
-- **A radio has to match its OWN on-state** (`_widget_is_on`): every widget in a
-  radio group carries the group's value, so comparing to `Off` alone reports all
-  of them checked the moment one is. `Off` is the name the PDF spec reserves for
-  the off state, which is what makes "anything else is on" safe across the export
-  values real forms use ("Yes", "On", "1").
+- **A box's state is read off its OWN `/AS`, because the VALUE belongs to the
+  GROUP** (`_widget_appearance_state`, `_widget_is_on`). An exclusive group is
+  several widgets sharing ONE field value, each with its own on-state name, and
+  a rule comparing that shared value against `Off` reports every member checked
+  the moment one is. The older rule closed that for a widget whose field type
+  said `RADIOBUTTON` — and a Judicial Council form does not write one: every box
+  on a delivered CIV-100 and CIV-110 is typed **CHECKBOX**, group members
+  included, so the guard never ran. A CIV-100 shipped `[X] is  [X] is not` on
+  all three subdivisions of item 5 and `[X] Default entered as requested`
+  beside `[X] Default NOT entered`; a CIV-110 shipped `[X] With prejudice
+  [X] Without prejudice  [X] Without prejudice and with the court retaining
+  jurisdiction`, and `[X] did [X] did not` waive fees. On these forms the
+  checkbox IS the pleading, so that is the document stating two or three
+  contradictory things at once, and the page banner's tally — the operator's
+  "did the checkboxes come through?" — agreed with it.
+  `/AS` names which entry of the widget's own `/AP /N` dictionary is painted, so
+  it is the one PER-WIDGET answer and it is exactly what a viewer displays. It
+  also settles the case no comparison against a value can: a group whose members
+  all carry the SAME on-state name (three widgets with `/AP /N` key `Yes`, which
+  is how a CIV-110 writes the party line under a signature) is indistinguishable
+  by value and obvious by `/AS`. The two places it cannot be trusted fall back
+  to the value: a widget carrying no `/AS` at all, and an AcroForm setting
+  `/NeedAppearances`, which tells the viewer to rebuild every appearance from
+  `/V` and so makes the stored `/AS` describe nothing (read once and cached per
+  Document). That fallback now asks a **CHECKBOX** for its own on-state as well
+  as a RADIOBUTTON, for the reason the bug existed: the type field does not say
+  whether a widget is one of a group, and a value naming a state the widget's
+  own `/AP /N` lacks is painted `Off` by every viewer, so matching is what the
+  page shows. `Off` is still the name the PDF spec reserves for the off state,
+  which is what keeps "anything else is on" safe across the export values real
+  forms use ("Yes", "On", "1"). Pinned on a fixture that writes the shape
+  through the xref (`_group_page` in `test_form_fields.py`) — PyMuPDF's
+  high-level API cannot express a shared value beside a per-widget `/AS`, and a
+  fixture that cannot express the difference cannot see the bug.
 - **The form path wins over the pleading-rows path only when the page carries a
   checkbox state** (`_form_has_state_boxes`, asked of the rendered text so it
   holds for a widget form and an ink one alike). That state is invisible to every other rendering, which is
@@ -3742,6 +3771,15 @@ answerable at the top of the page.
   `_form_page_text` is unchanged for every other caller; the render carries
   its source, box count and form id beside the text because the text alone
   cannot say whether it earns the page.
+- **A form page takes the re-draw dedupe every other rendering takes**
+  (`_drop_overdrawn_spans`, in `_form_page_cells`). `_page_flowing_text` and
+  `_detect_line_anchors` both pass their spans through it; this path read
+  `get_text("dict")` raw, so a form page carrying its text twice exported it
+  twice. The copy the tool makes ITSELF is the one that reached a delivered
+  folder: `_ocr_image_regions` re-reads the printed caption inside its own
+  rect and lays a second copy over the first, and a CIV-110's signature block
+  came out `(SIGNATURE) (SIGNATURE)` — collapsed on any other page, and not
+  on this one.
 - **Detection reads what the export writes.** `_page_detect_text` takes the
   DECIDED form text via the `_FORM_UNDECIDED` sentinel — distinct from `None`,
   which means "decided against it" — because a page whose form rendering was
@@ -5085,6 +5123,57 @@ survive to fail.
   three words the OCR found in it, and the judge's name this pass exists to
   recover would be dropped. A re-read page carries hundreds of words inside the
   image; nothing else comes near the floor.
+  **…and a word the recogniser has NO CONFIDENCE in is not a recovery**
+  (`_IMG_OCR_MIN_CONF`, `_image_ocr_read`, `_strip_weak_ocr_words`). Both rules
+  above ask whether the region's words are NEW; neither asks whether they are
+  WORDS. The commonest image on a page whose own text is sound is a SIGNATURE,
+  which is the one thing on a filing that is not text at all — so a delivered
+  CIV-110 carrying an e-signature over its signature line cleared every guard:
+  the reading was four tokens the page did not have, and `PUTTTE THU UG
+  CUTTINICLOU.` went into the export AND into the PDF's own text layer, where
+  (the pass being additive, and the tool replacing the source) it survived
+  every later run. It then fed the harvest and the review tiers as capitalised
+  name-shaped debris — a worksheet row no answer clears.
+  No SHAPE measure reaches it, and this file already records why: those tokens
+  carry vowels, no five-consonant run and no interior mark, so
+  `_pn_token_is_mangled` calls every one of them a word and `_text_looks_garbled`
+  calls the region clean (checked, not assumed). The RECOGNISER'S OWN
+  confidence is the measure that does reach it, and it was the one signal this
+  pass threw away. Measured on the delivered region at `_ocr_base_dpi`,
+  Tesseract 5.3.4, `_OCR_CONFIG`: every junk token scored **0** while
+  `(SIGNATURE)` — real print inside the SAME region — scored 96, and a printed
+  name in an image (the judge's signature block this pass EXISTS for) scored
+  95-96 and held there blurred and downsampled threefold to fax grade. The
+  floor sits in the middle of that gap rather than near either edge.
+  Asked at the NEWNESS filter, which is where the defect was: the signature's
+  junk was the whole of the evidence for reading the region, so with it gone
+  the region has nothing new and refuses itself through the floor already
+  there — no new region-level gate. `_image_ocr_already_read` keeps the FULL
+  text, its two arms being tuned against it: a garbled re-read of a page's own
+  layer is exactly the low-confidence text this removes, and hiding it there
+  would cost that guard the evidence it counts.
+  **…and the OVERLAY is stripped too**, because the region this pass was
+  WRITTEN for is a signature block carrying a scrawl AND a printed name: it
+  passes on the name and would carry the scrawl's junk in with it, which the
+  gate cannot reach. Matched by TEXT — `image_to_data` and the overlay PDF
+  return identical word sets (verified on the delivered region) — so no
+  coordinate mapping is guessed at, and the embedded image is kept
+  (`PDF_REDACT_IMAGE_NONE`). A redaction removes every glyph its rect touches,
+  so one laid over a word can nibble the word NEXT to it: where the lines are
+  set tight enough that two words' boxes overlap, dropping "PUTTTE" took
+  "Macken" off "Mackenzie". So the strip must PROVE it cost nothing, the rule
+  `_reocr_improves` states for the destructive rebuild — the words are read
+  back, and unless what remains is the reading MINUS the weak words exactly,
+  the strip is ABANDONED and Tesseract's output is overlaid whole. Residual,
+  and stated: a region whose lines are that tight keeps its junk, which is
+  what shipped before and is the right way to be wrong here.
+  Reading through `image_to_data` INSTEAD of `image_to_pdf_or_hocr` is what
+  keeps this free: it runs the same recognition for the same cost (measured
+  0.154 s against 0.147 s) and returns the confidences beside the text, so the
+  gate is paid for exactly once and the PDF is built only for a region that
+  PASSED — a refused region, which is most of them, costs exactly what it did.
+  A word reporting NO confidence is kept: no confidence is not evidence of a
+  bad reading.
   **…and BOTH of those are asked too late for the page THIS RUN read itself**
   (`_OCR_READ_ATTR`, `_note_ocr_read_page`, `_page_read_by_this_run`). The two
   rules above are measured on what the OCR CAME BACK WITH, so the render and
