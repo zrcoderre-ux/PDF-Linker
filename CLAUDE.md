@@ -3704,11 +3704,40 @@ answerable at the top of the page.
   label, so a fixed centre tolerance either splits a printed row or welds two.
   Each cell's extent is capped to a nominal text line (`_FORM_CELL_HALF`) so one
   tall field box (a three-line attorney block) cannot annex the rows below it.
-- **A radio has to match its OWN on-state** (`_widget_is_on`): every widget in a
-  radio group carries the group's value, so comparing to `Off` alone reports all
-  of them checked the moment one is. `Off` is the name the PDF spec reserves for
-  the off state, which is what makes "anything else is on" safe across the export
-  values real forms use ("Yes", "On", "1").
+- **A box's state is read off its OWN `/AS`, because the VALUE belongs to the
+  GROUP** (`_widget_appearance_state`, `_widget_is_on`). An exclusive group is
+  several widgets sharing ONE field value, each with its own on-state name, and
+  a rule comparing that shared value against `Off` reports every member checked
+  the moment one is. The older rule closed that for a widget whose field type
+  said `RADIOBUTTON` — and a Judicial Council form does not write one: every box
+  on a delivered CIV-100 and CIV-110 is typed **CHECKBOX**, group members
+  included, so the guard never ran. A CIV-100 shipped `[X] is  [X] is not` on
+  all three subdivisions of item 5 and `[X] Default entered as requested`
+  beside `[X] Default NOT entered`; a CIV-110 shipped `[X] With prejudice
+  [X] Without prejudice  [X] Without prejudice and with the court retaining
+  jurisdiction`, and `[X] did [X] did not` waive fees. On these forms the
+  checkbox IS the pleading, so that is the document stating two or three
+  contradictory things at once, and the page banner's tally — the operator's
+  "did the checkboxes come through?" — agreed with it.
+  `/AS` names which entry of the widget's own `/AP /N` dictionary is painted, so
+  it is the one PER-WIDGET answer and it is exactly what a viewer displays. It
+  also settles the case no comparison against a value can: a group whose members
+  all carry the SAME on-state name (three widgets with `/AP /N` key `Yes`, which
+  is how a CIV-110 writes the party line under a signature) is indistinguishable
+  by value and obvious by `/AS`. The two places it cannot be trusted fall back
+  to the value: a widget carrying no `/AS` at all, and an AcroForm setting
+  `/NeedAppearances`, which tells the viewer to rebuild every appearance from
+  `/V` and so makes the stored `/AS` describe nothing (read once and cached per
+  Document). That fallback now asks a **CHECKBOX** for its own on-state as well
+  as a RADIOBUTTON, for the reason the bug existed: the type field does not say
+  whether a widget is one of a group, and a value naming a state the widget's
+  own `/AP /N` lacks is painted `Off` by every viewer, so matching is what the
+  page shows. `Off` is still the name the PDF spec reserves for the off state,
+  which is what keeps "anything else is on" safe across the export values real
+  forms use ("Yes", "On", "1"). Pinned on a fixture that writes the shape
+  through the xref (`_group_page` in `test_form_fields.py`) — PyMuPDF's
+  high-level API cannot express a shared value beside a per-widget `/AS`, and a
+  fixture that cannot express the difference cannot see the bug.
 - **The form path wins over the pleading-rows path only when the page carries a
   checkbox state** (`_form_has_state_boxes`, asked of the rendered text so it
   holds for a widget form and an ink one alike). That state is invisible to every other rendering, which is

@@ -252,6 +252,108 @@ def test_only_the_selected_radio_in_a_group_reads_checked():
     assert pl._widget_is_on(_FakeWidget(rb, "Off", on="corp")) is False
 
 
+def _group_page(members, need_appearances=False):
+    """A page carrying ONE exclusive group written the way a real Judicial
+    Council form writes it: several widgets typed CHECKBOX (not RADIOBUTTON),
+    all reporting the group's SHARED field value, each with its own `/AP /N`
+    on-state and its own `/AS`. `members` is (caption, on_state, as_state).
+
+    PyMuPDF's high-level API cannot build this shape, so the appearance
+    dictionary and `/AS` are written through the xref — which is the point: the
+    bug lived exactly in the difference between the shared value and the
+    per-widget `/AS`, so a fixture that cannot express that difference cannot
+    see it."""
+    doc = fitz.open()
+    page = _page(doc)
+    shared = next((on for _, on, a in members if a != "Off"), "Off")
+    xrefs = []
+    for i, (caption, _on, _as) in enumerate(members):
+        x = 70 + i * 90
+        _static(page, x + 14, 230, caption, 8)
+        w = fitz.Widget()
+        w.field_name = "Group_cb[%d]" % i
+        w.field_type = fitz.PDF_WIDGET_TYPE_CHECKBOX
+        w.rect = fitz.Rect(x, 222, x + 10, 232)
+        w.field_value = True
+        w.border_width = 0.7
+        w.border_color = (0, 0, 0)
+        xrefs.append(page.add_widget(w).xref)
+    for xref, (_caption, on, as_) in zip(xrefs, members):
+        stream = doc.xref_get_key(xref, "AP/N/Yes")[1]
+        doc.xref_set_key(xref, "AP/N", "<</%s %s>>" % (on, stream))
+        doc.xref_set_key(xref, "V", "/" + shared)
+        doc.xref_set_key(xref, "AS", "/" + as_)
+    if need_appearances:
+        doc.xref_set_key(doc.pdf_catalog(), "AcroForm/NeedAppearances", "true")
+    doc = fitz.open("pdf", doc.tobytes())      # round-trip, as a real file is
+    return doc, doc[0]
+
+
+def _boxes(page):
+    """The state boxes of a rendered form page, in reading order."""
+    import re
+    return re.findall(r"\[[X ]\]", pl._form_page_text(page))
+
+
+def test_a_shared_value_group_typed_as_checkboxes_reads_ONE_box():
+    # The delivered failure. A CIV-100's item 5a is two widgets sharing one
+    # field value; a CIV-110's item 1a is three. Both are typed CHECKBOX, so a
+    # rule that asked a widget for its own on-state only when it called itself a
+    # RADIOBUTTON never ran — and the export read "[X] is [X] is not", the
+    # document saying two contradictory things at once on a form where the
+    # checkbox IS the pleading.
+    _doc, page = _group_page([("is", "1", "Off"), ("is not", "2", "2")])
+    assert _boxes(page) == ["[ ]", "[X]"]
+
+
+def test_every_member_of_an_unselected_group_reads_off():
+    _doc, page = _group_page([("is", "1", "Off"), ("is not", "2", "Off")])
+    assert _boxes(page) == ["[ ]", "[ ]"]
+
+
+def test_the_page_tally_counts_only_the_selected_member():
+    # The banner is the operator's "did the checkboxes come through?", so it
+    # has to move with them: it read 3 of 3 on the CIV-110 item quoted above.
+    _doc, page = _group_page([("With prejudice", "1", "1"),
+                              ("Without prejudice", "2", "Off"),
+                              ("and retaining jurisdiction", "3", "Off")])
+    cells, boxes, checked = pl._form_page_cells(page)
+    assert (boxes, checked) == (3, 1)
+
+
+def test_a_group_whose_members_share_one_on_state_name_is_still_resolved():
+    # The case NO comparison against the field value can settle: three widgets
+    # whose `/AP /N` key is the same name, which is how a CIV-110 writes the
+    # party line under a signature. Only `/AS` tells them apart.
+    _doc, page = _group_page([("Cross-Complainant", "Yes", "Off"),
+                              ("Plaintiff", "Yes", "Yes"),
+                              ("Defendant", "Yes", "Off")])
+    assert _boxes(page) == ["[ ]", "[X]", "[ ]"]
+
+
+def test_need_appearances_falls_back_to_the_field_value():
+    # `/NeedAppearances` tells the viewer to rebuild every appearance from `/V`,
+    # so the stored `/AS` describes nothing and the value is the only evidence
+    # left. Here `/AS` is stale-Off on the member the value selects.
+    _doc, page = _group_page([("is", "1", "Off"), ("is not", "2", "Off")],
+                             need_appearances=True)
+    # shared value is "Off" when nothing is marked, so mark one through /V only
+    for w in page.widgets():
+        page.parent.xref_set_key(w.xref, "V", "/2")
+    assert _boxes(page) == ["[ ]", "[X]"]
+
+
+def test_a_checkbox_with_no_AS_is_read_against_its_own_on_state():
+    # The fallback, which is where a widget with no `/AS` at all lands. A bare
+    # CHECKBOX gets the same on-state comparison a RADIOBUTTON does: the type
+    # field does not say whether a widget is one of a group, and a value naming
+    # a state the widget's own appearance dictionary lacks is painted Off by
+    # every viewer.
+    cb = fitz.PDF_WIDGET_TYPE_CHECKBOX
+    assert pl._widget_is_on(_FakeWidget(cb, "2", on="2")) is True
+    assert pl._widget_is_on(_FakeWidget(cb, "2", on="1")) is False
+
+
 def test_a_radio_renders_a_state_box_like_a_checkbox():
     rb = fitz.PDF_WIDGET_TYPE_RADIOBUTTON
     rect = fitz.Rect(60, 90, 70, 100)

@@ -26482,23 +26482,87 @@ _FORM_ROW_PAD = 2.0
 _FORM_CELL_HALF = 5.5
 
 
-def _widget_is_on(w):
+# Cached per Document: the AcroForm `/NeedAppearances` flag, which decides
+# whether a widget's stored `/AS` still describes what a viewer paints.
+_NEED_APPEARANCES_ATTR = "_pdf_linker_need_appearances"
+
+
+def _widget_appearance_state(w, page=None):
+    """The widget's OWN `/AS` appearance state, or None when it cannot be read.
+
+    `/AS` names which entry of the widget's `/AP /N` dictionary is painted, so
+    it is per-WIDGET and is exactly what a viewer displays — unlike `/V`, which
+    a group of widgets shares. Returns None where the widget carries no `/AS`
+    (nothing to read), or where the AcroForm sets `/NeedAppearances`, which
+    tells the viewer to rebuild every appearance from `/V` and so makes the
+    stored `/AS` meaningless."""
+    doc = None
+    try:
+        doc = (page or w.parent).parent
+    except Exception:
+        return None
+    if doc is None:
+        return None
+    need = getattr(doc, _NEED_APPEARANCES_ATTR, None)
+    if need is None:
+        need = False
+        try:
+            kind, val = doc.xref_get_key(doc.pdf_catalog(),
+                                         "AcroForm/NeedAppearances")
+            need = kind == "bool" and str(val).lower() == "true"
+        except Exception:
+            need = False
+        try:
+            setattr(doc, _NEED_APPEARANCES_ATTR, need)
+        except Exception:
+            pass
+    if need:
+        return None
+    try:
+        kind, val = doc.xref_get_key(w.xref, "AS")
+    except Exception:
+        return None
+    if kind != "name":
+        return None
+    return str(val).lstrip("/")
+
+
+def _widget_is_on(w, page=None):
     """True when a checkbox/radio widget is CHECKED.
 
-    The PDF spec reserves the name `Off` for the off state, so any other state
-    name means on — which is what makes this safe across the export values real
-    forms use ("Yes", "On", "1"). A RADIO also has to match its OWN on-state:
-    every widget in a radio group carries the group's value, so comparing to
-    `Off` alone would report all of them checked as soon as one was."""
+    `/AS` is asked FIRST, because it is the only per-WIDGET answer. A radio
+    group is a set of widgets sharing ONE field value, and — this is the half
+    that bit — a Judicial Council form writes those widgets as field type
+    CHECKBOX rather than RADIOBUTTON. So a rule that compared the shared value
+    against `Off`, or that asked a widget for its own on-state only when it
+    called itself a radio, reported EVERY member of the group checked as soon
+    as one of them was: a delivered CIV-100 read `[X] is [X] is not` on all
+    three subdivisions of item 5, and a CIV-110 read `[X] With prejudice
+    [X] Without prejudice [X] Without prejudice and with the court retaining
+    jurisdiction` — the checkbox IS the pleading, so that is the document
+    saying three contradictory things at once. `/AS` is what the viewer paints
+    and it is right for both shapes at once, including the group whose members
+    all share ONE on-state name (three widgets with `/AP /N` key `Yes`, which
+    no comparison against a value can tell apart).
+
+    Where `/AS` cannot be read the value is compared against the widget's own
+    on-state for a CHECKBOX as well as a RADIOBUTTON, for the same reason: the
+    type field does not say whether a widget is one of a group. A widget whose
+    field value names a state its own `/AP /N` lacks is painted `Off` by every
+    viewer, so matching is what the page shows."""
     val = w.field_value
     if isinstance(val, bool):
         return val
+    state = _widget_appearance_state(w, page)
+    if state is not None:
+        return state.lower() != "off"
     s = str(val if val is not None else "").strip()
     if s == "" or s.lower() == "off":
         return False
     try:
         import fitz
-        if w.field_type == fitz.PDF_WIDGET_TYPE_RADIOBUTTON:
+        if w.field_type in (fitz.PDF_WIDGET_TYPE_CHECKBOX,
+                            fitz.PDF_WIDGET_TYPE_RADIOBUTTON):
             on = w.on_state()
             if on:
                 return s == str(on)
@@ -26514,7 +26578,7 @@ def _form_cell(y_mid, half, x, text):
     return (y_mid, min(half, _FORM_CELL_HALF), x, text)
 
 
-def _form_widget_cells(w, rect):
+def _form_widget_cells(w, rect, page=None):
     """The cells one widget contributes. A checkbox/radio yields its state box; a
     filled text/choice field yields its value, one cell per line so a stacked
     attorney block keeps its lines. An empty field yields nothing — a blank on
@@ -26525,7 +26589,7 @@ def _form_widget_cells(w, rect):
     if w.field_type in (fitz.PDF_WIDGET_TYPE_CHECKBOX,
                         fitz.PDF_WIDGET_TYPE_RADIOBUTTON):
         return [_form_cell(y_mid, half, rect.x0,
-                           "[X]" if _widget_is_on(w) else "[ ]")]
+                           "[X]" if _widget_is_on(w, page) else "[ ]")]
     if w.field_type == fitz.PDF_WIDGET_TYPE_SIGNATURE:
         return []
     lines = [ln.strip() for ln in str(w.field_value or "").splitlines()]
@@ -27028,8 +27092,8 @@ def _form_page_cells(page):
         try:
             if w.field_type in choice:
                 boxes += 1
-                checked += 1 if _widget_is_on(w) else 0
-            cells.extend(_form_widget_cells(w, r))
+                checked += 1 if _widget_is_on(w, page) else 0
+            cells.extend(_form_widget_cells(w, r, page))
         except Exception:
             continue
     return cells, boxes, checked
