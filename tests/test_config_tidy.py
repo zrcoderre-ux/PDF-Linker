@@ -160,13 +160,69 @@ def test_an_unknown_key_survives(tmp_path, monkeypatch):
 
 
 def test_a_comment_the_operator_typed_survives(tmp_path, monkeypatch):
+    # A note with a BLANK LINE under it is a run of its own, which is what the
+    # header tells the operator to leave.
     note = "# leave this off until the OneDrive sync settles down\n"
-    path = _cfg(tmp_path, monkeypatch, OLD + note + "partial_names = off\n")
+    path = _cfg(tmp_path, monkeypatch,
+                OLD + note + "\npartial_names = off\n")
     P._config_tidy(path, log)
     text = path.read_text()
     assert note in text
-    # ...carried with the setting it was written under.
+    # ...carried with the setting it was written under, above its paragraph.
+    assert text.index(note) < text.index("# Match a TRUNCATED party name")
     assert text.index(note) < text.index("partial_names = off")
+
+
+def test_a_note_survives_every_later_run(tmp_path, monkeypatch):
+    # It is re-emitted ABOVE the paragraph with a blank line under it, which is
+    # the one position that reads as a run of its own next time. Written back
+    # into the documentation slot it would be shed by the very next run.
+    note = "# leave this off until the OneDrive sync settles down\n"
+    path = _cfg(tmp_path, monkeypatch,
+                OLD + note + "\npartial_names = off\n")
+    P._config_tidy(path, log)
+    for _ in range(3):
+        before = path.read_text()
+        assert P._config_tidy(path, log) == ([], [])
+        assert path.read_text() == before
+        assert note in before
+
+
+def test_a_line_inside_the_tools_own_paragraph_goes_with_it(tmp_path,
+                                                            monkeypatch):
+    # The stated residual, and the reason the header says to leave a blank
+    # line: the run TOUCHING the setting is that setting's documentation slot,
+    # and it is replaced whatever it now says.
+    note = "# leave this off until the sync settles down\n"
+    prose = "# Match a TRUNCATED party name (the front of it) when a two-\n"
+    path = _cfg(tmp_path, monkeypatch,
+                OLD + "\n" + prose + note + "partial_names = off\n")
+    P._config_tidy(path, log)
+    text = path.read_text()
+    assert note not in text
+    assert _live(text)["partial_names"] == "off"
+
+
+def test_a_wholly_REWORDED_block_is_shed_on_the_first_run(tmp_path,
+                                                          monkeypatch):
+    # The reason the slot rule exists at all. Matching prose line by line
+    # cannot see a paragraph that has been rewritten from scratch — not one
+    # sentence matches — so every line of it was preserved as a note of the
+    # operator's and the block came back carrying BOTH wordings. Shortening the
+    # documentation must not be a way of doubling it.
+    stale = ("# What a surviving real value does to the run. The\n"
+             "# pseudonymization is a PRECAUTION against casual recognition of\n"
+             "# a public filing, so the gate is tiered: primary quarantines\n"
+             "# only when a FULL party name survives; strict quarantines on\n"
+             "# ANY surviving value; off never quarantines.\n")
+    path = _cfg(tmp_path, monkeypatch, OLD + "\n" + stale + "leak_gate = strict\n")
+    P._config_tidy(path, log)
+    text = path.read_text()
+    assert "PRECAUTION against casual recognition" not in text
+    assert _live(text)["leak_gate"] == "strict"
+    assert text.count("What a surviving real value does to the run") == 1
+    # ...and it is right the FIRST time, not after a second run.
+    assert P._config_tidy(path, log) == ([], [])
 
 
 def test_a_previous_versions_prose_is_not_kept_as_their_note(tmp_path,

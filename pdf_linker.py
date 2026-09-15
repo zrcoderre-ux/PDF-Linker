@@ -34249,23 +34249,23 @@ def process_pdf(pdf_path: Path, log: logging.Logger,
 _CONFIG_TRUE = {"1", "true", "yes", "on", "y", "t"}
 _CONFIG_FALSE = {"0", "false", "no", "off", "n", "f"}
 _CONFIG_HEADER = (
-    "# pdf_linker settings. Edit the values below to change behaviour without\n"
-    "# touching the code. Lines starting with # are comments. A command-line\n"
-    "# flag (e.g. --no-pseudonymize) overrides the matching setting here.\n"
+    "# pdf_linker settings. A command-line flag (e.g. --no-pseudonymize) beats\n"
+    "# the matching setting here.\n"
     "#\n"
-    "# A setting that is COMMENTED OUT is OFF, and editing the value on a\n"
-    "# commented line changes nothing: delete the '# ' in front of it to turn\n"
-    "# the setting on.\n"
+    "# A COMMENTED-OUT setting is OFF, and editing the value on a commented\n"
+    "# line does nothing: delete the '# ' in front of it to turn the setting on.\n"
     "#\n"
-    "# Every run re-emits this file in the order below, carrying your values,\n"
-    "# your own comments and any setting it does not recognise across exactly\n"
-    "# as you left them. A setting a newer version adds appears in its place;\n"
-    "# one that has been retired is dropped and named at the end.\n"
+    "# Every run re-emits this file in the order below, keeping your values\n"
+    "# and any setting it does not recognise. A setting a newer version adds\n"
+    "# appears in its place; a retired one is dropped and named at the end.\n"
+    "# Notes of your own are kept too, and are moved to sit above the\n"
+    "# paragraph they belong to. Leave a BLANK LINE between your note and the\n"
+    "# paragraph under it: a line written inside one of these paragraphs is\n"
+    "# read as part of it and is replaced when the wording is next updated.\n"
     "#\n"
-    "# Word documents (.docx/.docm) in a folder that has NO PDFs are bulk-\n"
-    "# converted to scrubbed .txt exports too (never hyperlinked). A Word doc\n"
-    "# beside PDFs is left alone, so the usual PDF workflow is untouched.\n"
-    "# Legacy binary .doc files can't be read (re-save them as .docx).\n"
+    "# Word docs (.docx/.docm) in a folder with NO PDFs are converted to\n"
+    "# scrubbed .txt too (never hyperlinked); beside PDFs they are left alone.\n"
+    "# Legacy .doc can't be read -- re-save as .docx.\n"
     "\n"
 )
 # One block per setting: its explanation and the line that sets it. Kept
@@ -34279,81 +34279,56 @@ _CONFIG_HEADER = (
 # mid-run changes nothing about the run that appended it.
 _CONFIG_BLOCKS = (
     ("pseudonymize",
-     "# Pseudonymize the .txt exports? on/off (default: on). When on, party /\n"
-     "# attorney names, case numbers, and detected PII in the .txt exports are\n"
-     "# swapped for stable fakes using the newest Order*.xlsx in Downloads; the\n"
-     "# PDFs themselves are never modified.\n"
+     "# Pseudonymize the .txt exports? on/off (default: on). Party / attorney\n"
+     "# names, case numbers and detected PII become stable fakes, drawn using\n"
+     "# the newest Order*.xlsx in Downloads. The PDFs are never modified.\n"
      "#\n"
-     "# Forgot a PDF from the batch? Drop it and the run's pseudonym_key.xlsx in a\n"
-     "# folder and run again (or point --key at the key): the tool recognizes its\n"
-     "# own key and reproduces the same fakes as the batch, so the new .txt stays\n"
-     "# consistent. New values in that file get fresh fakes and are added to the\n"
-     "# key.\n"
+     "# Forgot a PDF? Drop it beside the run's pseudonym_key.xlsx and run again:\n"
+     "# the key is reused, so the new .txt gets the same fakes as the batch.\n"
      "pseudonymize = on\n"
      "\n"
      ),
     ("partial_names",
      "# Match a TRUNCATED party name (the front of it) when a two-column page\n"
-     "# splices the caption? on/off (default: off). A prefix term is only\n"
-     "# registered when it never appears in ordinary prose in this case, but a\n"
-     "# false replacement is silent, so review the key before trusting it.\n"
+     "# splices the caption? on/off (default: off). A false replacement here is\n"
+     "# silent, so review the key before trusting it.\n"
      "partial_names = off\n"
      "\n"
      ),
     ("defer_run",
      "# Defer the run? on/off (default: off). ON means starting the tool on a\n"
      "# folder does NOT process it: a double-clickable \"Run PDF-Linker\"\n"
-     "# launcher is written into the folder and the run stops there, so you can\n"
-     "# move the folder where it belongs first and start the work at its\n"
-     "# destination with one click. The launcher processes the folder it sits\n"
-     "# in, so it keeps working after the move (and with copy_to below, the\n"
-     "# copy gets one too -- either folder can be the one you run). It is\n"
-     "# replaced by the usual \"Re-run PDF-Linker\" launcher as soon as the run\n"
-     "# it promises starts, so a folder never carries both. A double-click\n"
-     "# always means RUN NOW: every launcher overrides this setting, or nothing\n"
-     "# would ever run. Applying leak fixes (--fix-leaks) is never deferred.\n"
+     "# launcher is written into the folder instead, so you can move the folder\n"
+     "# where it belongs and start the work there with one click. A launcher\n"
+     "# always runs the folder it SITS IN, so it survives the move, and a\n"
+     "# double-click always means RUN NOW -- every launcher overrides this\n"
+     "# setting. --fix-leaks is never deferred.\n"
      "defer_run = off\n"
      "\n"
      ),
     ("copy_to",
-     "# Copy the whole case folder somewhere? Empty (the default) means never.\n"
-     "# Give a DESTINATION FOLDER below and the case folder itself -- and every\n"
-     "# file in it -- is copied in as <destination>\\<this folder's name>.\n"
-     "# Files are overwritten in place and nothing already in the destination is\n"
-     "# deleted, so a re-run REPLACES the copy with the current state (a file\n"
-     "# you deleted from the case folder does stay behind in the copy).\n"
+     "# Copy the whole case folder somewhere? The case folder and everything in\n"
+     "# it is copied in as <destination>\\<this folder's name>. Files are\n"
+     "# overwritten and nothing already there is deleted, so a re-run replaces\n"
+     "# the copy with the current state.\n"
      "#\n"
-     "# WHEN it is copied follows defer_run above, and BOTH folders end up with\n"
-     "# a launcher either way -- point copy_to at a synced folder (a local\n"
-     "# OneDrive one) and the case can be run or re-run from either computer:\n"
-     "#   defer_run = off  the copy is made at the END of the run, so it holds\n"
-     "#                    the exports, the key and a \"Re-run PDF-Linker\"\n"
-     "#                    launcher of its own. If the leak gate quarantined an\n"
-     "#                    export the copy WAITS, so the destination never\n"
-     "#                    receives a *.LEAK; Apply Leak Fixes makes it once the\n"
-     "#                    last leak is resolved.\n"
-     "#   defer_run = on   the copy is made at the START, and a \"Run\n"
-     "#                    PDF-Linker\" launcher goes into BOTH folders -- run\n"
-     "#                    whichever one you are at. The case's Order*.xlsx\n"
-     "#                    party spreadsheet is copied in too (from Downloads if\n"
-     "#                    that is where it is), so the copy can do the full run\n"
-     "#                    on its own instead of falling back to whatever is\n"
-     "#                    newest in Downloads by the time it is clicked --\n"
-     "#                    which may be another case.\n"
-     "# Every launcher runs the folder it SITS IN, so the two never work on the\n"
-     "# same files, and a folder that already IS the destination is never copied\n"
-     "# onto itself -- a re-run started inside the copy simply re-runs it.\n"
+     "# WHEN it is copied follows defer_run above, and BOTH folders get a\n"
+     "# launcher either way -- point this at a synced folder (a local OneDrive\n"
+     "# one) and the case runs from either computer:\n"
+     "#   defer_run = off  copied at the END, holding the exports and the key.\n"
+     "#                    A quarantined export makes the copy WAIT, so the\n"
+     "#                    destination never receives a *.LEAK; Apply Leak\n"
+     "#                    Fixes makes it once the last leak is resolved.\n"
+     "#   defer_run = on   copied at the START, with the case's Order*.xlsx\n"
+     "#                    party spreadsheet, so the copy can do the full run\n"
+     "#                    rather than guessing at the newest one in Downloads.\n"
      "#\n"
-     "# And the copy can be the folder that is AHEAD: if you deferred here, ran\n"
-     "# the case on the other computer, and come back to this folder, starting\n"
-     "# the tool here BRINGS THAT RUN BACK -- exports, key, worksheet -- instead\n"
-     "# of doing the case a second time. It takes a file only when this folder\n"
-     "# has an older version or none, so decisions you typed here are never\n"
-     "# overwritten, and it never deletes anything, so a document only this\n"
-     "# folder has survives and is processed by the run that follows. A copy\n"
-     "# showing a run in progress (or one that stopped part-way) is left alone.\n"
-     "# If the copy cannot be made, the run carries on exactly as it would with\n"
-     "# no copy_to set at all (deferred: this folder keeps its launcher).\n"
+     "# The copy can also be the folder that is AHEAD: run the case on the\n"
+     "# other computer, come back here, and starting the tool BRINGS THAT RUN\n"
+     "# BACK rather than doing the case twice. It only ever takes a file this\n"
+     "# folder has an older version of or lacks, and deletes nothing, so\n"
+     "# decisions you typed here are safe. A copy mid-run is left alone. If the\n"
+     "# copy cannot be made the run carries on as if this were empty.\n"
      "#\n"
      "# EMPTY means never copy. To turn it on, type the destination folder\n"
      "# after the '=' below, e.g.  copy_to = C:\\Users\\you\\Documents\\Cases\n"
@@ -34367,26 +34342,22 @@ _CONFIG_BLOCKS = (
      "\n"
      ),
     ("combined_text",
-     "# ALSO write every .txt export into ONE file? on/off (default: off).\n"
-     "# The individual exports are written exactly as before; this adds a\n"
-     "# \"Combined Text.txt\" in the CASE FOLDER (not the text subfolder) that\n"
-     "# holds each of them in full, in name order, behind a DOCUMENT banner --\n"
-     "# one file to upload where a folder of them is awkward. It is built from\n"
-     "# the exports as delivered, so it is never written while an export is\n"
-     "# quarantined for a leak (Apply Leak Fixes writes it once the last one is\n"
-     "# released), and it is removed again when this is turned off. With\n"
+     "# ALSO write every .txt export into ONE file? on/off (default: off). The\n"
+     "# individual exports are unchanged; this adds a \"Combined Text.txt\" in\n"
+     "# the CASE FOLDER holding each of them in full behind a DOCUMENT banner --\n"
+     "# one file to upload where a folder of them is awkward. A quarantined\n"
+     "# export is named in its header rather than included. With\n"
      "# keep_original_text also on, a \"Combined Original Text.txt\" of the\n"
-     "# UNSCRUBBED copies is written INSIDE that do-not-share folder as well.\n"
+     "# UNSCRUBBED copies is written inside that do-not-share folder too.\n"
      "combined_text = off\n"
      "\n"
      ),
     ("keep_original_text",
-     "# Also write the UNSCRUBBED text to a second folder, for QA / your own\n"
-     "# reference? on/off (default: off). The pseudonymized folder above stays\n"
-     "# the shareable one; this second folder holds the ORIGINAL text under the\n"
-     "# real filename and, by design, contains real names — it is never checked\n"
-     "# by the leak gate and must NOT be shared. Diff the two folders to confirm\n"
-     "# the scrub is clean and nothing load-bearing (a citation, a date) changed.\n"
+     "# Also write the UNSCRUBBED text to a second folder, for QA? on/off\n"
+     "# (default: off). It holds the ORIGINAL text under the real filename and\n"
+     "# by design contains real names -- never leak-checked, and NOT to be\n"
+     "# shared. Diff the two folders to confirm the scrub changed nothing\n"
+     "# load-bearing (a citation, a date).\n"
      "keep_original_text = off\n"
      "\n"
      ),
@@ -34404,27 +34375,26 @@ _CONFIG_BLOCKS = (
      "\n"
      ),
     ("leak_gate",
-     "# What a surviving real value does to the run. The pseudonymization is a\n"
-     "# PRECAUTION against casual recognition of a public filing, so the gate is\n"
-     "# tiered:  primary (default) quarantines the exports only when a FULL\n"
-     "# party/entity/attorney name or defined short name survives (that defeats\n"
-     "# the whole purpose); lesser survivors (a bare token, an identifier) are\n"
-     "# warned about and marked in the key but the exports are delivered.\n"
-     "# strict quarantines on ANY surviving value; off never quarantines.\n"
+     "# What a surviving real value does to the run.\n"
+     "#   primary (default)  quarantine only when a FULL party / entity /\n"
+     "#                      attorney name or defined short name survives; a\n"
+     "#                      bare token or an identifier is warned about and\n"
+     "#                      marked in the key, and the exports are delivered.\n"
+     "#   strict             quarantine on ANY surviving value.\n"
+     "#   off                never quarantine.\n"
      "leak_gate = primary\n"
      "\n"
      ),
     ("master_leaks",
-     "# Accumulate every flagged leak into ONE master spreadsheet across all runs\n"
-     "# and case folders, so you can spot a value that keeps leaking over time.\n"
-     "# Case folders are named there by their PSEUDONYM (this case's own fakes\n"
-     "# where the key can supply them, else a stable id) — the workbook outlives\n"
-     "# every case in it, so it never carries a real folder name. Which folder an\n"
-     "# id belongs to is recorded in that folder's own pdf_linker.log.\n"
-     "# on/off (default: off). This toggle controls the 'Master Leaks' TALLY sheet\n"
-     "# only. The 'KEEP' sheet in the SAME workbook — the durable no/[bracket]\n"
-     "# decisions, applied across every folder and run — is always maintained (it\n"
-     "# is the preservation vehicle for those decisions), so the workbook may be\n"
+     "# Accumulate every flagged leak into ONE master spreadsheet across all\n"
+     "# runs and case folders, so a value that keeps leaking is visible over\n"
+     "# time? on/off (default: off). Case folders are named there by their\n"
+     "# PSEUDONYM, never their real name; which folder an id belongs to is in\n"
+     "# that folder's own pdf_linker.log.\n"
+     "#\n"
+     "# This controls the 'Master Leaks' TALLY sheet ONLY. The 'KEEP' sheet in\n"
+     "# the same workbook -- your durable no / never / [bracket] decisions,\n"
+     "# applied in every folder -- is always maintained, so the workbook may be\n"
      "# created for KEEP even with the tally off.\n"
      "master_leaks = off\n"
      "\n"
@@ -34650,6 +34620,48 @@ def _config_prose_is_ours(line, block_prose):
                for b in (*block_prose, *_CONFIG_FURNITURE))
 
 
+def _config_keep_notes(notes, block_prose):
+    """The lines of `notes` that are the OPERATOR's, dropping the tool's own.
+
+    Line by line is not enough and cannot be made enough. Shorten a paragraph
+    and its old sentences match nothing, so every one of them is preserved as a
+    note of theirs and the block comes back carrying both wordings — the stale-
+    documentation failure this is here to prevent, arriving the moment the
+    documentation is edited. Keeping an ARCHIVE of past wordings would answer
+    it and is the shape this project keeps paying for: two things that must
+    agree, kept in two places, silently wrong the first time one is forgotten.
+
+    The STRUCTURE answers it with nothing to maintain, because a block is laid
+    out the same way every time it is written: one contiguous comment run
+    sitting directly on the setting line. So the run TOUCHING the setting is
+    that setting's documentation slot and goes whatever it now says — which is
+    what makes a wholly reworded block come out right on the FIRST run rather
+    than carrying both wordings until the second. Any other run is the
+    operator's unless this version still recognises a line of it, which is what
+    sheds a header or a banner an older build wrote.
+
+    Their notes are re-emitted ABOVE the block's paragraph with a blank line
+    under them (`_config_render`), which is the one place that survives: put
+    back into the documentation slot they would be shed by the very next run."""
+    kept, runs, run = [], [], []
+    for line in notes:
+        if line.strip():
+            run.append(line)
+        else:
+            runs.append(run)
+            run = []
+    runs.append(run)
+    # The last run touches the setting line only if nothing blank followed it;
+    # a file ending its notes on a blank line has no documentation slot filled.
+    slot = len(runs) - 1 if runs[-1] else -1
+    for i, r in enumerate(runs):
+        if i == slot or not r:
+            continue
+        if not any(_config_prose_is_ours(ln, block_prose) for ln in r):
+            kept.extend(r)
+    return kept
+
+
 def _config_split(text):
     """Split a config file into (regions, tail).
 
@@ -34690,14 +34702,19 @@ def _config_render(values, notes, unknown, removed):
     out = [_CONFIG_HEADER]
     for key, block in _CONFIG_BLOCKS:
         prose, setter, tail = _config_block_parts(block)
+        # A note of theirs goes ABOVE the paragraph, with a blank line under
+        # it, so the next run reads it as a run of its own rather than as this
+        # setting's documentation slot and sheds it.
         mine = notes.get(key) or []
+        if mine:
+            mine = [*mine, "\n"]
         if key in values:
             commented, value = values[key]
             lead = "# " if commented else ""
             # An EMPTY value writes no trailing space, so a setting left at its
             # "do nothing" default round-trips to the same bytes.
             setter = f"{lead}{key} =" + (f" {value}" if value else "") + "\n"
-        out.append("".join(prose) + "".join(mine) + setter + "".join(tail))
+        out.append("".join(mine) + "".join(prose) + setter + "".join(tail))
     body = "".join(out).rstrip("\n") + "\n"
     if unknown:
         body += "\n" + _CONFIG_UNKNOWN_NOTE + "".join(unknown)
@@ -34727,8 +34744,8 @@ def _config_tidy_text(text):
             # PREVIOUS tidy wrote is furniture and is not — re-emitting it
             # below a copy of itself is how the banners multiplied in the
             # first place.
-            unknown.extend(ln + "\n" for ln in region_notes
-                           if not _config_prose_is_ours(ln, set()))
+            unknown.extend(ln + "\n" for ln in
+                           _config_keep_notes(region_notes, set()))
             unknown.append(raw + "\n")
             continue
         if commented and value in _CONFIG_PLACEHOLDERS.get(key, ()):
@@ -34742,8 +34759,8 @@ def _config_tidy_text(text):
         if prev is None or not commented or prev[0]:
             values[key] = (commented, value)
         block_prose = _config_block_prose(key)
-        mine = [ln + "\n" for ln in region_notes
-                if not _config_prose_is_ours(ln, block_prose)]
+        mine = [ln + "\n" for ln in
+                _config_keep_notes(region_notes, block_prose)]
         if mine:
             notes.setdefault(key, []).extend(mine)
     # A removal note an earlier tidy wrote is carried forward, or the answer to
@@ -34755,8 +34772,7 @@ def _config_tidy_text(text):
         if _config_norm(ln).startswith(lead) and ":" in ln:
             removed.extend(w.strip(" .") for w in
                            ln.split(":", 1)[1].split(",") if w.strip(" ."))
-    kept_tail = [ln + "\n" for ln in tail
-                 if ln.strip() and not _config_prose_is_ours(ln, set())]
+    kept_tail = [ln + "\n" for ln in _config_keep_notes(tail, set())]
     if kept_tail:
         unknown.extend(kept_tail)
     new = _config_render(values, notes, unknown, removed)
