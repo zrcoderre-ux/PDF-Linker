@@ -11807,6 +11807,131 @@ def _pn_fake_pobox(real):
     return _pn_reapply_digits(fake, real)
 
 
+# ── A FIRM FILE STAMP ────────────────────────────────────────────────────────
+# "308742 00148/8-13-23/blp/bp" at the foot of every page of a contract: the
+# law firm's own document-ID footer, printed so a loose page can be traced
+# back to the file and to the draft. Reading it left to right — the CLIENT
+# number (the firm's accounting number for that client), the MATTER number
+# under it, the date that draft was generated, the initials of the attorney
+# who drafted it, and the initials of the person who typed it.
+#
+# It reached no pass at all. Every identifier class in `_PN_ID_RES` is
+# label-anchored and a footer carries no label; `_pn_docket_numbers` knows
+# only court shapes; the bare-number screens drop a five-digit matter number
+# on sight; and the initials are lower case, so every name tier (all of them
+# cap-only or Title-case) walks past them. So the stamp shipped verbatim AND
+# silently — no fake, no LEAK row, nothing in the worksheet.
+#
+# **The two NUMBERS are faked, for the reason a docket number is.** A docket
+# identifies a MATTER and every one of them is faked; this identifies a matter
+# too, in the firm's file system rather than the court's. That it does not
+# resolve publicly is not the point — inside a delivered batch it is a JOIN
+# KEY: every document carrying "308742 00148" is the same client and the same
+# matter, so a reader who identifies one document has identified all of them
+# and the per-document scrub is undone by a footer. It is also a direct lookup
+# for anyone holding the firm's system, which in litigation includes the firm
+# and everyone who has been through its production. The two are drawn
+# SEPARATELY, seeded each on its own digits: a firm gives one client one
+# client number and many matter numbers, so two matters of one client must
+# share the client half and differ in the other, and every page of every
+# document must draw the same fake for each.
+#
+# **The DATE is kept**, which is the standing rule that a filing is full of
+# dates and every one of them is load-bearing. A date identifies nobody, and
+# in a contract dispute the draft date is routinely the thing being litigated
+# — which version was circulated, which was signed. "The 8-13-23 draft" is how
+# the document is referred to in the briefing, and a faked one would make the
+# footer disagree with the papers that cite it.
+#
+# **The INITIALS are faked, GROUP BY GROUP.** They are two people, and against
+# the firm's own letterhead "blp" narrows to one lawyer. Each group is drawn
+# on its own so one person's initials map the same way whoever they are
+# printed beside — faking the run as one string would give "blp" one fake in
+# "/blp/bp" and another in "/blp/kj", which is one word with two fakes. The
+# stand-in must not spell a word, the guard `_pn_fake_initials_name` already
+# states for an initials name.
+#
+# The SHAPE is the whole corroboration, since nothing here is labelled: two
+# digit runs, a date and slash-delimited initials, in that order. Measured
+# over this repo's own notes, sources and tests: zero rows. Residuals, and
+# stated — a footer with no matter number ("308742/8-13-23/blp"), one with no
+# date at all, one carrying more than three initials groups, and one whose
+# slashes a scan misread are each refused whole rather than half-matched,
+# because a stamp faked in part is the half-scrub this tool refuses.
+_PN_FILE_STAMP_RE = re.compile(
+    r"(?<![\w/.\-])"
+    r"(?P<client>\d{4,8})[ \t.\-/](?P<matter>\d{3,8})"
+    r"[ \t]*/[ \t]*"
+    r"(?P<date>\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4})"
+    r"[ \t]*/[ \t]*"
+    r"(?P<inits>[A-Za-z]{1,4}(?:[ \t]*/[ \t]*[A-Za-z]{1,4}){0,2})"
+    r"(?![\w/])")
+
+
+def _pn_rebuild_file_stamp(real, fake_number, fake_initials):
+    """Lay the faked parts back into `real`'s exact template. The DATE and
+    every separator are copied verbatim, so the stamp still reads as a stamp
+    and the export can be lined up against the page. ONE definition of which
+    parts move, so the registry-backed faker and the module-level fallback
+    cannot come out differently."""
+    m = _PN_FILE_STAMP_RE.match(real)
+    if not m:
+        return real
+    parts = [(*m.span("client"), fake_number(m.group("client"), "client")),
+             (*m.span("matter"), fake_number(m.group("matter"), "matter"))]
+    base = m.start("inits")
+    for g in re.finditer(r"[A-Za-z]+", m.group("inits")):
+        parts.append((base + g.start(), base + g.end(),
+                      fake_initials(g.group(0))))
+    out, last = [], 0
+    for s, e, rep in sorted(parts):
+        out.append(real[last:s])
+        out.append(rep)
+        last = e
+    out.append(real[last:])
+    return "".join(out)
+
+
+def _pn_file_stamp_keep_prefix(val):
+    """How many leading ZEROS of a file-stamp number are copied verbatim. A
+    matter number is zero-padded to a fixed width ("00148"), and randomising
+    the padding makes the fake stop reading as a matter number — the printed
+    SHAPE is kept, the rule the date-of-birth and card fakers already follow.
+    Never the whole value, or an all-zero number would have no digit left to
+    move and the fake would be the real."""
+    return min(len(val) - len(val.lstrip("0")), len(val) - 1)
+
+
+def _pn_fake_file_stamp(real):
+    """Module-level fallback (no registry): the client and matter numbers
+    faked digit for digit and the initials letter for letter, the date and
+    the separators kept."""
+    def number(val, which):
+        keep = _pn_file_stamp_keep_prefix(val)
+        cand = val
+        for attempt in range(100):
+            r = _pn_rng(f"filestamp-{which}", val, attempt)
+            cand = val[:keep] + "".join(str(r.randrange(10)) for _ in val[keep:])
+            if cand != val:
+                break
+        return cand
+
+    def initials(val):
+        cand = val
+        for attempt in range(100):
+            r = _pn_rng("filestamp-initials", val, attempt)
+            cand = "".join(
+                (_PN_INITIAL_POOL[r.randrange(len(_PN_INITIAL_POOL))]
+                 if c.isupper()
+                 else _PN_INITIAL_POOL[r.randrange(len(_PN_INITIAL_POOL))].lower())
+                for c in val)
+            if cand.lower() != val.lower() and not _pn_reads_as_word(cand):
+                break
+        return cand
+
+    return _pn_rebuild_file_stamp(real, number, initials)
+
+
 # ── A DATE OF BIRTH ──────────────────────────────────────────────────────────
 # The DAY and MONTH are faked and the YEAR is kept: the year is what a record
 # is read by (a minor, a decedent's age at death, a limitations period) and
@@ -13061,9 +13186,13 @@ _PN_DETECTORS = {
     # walked past fourteen of them on one firm's letterhead. The area code
     # is faked as digits and the WORD as a same-length pool word.
     "vanity phone": (_PN_VANITY_PHONE_RE, None),
+    # A law firm's document-ID footer — "308742 00148/8-13-23/blp/bp" — whose
+    # client and matter numbers and drafting/typing initials are faked and
+    # whose DATE is kept (see `_PN_FILE_STAMP_RE`).
+    "file stamp": (_PN_FILE_STAMP_RE, _pn_fake_file_stamp),
 }
 _PN_DEFAULT_DETECTORS = ["ssn", "email", "phone", "address", "url", "pobox",
-                         "card", "vanity phone"]
+                         "card", "vanity phone", "file stamp"]
 
 
 # ── Label-anchored identifiers (auto-faked) ─────────────────────────────────
@@ -20727,6 +20856,8 @@ class Pseudonymizer:
                 fake = self._fake_card(real)
             elif cat == "vanity phone":
                 fake = self._fake_vanity_phone(real)
+            elif cat == "file stamp":
+                fake = self._fake_file_stamp(real)
             else:
                 fake = faker(real)
             # The record's own pattern is what `_surviving_records` and
@@ -20825,6 +20956,30 @@ class Pseudonymizer:
         if re.sub(r"\D", "", fake) == digits:
             fake = self.registry.digits(real, "pobox", seed=digits + "'")
         return fake
+
+    def _fake_file_stamp(self, real):
+        """A firm document-ID footer with its client and matter numbers and
+        its initials faked, the DATE and the separators kept.
+
+        Each part is drawn on its OWN value, never on the printed stamp, so a
+        client number is one fake across every matter of that client, a matter
+        number one fake across every page of every document, and one person's
+        initials one fake wherever they are printed. The whole stamp is still
+        memoized per printed spelling by `_detector_record`, so each spelling
+        keeps its own reversible row — the rule two spellings of one docket
+        already follow."""
+        def number(val, which):
+            return self.registry.digits(
+                val, f"filestamp-{which}",
+                keep_prefix=_pn_file_stamp_keep_prefix(val))
+
+        def initials(val):
+            return self.registry.alnum(
+                val, "filestamp-initials",
+                avoid=lambda c: (_pn_reads_as_word(c)
+                                 or c.lower() == val.lower()))
+
+        return _pn_rebuild_file_stamp(real, number, initials)
 
     def _fake_vanity_phone(self, real):
         """"(424)-INJURED" -> "(736)-SUNDIAL": the area code faked as digits

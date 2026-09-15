@@ -1661,6 +1661,68 @@ the party), so its row stays reversible.
   close words. The fake takes "Street" as its type for a street that had
   none, which reads as an address; the house number, suite and tail are
   kept exactly as before.
+- **A FIRM FILE STAMP names the client, the matter and two people, and
+  reached no pass at all** (`_PN_FILE_STAMP_RE`, `_pn_rebuild_file_stamp`,
+  `_pn_fake_file_stamp`, the `file stamp` detector). "308742
+  00148/8-13-23/blp/bp" at the foot of every page of a contract is the law
+  firm's own document-ID footer, printed so a loose page can be traced back
+  to the file and to the draft: the CLIENT number (the firm's accounting
+  number for that client), the MATTER number under it, the date that draft
+  was generated, the drafting attorney's initials, the typist's. Every
+  identifier class is label-anchored and a footer carries no label;
+  `_pn_docket_numbers` knows only court shapes; the bare-number screens drop
+  a five-digit matter number on sight; and the initials are lower case, so
+  every name tier — all of them cap-only or Title-case — walks past them. The
+  stamp shipped verbatim AND silently: no fake, and no LEAK row either, which
+  is the half that makes it worse than an ordinary leak.
+  **The two NUMBERS are faked, for the reason a docket number is.** A docket
+  identifies a MATTER and every one of them is faked; this identifies a matter
+  too, in the firm's file system rather than the court's. That it does not
+  resolve publicly is not the point — inside a delivered batch it is a JOIN
+  KEY: every document carrying "308742 00148" is the same client and the same
+  matter, so a reader who identifies one document has identified all of them
+  and the per-document scrub is undone by a footer. It is also a direct lookup
+  for anyone holding the firm's system, which in litigation includes the firm
+  and everyone who has been through its production. The two halves are drawn
+  SEPARATELY, seeded each on its own digits, because a firm gives one client
+  one client number and many matter numbers: two matters of one client must
+  share the client half and differ in the other, and every page of every
+  document must draw the same fake for each. The zero PADDING of a matter
+  number is kept (`_pn_file_stamp_keep_prefix`, through `digits`'
+  `keep_prefix`), the printed-shape rule the date-of-birth and card fakers
+  already follow — randomising it makes the fake stop reading as a matter
+  number — and never the whole value, or an all-zero number would have no
+  digit left to move and the fake would be the real.
+  **The DATE is kept**, which is the standing rule that a filing is full of
+  dates and every one of them is load-bearing. A date identifies nobody, and
+  in a contract dispute the draft date is routinely the thing being litigated
+  — which version was circulated, which was signed. "The 8-13-23 draft" is how
+  the document is referred to in the papers, and a faked one would make the
+  footer disagree with every brief that cites it.
+  **The INITIALS are faked, GROUP BY GROUP.** They are two people, and against
+  the firm's own letterhead "blp" narrows to one lawyer and "bp" to one staff
+  member. Each group is drawn on its own so one person's initials take one
+  fake wherever they are printed — faking the RUN as a single string would
+  give "blp" one fake in "/blp/bp" and another in "/blp/kj", one word with two
+  fakes, which is one person read as two. Drawn through `registry.alnum` with
+  `avoid=_pn_reads_as_word`, so a stand-in never spells an ordinary word, the
+  guard `_pn_fake_initials_name` already states for an initials name, and
+  never the real letters.
+  The SHAPE is the whole corroboration, nothing here being labelled: two digit
+  runs, a date, then slash-delimited initials, in that order. Measured over
+  this repo's own notes, sources and tests — the corpus most likely to defeat
+  it, being full of citations, dockets, section numbers and dates — **zero
+  rows** beside the worked example itself. `_pn_rebuild_file_stamp` is the one
+  definition of which parts move, so the registry-backed faker and the
+  module-level fallback cannot come out differently; the whole stamp is ONE
+  record, so it is one reversible key row however many pages carry it, and a
+  re-run off the key reproduces it literally like any other detector row.
+  Residuals, and stated: a footer with no matter number
+  ("308742/8-13-23/blp"), one with no date at all, one carrying more than
+  three initials groups, and one whose slashes a scan misread are each refused
+  WHOLE rather than half-matched — a stamp faked in part is the half-scrub
+  this tool refuses, and a shape loose enough to catch them would start
+  claiming citations and docket numbers.
 - **A LABELLED IDENTIFIER with no class is a number the run walks past**
   (`_PN_ID_RES`: tax id, routing, claim, policy, bond-with-letters, medical
   record, patient id, employee id, parcel, passport, medicare, instrument,
