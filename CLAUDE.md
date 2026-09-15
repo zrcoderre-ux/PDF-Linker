@@ -5534,8 +5534,11 @@ documents behind DOCUMENT banners. That is gone at the owner's direction — a
 better answer to the same problem was found outside this tool — and with it the
 `max_text_files` setting, the two grouping rules, the reproduce-the-previous-
 grouping record, and the leak-gate bookkeeping that had to be remapped onto a
-combined file. A `max_text_files` line in a config file people already have is
-simply ignored now; `_config_add_missing` never removes what it did not write.
+combined file. A `max_text_files` line in a config file people already have was
+simply ignored for as long as the config was append-only; now that the file is
+re-emitted each run it is named in `_CONFIG_RETIRED`, so the line is dropped
+with its own prose and said out loud once — a setting still sitting there
+reading as live is a setting the operator believes is doing something.
 
 **What is left is the folder it left behind.** A combined export is named for
 nothing in the case (`COMBINED 5 documents.txt`, `Brief (COMBINED 3 parts).txt`),
@@ -6318,26 +6321,72 @@ reads as "fully scrubbed".
 ## Conventions
 
 - **A new SETTING must reach the config file people already have**
-  (`_CONFIG_BLOCKS`, `_config_add_missing`). The template was written once —
-  when no `pdf_linker.config` existed — so every setting added afterwards was
-  invisible to anyone who already had one, which after the first run is
-  everyone: a real operator's file carried four settings while the tool had
-  twelve, and the only way to discover `copy_to` or `defer_run` was to read the
-  source. `_read_config` now tops the file up on every run, appending the
-  blocks it does not MENTION (live or commented out — commenting one out is a
-  decision, and re-adding it would undo that decision every run). APPENDED and
-  never rewritten: their values, their ordering, their own notes and any key
-  this version has never heard of all stay as they are. The template is
-  therefore kept as one block per setting, with **exactly one setting line
-  each** — that is what makes it safe, since a block can never re-set a key the
-  file already carries, and the reader takes the LAST line for a key, so a
-  default appended below would otherwise silently flip a value typed above (the
-  `keep_original_text` / `original_text_subfolder` pair shared a block and would
-  have done exactly that). `_CONFIG_TEMPLATE` is derived from the blocks rather
-  than kept beside them. Safe to do MID-RUN because every default in the
-  template equals the code's own fallback — the appended line describes what
-  the run was already doing — and `test_config_topup.py` pins that invariant,
-  so a new setting whose default disagrees with its code default fails there.
+  (`_CONFIG_BLOCKS`, `_config_tidy`). The template was written once — when no
+  `pdf_linker.config` existed — so every setting added afterwards was invisible
+  to anyone who already had one, which after the first run is everyone: a real
+  operator's file carried four settings while the tool had twelve, and the only
+  way to discover `copy_to` or `defer_run` was to read the source. `_read_config`
+  brings the file up to date on every run. The template is kept as one block per
+  setting, with **exactly one setting line each** — that is what makes it safe,
+  since a block can never re-set a key the file already carries, and the reader
+  takes the LAST line for a key, so a default written below would otherwise
+  silently flip a value typed above (the `keep_original_text` /
+  `original_text_subfolder` pair shared a block and would have done exactly
+  that). `_CONFIG_TEMPLATE` is derived from the blocks rather than kept beside
+  them. Safe to do MID-RUN because every default in the template equals the
+  code's own fallback — the line written describes what the run was already
+  doing — and `test_config_tidy.py` pins that invariant, so a new setting whose
+  default disagrees with its code default fails there.
+- **…and the file is RE-EMITTED, not appended to** (`_config_tidy_text`,
+  `_config_render`, `_config_split`). Topping up by APPENDING the missing blocks
+  under a "Settings this file did not mention" banner was the first answer, and
+  two rounds of it produced a file that says everything it has to say and is
+  unreadable while saying it: the operator's config came back carrying TWO of
+  those banners, a retired setting (`max_text_files`, whose feature was removed)
+  still sitting there looking live, and its settings in the order three versions
+  happened to add them. That REVERSES the append-never-rewrite rule these notes
+  recorded, at the owner's direction — and the reasons that rule was written for
+  are kept as invariants of the rewrite rather than as a refusal to make one.
+  Every VALUE survives, live or commented out, in place of the template's own
+  default. Every COMMENT the operator typed survives, carried with the setting
+  it was written under — while a PREVIOUS version's wording of a block is shed
+  (`_config_prose_is_ours`, exact where it can be and `_CONFIG_PROSE_MATCH`
+  close where a paragraph has been reworded), or the tidy would become a way of
+  accumulating stale documentation for ever. A key this version has never heard
+  of survives verbatim in a section of its own: it is either from a newer build
+  or typed by hand, and not this version's to drop. And the rewrite is REFUSED
+  outright unless the file it would write reads back to exactly the settings the
+  file on disk reads to (`_config_live`) — that check is the whole licence for
+  rewriting an operator's file at all, and it is asked ONE WAY, because a
+  setting the tidy ADDS is one the file did not mention and every default is the
+  code's own fallback. Written to a sibling and renamed, so a death mid-write
+  cannot leave a truncated config where the settings were, and only when the
+  bytes differ, so an already-tidy file does not churn. A RETIRED setting
+  (`_CONFIG_RETIRED`) is the one deliberate subtraction: dropped whole with its
+  own prose — there is no block left to match that prose against — named once in
+  the log and once at the tail of the file (`_CONFIG_REMOVED_LEAD`), and that
+  note PERSISTS rather than clearing itself, since it is the answer to "where
+  did my setting go" and the operator may not open the file until long after the
+  run that dropped it.
+- **A setting whose default is DO NOTHING ships live and EMPTY, never commented
+  out** (`_CONFIG_PLACEHOLDERS`, `_config_commented_out`). `copy_to` and
+  `master_leaks_path` shipped their setting line commented out, around a
+  PLACEHOLDER path showing the shape — so the natural way to fill one in was to
+  edit the path where it stood, which leaves the `#` in front of it. The setting
+  then reads as empty, the tool does nothing, and it said nothing either: one
+  operator's `copy_to` sat like that pointing at a real OneDrive folder, and the
+  only symptom was that no copy was ever made, which is indistinguishable from
+  the feature being broken. Both lines are `copy_to =` now, with the example in
+  the prose above, so there is no `#` left to forget; an empty value means what
+  the absent key meant, so the default does not move. Every config already
+  written carries the old form, so the shape is still recognised at both ends: a
+  commented line carrying one of the placeholder values is the template's own
+  furniture and is REPLACED by the live empty line, while a commented line
+  carrying anything else is the operator's and is preserved exactly as it
+  stands — and REPORTED once per run, naming the value and the remedy. Never
+  activated on their behalf: turning on a folder copy nobody asked for would put
+  a case folder somewhere they did not choose, and commenting a setting out is a
+  decision this tool has always respected.
 - **No real judge name in the repo** — court-personnel scrubbing is name-agnostic
   (discovered from the document); the fictional "Dana Whitaker" is used in tests/
   comments.

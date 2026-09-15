@@ -34252,11 +34252,25 @@ _CONFIG_HEADER = (
     "# pdf_linker settings. Edit the values below to change behaviour without\n"
     "# touching the code. Lines starting with # are comments. A command-line\n"
     "# flag (e.g. --no-pseudonymize) overrides the matching setting here.\n"
+    "#\n"
+    "# A setting that is COMMENTED OUT is OFF, and editing the value on a\n"
+    "# commented line changes nothing: delete the '# ' in front of it to turn\n"
+    "# the setting on.\n"
+    "#\n"
+    "# Every run re-emits this file in the order below, carrying your values,\n"
+    "# your own comments and any setting it does not recognise across exactly\n"
+    "# as you left them. A setting a newer version adds appears in its place;\n"
+    "# one that has been retired is dropped and named at the end.\n"
+    "#\n"
+    "# Word documents (.docx/.docm) in a folder that has NO PDFs are bulk-\n"
+    "# converted to scrubbed .txt exports too (never hyperlinked). A Word doc\n"
+    "# beside PDFs is left alone, so the usual PDF workflow is untouched.\n"
+    "# Legacy binary .doc files can't be read (re-save them as .docx).\n"
     "\n"
 )
 # One block per setting: its explanation and the line that sets it. Kept
 # apart so a config file that PREDATES a setting can be topped up with just
-# that block — see `_config_add_missing`. Exactly one setting line per block,
+# that block — see `_config_tidy`. Exactly one setting line per block,
 # which is what makes topping up safe: a block can never re-set a key the
 # file already carries, so nothing the operator typed is ever overridden by
 # a default appended below it.
@@ -34340,7 +34354,10 @@ _CONFIG_BLOCKS = (
      "# showing a run in progress (or one that stopped part-way) is left alone.\n"
      "# If the copy cannot be made, the run carries on exactly as it would with\n"
      "# no copy_to set at all (deferred: this folder keeps its launcher).\n"
-     "# copy_to = C:\\Users\\you\\Documents\\Cases\n"
+     "#\n"
+     "# EMPTY means never copy. To turn it on, type the destination folder\n"
+     "# after the '=' below, e.g.  copy_to = C:\\Users\\you\\Documents\\Cases\n"
+     "copy_to =\n"
      "\n"
      ),
     ("text_subfolder",
@@ -34364,11 +34381,6 @@ _CONFIG_BLOCKS = (
      "\n"
      ),
     ("keep_original_text",
-     "# Word documents (.docx/.docm) in a folder that has NO PDFs are bulk-\n"
-     "# converted to scrubbed .txt exports too (never hyperlinked). A Word doc\n"
-     "# beside PDFs is left alone, so the usual PDF workflow is untouched. Legacy\n"
-     "# binary .doc files can't be read (re-save them as .docx).\n"
-     "\n"
      "# Also write the UNSCRUBBED text to a second folder, for QA / your own\n"
      "# reference? on/off (default: off). The pseudonymized folder above stays\n"
      "# the shareable one; this second folder holds the ORIGINAL text under the\n"
@@ -34376,6 +34388,7 @@ _CONFIG_BLOCKS = (
      "# by the leak gate and must NOT be shared. Diff the two folders to confirm\n"
      "# the scrub is clean and nothing load-bearing (a citation, a date) changed.\n"
      "keep_original_text = off\n"
+     "\n"
      ),
     ("original_text_subfolder",
      "# Name of that second folder. The default flags it so it isn't mistaken\n"
@@ -34414,17 +34427,25 @@ _CONFIG_BLOCKS = (
      "# is the preservation vehicle for those decisions), so the workbook may be\n"
      "# created for KEEP even with the tally off.\n"
      "master_leaks = off\n"
+     "\n"
      ),
     ("master_leaks_path",
      "# Where that master workbook lives (both the KEEP and Master Leaks sheets).\n"
-     "# Default: master_leaks.xlsx next to this config file (or the PDF_LINKER_MASTER\n"
-     "# env var). Point it anywhere stable (e.g. a OneDrive path) so it persists.\n"
-     "# master_leaks_path = C:\\Users\\you\\Documents\\Master Leaks.xlsx\n"
+     "# EMPTY puts master_leaks.xlsx next to this config file (or wherever the\n"
+     "# PDF_LINKER_MASTER env var says). Point it somewhere stable -- a OneDrive\n"
+     "# path -- so it persists, e.g.\n"
+     "#   master_leaks_path = C:\\Users\\you\\Documents\\Master Leaks.xlsx\n"
+     "master_leaks_path =\n"
+     "\n"
      ),
 )
 # The whole file, for a folder that has none: header plus every block, in
-# order. Derived rather than kept beside them, so the two cannot drift.
-_CONFIG_TEMPLATE = _CONFIG_HEADER + "".join(b for _k, b in _CONFIG_BLOCKS)
+# order. Derived rather than kept beside them, so the two cannot drift — and
+# closed the way `_config_render` closes a file it re-emits, one trailing
+# newline, so a fresh config is already tidy and the first run does not rewrite
+# the file it has just written.
+_CONFIG_TEMPLATE = ((_CONFIG_HEADER + "".join(b for _k, b in _CONFIG_BLOCKS))
+                    .rstrip("\n") + "\n")
 
 
 def _config_path():
@@ -34445,68 +34466,411 @@ def _config_key_re(key):
                       re.MULTILINE)
 
 
-_CONFIG_ADDED_NOTE = (
-    "\n"
-    "# ── Settings this file did not mention ──────────────────────────────────\n"
-    "# Added by a newer PDF-Linker, at their defaults. Nothing above was\n"
-    "# changed: your own settings, values and notes are exactly as you left\n"
-    "# them, and a default appended here does the same thing the tool was\n"
-    "# already doing. Edit or delete these freely.\n"
-    "\n")
+# ── Keeping the file TIDY, not merely complete ───────────────────────────────
+# The top-up above solved "a setting added later is invisible" by APPENDING the
+# blocks a file did not mention. Two rounds of that and the file says what it
+# has to say and is unreadable while saying it: a real operator's config came
+# back carrying TWO "Settings this file did not mention" banners, a retired
+# setting (`max_text_files`, whose feature was removed) still sitting there
+# looking live, and its settings in the order three different versions happened
+# to add them rather than in any order at all.
+#
+# So the file is now RE-EMITTED on every run, in canonical order, from the
+# blocks: one banner never, one block per setting, retired settings gone. That
+# REVERSES the append-never-rewrite rule these notes recorded, at the owner's
+# direction, and the reasons that rule was written for are kept as invariants of
+# the rewrite instead of as a refusal to make one:
+#
+#   * every VALUE the operator set survives, live or commented out, in place of
+#     the template's own default or placeholder;
+#   * every COMMENT they typed survives, carried with the setting it was written
+#     under (`_config_prose_is_ours`, which sheds a PREVIOUS version's prose so
+#     the tidy is not a way of preserving stale documentation forever);
+#   * a key this version has never heard of survives, verbatim, in a section of
+#     its own — it is not ours to drop, and a newer build may want it;
+#   * and the rewrite is REFUSED outright unless the file it would write reads
+#     back to exactly the settings the file on disk reads to (`_config_live`),
+#     so a tidy can never change what the tool does. That check is the whole
+#     licence for rewriting an operator's file at all.
+#
+# A retired setting is the one thing DROPPED, and it is named once in the log
+# and once in the file (`_CONFIG_REMOVED_LEAD`, at the tail) so a value that
+# vanishes is never silent. That note PERSISTS — it is carried forward by every
+# later tidy — because it is the answer to "where did my setting go" and the
+# operator may not open the file until long after the run that dropped it; only
+# the run that actually dropped one reports it.
+_CONFIG_RETIRED = {
+    "max_text_files": "combining several exports into one file to fit an "
+                      "upload cap was removed; `combined_text` writes an "
+                      "additional combined file instead",
+}
+# The values `copy_to` and `master_leaks_path` shipped as, back when their
+# lines were commented out. A commented line still carrying one of these is the
+# template's own furniture and not a decision: it is replaced by the live empty
+# line those two ship now, and it is never reported as a setting left switched
+# off by accident. A commented line carrying anything ELSE is the operator's
+# and is preserved exactly as it stands (`_config_commented_out` says so once
+# per run). Keyed by setting, because only these two ever had the shape.
+_CONFIG_PLACEHOLDERS = {
+    "copy_to": {"C:\\Users\\you\\Documents\\Cases"},
+    "master_leaks_path": {"C:\\Users\\you\\Documents\\Master Leaks.xlsx"},
+}
+# The generic form of `_config_key_re`, and it must draw the line in the same
+# place: two readers disagreeing about what counts as a setting line is how a
+# block of prose comes to be read as a setting (or a setting as prose).
+# `test_config_tidy.py` pins that they agree.
+_CONFIG_SETTING_RE = re.compile(
+    r"^[ \t]*(#[ ]?)?([A-Za-z_][A-Za-z0-9_]*)[ \t]*=(.*)$")
+_CONFIG_UNKNOWN_NOTE = (
+    "# ── Anything this version does not recognise ────────────────────────────\n"
+    "# Kept exactly as you left it: a setting from a newer PDF-Linker than this\n"
+    "# one, one typed by hand, or a note of your own that sat at the end of the\n"
+    "# file rather than under a setting. None of it is this version's to delete.\n")
+_CONFIG_REMOVED_LEAD = "# Removed (no longer used by this version): "
+# How close a comment line has to sit to a line of the CURRENT block before it
+# is read as that block's own prose rather than as something the operator
+# wrote. It is deliberately high, because the two failures are not equal: a
+# stale line left standing is clutter, and a note of theirs dropped is content
+# destroyed. One retuned word in a paragraph scores ~0.99 against its previous
+# wording; an operator's own sentence scores nothing like this against any of
+# them.
+_CONFIG_PROSE_MATCH = 0.8
 
 
-def _config_add_missing(path, log=None):
-    """Append the settings `path` does not mention yet. Returns their names.
+def _config_ratio(a, b):
+    """How alike two comment lines are, once reduced to their words. Two
+    versions of one paragraph score ~0.99; an operator's own sentence scores
+    nothing like that against any of ours."""
+    import difflib
+    return difflib.SequenceMatcher(None, _config_norm(a), _config_norm(b)).ratio()
 
-    The template used to be written ONCE, when no config file existed — so a
-    setting added later was invisible to everyone who already had one, which
-    after the first run is everyone. An operator's file sat with four settings
-    in it while the tool had grown twelve, and the only way to discover
-    `copy_to` or `defer_run` was to read the source.
 
-    APPENDED, never rewritten. The file is the operator's: their values, their
-    ordering, their own comments and any key this version has never heard of
-    all stay exactly as they are, and the new blocks go at the end under a
-    header saying where they came from. A setting is "mentioned" whether it is
-    live or commented out, so commenting one out is not undone on the next run.
+def _config_norm(line):
+    """A comment line reduced to the words in it, for comparing two versions of
+    one paragraph. The leading `#` and the indent carry no meaning here, and
+    neither does the length of a box-drawing rule — a section banner is ruled
+    out to the width its wording happened to leave, so two versions of one
+    banner differ by nothing but the count of dashes and must still match."""
+    return " ".join(
+        line.lstrip().lstrip("#").replace("\u2500", " ").split()).lower()
 
-    Safe to do mid-run because every default in `_CONFIG_BLOCKS` matches the
-    code's own fallback: the appended lines describe what the run was already
-    going to do. Best-effort throughout — a config that cannot be read or
-    written must never fail a run over documentation."""
+
+def _config_block_parts(block):
+    """(prose lines, the setting line) of one `_CONFIG_BLOCKS` entry.
+
+    The setting line is the LAST line that sets anything; everything above it is
+    that setting's documentation, and anything below it is the blank separator."""
+    lines = block.splitlines(keepends=True)
+    for i in range(len(lines) - 1, -1, -1):
+        if _CONFIG_SETTING_RE.match(lines[i]):
+            return lines[:i], lines[i], lines[i + 1:]
+    return lines, "", []
+
+
+def _config_block_prose(key):
+    """The normalised comment lines of `key`'s current block, for matching."""
+    for k, block in _CONFIG_BLOCKS:
+        if k == key:
+            prose, _setter, _tail = _config_block_parts(block)
+            return {_config_norm(ln) for ln in prose if ln.strip()}
+    return set()
+
+
+# Lines that belong to the FILE rather than to any setting: the header, and the
+# furniture a previous version (or a previous tidy) wrote. Recognised so they
+# are never mistaken for something the operator typed and carried forward for
+# ever.
+_CONFIG_FURNITURE = {
+    _config_norm(ln)
+    for src in (_CONFIG_HEADER, _CONFIG_UNKNOWN_NOTE,
+                "# ── Settings this file did not mention ─────────────────────\n"
+                "# Added by a newer PDF-Linker, at their defaults. Nothing above was\n"
+                "# changed: your own settings, values and notes are exactly as you left\n"
+                "# them, and a default appended here does the same thing the tool was\n"
+                "# already doing. Edit or delete these freely.\n")
+    for ln in src.splitlines() if ln.strip()
+}
+
+
+# The RULED heading of a section this file has written for itself. A banner is
+# matched loosely (`_config_ratio`), because its own wording may be retuned
+# between versions and a stale copy left standing is how the banners came to
+# multiply in the first place.
+_CONFIG_BANNERS = (
+    "# ── Anything this version does not recognise ──\n",
+    "# ── Settings this version does not recognise ──\n",
+    "# ── Settings this file did not mention ──\n",
+)
+
+
+def _config_shed_banner_blocks(lines):
+    """Drop every section heading this file has written for itself, and the
+    note under it.
+
+    Matching those note BODIES line by line does not work and cannot be made
+    to: reword one and its old sentences match nothing, so they are preserved
+    as the operator's and the section multiplies exactly as before. The
+    STRUCTURE is what identifies them — a ruled banner of ours, then the
+    contiguous comment lines that are its note. It stops at a blank line or at
+    anything that is not a comment, so it can never reach the prose of the
+    setting that follows (a blank always separates the two) or a setting line."""
+    out, i = [], 0
+    while i < len(lines):
+        # The RULE is the cheap half of the test and is asked first: a banner
+        # of ours always carries one, and almost no other line in the file
+        # does, so the similarity sweep is paid on a handful of lines.
+        if "\u2500\u2500" in lines[i] \
+                and any(_config_ratio(lines[i], b) >= _CONFIG_PROSE_MATCH
+                        for b in _CONFIG_BANNERS):
+            i += 1
+            while i < len(lines) and lines[i].lstrip().startswith("#"):
+                i += 1
+            continue
+        out.append(lines[i])
+        i += 1
+    return out
+
+
+def _config_prose_is_ours(line, block_prose):
+    """True when `line` is the TOOL's documentation rather than the operator's.
+
+    Exact where it can be, and close-enough where a paragraph has been reworded
+    since the file was written — a file carrying version N's wording of a block
+    must not have it preserved as an operator note beside version N+1's."""
+    s = _config_norm(line)
+    if not s or s in _CONFIG_FURNITURE or s in block_prose:
+        return True
+    if s.startswith(_config_norm(_CONFIG_REMOVED_LEAD)):
+        return True
+    # The furniture is matched loosely as well as the block's prose, and for
+    # the same reason: a banner or a note this file has reworded since must not
+    # come back as a line of the operator's, or the very section headers this
+    # exists to fold would start multiplying again one rewording later.
+    return any(_config_ratio(s, b) >= _CONFIG_PROSE_MATCH
+               for b in (*block_prose, *_CONFIG_FURNITURE))
+
+
+def _config_split(text):
+    """Split a config file into (regions, tail).
+
+    A region is (notes, key, commented, value): the comment/blank lines standing
+    in front of a setting line, and what that line says. Comments belong to the
+    setting BELOW them, which is how every block in this file is laid out.
+    `tail` is whatever trails the last setting."""
+    regions, notes = [], []
+    for line in _config_shed_banner_blocks(text.splitlines()):
+        m = _CONFIG_SETTING_RE.match(line)
+        if m:
+            regions.append((notes, m.group(2).strip().lower(),
+                            bool(m.group(1)), m.group(3).strip(), line))
+            notes = []
+        else:
+            notes.append(line)
+    return regions, notes
+
+
+def _config_live(text):
+    """{key: value} exactly as `_read_config` would read it — the LAST live line
+    for a key wins, a commented one sets nothing. The rewrite is measured
+    against this and refused if it moves."""
+    out = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        out[k.strip().lower()] = v.strip()
+    return out
+
+
+def _config_render(values, notes, unknown, removed):
+    """The canonical file: header, every block in order, then what could not be
+    folded into one. With nothing to substitute it IS `_CONFIG_TEMPLATE`, which
+    is what makes a fresh file already tidy and a second tidy a no-op."""
+    out = [_CONFIG_HEADER]
+    for key, block in _CONFIG_BLOCKS:
+        prose, setter, tail = _config_block_parts(block)
+        mine = notes.get(key) or []
+        if key in values:
+            commented, value = values[key]
+            lead = "# " if commented else ""
+            # An EMPTY value writes no trailing space, so a setting left at its
+            # "do nothing" default round-trips to the same bytes.
+            setter = f"{lead}{key} =" + (f" {value}" if value else "") + "\n"
+        out.append("".join(prose) + "".join(mine) + setter + "".join(tail))
+    body = "".join(out).rstrip("\n") + "\n"
+    if unknown:
+        body += "\n" + _CONFIG_UNKNOWN_NOTE + "".join(unknown)
+    if removed:
+        body += "\n" + _CONFIG_REMOVED_LEAD + ", ".join(sorted(removed)) + ".\n"
+    return body
+
+
+def _config_tidy_text(text):
+    """The tidied form of `text`, plus the settings added and those removed.
+
+    Returns (new text, added keys, removed keys) — or (None, ...) when the
+    rewrite would change what the file SETS, in which case the file on disk is
+    left exactly as it is."""
+    regions, tail = _config_split(text)
+    known = {k for k, _b in _CONFIG_BLOCKS}
+    values, notes, unknown, removed = {}, {}, [], []
+    for region_notes, key, commented, value, raw in regions:
+        if key in _CONFIG_RETIRED and key not in known:
+            # Dropped WHOLE, its own prose with it: there is no block left to
+            # match that prose against, so carrying the unmatched lines forward
+            # would preserve the documentation of a feature that is gone.
+            removed.append(key)
+            continue
+        if key not in known:
+            # Their own comments above it are kept; the section header a
+            # PREVIOUS tidy wrote is furniture and is not — re-emitting it
+            # below a copy of itself is how the banners multiplied in the
+            # first place.
+            unknown.extend(ln + "\n" for ln in region_notes
+                           if not _config_prose_is_ours(ln, set()))
+            unknown.append(raw + "\n")
+            continue
+        if commented and value in _CONFIG_PLACEHOLDERS.get(key, ()):
+            # The template's own example, not a decision: leave the key unset
+            # so the block's current line — live and empty — is written, and
+            # the `#` that made this setting silently do nothing is gone.
+            continue
+        # A LIVE line beats a commented one and a later line beats an earlier
+        # one, which is the precedence `_config_live` reads the file with.
+        prev = values.get(key)
+        if prev is None or not commented or prev[0]:
+            values[key] = (commented, value)
+        block_prose = _config_block_prose(key)
+        mine = [ln + "\n" for ln in region_notes
+                if not _config_prose_is_ours(ln, block_prose)]
+        if mine:
+            notes.setdefault(key, []).extend(mine)
+    # A removal note an earlier tidy wrote is carried forward, or the answer to
+    # "where did my setting go" would clear itself on the very next run — very
+    # likely before the operator ever opened the file. Carried names are NOT
+    # reported again: they were reported by the run that dropped them.
+    dropped, lead = list(removed), _config_norm(_CONFIG_REMOVED_LEAD)
+    for ln in tail:
+        if _config_norm(ln).startswith(lead) and ":" in ln:
+            removed.extend(w.strip(" .") for w in
+                           ln.split(":", 1)[1].split(",") if w.strip(" ."))
+    kept_tail = [ln + "\n" for ln in tail
+                 if ln.strip() and not _config_prose_is_ours(ln, set())]
+    if kept_tail:
+        unknown.extend(kept_tail)
+    new = _config_render(values, notes, unknown, removed)
+    # The licence for rewriting the operator's file at all: it may only ever
+    # move the PROSE. A setting the file already SET must come out of the tidy
+    # set to the same thing — a tidy that moves one is a bug in the tidy, and
+    # the file is worth more than the tidiness. Asked one way only, because a
+    # setting the tidy ADDS is a setting the file did not mention, and every
+    # default in `_CONFIG_BLOCKS` is the code's own fallback: the line appended
+    # describes what the run was already going to do. The retired settings are
+    # the one deliberate subtraction, and the log and the file both name them.
+    was, now = _config_live(text), _config_live(new)
+    for key in removed:
+        was.pop(key, None)
+    if any(now.get(k) != v for k, v in was.items()):
+        return None, [], []
+    added = [k for k, _b in _CONFIG_BLOCKS if not _config_key_re(k).search(text)]
+    return new, added, sorted(set(dropped))
+
+
+def _config_tidy(path, log=None):
+    """Re-emit `path` in canonical order, adding the settings it never mentioned
+    and dropping the ones this version retired. Returns their names.
+
+    Best-effort throughout: a config that cannot be read or written must never
+    fail a run over its own formatting. Written to a sibling and renamed, so a
+    death mid-write cannot leave a truncated config where the settings were, and
+    only when the bytes actually differ, so an already-tidy file does not churn."""
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
-        return []
-    missing = [(k, b) for k, b in _CONFIG_BLOCKS
-               if not _config_key_re(k).search(text)]
-    if not missing:
-        return []
-    tail = text if text.endswith("\n") else text + "\n"
+        return [], []
+    new, added, removed = _config_tidy_text(text)
+    if new is None:
+        if log:
+            log.warning(
+                f"Not tidying {path.name}: the tidied file would not read back "
+                f"to the same settings, so it was left exactly as it is. "
+                f"Nothing about this run changes.")
+        return [], []
+    if new == text:
+        return [], []
+    tmp = path.with_name(path.name + ".tmp")
     try:
-        path.write_text(tail + _CONFIG_ADDED_NOTE
-                        + "".join(b for _k, b in missing).rstrip("\n") + "\n",
-                        encoding="utf-8")
+        tmp.write_text(new, encoding="utf-8")
+        os.replace(tmp, path)
     except OSError as e:
         if log:
-            log.warning(f"Could not add the new setting(s) to {path}: {e}")
-        return []
-    names = [k for k, _b in missing]
+            log.warning(f"Could not tidy {path}: {e}")
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        return [], []
     if log:
-        log.info(f"Config: added {len(names)} setting(s) this file did not "
-                 f"mention yet ({', '.join(names)}) — they are documented at "
-                 f"the end of {path.name}, at their defaults. Nothing you had "
-                 f"set was changed.")
-    return names
+        if added:
+            log.info(f"Config: added {len(added)} setting(s) this file did not "
+                     f"mention yet ({', '.join(added)}), at their defaults — "
+                     f"nothing you had set was changed.")
+        for key in removed:
+            log.info(f"Config: removed the retired setting {key!r} from "
+                     f"{path.name} — {_CONFIG_RETIRED[key]}. It had stopped "
+                     f"doing anything.")
+        if not added and not removed:
+            log.info(f"Config: tidied {path.name} (settings back in order, "
+                     f"duplicate notes folded). Every value you set is "
+                     f"unchanged.")
+    return added, removed
+
+
+def _config_commented_out(text):
+    """{key: value} for a setting this version knows that the file has
+    COMMENTED OUT with a value of its own.
+
+    `copy_to` and `master_leaks_path` used to ship their setting line COMMENTED
+    OUT, because for both the default is to do nothing — and commented out
+    around a PLACEHOLDER path, to show the shape. So the natural way to fill one
+    in was to edit the path where it stood, which leaves the `#` in front of it:
+    the setting reads as empty, the tool does nothing, and it used to say
+    nothing either. One operator's `copy_to` sat like that pointing at a real
+    OneDrive folder, and the only symptom was that no copy was ever made.
+
+    Both lines ship LIVE AND EMPTY now, so there is no `#` left to forget — but
+    every config file already written carries the old form, so the shape still
+    has to be recognised. The line is never activated on their behalf: turning
+    on a folder copy nobody asked for would put a case folder somewhere the
+    operator did not choose, and commenting a setting out is a decision this
+    tool has always respected. It is worth a word, and a word is all."""
+    out = {}
+    for _notes, key, commented, value, _raw in _config_split(text)[0]:
+        if commented and value and key in _CONFIG_PLACEHOLDERS \
+                and value not in _CONFIG_PLACEHOLDERS[key]:
+            out[key] = value
+    return out
+
+
+def _warn_commented_out_settings(text, log):
+    for key, value in sorted(_config_commented_out(text).items()):
+        log.warning(
+            f"Config: {key} is COMMENTED OUT and so is doing nothing, but the "
+            f"line carries a value you seem to have typed: "
+            f"'# {key} = {value}'. Delete the '# ' in front of it in "
+            f"{_config_path().name} to turn it on. Left as it stands — "
+            f"commenting a setting out is a decision, and this run is not "
+            f"going to guess at it.")
 
 
 def _read_config(log=None):
     """Return {key: value} from pdf_linker.config next to the script.
 
     A file that does not exist is created from the template. One that does is
-    read as it stands and then TOPPED UP with any setting it does not mention
-    (`_config_add_missing`), so a config written by an older version does not
-    hide everything added since."""
+    read as it stands and then TIDIED (`_config_tidy`) — re-emitted in canonical
+    order, carrying every value and note the operator set, gaining any setting
+    it never mentioned and losing any this version has retired."""
     path = _config_path()
     if not path.is_file():
         try:
@@ -34517,19 +34881,18 @@ def _read_config(log=None):
             pass
         return {}
     cfg = {}
+    text = ""
     try:
-        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            k, v = line.split("=", 1)
-            cfg[k.strip().lower()] = v.strip()
+        text = path.read_text(encoding="utf-8", errors="replace")
+        cfg = _config_live(text)
     except OSError as e:
         if log:
             log.warning(f"Could not read config file {path}: {e}")
+    if log and text:
+        _warn_commented_out_settings(text, log)
     # After the read, so this run uses the file as the operator left it. The
-    # values appended are the defaults it would have used anyway.
-    _config_add_missing(path, log)
+    # tidy moves prose and never a value — it is refused outright if it would.
+    _config_tidy(path, log)
     return cfg
 
 
