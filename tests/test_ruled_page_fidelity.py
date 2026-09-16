@@ -13,6 +13,12 @@ import pytest
 fitz = pytest.importorskip("fitz")
 
 import pdf_linker as P
+
+
+def _rule_line(l):
+    """A line that is nothing but line art: a rule run with its junctions."""
+    t = l.strip()
+    return bool(t) and P._FORM_HRULE in t and set(t) <= set(P._RULE_GLYPHS)
 from test_ruled_table_rows import _separate_statement
 
 
@@ -83,7 +89,7 @@ class TestPleadingPage:
         assert len(rules) == 2, rules
         for i in rules:
             assert lines[i].startswith("    "), lines[i]   # unnumbered
-            assert set(lines[i].strip()) == {P._FORM_HRULE}
+            assert _rule_line(lines[i])
         assert rules[0] < next(i for i, l in enumerate(lines) if "ROXANE" in l)
         assert rules[1] > next(i for i, l in enumerate(lines) if "Defendant." in l)
 
@@ -153,7 +159,7 @@ class TestExhibitPage:
 
     def test_the_box_is_drawn_around_its_cells(self):
         lines = P._page_visual_text(self._page()).splitlines()
-        rules = [i for i, l in enumerate(lines) if set(l.strip()) == {P._FORM_HRULE}]
+        rules = [i for i, l in enumerate(lines) if _rule_line(l)]
         assert len(rules) == 2, lines
         inside = lines[rules[0] + 1:rules[1]]
         assert len(inside) == 2 and all(l.count(P._FORM_VRULE) == 3 for l in inside), inside
@@ -184,3 +190,74 @@ def test_the_three_renderers_read_one_rule_layout():
     would be the start of two definitions of how a rule is drawn."""
     for fn in (P._form_layout, P._page_visual_text, P._pleading_lines):
         assert "_lay_rules(" in inspect.getsource(fn), fn.__name__
+
+
+class TestJunctions:
+    def test_a_box_meets_its_divider_with_corners_and_tees(self):
+        lines = P._page_visual_text(TestExhibitPage()._page()).splitlines()
+        top, bottom = [l for l in lines if _rule_line(l)]
+        assert top.startswith("\u250c") and top.rstrip().endswith("\u2510")   # ┌ … ┐
+        assert "\u252c" in top and "\u2534" in bottom                         # ┬ … ┴
+        assert bottom.startswith("\u2514") and bottom.rstrip().endswith("\u2518")
+        # the tee stands at the very column the bar takes on the text lines
+        inside = [l for l in lines if l.count(P._FORM_VRULE) == 3]
+        div = {l.rindex(P._FORM_VRULE, 0, l.rindex(P._FORM_VRULE)) for l in inside}
+        assert div == {top.index("\u252c")} == {bottom.index("\u2534")}
+
+    def test_a_rule_ending_at_a_divider_is_a_tee_not_a_gap(self, txt):
+        lines = txt.splitlines()
+        top, bottom = [l for l in lines if _rule_line(l)]
+        a = next(l for l in lines if "ROXANE" in l)
+        col = a.index(P._FORM_VRULE)
+        assert top[col] == "\u252c" and bottom[col] == "\u2534"
+        assert P._FORM_VRULE not in top and P._FORM_VRULE not in bottom
+
+    def test_the_form_caption_box_is_drawn_whole(self):
+        from test_form_render_fidelity import _boxed_form
+        lines = P._form_page_text(_boxed_form()).splitlines()[1:]
+        top = next(l for l in lines if _rule_line(l))
+        assert top.strip()[0] == "\u250c" and top.strip()[-1] == "\u2510"
+        assert top.count("\u252c") == 2, top          # the divider and the short edge
+
+
+class TestBarRealignment:
+    def test_a_longer_stand_in_takes_its_growth_from_the_padding(self):
+        before = "\u2502 NAME: Rosa Delgado          \u2502 x \u2502"
+        after = before.replace("Rosa Delgado", "Wilhelmina Featherstonehaugh"[:20])
+        out = P._realign_rule_bars(before, after)
+        assert [i for i, c in enumerate(out) if c == P._FORM_VRULE] == \
+               [i for i, c in enumerate(before) if c == P._FORM_VRULE]
+        assert "Wilhelmina" in out and out.count(" ") < before.count(" ")
+
+    def test_a_shorter_stand_in_pads_back_out(self):
+        before = "\u2502 NAME: Rosa Delgado   \u2502"
+        after = before.replace("Rosa Delgado", "Ann Lee")
+        out = P._realign_rule_bars(before, after)
+        assert out.index(P._FORM_VRULE, 1) == before.index(P._FORM_VRULE, 1)
+
+    def test_text_that_fills_the_cell_is_never_cut(self):
+        before = "\u2502 EMAIL: a@b.com \u2502"
+        after = before.replace("a@b.com", "averylongmailbox@postbox9.org")
+        assert P._realign_rule_bars(before, after) == after
+
+    def test_a_line_count_change_or_a_bar_count_change_is_left_alone(self):
+        assert P._realign_rule_text("a\u2502b\nc", "a\u2502b") == "a\u2502b"
+        assert P._realign_rule_bars("a \u2502 b", "a b") == "a b"
+
+    def test_the_export_scrubs_a_form_and_keeps_the_bars_aligned(self, tmp_path):
+        from test_form_render_fidelity import _boxed_form
+        pg = _boxed_form()
+        path = tmp_path / "form.pdf"
+        pg._doc_ref.save(path)
+        doc = fitz.open(path)
+        reg = P._PnFakeRegistry()
+        terms = P._pn_build_terms(["Rosa Delgado"], [], [], registry=reg)
+        det = {k: P._PN_DETECTORS[k] for k in P._PN_DEFAULT_DETECTORS}
+        pz = P.Pseudonymizer(terms, det, registry=reg)
+        assert P._write_text_version(path, doc, logging.getLogger("t"), pseudonymizer=pz)
+        out = (tmp_path / "Text Files").glob("*.txt")
+        text = next(out).read_text("utf-8")
+        assert "Rosa Delgado" not in text
+        inside = [l for l in text.splitlines() if l.count(P._FORM_VRULE) >= 3]
+        cols = {tuple(i for i, c in enumerate(l) if c == P._FORM_VRULE)[-2:] for l in inside}
+        assert len(cols) == 1, cols

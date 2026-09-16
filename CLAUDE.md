@@ -4258,6 +4258,35 @@ only. Residual, and stated: the exhibit renderer's lead is the median of
 ALL row gaps, so on a sparse page a real gap can round to no blank line,
 and a rule that sits inside a two-column prose band is stepped over, since
 a bar cannot stand in one column of text read column by column.
+**…and a VERTICAL rule is one unbroken line, through every junction and
+every scrubbed row** (`_rule_lines_text`, `_rule_join_glyph`, `_RULE_GLYPHS`,
+`_realign_rule_bars`, `_realign_rule_text`), at the owner's direction — the
+horizontal rules read well and the vertical ones did not, in two ways. At a
+JUNCTION the bar was dropped, on the reasoning that the dash run already
+covered it, so the divider of a caption box was a gap on every line a
+section rule met it and the PLD-PI-001's right-hand column read as three
+pieces. The bar is set INTO the run now as the glyph the page draws there —
+a corner where the vertical rule starts or ends at the run's end (`┌ ┐ └
+┘`), a tee where one meets the other mid-run (`├ ┤ ┬ ┴`), a cross where they
+pass (`┼`) — and placed from the page's column STOPS and never from the
+rule's own x, so the tee stands at exactly the column the bar takes on the
+twenty lines beneath it, the run extended to reach it where rounding put it
+one short. Never a cell of its own: a bar cell inside a rule run would be a
+column stop the run itself pushes, and the whole page would move right. And
+on a SCRUBBED row the bar drifted: the form and exhibit renderers lay the
+page out and scrub the text AFTER (the pleading path scrubs its segments
+first and lays the rules over the result), so a stand-in three characters
+longer than the name it replaced pushed the bar after it three columns, and
+the right edge of the caption box came out jagged on exactly the rows the
+key had touched. The scrub is left where it is — it sees a label and its
+value on one line there, which the label-anchored identifiers need — and
+`build_body` puts every bar back at the column it had before the scrub,
+taking the growth out of the PADDING before it, which is what the padding is
+for; where the text really fills the cell the bar drifts as the text did,
+since cutting a word would be worse, and a line whose bar count the scrub
+changed is left as scrubbed. Asked line by line and only where the scrub
+kept the line count, which a stand-in always does. The Context reader
+strips the junction glyphs with the rules.
 
 **…and a ROTATED page is rendered in its READING frame**
 (`_reading_frame_spans`, `_page_text_spans`, read by `_page_visual_text` and
