@@ -26357,6 +26357,118 @@ def _column_stops(rows, left, char_w=_VIS_CHAR_W):
     return {x: stops[g] for x, g in group.items()}
 
 
+# Two-column PROSE — a contract or a terms page printed in two columns — is
+# the one shape where the page's geometry and its reading order disagree: laid
+# out row by row the export puts one printed line of EACH column on every
+# line, and a reader (or a drafting model) reads "1. TERM. This Agreement
+# begins on the 2. PAYMENT. Lessee shall pay the monthly" as one sentence. Such
+# a band is rendered COLUMN BY COLUMN instead, at the owner's direction: every
+# line of the first column, then every line of the next, each at its own
+# printed indent so the export still says where the text sat. What makes a
+# band prose and not a caption or a ledger is the CELLS: on most of its rows
+# every column carries a run of several words with ordinary lower-case text in
+# it, and every column but the last FILLS its width (ragged-right prose runs up
+# to the column boundary; a caption's "v." and a ledger's "0.8" do not).
+_VIS_COL_MIN_ROWS = 4      # rows carrying a cell at two or more stops
+_VIS_COL_MIN_WORDS = 3     # a prose cell is at least this many words…
+_VIS_COL_FILL = 0.6        # …filling this much of its column (not the last)
+_VIS_COL_SHARE = 0.6       # share of a column's cells that must read as prose
+_VIS_COL_MIN_WIDTH = 100.0  # pt: a column narrower than this is a label
+_VIS_COL_LOWER_RE = re.compile(r"(?<![A-Za-z])[a-z]{2,}(?![A-Za-z])")
+
+
+def _cluster_x(xs, tol=_VIS_STOP_TOL):
+    """{x: first x of its cluster} for a sorted iterable of x's within `tol`."""
+    group, start = {}, None
+    for x in sorted(set(xs)):
+        if start is None or x - start > tol:
+            start = x
+        group[x] = start
+    return group
+
+
+def _cluster_x_of(x, stops, tol=_VIS_STOP_TOL):
+    """The stop of `stops` (sorted cluster x's) that `x` belongs to, or None:
+    the last stop not more than `tol` to the right of `x`."""
+    hit = None
+    for sx in stops:
+        if sx <= x + tol:
+            hit = sx
+        else:
+            break
+    return hit
+
+
+def _cell_reads_as_prose(text):
+    return (len(text.split()) >= _VIS_COL_MIN_WORDS
+            and _VIS_COL_LOWER_RE.search(text) is not None)
+
+
+def _band_is_prose(rows, stops, group):
+    """`rows` are `[(x0, x1, text), ...]` lists whose cells all start on
+    `stops` (sorted cluster x's). True when they read as multi-column prose:
+    enough rows carry two or more cells, every column is wide enough to hold a
+    sentence, and on most rows each column's cell is a run of words with
+    lower-case text in it, filling its width (the last column excepted, whose
+    right edge nothing here measures)."""
+    if len(stops) < 2:
+        return False
+    if sum(1 for r in rows if len(r) >= 2) < _VIS_COL_MIN_ROWS:
+        return False
+    for k, sx in enumerate(stops):
+        last = k == len(stops) - 1
+        if not last and stops[k + 1] - sx < _VIS_COL_MIN_WIDTH:
+            return False
+        cells = [(x0, x1, t) for r in rows for x0, x1, t in r if group[x0] == sx]
+        if len(cells) < _VIS_COL_MIN_ROWS:
+            return False
+        prose = 0
+        for x0, x1, t in cells:
+            if not _cell_reads_as_prose(t):
+                continue
+            if not last and (x1 - x0) < _VIS_COL_FILL * (stops[k + 1] - x0):
+                continue
+            prose += 1
+        if prose < _VIS_COL_SHARE * len(cells):
+            return False
+    return True
+
+
+def _prose_column_bands(rows):
+    """[(first row, past-last row, stops)] for every run of rows that reads
+    as multi-column prose (`_band_is_prose`). A band opens on a row with two
+    or more cells and runs while every cell of the next row starts on one of
+    the band's stops and stays inside its column — a full-width line ends it,
+    a row with only one column's cell (the other column's paragraph break)
+    does not."""
+    group = _cluster_x(x0 for r in rows for x0, _x1, _t in r)
+    bands, i, n = [], 0, len(rows)
+    while i < n:
+        if len(rows[i]) < 2:
+            i += 1
+            continue
+        stops = sorted({group[x0] for x0, _x1, _t in rows[i]})
+
+        def _on_band(r):
+            for x0, x1, _t in r:
+                g = group.get(x0)
+                if g not in stops:
+                    return False
+                k = stops.index(g)
+                if k + 1 < len(stops) and x1 > stops[k + 1] + _VIS_STOP_TOL:
+                    return False
+            return True
+        j = i
+        while j < n and rows[j] and _on_band(rows[j]):
+            j += 1
+        if _band_is_prose(rows[i:j], stops, group):
+            bands.append((i, j, stops))
+            i = j
+        else:
+            i += 1
+    return bands
+
+
 def _rows_body_left(rows):
     """The x of a pleading page's body-left edge — column 0 of the layout.
 
@@ -26480,28 +26592,59 @@ def _page_visual_text(page):
             blanks = max(0, min(int(round((r["y"] - prev_y) / lead)) - 1,
                                 _VIS_MAX_BLANKS))
         prev_y = r["y"]
-        segs, prev_x1 = [], None
+        segs, prev_x1 = [], None     # (x0, x1, text) per cell
         for s in sorted(r["spans"], key=lambda s: s["bbox"][0]):
             t = s.get("text", "")
             if not t:
                 continue
             x0, y0, x1, y1 = s["bbox"]
             if not segs or (prev_x1 is not None and (x0 - prev_x1) >= _VIS_GAP_PT):
-                segs.append((float(x0), t))
+                segs.append((float(x0), float(x1), t))
             else:
-                cx, ct = segs[-1]
+                cx, _cx1, ct = segs[-1]
                 if (not ct[-1].isspace() and not t[:1].isspace()
                         and prev_x1 is not None
                         and (x0 - prev_x1) > 0.2 * (y1 - y0)):
                     ct += " "
-                segs[-1] = (cx, ct + t)
+                segs[-1] = (cx, float(x1), ct + t)
             prev_x1 = x1
         cells.append(segs)
         blanks_before.append(blanks)
-    out = []
-    for blanks, line in zip(blanks_before, _visual_rows_text(cells, left, char_w)):
-        out.extend([""] * blanks)
-        out.append(line)
+    flat = [[(x0, t) for x0, _x1, t in r] for r in cells]
+    stops = _column_stops(flat, left, char_w)
+    lines = [_visual_row_text(r, left, char_w, stops) for r in flat]
+    # A run of two-column PROSE reads column by column (see the note above
+    # `_VIS_COL_MIN_ROWS`); everything else reads row by row.
+    bands = {i0: (i1, sx) for i0, i1, sx in _prose_column_bands(cells)}
+    out, i = [], 0
+    while i < len(lines):
+        if i in bands:
+            i1, band_stops = bands[i]
+            out.extend([""] * blanks_before[i])
+            for k, sx in enumerate(band_stops):
+                col_lines = []
+                for r in range(i, i1):
+                    hit = [t for x0, _x1, t in cells[r]
+                           if _cluster_x_of(x0, band_stops) == sx]
+                    if r > i:
+                        col_lines.extend([""] * blanks_before[r])
+                    if hit:
+                        col_lines.append(" " * stops.get(
+                            next(x0 for x0, _x1, t in cells[r]
+                                 if _cluster_x_of(x0, band_stops) == sx), 0)
+                            + " ".join(hit))
+                    elif col_lines and col_lines[-1] != "":
+                        col_lines.append("")       # that column's own gap
+                while col_lines and col_lines[-1] == "":
+                    col_lines.pop()
+                if k:
+                    out.append("")
+                out.extend(col_lines)
+            i = i1
+            continue
+        out.extend([""] * blanks_before[i])
+        out.append(lines[i])
+        i += 1
     text = "\n".join(out).rstrip()
     return text or None
 
