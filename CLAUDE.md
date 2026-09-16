@@ -3709,6 +3709,31 @@ answerable at the top of the page.
   of them checked the moment one is. `Off` is the name the PDF spec reserves for
   the off state, which is what makes "anything else is on" safe across the export
   values real forms use ("Yes", "On", "1").
+- **…and it has to match the state the page DRAWS, which is `/AS` and not
+  `/V`** (`_widget_is_on`). A delivered PLD-PI-001 had item 12.b's box at
+  `V=1` against an on-state of `2` with `/AS /Off`: every viewer draws it
+  empty (there is no appearance named `1` to draw), and "any state but `Off`
+  is on" printed `[X]` on a box the page shows blank — a false answer on the
+  one kind of document where the checkbox IS the pleading, and the banner
+  counted it. The appearance state is what the reader sees, so where the
+  widget carries one it is the answer and the value is not consulted; with
+  none, a value is on only where it NAMES the widget's own on-state, for a
+  checkbox as for a radio, and "not Off" is the rule only where the widget
+  cannot say what its on-state is.
+- **…and a trailing LABEL is positioned by PADDING, and the padding is
+  width** (`_form_text_x`, `_FORM_SPACE_EM`). A form sets "an unincorporated
+  entity" and "(describe):" as two spans that OPEN at the same x, the second
+  carrying forty leading spaces to push its word along the line; cut to its
+  visible text both took the span's x, the layout sorted the shorter text
+  first, and the same delivered form read `(3) [ ] (describe): an
+  unincorporated entity`, `7. [ ] (names): Defendants who are joined…` and
+  `15. [ ] (specify paragraph numbers): The paragraphs…` on two of its three
+  pages. The visible text starts where the padding ends: a space is 0.278 em
+  in Helvetica and Arial, which a Judicial Council form is set in (measured
+  on the delivered span, the "(" stood exactly there), and near enough in
+  anything else to keep the order right. Asked at both static-span cell
+  sites, the widget path and the ink path, so the two cannot answer
+  differently.
 - **The form path wins over the pleading-rows path only when the page carries a
   checkbox state** (`_form_has_state_boxes`, asked of the rendered text so it
   holds for a widget form and an ink one alike). That state is invisible to every other rendering, which is

@@ -26741,21 +26741,54 @@ def _widget_is_on(w):
     forms use ("Yes", "On", "1"). A RADIO also has to match its OWN on-state:
     every widget in a radio group carries the group's value, so comparing to
     `Off` alone would report all of them checked as soon as one was."""
+    # The APPEARANCE STATE (/AS) is what the page DRAWS, so where the widget
+    # carries one it is the answer and the value is not consulted: a
+    # delivered PLD-PI-001 had item 12.b's box at V=1 against an on-state of
+    # 2 with /AS /Off — the viewer draws it empty, and reading the value as
+    # "not Off, so on" printed [X] on a box the page shows blank.
+    try:
+        kind, name = w.parent.parent.xref_get_key(w.xref, "AS")
+        if kind == "name" and name:
+            return name.lstrip("/").strip().lower() != "off"
+    except Exception:
+        pass
     val = w.field_value
     if isinstance(val, bool):
         return val
     s = str(val if val is not None else "").strip()
     if s == "" or s.lower() == "off":
         return False
+    # With no appearance state to read, a value is on only where it NAMES the
+    # widget's own on-state — for a radio (every kid carries the group's
+    # value) and for a checkbox alike, since a value naming no appearance the
+    # widget has draws nothing. "Not Off" is the rule only where the widget
+    # cannot say what its on-state is.
     try:
-        import fitz
-        if w.field_type == fitz.PDF_WIDGET_TYPE_RADIOBUTTON:
-            on = w.on_state()
-            if on:
-                return s == str(on)
+        on = w.on_state()
+        if on:
+            return s == str(on)
     except Exception:
         pass
     return True
+
+
+# A form positions a trailing label by PADDING its span with spaces rather
+# than starting a new span: "an unincorporated entity" and
+# "                                        (describe):" are two spans that
+# open at the SAME x, and cut to their visible text both took that x, so the
+# layout sorted the parenthetical ahead of the caption it follows and a
+# delivered PLD-PI-001 read "(3) [ ] (describe): an unincorporated entity".
+# The visible text starts where the padding ends; a space is 0.278 em in
+# Helvetica/Arial, which is what a Judicial Council form is set in, and near
+# enough in anything else to keep the order right.
+_FORM_SPACE_EM = 0.278
+
+
+def _form_text_x(x0, text, size):
+    """The x where `text`'s first VISIBLE character stands, given the span
+    opens at `x0`: the padding's width is added on."""
+    lead = len(text) - len(text.lstrip(" "))
+    return x0 + lead * _FORM_SPACE_EM * float(size or 0.0)
 
 
 def _form_cell(y_mid, half, x, text):
@@ -27234,7 +27267,8 @@ def _ink_form_cells(page):
         h = max((bb[3] - bb[1]) / max(len(parts), 1), 1.0)
         for k, part in enumerate(parts):
             if part.strip():
-                cells.append(_form_cell(bb[1] + h * (k + 0.5), h / 2, bb[0],
+                cells.append(_form_cell(bb[1] + h * (k + 0.5), h / 2,
+                                        _form_text_x(bb[0], part, sp.get("size")),
                                         part.strip()))
     return cells, boxes, marked, unsure, exact, consumed
 
@@ -27271,8 +27305,10 @@ def _form_page_cells(page):
                 h = max((bb[3] - bb[1]) / max(len(parts), 1), 1.0)
                 for k, part in enumerate(parts):
                     if part.strip():
-                        cells.append(_form_cell(bb[1] + h * (k + 0.5), h / 2,
-                                                bb[0], part.strip()))
+                        cells.append(_form_cell(
+                            bb[1] + h * (k + 0.5), h / 2,
+                            _form_text_x(bb[0], part, sp.get("size")),
+                            part.strip()))
     choice = (fitz.PDF_WIDGET_TYPE_CHECKBOX, fitz.PDF_WIDGET_TYPE_RADIOBUTTON)
     boxes = checked = 0
     for w, r in zip(widgets, rects):
