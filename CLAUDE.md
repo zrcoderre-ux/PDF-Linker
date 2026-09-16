@@ -4092,6 +4092,43 @@ pins every binding, only whitespace moves). `--fix-leaks` is indifferent: it
 works on the `.txt` as it stands and never reopens the PDFs, so it neither
 converts an old-format export nor is confused by either format.
 
+**…and the GRID UNIT is measured off the page, and a column is one column
+all the way DOWN it** (`_spans_char_width`, `_column_stops`,
+`_visual_rows_text`, `_VIS_CW_*`, `_VIS_STOP_TOL`). The grid shipped dividing
+an x offset by a FIXED 6 pt — one 12 pt character — and resolving an overflow
+PER ROW, and both showed to the operator as "the columns don't line up". An
+exhibit set in 8 pt fits half again as many characters into a printed column,
+so a billing cell that FIT on the page ran past its grid slot in the export;
+and when it did, only that row's next cell was pushed right (`max(col,
+len(line)+1)`), so a ledger rendered with its short rows aligned and its long
+rows ragged — worse to read than either, since the eye takes the aligned
+rows as the columns and the ragged ones as a different table. The unit is
+now the length-weighted MEDIAN of the page's own spans' width per character
+(sideways spans skipped, since their bbox width is their height; the default
+kept below `_VIS_CW_MIN_SAMPLE` characters, since a slip sheet's two words
+measure nothing; bounded to `_VIS_CW_MIN`..`_VIS_CW_MAX`), so a 10 pt body
+with one 18 pt heading measures as its body and the heading's column is
+x-derived as before. And the page is laid out in TWO passes: every cell
+starting within `_VIS_STOP_TOL` of one x shares one stop, stops are settled
+left to right, and where ANY row's cell before a stop runs past it the whole
+stop moves right — the table stays a table, at the cost of a wider gap in
+the rows that did fit. A prose line is one cell and constrains nothing;
+column 0 still adds nothing, so body text does not move. `_page_visual_text`
+now builds each row's CELLS first (a span opens a cell only across a real
+gap, `_VIS_GAP_PT`, else glues onto the one before it as it always did) and
+lays them out through the same function the pleading path uses
+(`_pn_apply_page_rows`, and the unscrubbed row writer in `build_body`, each
+handed the page's unit measured in the export loop, `block_char_w`), so the
+two paths cannot answer the column question differently. Cost: ~1.4 ms a
+pleading page for the extra span read, ~1.4 ms for the stops on a 400-row
+page. Accepted, and the same as the layout's own: exports of a delivered
+folder come back with the new spacing on the first FULL re-run, whitespace
+only. What this does NOT do, and is a policy question: two-column PROSE (a
+contract printed in two columns) is still rendered ACROSS, each printed line
+of both columns on one export line, which is the page's geometry and not its
+reading order; rendering it column by column is what `_page_column_streams`
+already does for the scrub and `_page_detect_text` for detection.
+
 **…and a ROTATED page is rendered in its READING frame**
 (`_reading_frame_spans`, `_page_text_spans`, read by `_page_visual_text` and
 the span rebuild in `_page_flowing_text`). Extraction reports every
