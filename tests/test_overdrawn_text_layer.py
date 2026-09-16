@@ -272,3 +272,88 @@ def test_a_fragment_is_never_dropped_for_a_fragment():
              _sp("HOLM", 100, 101, 130, 111)]
     kept = P._drop_overdrawn_spans(spans)
     assert [s["text"] for s in kept] == ["DENHOLM"]
+
+
+# ---- two copies that agree on the words and not on the bytes -----------------
+
+def _twice(a_text, b_text, dx=0.0):
+    doc = fitz.open()
+    pg = doc.new_page(width=612, height=792)
+    pg.insert_text((90, 100), a_text, fontsize=10)
+    pg.insert_text((90 + dx, 100), b_text, fontsize=10)
+    return pg
+
+
+def _spans(page):
+    return [sp for blk in page.get_text("dict")["blocks"]
+            for ln in blk.get("lines", []) for sp in ln.get("spans", [])
+            if sp["text"].strip()]
+
+
+class TestCopiesThatDifferOnlyInTheirBytes:
+    """A flattened form carries each value twice — the field's appearance
+    burned into the content over the value the builder printed — and the two
+    fonts set the same words differently: a typographic apostrophe against a
+    straight one, a trailing space on one run. Compared byte for byte they
+    were two texts and both copies shipped."""
+
+    def test_a_curly_and_a_straight_apostrophe_are_one_text(self):
+        # As span dicts: the base-14 font a test page is set in has no
+        # typographic apostrophe, where the delivered PDF's fonts do.
+        a = {"text": "Plaintiffs\u2019 vehicle.", "bbox": (90.0, 89.2, 167.2, 103.0)}
+        b = {"text": "Plaintiffs' vehicle.", "bbox": (90.0, 89.2, 166.4, 103.0)}
+        assert len(P._drop_overdrawn_spans([a, b])) == 1
+
+    def test_a_trailing_space_is_one_text(self):
+        pg = _twice("Detroit St. near ", "Detroit St. near")
+        assert len(P._drop_overdrawn_spans(_spans(pg), pg)) == 1
+
+    def test_different_words_at_one_place_still_both_stand(self):
+        pg = _twice("Plaintiffs", "Defendants")
+        assert len(P._drop_overdrawn_spans(_spans(pg), pg)) == 2
+
+    def test_the_key_folds_only_what_two_fonts_disagree_on(self):
+        assert P._span_text_key(" It\u2019s  \u201cso\u201d ") == "It's \"so\""
+        assert P._span_text_key("90013") != P._span_text_key("90014")
+
+
+class TestAFormPageReadsEachValueOnce:
+    """The ink-form path read the page's spans raw, so a flattened form's
+    doubled values were laid out twice ("ZIP CODE: 90013 90013",
+    "1 1 to 50 50") where the rows path beside it collapsed them."""
+
+    def _form(self, twice):
+        doc = fitz.open()
+        pg = doc.new_page(width=612, height=792)
+        sh = pg.new_shape()
+        for k in range(4):                    # checkbox-sized squares: the ink gate
+            sh.draw_rect(fitz.Rect(40, 200 + 20 * k, 50, 210 + 20 * k))
+        sh.finish(width=0.6)
+        sh.commit()
+        for k, cap in enumerate(("MOTOR VEHICLE", "OTHER", "Property Damage", "Wrongful Death")):
+            pg.insert_text((56, 209 + 20 * k), cap, fontsize=9)
+        pg.insert_text((40, 120), "ZIP CODE:", fontsize=7)
+        for _ in range(2 if twice else 1):
+            pg.insert_text((90, 120), "90013", fontsize=9)
+        pg.insert_text((40, 760), "PLD-PI-001 [Rev. January 1, 2024]", fontsize=6)
+        return pg
+
+    def test_a_value_drawn_twice_is_written_once(self):
+        once = P._form_page_text(self._form(False))
+        twice = P._form_page_text(self._form(True))
+        assert once is not None and "90013" in once
+        assert twice.count("90013") == 1, twice
+        assert "90013 90013" not in twice
+
+
+class TestABoxDrawnAsAQuadIsABox:
+    def test_page_rules_reads_a_quad(self):
+        doc = fitz.open()
+        pg = doc.new_page(width=612, height=792)
+        sh = pg.new_shape()
+        sh.draw_quad(fitz.Quad(fitz.Point(36, 47), fitz.Point(576, 47),
+                               fitz.Point(36, 120), fitz.Point(576, 120)))
+        sh.finish(width=0.6)
+        sh.commit()
+        vert, horiz = P._page_rules(pg, P._FORM_RULE_MIN)
+        assert len(vert) == 2 and len(horiz) == 2, (vert, horiz)
