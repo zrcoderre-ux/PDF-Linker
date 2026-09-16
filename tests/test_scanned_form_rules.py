@@ -187,3 +187,81 @@ class TestAnOcrWordOverVisibleType:
         misread = _sp(161.7, 155.1, 188.1, 163.7, "Streel", "GlyphLessFont")
         kept = P._drop_overdrawn_spans([run, misread])
         assert len(kept) == 2
+
+
+class TestAnInvisibleLayerInAnOrdinaryFont:
+    """A filer's OCR draws its words in render mode 3 in whatever font it
+    likes; the mode, read off the text trace, is what says they are not on
+    the page."""
+
+    def _page(self):
+        doc = fitz.open()
+        pg = doc.new_page(width=612, height=792)
+        pg.insert_text((72, 100), "Judicial Council of California", fontsize=10)
+        pg.insert_text((72, 100), "refadioal Councl Calforia", fontsize=10, render_mode=3)
+        pg.insert_text((72, 140), "Another line", fontsize=10)
+        return pg
+
+    def test_the_misreading_is_dropped_with_the_page_in_hand(self):
+        pg = self._page()
+        spans = P._page_text_spans(pg)
+        kept = P._drop_overdrawn_spans(spans, pg)
+        assert [s["text"] for s in kept] == ["Judicial Council of California", "Another line"]
+
+    def test_the_visual_renderer_writes_the_type_once(self):
+        txt = P._page_visual_text(self._page())
+        assert "Judicial Council of California" in txt and "refadioal" not in txt, txt
+
+    def test_the_trace_is_read_once_per_page(self, monkeypatch):
+        pg = self._page()
+        P._page_invisible_runs(pg)
+        monkeypatch.setattr(type(pg), "get_texttrace",
+                            lambda self: pytest.fail("read twice"))
+        assert P._page_invisible_runs(pg)[0]
+
+
+class TestSameTextOffCentre:
+    def test_a_copy_on_a_lower_baseline_collapses(self):
+        a = _sp(100, 100, 160, 110, "(850) 883-0184")
+        b = _sp(101, 105, 161, 115, "(850) 883-0184")
+        assert P._spans_overdrawn(a, b)
+        assert len(P._drop_overdrawn_spans([a, b])) == 1
+
+    def test_the_same_value_on_the_next_row_is_kept(self):
+        # The sample form's STREET and MAILING rows, measured.
+        a = _sp(100.6, 154.1, 181.6, 166.3, "111 North Hill Street")
+        b = _sp(100.6, 165.0, 181.6, 177.3, "111 North Hill Street")
+        assert not P._spans_overdrawn(a, b)
+        assert len(P._drop_overdrawn_spans([a, b])) == 2
+
+    def test_side_by_side_copies_are_two(self):
+        a = _sp(100, 100, 160, 110, "50")
+        b = _sp(165, 100, 225, 110, "50")
+        assert len(P._drop_overdrawn_spans([a, b])) == 2
+
+
+class TestAPushedStopIsNeverCappedToThePage:
+    def test_the_right_column_stays_right_of_the_long_row(self):
+        # A label row too dense for the grid pushes the divider's stop past
+        # the page-width cap; the cells behind it must follow, not pile up.
+        left, cw = 0.0, 5.0
+        cap = int(600 / cw) + 2
+        long_row = [(0.0, "X" * (cap + 10)), (560.0, "|"), (570.0, "RIGHT")]
+        short_row = [(0.0, "short"), (560.0, "|"), (570.0, "RIGHT")]
+        stops = P._column_stops([long_row, short_row], left, cw, max_col=cap)
+        assert stops[560.0] >= cap + 11
+        assert stops[570.0] >= stops[560.0] + 2
+        lines = [P._visual_row_text(r, left, cw, stops) for r in (long_row, short_row)]
+        assert lines[0].index("|") == lines[1].index("|")
+        assert lines[0].index("RIGHT") == lines[1].index("RIGHT")
+
+
+class TestTheFormPathDropsTheSidewaysMargin:
+    def test_a_stamp_up_the_left_margin_is_not_laid_into_the_rows(self):
+        pg = _scanned_form()
+        pg.insert_text((18, 400), "Electronically Received 07/31/2026 09:32 AM",
+                       fontsize=9, rotate=90)
+        txt = P._form_page_text(pg)
+        assert txt is not None
+        assert "Electronically" not in txt and "09:32" not in txt, txt
+        assert "111 North Hill Street" in txt
