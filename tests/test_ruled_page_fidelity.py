@@ -261,3 +261,46 @@ class TestBarRealignment:
         inside = [l for l in text.splitlines() if l.count(P._FORM_VRULE) >= 3]
         cols = {tuple(i for i, c in enumerate(l) if c == P._FORM_VRULE)[-2:] for l in inside}
         assert len(cols) == 1, cols
+
+    def test_a_cure_that_lands_after_the_layout_keeps_the_bars_aligned(
+            self, tmp_path, monkeypatch):
+        """The e-mail, weld and survivor cures rewrite the display text after
+        `build_body` has laid the page out and realigned it, so a stand-in
+        one of them lands pushed the bar after it — the EMAIL ADDRESS row of
+        a delivered PLD-PI-001 sat five columns right of every other row.
+        Realigned once more after the last cure, against the unscrubbed
+        body."""
+        from test_form_render_fidelity import _boxed_form
+        pg = _boxed_form()
+        path = tmp_path / "form.pdf"
+        pg._doc_ref.save(path)
+        doc = fitz.open(path)
+        reg = P._PnFakeRegistry()
+        terms = P._pn_build_terms(["Rosa Delgado"], [], [], registry=reg)
+        det = {k: P._PN_DETECTORS[k] for k in P._PN_DEFAULT_DETECTORS}
+        pz = P.Pseudonymizer(terms, det, registry=reg)
+        # A cure landing a LONGER stand-in on a caption-box row, after the
+        # main pass and its realignment have both run.
+        real = pz.scrub_survivors
+        monkeypatch.setattr(pz, "scrub_survivors", lambda t: real(t).replace(
+            "FOR COURT USE ONLY", "FOR COURT USE ONLY (CLERK STAMP HERE)"))
+        assert P._write_text_version(path, doc, logging.getLogger("t"), pseudonymizer=pz)
+        text = next((tmp_path / "Text Files").glob("*.txt")).read_text("utf-8")
+        assert "CLERK STAMP HERE" in text                 # the cure landed
+        inside = [l for l in text.splitlines() if l.count(P._FORM_VRULE) >= 3]
+        cols = {tuple(i for i, c in enumerate(l) if c == P._FORM_VRULE)[-2:] for l in inside}
+        assert len(cols) == 1, cols
+
+    def test_the_realignment_follows_the_last_cure_on_both_writer_paths(self):
+        """Pinned on the SOURCE: the realignment is worth nothing ahead of a
+        pass that can still move the text, and the fix-leaks rewrite runs the
+        same cures over an export of its own."""
+        import inspect
+        src = inspect.getsource(P._write_text_version)
+        cure = src.index("_leak_mark(\"survivor cure\")")
+        assert "_realign_rule_text(original, body)" in src[cure:]
+        assert "scrub_" not in src[src.index("_realign_rule_text(original, body)"):
+                                   src.index("surviving_reals(body)")]
+        fix = inspect.getsource(P._fix_leaks_mode)
+        i = fix.index("scrubbed = pz.scrub_survivors(scrubbed)")
+        assert "_realign_rule_text(_NFKC(body), scrubbed)" in fix[i:i + 600]

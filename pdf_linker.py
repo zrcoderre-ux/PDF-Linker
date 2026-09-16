@@ -32925,6 +32925,14 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         body = pseudonymizer.scrub_survivors(body)
         scrubbed_detect = pseudonymizer.scrub_survivors(scrubbed_detect)
         _leak_mark("survivor cure")
+        # Every cure above rewrites the DISPLAY text after `build_body` laid
+        # the page out and put its bars back — so a stand-in a cure lands
+        # (an e-mail the pattern pass left standing, a welded name, a plain
+        # survivor) pushed the bar after it exactly as the main pass once did,
+        # on the one row of the caption box the cure touched. Realigned ONCE,
+        # here, after the LAST pass that can change the text, against the
+        # unscrubbed body — whichever pass made the replacement.
+        body = _realign_rule_text(original, body)
         if spliced:
             log.warning(f"  Pseudonymization REVIEW on {pdf_path.name}: caption "
                         f"on page(s) {spliced} appears column-spliced; term "
@@ -37673,6 +37681,10 @@ def _fix_leaks_mode(folder, args, cfg, log):
         # one every page gets in a full run.
         scrubbed = pz.scrub_welded(scrubbed, spliced=is_leak)
         scrubbed = pz.scrub_survivors(scrubbed)
+        # The export's own bars are the columns to keep: a fix that lands on
+        # a caption-box row must not push the rule after it (the full run's
+        # rule, asked of the text this pass actually rewrites).
+        scrubbed = _realign_rule_text(_NFKC(body), scrubbed)
         # Compare against the NFKC form: apply() normalizes unconditionally, so
         # a file whose only difference is normalization has no actual fix in it
         # and is left untouched (not rewritten, not counted as changed).
