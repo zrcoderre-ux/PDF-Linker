@@ -4287,6 +4287,28 @@ since cutting a word would be worse, and a line whose bar count the scrub
 changed is left as scrubbed. Asked line by line and only where the scrub
 kept the line count, which a stand-in always does. The Context reader
 strips the junction glyphs with the rules.
+**…and it is asked AFTER the last pass that can move the text.** The
+realignment shipped inside `build_body`, right after the main scrub — and
+the writer then runs three CURES over the finished body (`scrub_emails`,
+`scrub_welded`, `scrub_survivors`), each of which lands a stand-in the main
+pass left standing, on the text as laid out. So the one caption-box row a
+cure touched drifted exactly as every row once had: a delivered
+PLD-PI-001's EMAIL ADDRESS row sat five columns right of the thirty rows
+around it, the address having been faked by the e-mail cure and not by
+`apply`. `_write_text_version` realigns once more after the survivor cure,
+against the unscrubbed body, whichever pass made the replacement; the
+`--fix-leaks` rewrite does the same against the export it read, since its
+own bars are the columns to keep. A test pins the call's POSITION on the
+source of both writers, because a realignment ahead of a pass that can
+still move the text is worth nothing and looks finished.
+**What a text file cannot do, stated once**: the bar is one glyph per
+line, so the vertical rule is continuous only where the viewer's line
+spacing equals the glyph's height — a monospace font with box-drawing
+glyphs at single spacing (Consolas in Notepad, Cascadia, DejaVu Sans Mono)
+draws it unbroken; any leading above that shows a column of short strokes,
+and a proportional font scatters them. Measured against a plain ASCII `|`
+at the same leading: it breaks identically, so no glyph choice closes the
+gap, and the box glyph is kept for the viewer that can draw it.
 
 **…and a ROTATED page is rendered in its READING frame**
 (`_reading_frame_spans`, `_page_text_spans`, read by `_page_visual_text` and
