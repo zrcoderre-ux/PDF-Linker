@@ -4123,11 +4123,34 @@ two paths cannot answer the column question differently. Cost: ~1.4 ms a
 pleading page for the extra span read, ~1.4 ms for the stops on a 400-row
 page. Accepted, and the same as the layout's own: exports of a delivered
 folder come back with the new spacing on the first FULL re-run, whitespace
-only. What this does NOT do, and is a policy question: two-column PROSE (a
-contract printed in two columns) is still rendered ACROSS, each printed line
-of both columns on one export line, which is the page's geometry and not its
-reading order; rendering it column by column is what `_page_column_streams`
-already does for the scrub and `_page_detect_text` for detection.
+only.
+**…and two-column PROSE reads COLUMN BY COLUMN** (`_prose_column_bands`,
+`_band_is_prose`, `_cell_reads_as_prose`, `_VIS_COL_*`), at the owner's
+direction. A contract or a terms page printed in two columns is the one
+shape where the page's geometry and its reading order disagree: laid out row
+by row the export put one printed line of EACH column on every line, and a
+reader — or the drafting model — met "1. TERM. This Agreement begins on the
+2. PAYMENT. Lessee shall pay the monthly" as one sentence. A band that reads
+as multi-column prose is rendered every line of its first column, then
+every line of the next, a blank line between, each column still at its own
+printed indent so the export still says where the text sat. What makes a
+band PROSE and not a caption, a ledger or a label/value block is the CELLS,
+and every screen was measured against those three shapes: at least
+`_VIS_COL_MIN_ROWS` rows carry a cell at two or more stops; every column but
+the last is at least `_VIS_COL_MIN_WIDTH` wide; and on `_VIS_COL_SHARE` of
+its rows each column's cell is `_VIS_COL_MIN_WORDS` or more words with a
+lower-case word in it, FILLING `_VIS_COL_FILL` of its width (ragged-right
+prose runs up to the column boundary; a caption's "v." and "Plaintiff," and
+a ledger's "0.8" and "$980.00" do not, and a ledger's numbers fail the word
+count outright). A band opens on a row with two or more cells and runs while
+the next row's cells all start on its stops and stay inside their column —
+a full-width line ends it, a row carrying only one column's cell (the other
+column's paragraph break) does not, and that gap is written as a blank line
+in that column alone. `_page_visual_text` only, which is where an exhibit
+lands; the pleading-row path still reads a row as a row, since a pleading's
+two columns are a caption. Detection (`_page_detect_text`, column-ordered
+already) and citation detection (the flowing text) are untouched. Cost:
+~6.5 ms on a fifty-row two-column page.
 
 **…and a ROTATED page is rendered in its READING frame**
 (`_reading_frame_spans`, `_page_text_spans`, read by `_page_visual_text` and
