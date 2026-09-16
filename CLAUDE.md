@@ -4212,6 +4212,52 @@ lands; the pleading-row path still reads a row as a row, since a pleading's
 two columns are a caption. Detection (`_page_detect_text`, column-ordered
 already) and citation detection (the flowing text) are untouched. Cost:
 ~6.5 ms on a fifty-row two-column page.
+**…and EVERY renderer draws the page's RULES and its EMPTY LINES**
+(`_lay_rules`, `_pleading_layout`, `_pleading_lines`, `_PleadingRows`,
+`_AnchorList.gutter`, `_pn_scrub_page_rows`, `_PN_GUTTER_BARE_RE`,
+`_PN_RULE_GLYPH_RE`), at the owner's direction. The form renderer drew its
+boxes and gaps and the other two did not, so a caption page and an exhibit
+still read as a list beside a page of ruled boxes. One definition now:
+`_lay_rules` takes text lines with their y and lays the page's line art
+among them — a `─` line per horizontal rule, a `│` on every line a vertical
+rule crosses, blank lines for the gaps where a lead is given — and the form,
+exhibit and pleading renderers all read it (`test_ruled_page_fidelity.py`
+pins that on the SOURCE, since two definitions of how a rule is drawn is how
+three renderers come to draw one page three ways). The EXHIBIT path reads
+the line art at the same floor the form does (`_FORM_RULE_MIN`) and draws it
+only where the text was NOT re-framed — `_page_rules` reads the page's own
+frame, so on a rotated or skewed scan the rules would land in the wrong
+place, and the identity of the framed span list is the test. The PLEADING
+path is the harder one: its rows are `(line_num, segments)` and carry no y,
+and several consumers unpack them exactly so. So `_page_lined_rows` hands
+back a `_PleadingRows` — a list, read as one by every consumer — carrying
+the page's LAYOUT beside it: each row's baseline, the line art less the
+rules of a ruled TABLE (whose rows the fold has already written as pipes,
+so drawing them again would frame a grid twice), and every gutter number NO
+ROW CLAIMS, which `_detect_line_anchors` now reports (`_AnchorList.gutter`)
+— a line the page left empty, and on pleading paper the empty line IS the
+gap, so it prints as its bare number (` 7`) exactly where the page prints
+one. The scrub is split from the layout (`_pn_scrub_page_rows`; the old
+name stays as the two composed) so the rules and bare numbers are laid
+AFTER the substitution and no term ever meets a `│`; a rule line carries no
+number, so a pinpoint still lands on text. Pleading paper's OWN rules are
+not drawn: the double rule at the gutter and the single one at the right
+margin say nothing the numbers do not, and a bar left of the body would
+push every line right — so a vertical rule at or left of the leftmost text
+start, or at or right of every row's start, is a margin rule and is
+dropped, while the caption box's divider between the party column and the
+case-number column is drawn. Two readers of the export had to learn the
+new lines: a bare number fails `_PN_GUTTER_RE`'s "two spaces then text"
+shape, so left alone it was PROSE to `_pn_context_prep` and a Context
+quote read "6 7 8 NOTICE OF MOTION"; it is a location now and no body, and
+the rule glyphs — the form export's included — are stripped from a quote as
+the furniture they are. Cost, accepted and the layout's own: exports of a
+delivered folder come back on the first FULL re-run with their empty
+numbered lines and their caption boxes drawn, whitespace and rule glyphs
+only. Residual, and stated: the exhibit renderer's lead is the median of
+ALL row gaps, so on a sparse page a real gap can round to no blank line,
+and a rule that sits inside a two-column prose band is stepped over, since
+a bar cannot stand in one column of text read column by column.
 
 **…and a ROTATED page is rendered in its READING frame**
 (`_reading_frame_spans`, `_page_text_spans`, read by `_page_visual_text` and

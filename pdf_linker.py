@@ -4708,6 +4708,15 @@ def _sidebar_spans(spans, line_col, tol):
     return out
 
 
+class _AnchorList(list):
+    """`_detect_line_anchors`' rows, with the page's GUTTER beside them:
+    `gutter` is [(num, y)] for every line number the page prints, claimed by
+    a row or not, so the export can print the bare number of a line the page
+    left empty (see `_pleading_layout`). A list, so every consumer reads it
+    as one."""
+    gutter = ()
+
+
 def _pleading_gutter(page, blocks=None):
     """The line-number GUTTER of a pleading page: `(dominant_x, line_col)`,
     where `line_col` is the spans of the dominant line-number column as
@@ -5126,7 +5135,11 @@ def _detect_line_anchors(page, desplice=False, ink=None):
                 "segments": segs,
                 "y_mid": row["y"],
             })
-    return results
+    anchors = _AnchorList(results)
+    # Every number the page prints, claimed by a row or not, so the export
+    # can print the bare number of a line the page left empty.
+    anchors.gutter = sorted((s["num"], s["y_mid"]) for s in line_col)
+    return anchors
 
 
 def _annotate_paragraphs(anchors):
@@ -25734,6 +25747,13 @@ def _page_lined_rows(page, ink=None):
     anchors = detect(page)
     if not anchors:
         return None
+    gutter = getattr(anchors, "gutter", ())
+    # The ruled TABLE, read before the fold so the layout can leave its
+    # rules to the pipes the fold writes (see `_pleading_layout`).
+    try:
+        grid = _ruled_table(page, anchors)
+    except Exception:
+        grid = None
     anchors = _fold_ruled_rows(anchors, page)
 
     def _strip_markers(rows):
@@ -25771,15 +25791,65 @@ def _page_lined_rows(page, ink=None):
     score = _page_weld_score(rows)
     if score:
         try:
-            cured = _fold_ruled_rows(detect(page, desplice=True), page)
+            raw = detect(page, desplice=True)
+            cured = _fold_ruled_rows(raw, page)
         except Exception:
-            cured = None
+            raw = cured = None
         if cured:
             crows = _strip_markers([(a["line_num"], a["segments"])
                                     for a in sorted(cured, key=lambda a: a["y_mid"])])
             if _page_weld_score(crows) < score:
-                return crows
-    return rows
+                return _pleading_rows(crows, cured, page, grid,
+                                      getattr(raw, "gutter", ()))
+    return _pleading_rows(rows, anchors, page, grid, gutter)
+
+
+class _PleadingRows(list):
+    """`_page_lined_rows`' rows — a list of (line_num, segments), read as one
+    by every consumer — carrying the page's LAYOUT beside them (`layout`,
+    see `_pleading_layout`), which the export loop hands to
+    `_pleading_lines`."""
+    layout = None
+
+
+def _pleading_layout(rows, anchors, page, grid, gutter):
+    """What `_pleading_lines` needs to draw a pleading page as the page draws
+    it: `ys`, each row's baseline; `blank_nums`, [(num, y)] for every gutter
+    number no row claims — a line the page left empty, printed as its bare
+    number; and `rules`, the page's line art (`_page_rules` at the drawing
+    floor `_FORM_RULE_MIN`) less the rules of a ruled TABLE, whose rows the
+    fold has already written as pipes. None where the rows and anchors
+    disagree, and the rows are then laid out as before."""
+    ordered = sorted(anchors, key=lambda a: a["y_mid"])
+    if len(ordered) != len(rows):
+        return None
+    ys = [float(a["y_mid"]) for a in ordered]
+    claimed = {num for num, _segs in rows if num is not None}
+    blank = [(int(n), float(y)) for n, y in (gutter or ())
+             if int(n) not in claimed]
+    try:
+        vr, hr = _page_rules(page, min_len=_FORM_RULE_MIN)
+    except Exception:
+        vr, hr = [], []
+    if grid:
+        xs, bands = grid
+        gx0, gx1 = min(xs) - 2.0, max(xs) + 2.0
+        gy0, gy1 = bands[0][0] - 2.0, bands[-1][1] + 2.0
+        vr = [r for r in vr
+              if not (gx0 <= r[0] <= gx1 and r[1] >= gy0 and r[2] <= gy1)]
+        hr = [r for r in hr
+              if not (gy0 <= r[0] <= gy1 and r[1] >= gx0 and r[2] <= gx1)]
+    return {"ys": ys, "blank_nums": blank, "rules": (list(vr), list(hr))}
+
+
+def _pleading_rows(rows, anchors, page, grid, gutter):
+    """`rows` as `_PleadingRows`, its layout computed where it can be."""
+    out = _PleadingRows(rows)
+    try:
+        out.layout = _pleading_layout(rows, anchors, page, grid, gutter)
+    except Exception:
+        out.layout = None
+    return out
 
 
 # A ruled table on pleading paper needs this many ROW BANDS (the gaps
@@ -26576,10 +26646,20 @@ def _page_visual_text(page):
         # In the READING frame (see `_reading_frame_spans`): a rotated scan's
         # OCR layer runs up the unrotated page, and clustered as it lies
         # every word became a row of its own.
-        rows = _cluster_rows(_margin_sideways_dropped(_reading_frame_spans(
-            page, _drop_overdrawn_spans(spans, page))))
+        deduped = _drop_overdrawn_spans(spans, page)
+        framed = _reading_frame_spans(page, deduped)
+        rows = _cluster_rows(_margin_sideways_dropped(framed))
     except Exception:
         return None
+    # The page's line art, drawn as the form renderer draws it. Read in the
+    # page's own frame, so where the text was RE-FRAMED (a rotated or skewed
+    # scan) the rules would land in the wrong place and are left undrawn.
+    rules = ((), ())
+    if framed is deduped:
+        try:
+            rules = _page_rules(page, min_len=_FORM_RULE_MIN)
+        except Exception:
+            rules = ((), ())
     if not rows:
         return None
     rows = sorted(rows, key=lambda r: r["y"])
@@ -26617,17 +26697,31 @@ def _page_visual_text(page):
             prev_x1 = x1
         cells.append(segs)
         blanks_before.append(blanks)
-    flat = [[(x0, t) for x0, _x1, t in r] for r in cells]
-    stops = _column_stops(flat, left, char_w)
-    lines = [_visual_row_text(r, left, char_w, stops) for r in flat]
+    # Every line the export will carry, in y order: the text rows, each
+    # horizontal rule on a line of its own, blank lines for the page's gaps,
+    # and a bar on every line a vertical rule crosses (`_lay_rules`, the one
+    # definition the form and pleading renderers read too).
+    text_lines = [{"y": r["y"], "idx": i,
+                   "cells": [(x0, t) for x0, _x1, t in segs]}
+                  for i, (r, segs) in enumerate(zip(rows, cells))]
+    spaced = _lay_rules(text_lines, rules, char_w, lead)
+    stops = _column_stops([ln["cells"] for ln in spaced], left, char_w)
     # A run of two-column PROSE reads column by column (see the note above
-    # `_VIS_COL_MIN_ROWS`); everything else reads row by row.
+    # `_VIS_COL_MIN_ROWS`); everything else reads row by row. A band is
+    # rendered from its text rows alone, and the rule and blank lines that
+    # fall inside it are stepped over — a bar cannot stand in one column of
+    # text that is being read column by column.
     bands = {i0: (i1, sx) for i0, i1, sx in _prose_column_bands(cells)}
-    out, i = [], 0
-    while i < len(lines):
+    out, past_y = [], None
+    for ln in spaced:
+        if past_y is not None:
+            if ln["y"] <= past_y:
+                continue
+            past_y = None
+        i = ln.get("idx")
         if i in bands:
             i1, band_stops = bands[i]
-            out.extend([""] * blanks_before[i])
+            past_y = rows[i1 - 1]["y"]
             for k, sx in enumerate(band_stops):
                 col_lines = []
                 for r in range(i, i1):
@@ -26647,11 +26741,8 @@ def _page_visual_text(page):
                 if k:
                     out.append("")
                 out.extend(col_lines)
-            i = i1
             continue
-        out.extend([""] * blanks_before[i])
-        out.append(lines[i])
-        i += 1
+        out.append(_visual_row_text(ln["cells"], left, char_w, stops))
     text = "\n".join(out).rstrip()
     return text or None
 
@@ -26659,6 +26750,18 @@ def _page_visual_text(page):
 def _pn_apply_page_rows(pseudonymizer, rows, char_w=_VIS_CHAR_W):
     """Pseudonymize a pleading page column by column and return one display
     string per row. `char_w` is the page's own grid unit (`_spans_char_width`).
+    The scrub is `_pn_scrub_page_rows`' and the layout `_visual_rows_text`'s;
+    the export loop asks the two apart, so the page's rules and empty lines
+    can be laid between the rows (`_pleading_lines`)."""
+    left = _rows_body_left(rows)
+    return _visual_rows_text(_pn_scrub_page_rows(pseudonymizer, rows),
+                             left, char_w)
+
+
+def _pn_scrub_page_rows(pseudonymizer, rows):
+    """A pleading page's rows scrubbed column by column, as segment lists —
+    [[(x0, faked text), ...], ...], one per row, the ORIGINAL x deciding the
+    column and the scrubbed text filling it.
 
     The caption party block, when confidently detected and fully attributed,
     is RE-RENDERED from the tracked parties' fakes first (see
@@ -26678,14 +26781,34 @@ def _pn_apply_page_rows(pseudonymizer, rows, char_w=_VIS_CHAR_W):
         bodies = [rows[i][1][j][1] for i, j in items]
         for (i, j), text in zip(items, pseudonymizer.apply_lines(bodies)):
             faked[(i, j)] = text
-    # Re-assembled at each segment's own printed column (see the visual-layout
-    # note above), with the ORIGINAL x deciding the column and the SCRUBBED
-    # text filling it.
-    left = _rows_body_left(rows)
-    return _visual_rows_text([[(segs[j][0], faked[(i, j)])
-                               for j in range(len(segs))]
-                              for i, (_num, segs) in enumerate(rows)],
-                             left, char_w)
+    return [[(segs[j][0], faked[(i, j)]) for j in range(len(segs))]
+            for i, (_num, segs) in enumerate(rows)]
+
+
+def _pleading_lines(seg_rows, nums, layout, left, char_w=_VIS_CHAR_W):
+    """(line numbers, display lines) for a pleading page: `seg_rows` laid out
+    on the page's grid (`_visual_rows_text`'s own rule), and where `layout`
+    is given (`_pleading_layout`) the page's own furniture drawn among them
+    — a bare gutter number for a line the page left empty, a `─` line for
+    each horizontal rule, a `│` on every row a vertical rule crosses. A rule
+    line carries no number. A vertical rule standing in the MARGIN — at or
+    left of the leftmost text, or at or right of every row's start — is
+    pleading paper's own border and is not drawn: the gutter numbers already
+    say what it says, and drawing it would push every line right."""
+    if not layout:
+        return list(nums), _visual_rows_text(seg_rows, left, char_w)
+    xs = [float(x) for segs in seg_rows for x, _t in segs]
+    lo, hi = (min(xs), max(xs)) if xs else (left, left)
+    vr, hr = layout["rules"]
+    vr = [r for r in vr if lo + 1.0 < r[0] < hi - 1.0]
+    lines = [{"y": layout["ys"][i], "cells": list(segs), "num": nums[i]}
+             for i, segs in enumerate(seg_rows)]
+    lines += [{"y": y, "cells": [], "num": n} for n, y in layout["blank_nums"]]
+    spaced = _lay_rules(lines, (vr, hr), char_w, 0.0)
+    stops = _column_stops([ln["cells"] for ln in spaced], left, char_w)
+    return ([ln.get("num") for ln in spaced],
+            [_visual_row_text(ln["cells"], left, char_w, stops)
+             for ln in spaced])
 
 
 # ── Judicial Council / fillable-form pages ──────────────────────────────────
@@ -27435,6 +27558,48 @@ _FORM_HRULE = "\u2500"        # ─
 _FORM_VRULE = "\u2502"        # │
 
 
+def _lay_rules(lines, rules, cw, lead):
+    """`lines` — text lines as {"y", "cells": [(x, text), ...], ...} — with
+    the page's line art laid among them, in y order: a horizontal rule as a
+    line of its own (a run of `─` at its x and width; under a caption it
+    reads as the underline it is), blank lines for the page's vertical gaps
+    measured in `lead` (none where `lead` is 0), and a vertical rule as a
+    `│` on every line it crosses, blank ones included, so a box reads as a
+    box — except where a horizontal rule already runs through that x, which
+    is the rule's own junction, measured on the rule's real extent. Every
+    line keeps whatever else it carried; a rule line is marked `rule`. The
+    ONE definition, read by the form, exhibit and pleading renderers, so
+    three renderers cannot draw one page three ways."""
+    out = [dict(ln, rule=False, cells=list(ln["cells"])) for ln in lines]
+    vrules, hrules = rules or ((), ())
+    for y, x0, x1 in hrules:
+        if x1 - x0 <= 0:
+            continue
+        out.append({"y": float(y), "rule": True, "span": (float(x0), float(x1)),
+                    "cells": [(float(x0), _FORM_HRULE
+                               * max(1, int(round((x1 - x0) / cw))))]})
+    out.sort(key=lambda l: l["y"])
+    spaced, prev_y = [], None
+    for ln in out:
+        if prev_y is not None and lead:
+            blanks = max(0, min(int(round((ln["y"] - prev_y) / lead)) - 1,
+                                _VIS_MAX_BLANKS))
+            for k in range(blanks):
+                spaced.append({"y": prev_y + (k + 1) * (ln["y"] - prev_y)
+                               / (blanks + 1), "cells": [], "rule": False})
+        spaced.append(ln)
+        prev_y = ln["y"]
+    for x, y0, y1 in vrules:
+        for ln in spaced:
+            if not (y0 - 1.0 <= ln["y"] <= y1 + 1.0):
+                continue
+            if ln["rule"] and ln["span"][0] - cw <= x <= ln["span"][1] + cw:
+                continue
+            ln["cells"].append((float(x), _FORM_VRULE))
+            ln["cells"].sort()
+    return spaced
+
+
 def _form_layout(cells, char_w=None, rules=None, page_w=None):
     """Lay cells out as monospace rows: group by printed row, then place each at
     its own column. Shared by the widget path and the ink path.
@@ -27463,43 +27628,13 @@ def _form_layout(cells, char_w=None, rules=None, page_w=None):
         rows.append((cur, top, bot))
 
     # Every physical line the export will carry, each at the y it stands at
-    # on the page: the text rows, then each horizontal rule as a line of its
-    # own (a rule under a caption reads as the underline it is), then blank
-    # lines for the page's vertical gaps, measured in the text rows' own lead.
-    lines = [{"y": (t + b) / 2, "cells": sorted(row), "rule": False}
-             for row, t, b in rows]
-    vrules, hrules = rules or ((), ())
-    for y, x0, x1 in hrules:
-        if x1 - x0 <= 0:
-            continue
-        lines.append({"y": float(y), "rule": True, "span": (float(x0), float(x1)),
-                      "cells": [(float(x0), _FORM_HRULE
-                                 * max(1, int(round((x1 - x0) / cw))))]})
-    lines.sort(key=lambda l: l["y"])
+    # on the page: the text rows, the page's rules and its vertical gaps
+    # measured in the text rows' own lead (`_lay_rules`).
+    lines = [{"y": (t + b) / 2, "cells": sorted(row)} for row, t, b in rows]
     text_ys = sorted((t + b) / 2 for _row, t, b in rows)
     deltas = [b - a for a, b in zip(text_ys, text_ys[1:]) if b - a > 1.0]
     lead = statistics.median(deltas) if deltas else 0.0
-    spaced, prev_y = [], None
-    for ln in lines:
-        if prev_y is not None and lead:
-            blanks = max(0, min(int(round((ln["y"] - prev_y) / lead)) - 1,
-                                _VIS_MAX_BLANKS))
-            for k in range(blanks):
-                spaced.append({"y": prev_y + (k + 1) * (ln["y"] - prev_y)
-                               / (blanks + 1), "cells": [], "rule": False})
-        spaced.append(ln)
-        prev_y = ln["y"]
-    # A vertical rule is a bar on every line it crosses — the blank ones
-    # included, so a box reads as a box — except where a horizontal rule
-    # already runs through that x, which is the rule's own junction.
-    for x, y0, y1 in vrules:
-        for ln in spaced:
-            if not (y0 - 1.0 <= ln["y"] <= y1 + 1.0):
-                continue
-            if ln["rule"] and ln["span"][0] - cw <= x <= ln["span"][1] + cw:
-                continue
-            ln["cells"].append((float(x), _FORM_VRULE))
-            ln["cells"].sort()
+    spaced = _lay_rules(lines, rules, cw, lead)
     max_col = _FORM_MAX_COL
     if page_w:
         max_col = max(max_col, int((float(page_w) - left) / cw) + 2)
@@ -27995,6 +28130,15 @@ _PN_PAGE_HEADER_RE = re.compile(
 # numbered line reads " 1        NOTICE OF MOTION" and a fixed-width gap would
 # hand that line the PREVIOUS line's number.
 _PN_GUTTER_RE = re.compile(r"^\s*(\d+)\s{2,}\S")
+# A line the page left EMPTY prints as its bare gutter number (see
+# `_pleading_lines`): a location, and no body at all. Held to the writer's
+# own shape — the number right-aligned to two characters and nothing after
+# it — so a page number an exhibit prints mid-page, padded to its column,
+# never reads as one.
+_PN_GUTTER_BARE_RE = re.compile(r"^ ?(\d{1,2})$")
+# The rules the export draws (`_FORM_HRULE` / `_FORM_VRULE`) are furniture,
+# not prose: a Context quote reads through them.
+_PN_RULE_GLYPH_RE = re.compile("[\u2500\u2502]+")
 
 
 def _pn_page_label(pdf, printed):
@@ -28044,7 +28188,7 @@ def _pn_body_lines(body):
         if raw.startswith("====== Authorities"):
             page, gutter = "appendix", None
             continue
-        mg = _PN_GUTTER_RE.match(raw)
+        mg = _PN_GUTTER_RE.match(raw) or _PN_GUTTER_BARE_RE.match(raw)
         if mg:
             gutter = mg.group(1)
         out.append((page, gutter, raw))
@@ -28159,8 +28303,16 @@ def _pn_context_prep(parsed):
         # The gutter number is furniture. Cut the number and its spacing only:
         # the pattern's last atom is the first character of the body, so the
         # slice stops one short of the match end or it eats that character
-        # ("DISCRIMINATION" came out "ISCRIMINATION").
-        body = (text[m.end() - 1:] if m else text).strip()
+        # ("DISCRIMINATION" came out "ISCRIMINATION"). A bare number — a
+        # line the page left empty — is all furniture, and a rule the export
+        # drew is furniture wherever it stands.
+        if m:
+            body = text[m.end() - 1:]
+        elif _PN_GUTTER_BARE_RE.match(text):
+            body = ""
+        else:
+            body = text
+        body = _PN_RULE_GLYPH_RE.sub(" ", body).strip()
         # The visual layout pads a row's segments apart to mirror the page's
         # columns; a QUOTE is prose, so the padding comes back out — a Context
         # cell reading "ROXANE ESTRADA,        Case No.:" would spend half its
@@ -32522,14 +32674,18 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
                     detect_pages[dp + 1] if dp + 1 < len(detect_pages) else "")
             if isinstance(content, list):   # pleading page: (line_num, segments)
                 nums = [num for num, _ in content]
+                left = _rows_body_left(content)
                 if pz is not None:
                     # Column by column, so a name the page wrapped mid-name
                     # stays contiguous; rows re-assembled left to right after.
-                    bodies = _pn_apply_page_rows(pz, content, block_char_w[k])
+                    seg_rows = _pn_scrub_page_rows(pz, content)
                 else:
-                    left = _rows_body_left(content)
-                    bodies = _visual_rows_text([segs for _num, segs in content],
-                                               left, block_char_w[k])
+                    seg_rows = [segs for _num, segs in content]
+                # Laid out with the page's own rules and empty lines among
+                # the rows (`_pleading_lines`); a rule line has no number.
+                nums, bodies = _pleading_lines(
+                    seg_rows, nums, getattr(content, "layout", None),
+                    left, block_char_w[k])
                 # A gutter number owns its first row; continuation rows (a
                 # stacked letterhead/caption line) carry line_num=None and print
                 # under a blank, aligned gutter so the block reads as lines.
