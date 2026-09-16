@@ -3484,6 +3484,37 @@ the party), so its row stays reversible.
   QUAD item (`"qu"`, how some producers draw a rectangle) as the rect it
   spans, so a form's caption box is a box whichever way it was drawn; a
   form whose boxes are drawn no other way yielded no rule at all.
+  **…and an OCR word standing over VISIBLE type is a reading of it,
+  whatever it read** (`_span_is_invisible_reading`, `_SPAN_INSIDE_OVERSHOOT`,
+  `_SPAN_PIECE_MIN`, in `_span_is_redraw_fragment`). A delivered scanned
+  complaint carried its typed values twice: as real text (the filer's
+  builder wrote them over the page image) and again in an OCR layer laid
+  over the whole page — Tesseract's invisible GlyphLessFont, one span per
+  word, most likely this tool's own `_ocr_image_regions` pass from an
+  earlier run, whose overlay shows Tesseract's PDF onto the page (the page
+  image was in the file twice, which is how that pass leaves it). The
+  fragment rule should have taken every word, and two things stopped it,
+  read off a masked geometry report of the file (positions, fonts and sizes
+  with every letter and digit replaced, since the content could not
+  travel). The OCR word's box is the INK's and the typed run's box is the
+  FONT's, so they disagree by more than the one-point pad: the last word of
+  every value overshot the run's right edge by 3-8 pt (12-29% of its own
+  width — "Street Street", "GROUP GROUP", "individual. individual.") and the
+  words sat up to 2 pt above its top. The pad is a share of the piece's own
+  size in each direction now, for a piece of two characters or more ("50"
+  of "1 - 50" needs it); an abutting NEXT word still overshoots by its whole
+  width and is refused, and a one-character piece keeps the one-point pad,
+  because its text matches inside almost any run ("A" in "JANE") and only
+  exact geometry can vouch for it. And where the OCR MISREAD a word ("BERRIINGTON" over
+  "BERRINGTON") the text test could never match — so an invisible word whose
+  box lies inside a visible span's is dropped whatever it read: the visible
+  text IS the document at that spot, and nothing a reader can see is lost.
+  One way only: a visible word inside an invisible misreading stays, since
+  the type is the document and the reading is not. The height gate holds for
+  both, so an OCR word the size of a stamp never swallows a typed initial.
+  What is left, stated: an OCR word that WELDED the label to the value
+  ("NUMBER:158015" over "158015") is wider than the type and is nobody's
+  piece, so that value still reads twice.
   **…and the copies routinely do NOT split their row the same way**
   (`_span_is_redraw_fragment`). Exact-text equality collapses two copies only
   when both cut the row into the same pieces, and an OCR layer emits one span
@@ -3984,6 +4015,36 @@ extraction, which is what keeps the numbering.
   ink inside, so the state is the glyph or the box is empty.
 - **Widgets always win.** The ink pass runs only where they are absent, so an
   intact form is never read by inference.
+- **…and a SCANNED form's boxes are read off the PICTURE** (`_raster_rules`,
+  `_page_art_rules`, `_page_scan_image`, `_RASTER_RULE_*`). A delivered
+  complaint was a scanned PLD-PI-001: one 300-dpi image of the whole page,
+  its typed values as real text over it, an OCR layer over everything, and
+  not one line item or rectangle on the page — so `_page_rules` read
+  nothing, the export drew no caption box, no divider and no section rule,
+  and the checkbox marks came through as bare "X" glyphs. The ink pass
+  already reads the SQUARES off a render; the rules are read the same way
+  now, from a 144-dpi grayscale render: a run of dark pixels at least
+  `_FORM_RULE_MIN` long (one-pixel breaks tolerated, since a scan breaks a
+  line; two, and two checkboxes stacked a point apart joined into one
+  20-pt rule), at most `_RASTER_RULE_THICK` thick, clear of the scanner's
+  own border at the page edge, and with LIGHT beside it along its length
+  (`_RASTER_RULE_CLEAR`). The last gate is the one that matters: a word's
+  baseline row is a thin dark band too — at 144 dpi the feet of a 9-pt
+  word run together with gaps under a pixel — and it was read as a rule
+  until the letters standing on it were asked about. Measured against the
+  same page drawn as vectors: the render reads back every rule the vector
+  page draws, within a point, and nothing else, in 0.09 s. Both ends map
+  through the page's derotation, so a /Rotate scan's rules land where its
+  spans do. Asked ONLY of a page that draws no line art of its own AND
+  carries an image covering `_RASTER_RULE_COVER` of itself — a vector
+  page's rules are exact and a render would only re-read them a pixel off,
+  and a born-digital page never pays for the render (a test pins that the
+  fallback is not reached). Both renderers that draw rules take it
+  (`_form_page_geometry`, and `_page_visual_text` where the text was not
+  re-framed). Residual, and stated: a rule touching type — an underline
+  through descenders, a box edge a caption sits hard against — merges into
+  the type's band and is not drawn, and the pleading-row path's ruled-table
+  fold still reads vector rules only.
 - **The banner and the log both say when a state was inferred**, and ask for a
   check. An inferred checkbox on a default-judgment packet is precisely the fact
   nobody should take on trust, so it is never presented as equal to a widget's.
