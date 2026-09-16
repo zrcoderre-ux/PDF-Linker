@@ -4443,8 +4443,14 @@ def _page_flowing_text(page):
         spans = _page_text_spans(page)
     except Exception:
         return text
+    # The texts BEFORE the seam, since a template restoration
+    # (`_restore_template_labels`) changes a span's words in place and drops
+    # nothing: a page whose labels moved is rebuilt too, or this rendering —
+    # the citation parse's and the ordinary export's — would be the one
+    # reading of the page still carrying the OCR's spelling.
+    before = [sp["text"] for sp in spans]
     kept = _drop_overdrawn_spans(spans, page)
-    if len(kept) == len(spans):
+    if len(kept) == len(spans) and [sp["text"] for sp in kept] == before:
         return text
     rows = _cluster_rows(_reading_frame_spans(page, kept))
     if not rows:
@@ -4508,7 +4514,16 @@ def _drop_overdrawn_spans(spans, page=None):
     out, dropped = _drop_reread_spans(out)
     if dropped and page is not None:
         _note_doubled_page(page, dropped)
-    return _drop_redrawn_fragments(out)
+    out = _drop_redrawn_fragments(out)
+    # …and the settled layer of a SCANNED FORM has its pre-printed labels
+    # restored from the form's own template, where the page is recognised as
+    # one (`_restore_template_labels`). Here and not in any one renderer,
+    # since every rendering of a page — the form rows, the exhibit grid, the
+    # detection copy — takes its spans through this seam, and the export must
+    # read the label the scrub and the leak scan read.
+    if page is not None:
+        out = _restore_template_labels(out, page)
+    return out
 
 
 # Where a page's INVISIBLE text stands, read off its text trace and kept on
@@ -4549,6 +4564,547 @@ def _page_invisible_runs(page):
     if memo is not None:
         memo[page.number] = out
     return out
+
+# ── A PRE-PRINTED FORM is read against its own TEMPLATE ─────────────────────
+# A Judicial Council form has a predetermined layout: the same labels at the
+# same places on every copy ever filed. A SCAN of one hands the OCR the labels
+# to read afresh — "ATTORNEY OR PARTY WlTHOUT ATTORNEY", "CASE NUMBFR:",
+# "(TYPE OR PRlNT NAME)" — and every misreading lands in the export as a word
+# the document never carried. The blank official form says exactly what those
+# labels are, so where the page can be RECOGNISED as that form with enough
+# confidence, its pre-printed labels are restored from the template and the
+# typed VALUES are left exactly as read: the template knows the furniture and
+# nothing about what was typed into it.
+#
+# The library is a folder of blank official forms (`_form_templates_dir`),
+# indexed on first use: per page, the form id and revision the footer prints,
+# every WORD of the static layer with its box (never a word inside a field's
+# widget rect, since that is where a value would stand), and the widget rects
+# themselves. Recognition is asked three ways and all three must answer.
+# The scanned page's own footer must name the same form id (case-folded,
+# since a scan reads the I of PLD-PI-001 as an l), and where both footers
+# state a revision the two must agree. Enough of the scan's words must match
+# a template word EXACTLY, be unique on both sides and lie far enough apart to
+# fit a scale-and-offset transform from the template's page to the scan's
+# (`_template_fit`), or the identity transform must fit where the scan is
+# straight. And under that transform a SHARE of the template's label words
+# (`_TEMPLATE_MIN_SHARE`, over at least `_TEMPLATE_MIN_MATCHED`) must have a
+# scan word standing at their box reading the same or nearly so — the share
+# is what says "this is that form", and it is asked of the template's words
+# and never of the scan's, so a page full of typed values cannot vote.
+#
+# Restoration is WORD FOR WORD at the matched positions and nowhere else: a
+# scan word standing on a template label word within `_TEMPLATE_MAX_SLIP`
+# edits of it takes the template's spelling; a scan word matching nothing
+# stays what the OCR read (a value, a stamp, a handwritten note), and a word
+# standing inside a template widget rect is never touched at all. So the
+# worst case of a wrong recognition is a label misspelled into another
+# label's words of the same form, at the same place — and the gate is what
+# keeps that from being reached. Asked only of a page whose text layer came
+# out of OCR (this run's or the filer's), because a born-digital form's labels
+# are the template's own already and the fit would cost a page for nothing.
+# The page banner says how many labels moved and from which template, and
+# the fit is memoised per page on the Document so the export, the detection
+# copy and the form renderer describe one restoration.
+
+_TEMPLATE_DIR_NAME = "Form Templates"
+_TEMPLATE_ENV = "PDF_LINKER_FORM_TEMPLATES"
+_TEMPLATE_ATTR = "_pdf_linker_template_pages"      # {page number: (form, n)}
+_TEMPLATE_FIT_ATTR = "_pdf_linker_template_fits"   # {page number: fit | None}
+_TEMPLATE_CHARS_ATTR = "_pdf_linker_template_chars"  # {page number: char boxes}
+_TEMPLATE_MIN_SHARE = 0.6      # of the template's label words matched
+_TEMPLATE_MIN_MATCHED = 8      # and at least this many, whatever the share
+_TEMPLATE_MIN_ANCHORS = 4      # exact, unique word pairs a fit needs
+_TEMPLATE_ANCHOR_LEN = 4       # letters an anchor word must carry
+_TEMPLATE_MAX_SLIP = 0.34      # edits allowed per letter of a label word
+_TEMPLATE_FIT_TOL = 6.0        # pt: residual an anchor may leave the fit
+_TEMPLATE_SCALE_RANGE = (0.85, 1.15)
+_TEMPLATE_WORD_RE = re.compile(r"\S+")
+_TEMPLATE_REV_RE = re.compile(
+    r"Rev(?:ised|\.)?\s*([A-Za-z]{3,9}\.?\s+\d{1,2},?\s+\d{4}|[A-Za-z]{3,9}"
+    r"\.?\s+\d{4}|\d{1,2}/\d{1,2}/\d{2,4})", re.IGNORECASE)
+# What one setting/environment override names, resolved once per process so
+# the hook deep inside the span dedupe needs no config handed down to it.
+_TEMPLATE_DIR_OVERRIDE = None
+_TEMPLATE_CACHE = {}           # {dir: (signature, [template pages])}
+
+
+def _set_form_templates_dir(value):
+    """Point the template library at `value` (a config path or ""), from
+    `main` once the config is read. Empty keeps the default resolution."""
+    global _TEMPLATE_DIR_OVERRIDE
+    v = str(value or "").strip().strip('"')
+    _TEMPLATE_DIR_OVERRIDE = Path(v) if v else None
+
+
+def _form_templates_dir():
+    """Where the blank official forms live: the `form_templates` setting, then
+    the PDF_LINKER_FORM_TEMPLATES env var, else `Form Templates` beside the
+    config — the same resolution the master workbook uses."""
+    if _TEMPLATE_DIR_OVERRIDE is not None:
+        return _TEMPLATE_DIR_OVERRIDE
+    env = (os.environ.get(_TEMPLATE_ENV) or "").strip().strip('"')
+    if env:
+        return Path(env)
+    return _config_path().with_name(_TEMPLATE_DIR_NAME)
+
+
+def _template_word_key(text):
+    """The comparison form of a label word: case-folded, with the marks a
+    scan reads unreliably (a speck period, a comma) trimmed from its ends
+    and nothing inside it touched."""
+    return str(text or "").strip().strip(".,;:()[]{}'\"").casefold()
+
+
+def _template_form_key(form_no):
+    """The form id folded for comparison: case-insensitive, since a scan
+    reads the I of PLD-PI-001 as an l about as often as not."""
+    return re.sub(r"[^a-z0-9]", "", str(form_no or "").casefold().replace("l", "i"))
+
+
+def _template_revision(page):
+    """The revision the page's footer prints ("Rev. January 1, 2007" ->
+    "january12007"), or "" where the footer states none this can read."""
+    try:
+        import fitz
+        r = page.rect
+        foot = fitz.Rect(r.x0, r.y1 - (r.y1 - r.y0) * 0.18, r.x1, r.y1)
+        foot = fitz.Rect(foot * page.derotation_matrix)
+        foot.normalize()
+        text = page.get_text("text", clip=foot)
+    except Exception:
+        return ""
+    m = _TEMPLATE_REV_RE.search(text or "")
+    return re.sub(r"[^a-z0-9]", "", m.group(1).casefold()) if m else ""
+
+
+def _template_page_words(page, widget_rects):
+    """[(key, text, bbox)] for every word of `page`'s static layer standing
+    outside every widget rect — the pre-printed labels and nothing that
+    could be a value. Read off the characters' own boxes so a word's box is
+    the ink it covers, not its share of the run."""
+    words = []
+    try:
+        blocks = page.get_text("rawdict").get("blocks", [])
+    except Exception:
+        return words
+    for blk in blocks:
+        for ln in blk.get("lines", []):
+            for sp in ln.get("spans", []):
+                run, x0, y0, x1, y1 = [], None, None, None, None
+                def flush():
+                    if run:
+                        text = "".join(run)
+                        key = _template_word_key(text)
+                        if key:
+                            cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+                            if not any(r[0] <= cx <= r[2] and r[1] <= cy <= r[3]
+                                       for r in widget_rects):
+                                words.append((key, text, (x0, y0, x1, y1)))
+                for ch in sp.get("chars", []):
+                    c = ch.get("c", "")
+                    if c.isspace():
+                        flush()
+                        run, x0 = [], None
+                        continue
+                    bx0, by0, bx1, by1 = ch["bbox"]
+                    if x0 is None:
+                        x0, y0, x1, y1 = bx0, by0, bx1, by1
+                    else:
+                        x0, y0 = min(x0, bx0), min(y0, by0)
+                        x1, y1 = max(x1, bx1), max(y1, by1)
+                    run.append(c)
+                flush()
+    return words
+
+
+def _template_index_page(page, source):
+    """One template page: its form id, revision, label words and widget
+    rects — or None where the footer names no form id, since a page nothing
+    can recognise is not a template of anything."""
+    form_no = _form_page_number(page)
+    if not form_no:
+        return None
+    rects = []
+    try:
+        for w in page.widgets():
+            r = w.rect
+            rects.append((float(r.x0), float(r.y0), float(r.x1), float(r.y1)))
+    except Exception:
+        rects = []
+    words = _template_page_words(page, rects)
+    if len(words) < _TEMPLATE_MIN_MATCHED:
+        return None
+    return {"form": form_no, "form_key": _template_form_key(form_no),
+            "revision": _template_revision(page), "words": words,
+            "widgets": rects, "source": f"{source}#{page.number + 1}",
+            "width": float(page.rect.width), "height": float(page.rect.height)}
+
+
+def _template_library(log=None):
+    """Every template page in the library folder, indexed once per process
+    and re-read when the folder's files change. An absent folder is an empty
+    library, and a form that will not open is skipped and said so."""
+    folder = _form_templates_dir()
+    try:
+        files = sorted(p for p in folder.iterdir()
+                       if p.is_file() and p.suffix.lower() == ".pdf")
+    except Exception:
+        files = []
+    sig = tuple((p.name, p.stat().st_mtime_ns, p.stat().st_size) for p in files)
+    cached = _TEMPLATE_CACHE.get(str(folder))
+    if cached is not None and cached[0] == sig:
+        return cached[1]
+    pages = []
+    if files:
+        try:
+            import fitz
+        except Exception:
+            fitz = None
+        for p in files if fitz else []:
+            try:
+                with fitz.open(str(p)) as tdoc:
+                    for tp in tdoc:
+                        entry = _template_index_page(tp, p.name)
+                        if entry is not None:
+                            pages.append(entry)
+            except Exception as exc:
+                if log is not None:
+                    log.warning(f"Form templates: could not read {p.name}: {exc}")
+    if log is not None and files:
+        log.info(f"Form templates: {len(pages)} template page(s) indexed from "
+                 f"{len(files)} file(s) in {folder}")
+    _TEMPLATE_CACHE[str(folder)] = (sig, pages)
+    return pages
+
+
+def _template_char_boxes(page):
+    """{span bbox: [char bbox per character]} for `page`, read once off its
+    `rawdict` and kept on the Document, so a word inside a multi-word span
+    is placed by its own characters' boxes and not by its share of the run
+    — a filer's OCR draws a line as one run, and a word's share by character
+    count lands tens of points from the ink on a proportional font."""
+    try:
+        doc = page.parent
+        memo = getattr(doc, _TEMPLATE_CHARS_ATTR, None)
+        if memo is None:
+            memo = {}
+            setattr(doc, _TEMPLATE_CHARS_ATTR, memo)
+        if page.number in memo:
+            return memo[page.number]
+    except Exception:
+        memo = None
+    boxes = {}
+    try:
+        for blk in page.get_text("rawdict").get("blocks", []):
+            for ln in blk.get("lines", []):
+                for sp in ln.get("spans", []):
+                    chars = sp.get("chars") or []
+                    boxes[tuple(round(v, 3) for v in sp["bbox"])] = [
+                        tuple(c["bbox"]) for c in chars]
+    except Exception:
+        boxes = {}
+    if memo is not None:
+        memo[page.number] = boxes
+    return boxes
+
+
+def _template_scan_words(spans, page=None):
+    """[(key, text, bbox, span index, word index)] for every word of the
+    scan's spans — a span holding several words split at its spaces, each
+    word boxed by its own characters where the page can say
+    (`_template_char_boxes`) and by its share of the run otherwise."""
+    out = []
+    chars = _template_char_boxes(page) if page is not None else {}
+    for si, sp in enumerate(spans):
+        text = str(sp.get("text", ""))
+        if not text.strip():
+            continue
+        x0, y0, x1, y1 = sp["bbox"]
+        cb = chars.get(tuple(round(float(v), 3) for v in sp["bbox"]))
+        if cb is not None and len(cb) != len(text):
+            cb = None
+        n = max(len(text), 1)
+        w = (x1 - x0) / n
+        for wi, m in enumerate(_TEMPLATE_WORD_RE.finditer(text)):
+            key = _template_word_key(m.group())
+            if not key:
+                continue
+            if cb is not None:
+                seg = cb[m.start():m.end()]
+                bx0, bx1 = min(c[0] for c in seg), max(c[2] for c in seg)
+                by0, by1 = min(c[1] for c in seg), max(c[3] for c in seg)
+            else:
+                bx0, bx1, by0, by1 = x0 + w * m.start(), x0 + w * m.end(), y0, y1
+            out.append((key, m.group(), (bx0, by0, bx1, by1), si, wi))
+    return out
+
+
+def _template_fit(t_words, s_words):
+    """(sx, sy, tx, ty) mapping template coordinates onto the scan's, fitted
+    on words that read EXACTLY alike and are unique on both sides, or None
+    where too few such anchors exist or they do not agree. An anchor's
+    residual past `_TEMPLATE_FIT_TOL` is dropped and the fit re-taken once,
+    since one misplaced word (the same label printed twice on the page, one
+    copy inside a field) must not pull the whole page."""
+    def uniq(words):
+        seen, out = {}, {}
+        for w in words:
+            key = w[0]
+            if len(re.sub(r"[^a-z]", "", key)) < _TEMPLATE_ANCHOR_LEN:
+                continue
+            seen[key] = seen.get(key, 0) + 1
+            out[key] = w
+        return {k: v for k, v in out.items() if seen[k] == 1}
+    tu, su = uniq(t_words), uniq(s_words)
+    pairs = [(tu[k][2], su[k][2]) for k in tu if k in su]
+
+    def centre(b):
+        return ((b[0] + b[2]) / 2, (b[1] + b[3]) / 2)
+
+    def solve(prs):
+        if len(prs) < _TEMPLATE_MIN_ANCHORS:
+            return None
+        tc = [centre(a) for a, _b in prs]
+        sc = [centre(b) for _a, b in prs]
+        fit = []
+        for axis in (0, 1):
+            tv = [c[axis] for c in tc]
+            sv = [c[axis] for c in sc]
+            tm, sm = sum(tv) / len(tv), sum(sv) / len(sv)
+            var = sum((t - tm) ** 2 for t in tv)
+            if var < 1e-6:
+                return None              # anchors all on one line: no scale
+            cov = sum((t - tm) * (s - sm) for t, s in zip(tv, sv))
+            scale = cov / var
+            if not (_TEMPLATE_SCALE_RANGE[0] <= scale <= _TEMPLATE_SCALE_RANGE[1]):
+                return None
+            fit.append((scale, sm - scale * tm))
+        return (fit[0][0], fit[1][0], fit[0][1], fit[1][1])
+
+    def residuals(fit, prs):
+        sx, sy, tx, ty = fit
+        out = []
+        for a, b in prs:
+            ax, ay = centre(a)
+            bx, by = centre(b)
+            out.append(max(abs(sx * ax + tx - bx), abs(sy * ay + ty - by)))
+        return out
+    fit = solve(pairs)
+    if fit is None:
+        return None
+    res = residuals(fit, pairs)
+    if max(res) > _TEMPLATE_FIT_TOL:
+        kept = [p for p, r in zip(pairs, res) if r <= _TEMPLATE_FIT_TOL]
+        fit = solve(kept)
+        if fit is None or max(residuals(fit, kept)) > _TEMPLATE_FIT_TOL:
+            return None
+    return fit
+
+
+# The pairs a scan reads one for the other, folded to one spelling before
+# the distance is taken: "rn" for "m" is two characters for one and would
+# cost two edits of a four-letter word ("whorn" for "whom"), where it is one
+# misreading; a digit for the letter it is shaped like the same.
+_TEMPLATE_FOLDS = (("rn", "m"), ("vv", "w"), ("0", "o"), ("1", "l"), ("|", "l"),
+                   ("5", "s"), ("8", "b"), ("!", "i"))
+
+
+def _template_fold(key):
+    for a, b in _TEMPLATE_FOLDS:
+        key = key.replace(a, b)
+    return key
+
+
+def _template_word_slip(a, b):
+    """True when scan word `a` reads as label word `b` with at most the
+    slips a scan makes of it: an edit per three letters, one at least, and
+    never a word that is a different length by more than that — measured
+    with the confusable pairs folded, so "whorn" is one slip from "whom"."""
+    if a == b:
+        return True
+    a, b = _template_fold(a), _template_fold(b)
+    if a == b:
+        return True
+    n = max(len(a), len(b))
+    allow = max(1, int(_TEMPLATE_MAX_SLIP * n))
+    if abs(len(a) - len(b)) > allow:
+        return False
+    return _pn_osa_distance(a, b) <= allow
+
+
+def _template_match(tpl, fit, s_words):
+    """{scan word (span index, word index): template text} for every
+    template label word with a scan word standing at its transformed box
+    and reading the same or nearly so, plus the share of the template's
+    words so matched. The scan word must OVERLAP the label's box by half
+    its own width and sit within its height, so a value word beside a
+    label is never read as it."""
+    sx, sy, tx, ty = fit
+    bands = {}
+    for w in s_words:
+        b = w[2]
+        cy = (b[1] + b[3]) / 2
+        bands.setdefault(int(cy // 8), []).append(w)
+    hits, matched, asked = {}, 0, 0
+    for key, text, (x0, y0, x1, y1) in tpl["words"]:
+        if len(re.sub(r"[^a-z0-9]", "", key)) < 2:
+            continue
+        asked += 1
+        X0, Y0 = sx * x0 + tx, sy * y0 + ty
+        X1, Y1 = sx * x1 + tx, sy * y1 + ty
+        cy = (Y0 + Y1) / 2
+        best, best_ov = None, 0.0
+        for band in (int(cy // 8) - 1, int(cy // 8), int(cy // 8) + 1):
+            for w in bands.get(band, ()):
+                b = w[2]
+                wcy = (b[1] + b[3]) / 2
+                if not (Y0 - 1.0 <= wcy <= Y1 + 1.0):
+                    continue
+                ov = min(X1, b[2]) - max(X0, b[0])
+                if ov <= 0 or ov < 0.5 * min(b[2] - b[0], X1 - X0, 1e9):
+                    continue
+                if ov > best_ov and _template_word_slip(w[0], key):
+                    best, best_ov = w, ov
+        if best is not None:
+            matched += 1
+            if best[0] != key:
+                hits[(best[3], best[4])] = text
+    share = matched / asked if asked else 0.0
+    return hits, matched, share
+
+
+def _template_recognise(page, spans, log=None):
+    """The (template, fit) this scanned page is recognised as, or None. Asked
+    once per page and memoised on the Document, so every renderer of the page
+    reads one answer."""
+    try:
+        doc = page.parent
+        memo = getattr(doc, _TEMPLATE_FIT_ATTR, None)
+        if memo is None:
+            memo = {}
+            setattr(doc, _TEMPLATE_FIT_ATTR, memo)
+        # A recognition is kept for the page; a REFUSAL only for the span
+        # list that was refused, since the pleading path asks this of the
+        # body spans and the margin spans separately and the margin alone
+        # can never fit a form.
+        if page.number in memo:
+            return memo[page.number]
+        if (page.number, len(spans)) in memo:
+            return None
+    except Exception:
+        memo, doc = None, None
+    result = None
+    try:
+        library = _template_library(log)
+        if library and _page_text_is_ocr(page):
+            form_key = _template_form_key(_form_page_number(page))
+            cands = [t for t in library if form_key and t["form_key"] == form_key]
+            if cands:
+                rev = _template_revision(page)
+                s_words = _template_scan_words(spans, page)
+                best = None
+                for tpl in cands:
+                    if rev and tpl["revision"] and _pn_osa_distance(
+                            rev, tpl["revision"]) > 2:
+                        continue
+                    fit = _template_fit(tpl["words"], s_words)
+                    if fit is None:
+                        continue
+                    _hits, matched, share = _template_match(tpl, fit, s_words)
+                    if (share >= _TEMPLATE_MIN_SHARE
+                            and matched >= _TEMPLATE_MIN_MATCHED
+                            and (best is None or share > best[0])):
+                        best = (share, tpl, fit)
+                if best is not None:
+                    result = (best[1], best[2])
+    except Exception:
+        result = None
+    if memo is not None:
+        if result is not None:
+            memo[page.number] = result
+        else:
+            memo[(page.number, len(spans))] = None
+    return result
+
+
+def _note_template_page(page, form, count):
+    """Record that `count` label word(s) on `page` were restored from the
+    `form` template, so the export's banner can say so. The LARGEST count
+    seen, as `_note_doubled_page` keeps it: several renderers restore one
+    page and describe one restoration."""
+    try:
+        doc = page.parent
+        seen = getattr(doc, _TEMPLATE_ATTR, None)
+        if seen is None:
+            seen = {}
+            setattr(doc, _TEMPLATE_ATTR, seen)
+        prev = seen.get(page.number)
+        if prev is None or count > prev[1]:
+            seen[page.number] = (form, count)
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _restore_template_labels(spans, page, log=None):
+    """`spans` with each pre-printed LABEL word the OCR misread restored from
+    the recognised template's own spelling; the same list untouched where
+    the page is not recognised as a form in the library. Word for word, at
+    the matched positions only, and never a word standing inside a template
+    widget rect — that is where a value stands, and the template knows
+    nothing about values."""
+    if not spans:
+        return spans
+    got = _template_recognise(page, spans, log)
+    if got is None:
+        return spans
+    tpl, fit = got
+    s_words = _template_scan_words(spans, page)
+    hits, _matched, _share = _template_match(tpl, fit, s_words)
+    if not hits:
+        _note_template_page(page, tpl["form"], 0)
+        return spans
+    sx, sy, tx, ty = fit
+    widgets = [(sx * r[0] + tx, sy * r[1] + ty, sx * r[2] + tx, sy * r[3] + ty)
+               for r in tpl["widgets"]]
+
+    def in_widget(b):
+        cx, cy = (b[0] + b[2]) / 2, (b[1] + b[3]) / 2
+        return any(r[0] <= cx <= r[2] and r[1] <= cy <= r[3] for r in widgets)
+    by_span = {}
+    for w in s_words:
+        rep = hits.get((w[3], w[4]))
+        if rep is not None and not in_widget(w[2]):
+            by_span.setdefault(w[3], {})[w[4]] = rep
+    restored = 0
+    for si, reps in by_span.items():
+        sp = spans[si]
+        text = str(sp.get("text", ""))
+        pieces, last = [], 0
+        for wi, m in enumerate(_TEMPLATE_WORD_RE.finditer(text)):
+            rep = reps.get(wi)
+            if rep is None:
+                continue
+            # Keep the punctuation the scan word carried at its ends where
+            # the key trimmed it, since a colon after a label is the form's.
+            raw = m.group()
+            lead = raw[:len(raw) - len(raw.lstrip(".,;:()[]{}'\""))]
+            tail = raw[len(raw.rstrip(".,;:()[]{}'\"")):]
+            new = rep if (rep[:1] in ".,;:([{" or rep[-1:] in ".,;:)]}") else lead + rep + tail
+            pieces.append(text[last:m.start()])
+            pieces.append(new)
+            last = m.end()
+            restored += 1
+        pieces.append(text[last:])
+        spans[si]["text"] = "".join(pieces)
+    # Logged once per page: the export, the detection copy and the form
+    # renderer each restore the page, and they describe one restoration.
+    if _note_template_page(page, tpl["form"], restored) and restored:
+        (log or logging.getLogger("pdf_linker")).info(f"  Form templates: page {page.number + 1} restored {restored} "
+                 f"label word(s) from the {tpl['form']} template ({tpl['source']})")
+    return spans
 
 
 def _mark_invisible_spans(spans, page):
@@ -32990,6 +33546,12 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         # something any shape measure can settle, so the banner says a choice
         # was made rather than implying there was nothing to choose.
         doubled = getattr(doc, _DOUBLED_ATTR, {}).get(i)
+        # …and a scanned FORM whose pre-printed labels were restored from the
+        # form's own template. The labels are the form's, not the scan's, so
+        # a reader is told which words came from the library — and how many,
+        # since one is a speck period and forty is a page the OCR could not
+        # read.
+        restored = getattr(doc, _TEMPLATE_ATTR, {}).get(i)
         header = (f"====== Page {i + 1}"
                   + (f" (printed p. {label})" if label else "")
                   + (f" — REVIEW: NOT READ — no text layer, and OCR could "
@@ -33006,6 +33568,9 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
                      f"disagree; {doubled} piece(s) of the earlier reading "
                      f"were dropped and the later one is shown"
                      if doubled else "")
+                  + (f" — NOTE: {restored[1]} pre-printed label word(s) were "
+                     f"RESTORED from the {restored[0]} form template"
+                     if restored and restored[1] else "")
                   + " ======")
         page_blocks.append((header, rows if rows is not None else display))
         block_pages.append(len(detect_pages) - 1)   # its detection text
@@ -35391,6 +35956,19 @@ _CONFIG_BLOCKS = (
      "master_leaks_path =\n"
      "\n"
      ),
+    ("form_templates",
+     "# Where the BLANK official court forms live (PLD-PI-001, CIV-100, MC-025\n"
+     "# ... downloaded from the Judicial Council, unfilled). A SCANNED form\n"
+     "# whose footer names one of them, and whose pre-printed labels line up\n"
+     "# with it, has those labels restored from the blank form's own text --\n"
+     "# so the OCR's \"ATTORNEY OR PARTY WlTHOUT ATTORNEY\" reads as the form\n"
+     "# prints it. The typed values are never touched. EMPTY looks in a\n"
+     "# \"Form Templates\" folder next to this config file (or wherever the\n"
+     "# PDF_LINKER_FORM_TEMPLATES env var says), e.g.\n"
+     "#   form_templates = C:\\Users\\you\\Documents\\Form Templates\n"
+     "form_templates =\n"
+     "\n"
+     ),
 )
 # The whole file, for a folder that has none: header plus every block, in
 # order. Derived rather than kept beside them, so the two cannot drift — and
@@ -35467,6 +36045,7 @@ _CONFIG_RETIRED = {
 _CONFIG_PLACEHOLDERS = {
     "copy_to": {"C:\\Users\\you\\Documents\\Cases"},
     "master_leaks_path": {"C:\\Users\\you\\Documents\\Master Leaks.xlsx"},
+    "form_templates": {"C:\\Users\\you\\Documents\\Form Templates"},
 }
 # The generic form of `_config_key_re`, and it must draw the line in the same
 # place: two readers disagreeing about what counts as a setting line is how a
@@ -38418,6 +38997,13 @@ def main():
     # without PyMuPDF.
     if not _require_pymupdf(log):
         sys.exit(1)
+    # The form-template library, resolved from the config once and indexed
+    # here so the log says what it holds before the first page asks for it.
+    _set_form_templates_dir(cfg.get("form_templates"))
+    try:
+        _template_library(log)
+    except Exception as exc:
+        log.warning(f"Form templates: library not indexed: {exc}")
 
     # Claimed HERE and not with the folder lock above: `--fix-leaks` exits in
     # the block before this one, and a pass that never OCRs must not throttle

@@ -4084,6 +4084,87 @@ extraction, which is what keeps the numbering.
   the caption at the column their x dictated — the failure
   `_margin_sideways_dropped` was written for on the exhibit path, arriving
   on the third renderer. One rule, asked of all three.
+- **A PRE-PRINTED form is read against its own TEMPLATE, and only the
+  LABELS are ever taken from it** (`_template_library`, `_template_fit`,
+  `_template_match`, `_template_recognise`, `_restore_template_labels`,
+  `_TEMPLATE_ATTR`, the `form_templates` setting), at the owner's direction.
+  A Judicial Council form has a predetermined layout — the same labels at
+  the same places on every copy ever filed — and a SCAN of one hands the OCR
+  the labels to read afresh: "ATTORNEY OR PARTY WlTHOUT ATTORNEY", "CASE
+  NUMBFR:", every misreading landing in the export as a word the document
+  never carried, on the one kind of page whose furniture is entirely known
+  in advance. The blank official form says exactly what those labels are.
+  So the library is a folder of BLANK official forms (`Form Templates`
+  beside the config, or the setting, or `PDF_LINKER_FORM_TEMPLATES`),
+  indexed once per process: per page, the form id and revision the footer
+  prints, every WORD of the static layer with the box its own characters
+  cover — never a word inside a widget rect, since that is where a value
+  stands — and the widget rects themselves. A filled AcroForm indexes as
+  well as a blank one, because the values live in the widgets and the
+  static layer IS the blank form.
+  **Recognition is asked three ways and all three must answer**, because
+  restoration rewrites words and a wrong recognition would rewrite them
+  into another form's furniture. The scanned page's footer must name the
+  same form id (`_template_form_key`, case-folded with l read as I, since a
+  scan misreads PLD-PI-001 that way about as often as not), and where both
+  footers state a revision the two must agree within two slips — a scan
+  that garbles its revision is not held to it, a scan that reads a
+  DIFFERENT one plainly is a different layout. Enough words must read
+  EXACTLY alike, be unique on both sides and stand off one line to fit a
+  scale-and-offset transform from the template's page onto the scan's
+  (`_template_fit`: least squares per axis over at least
+  `_TEMPLATE_MIN_ANCHORS`, the scale held to `_TEMPLATE_SCALE_RANGE`, an
+  anchor past `_TEMPLATE_FIT_TOL` dropped once — the same label printed
+  twice, one copy in a field). And under that transform a SHARE of the
+  template's label words (`_TEMPLATE_MIN_SHARE`, over at least
+  `_TEMPLATE_MIN_MATCHED`) must have a scan word standing ON their box —
+  overlapping half its width, inside its height — reading the same or
+  within the slip rule. The share is asked of the TEMPLATE's words and
+  never of the scan's, so a page full of typed values cannot vote a form
+  in, and a declaration that merely carries a form id in its footer is
+  refused in 6 ms. The scan's words are boxed by their OWN characters
+  (`_template_char_boxes`, read once per page off the rawdict) and not by
+  a word's share of its run: a filer's OCR draws a line as one run, and a
+  share by character count lands tens of points from the ink on a
+  proportional font, which is where the first fit failed.
+  **Restoration is word for word at the matched positions and nowhere
+  else.** A scan word on a label word within the slip rule
+  (`_template_word_slip`: an edit per three letters, one at least, the
+  confusable pairs folded first so "rn" for "m" and a digit for its letter
+  are ONE slip) takes the template's spelling, the punctuation the scan
+  carried at its ends kept; a word matching nothing stays what the OCR read
+  (a value, a stamp, a handwritten note); a word standing inside a template
+  widget rect is never touched whatever it reads, so a value one slip from
+  a label ("PLAINTIFE" typed into a field) is left alone. The worst case of
+  a wrong recognition is therefore a label misspelled into another label's
+  words of the same form at the same place, and the gate is what keeps
+  that from being reached. Asked ONLY of a page whose text layer came out
+  of OCR (`_page_text_is_ocr`: this run's, or the filer's invisible font)
+  — a born-digital form's labels are the template's own already and the
+  fit would cost a page for nothing. Hooked at the ONE seam every renderer
+  takes its spans through (`_drop_overdrawn_spans`, after the dedupe): the
+  form rows, the exhibit grid, the pleading rows and the detection copy all
+  read the restored label, and `_page_flowing_text` — the citation parse's
+  rendering, gated on positive evidence of a re-draw — is rebuilt where a
+  label MOVED too, or it would be the one reading of the page still
+  carrying the OCR's spelling. Memoised per page on the Document
+  (`_TEMPLATE_FIT_ATTR`; a refusal only for the span list refused, since
+  the pleading path asks about the body and the margin separately), so
+  every rendering describes one restoration, and the page banner says how
+  many label words moved and from which template — the labels are the
+  form's and not the scan's, and one restored word is a speck period where
+  forty is a page the OCR could not read. Measured on the three pages of a
+  real filled PLD-PI-001 with one label word in six misread: every page
+  recognised as its own template page and no other, 36 of 38 misreadings
+  restored on page 1 (the two left are a one-letter word under the floor
+  and a slip past the rule), ZERO wrong restorations, the typed values
+  untouched, 11 ms to recognise and 15 ms to settle a 300-span page; a
+  scan shifted 12 pt and scaled to 0.97 fits to within a point. Residual,
+  and stated: a label word garbled past the slip rule stays as read, and
+  the PDF's own text layer is not corrected — the export is, in every
+  rendering — which is the next slice, with the field-name schema for
+  classifying values and the checkbox positions the template's widgets
+  already know.
 - **The banner and the log both say when a state was inferred**, and ask for a
   check. An inferred checkbox on a default-judgment packet is precisely the fact
   nobody should take on trust, so it is never presented as equal to a widget's.
