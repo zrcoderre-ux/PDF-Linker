@@ -3699,6 +3699,42 @@ lines stay separate rows; an empty field prints nothing. A one-line banner names
 the form and tallies the boxes, so "did the checkboxes come through?" is
 answerable at the top of the page.
 
+- **The form export MIRRORS the page, so a person reads the two side by
+  side** (`_form_layout`, `_form_page_geometry`, `_form_raw_spans`,
+  `_FORM_RULE_MIN`, `_FORM_HRULE` / `_FORM_VRULE`), at the owner's direction.
+  The layout shipped on a fixed 5 pt grid with per-row overflow, no blank
+  line for any vertical gap, and nothing for the boxes the form draws, so a
+  PLD-PI-001 read as a flat list beside a page of ruled boxes. Four things
+  now. The GRID UNIT is the page's own (`_spans_char_width`, the rule the
+  pleading and exhibit renderers already follow) and a column is one column
+  all the way down (`_column_stops`, `_visual_rows_text`), so a 9 pt form
+  lands where it sits. The page's VERTICAL GAPS are blank lines, measured in
+  the text rows' own lead and capped at `_VIS_MAX_BLANKS` — the empty field
+  under "(describe):" is the blank line the page shows there. The LINE ART is
+  drawn: a horizontal rule as a run of `─` at its own x and width, on a line
+  of its own (under a caption it reads as the underline it is), and a
+  vertical rule as a `│` on every line it crosses, blank lines included, so
+  the caption box, its "FOR COURT USE ONLY" divider and the section dividers
+  stand where the eye expects them; at a junction the dash run already covers
+  the bar, measured on the rule's real extent and not its character count.
+  The floor is `_FORM_RULE_MIN` (20 pt) and not the row splitter's
+  `_RULE_MIN_LEN` (40): that one decides what may BOUND a column, this one
+  what is DRAWN, and a two-line caption box's edge is ~33 pt where a
+  checkbox's is ~10. And a ROW is anchored on its topmost cell — a cell joins
+  where its centre is within the smaller half-height (plus the pad) of the
+  anchor's — where it was measured against the row's GROWN extent, which let
+  a footer's three 6 pt lines bridge through the 10 pt title beside them into
+  one line. Two belts found on the way. `_column_stops` no longer lets a
+  cell push the stop it stands on itself (a box edge and the caption set 2 pt
+  inside it share a stop; pushed by its own member the stop moved every row
+  it was on, and the whole page came out indented thirty columns). And the
+  padded-label x is read off the CHARACTERS' own boxes on the widget path
+  (`_form_raw_spans`), since the em estimate overshot the page edge for a
+  header set flush right behind sixty padding spaces in another size; the
+  ink path keeps the estimate. What a monospace grid cannot do, stated: a
+  bold caption is wider than its character count, so the label after it
+  sits a few columns further right than on the page, and two underlines at
+  one y that `_page_rules` merges into one span read as one rule.
 - **Rows group by vertical OVERLAP, not centre distance** (`_FORM_ROW_PAD`): a
   checkbox rect is taller than its caption and a field box taller than its
   label, so a fixed centre tolerance either splits a printed row or welds two.

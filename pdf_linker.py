@@ -4565,7 +4565,7 @@ _RULE_MIN_LEN = 40.0
 _RULE_MERGE_TOL = 2.5
 
 
-def _page_rules(page):
+def _page_rules(page, min_len=_RULE_MIN_LEN):
     """(vertical, horizontal) rules on `page`, from its own line art:
     vertical as [(x, y0, y1)], horizontal as [(y, x0, x1)], each the merged
     extent of the strokes drawn at that position. A stroke is a line item, a
@@ -4582,19 +4582,19 @@ def _page_rules(page):
             kind = item[0]
             if kind == "l":
                 p1, p2 = item[1], item[2]
-                if abs(p1.x - p2.x) <= 1.5 and abs(p2.y - p1.y) >= _RULE_MIN_LEN:
+                if abs(p1.x - p2.x) <= 1.5 and abs(p2.y - p1.y) >= min_len:
                     vert.append(((p1.x + p2.x) / 2, min(p1.y, p2.y),
                                  max(p1.y, p2.y)))
-                elif abs(p1.y - p2.y) <= 1.5 and abs(p2.x - p1.x) >= _RULE_MIN_LEN:
+                elif abs(p1.y - p2.y) <= 1.5 and abs(p2.x - p1.x) >= min_len:
                     horiz.append(((p1.y + p2.y) / 2, min(p1.x, p2.x),
                                   max(p1.x, p2.x)))
             elif kind == "re":
                 r = item[1]
-                if r.width <= 2.5 and r.height >= _RULE_MIN_LEN:
+                if r.width <= 2.5 and r.height >= min_len:
                     vert.append(((r.x0 + r.x1) / 2, r.y0, r.y1))
-                elif r.height <= 2.5 and r.width >= _RULE_MIN_LEN:
+                elif r.height <= 2.5 and r.width >= min_len:
                     horiz.append(((r.y0 + r.y1) / 2, r.x0, r.x1))
-                elif r.width >= _RULE_MIN_LEN and r.height >= _RULE_MIN_LEN:
+                elif r.width >= min_len and r.height >= min_len:
                     # A box: its four edges are rules. Only a STROKED box —
                     # a filled one is shading, and a shaded caption band or
                     # a highlighted cell draws no column.
@@ -26327,7 +26327,7 @@ def _spans_char_width(spans, default=_VIS_CHAR_W):
     return default
 
 
-def _column_stops(rows, left, char_w=_VIS_CHAR_W):
+def _column_stops(rows, left, char_w=_VIS_CHAR_W, max_col=None):
     """{cell x: column} for every cell on a page, so a printed column is ONE
     column of the export all the way down.
 
@@ -26337,6 +26337,7 @@ def _column_stops(rows, left, char_w=_VIS_CHAR_W):
     row, which is what keeps a table's rows aligned when one cell is long. A
     row with a single cell (prose) constrains nothing. `rows` is a list of
     segment lists, each `[(x, text), ...]`."""
+    cap = _FORM_MAX_COL if max_col is None else max_col
     xs = sorted({float(x) for segs in rows for x, _t in segs})
     group, start = {}, None
     for x in xs:
@@ -26345,15 +26346,21 @@ def _column_stops(rows, left, char_w=_VIS_CHAR_W):
         group[x] = start
     stops = {}
     for gx in sorted(set(group.values())):
-        col = max(0, min(int(round((gx - left) / char_w)), _FORM_MAX_COL))
+        col = max(0, min(int(round((gx - left) / char_w)), cap))
         for segs in rows:
             for j in range(1, len(segs)):
                 if group[float(segs[j][0])] != gx:
                     continue
                 px, pt = segs[j - 1]
+                if group[float(px)] == gx:
+                    # Two cells of ONE stop on one row (a box's edge and the
+                    # caption set hard against it): the row's own guard
+                    # separates them, and a stop pushed by its own member
+                    # would move every row the stop is on.
+                    continue
                 prev = stops.get(group[float(px)], 0)
                 col = max(col, prev + len(pt) + 1)
-        stops[gx] = min(col, _FORM_MAX_COL)
+        stops[gx] = min(col, cap)
     return {x: stops[g] for x, g in group.items()}
 
 
@@ -26784,11 +26791,30 @@ def _widget_is_on(w):
 _FORM_SPACE_EM = 0.278
 
 
-def _form_text_x(x0, text, size):
+def _form_text_x(x0, text, size, vis_x0=None):
     """The x where `text`'s first VISIBLE character stands, given the span
-    opens at `x0`: the padding's width is added on."""
+    opens at `x0`: the padding's width is added on — or, where the caller
+    read the characters' own boxes (`_form_raw_spans`), the measured x."""
     lead = len(text) - len(text.lstrip(" "))
+    if vis_x0 is not None and lead:
+        return float(vis_x0)
     return x0 + lead * _FORM_SPACE_EM * float(size or 0.0)
+
+
+def _form_raw_spans(page):
+    """`page.get_text("dict")`'s blocks, each span carrying `_vis_x0`: the x
+    of its first non-space character, read off the characters' own boxes.
+    Exact where the estimate is not — a header set flush right behind sixty
+    padding spaces in another size overshot the page edge by the estimate."""
+    blocks = page.get_text("rawdict").get("blocks", [])
+    for blk in blocks:
+        for line in blk.get("lines", []):
+            for sp in line.get("spans", []):
+                chars = sp.pop("chars", None) or []
+                sp["text"] = "".join(c.get("c", "") for c in chars)
+                vis = next((c for c in chars if not c.get("c", " ").isspace()), None)
+                sp["_vis_x0"] = float(vis["bbox"][0]) if vis else None
+    return blocks
 
 
 def _form_cell(y_mid, half, x, text):
@@ -27287,7 +27313,7 @@ def _form_page_cells(page):
     rects = [fitz.Rect(w.rect) for w in widgets]
     cells = []
     try:
-        blocks = page.get_text("dict").get("blocks", [])
+        blocks = _form_raw_spans(page)
     except Exception:
         return None            # no static layer to place the widgets against
     for blk in blocks:
@@ -27307,7 +27333,8 @@ def _form_page_cells(page):
                     if part.strip():
                         cells.append(_form_cell(
                             bb[1] + h * (k + 0.5), h / 2,
-                            _form_text_x(bb[0], part, sp.get("size")),
+                            _form_text_x(bb[0], part, sp.get("size"),
+                                         sp.get("_vis_x0")),
                             part.strip()))
     choice = (fitz.PDF_WIDGET_TYPE_CHECKBOX, fitz.PDF_WIDGET_TYPE_RADIOBUTTON)
     boxes = checked = 0
@@ -27394,36 +27421,113 @@ def _form_page_number(page):
     return m.group(1) if m else ""
 
 
-def _form_layout(cells):
+# The form rendering mirrors the PAGE, so a person can read the export beside
+# it: the page's own vertical gaps are blank lines, and the boxes and dividers
+# a form draws are drawn too — a horizontal rule as a run of `─` at its own
+# width and a vertical rule as a `│` on every line it crosses, so the caption
+# box, its "FOR COURT USE ONLY" column and the section dividers are where the
+# eye expects them. The grid unit is the page's own (`_spans_char_width`, the
+# rule the pleading and exhibit renderers already follow) and a column is one
+# column all the way down (`_column_stops`), so a form set in 9 pt lands where
+# it sits rather than overflowing a 5 pt grid sized for something else.
+_FORM_RULE_MIN = 20.0        # pt: the shortest line art drawn in the export
+_FORM_HRULE = "\u2500"        # ─
+_FORM_VRULE = "\u2502"        # │
+
+
+def _form_layout(cells, char_w=None, rules=None, page_w=None):
     """Lay cells out as monospace rows: group by printed row, then place each at
-    its own column. Shared by the widget path and the ink path."""
+    its own column. Shared by the widget path and the ink path.
+
+    `char_w` is the page's grid unit (default `_FORM_CHAR_W`); `rules` is
+    `_page_rules`' `(vertical, horizontal)` pair, drawn as lines; `page_w`
+    lets a wide page reach past `_FORM_MAX_COL` rather than piling its
+    right-hand cells at the cap."""
+    cw = float(char_w or _FORM_CHAR_W)
     left = min(x for _y, _h, x, _t in cells)
-    rows, cur, top, bot = [], [], 0.0, 0.0
+    # A cell joins the row whose ANCHOR — its topmost cell — it overlaps: its
+    # centre within the smaller of the two half-heights (plus the pad) of the
+    # anchor's. Measured against the row's grown extent instead, a footer's
+    # three 6 pt lines bridged through the 10 pt title beside them into one
+    # row, and the export read the whole footer as a single line.
+    rows, cur, top, bot, ay, ah = [], [], 0.0, 0.0, 0.0, 0.0
     for y, half, x, t in sorted(cells, key=lambda c: (c[0], c[2])):
-        if cur and top - _FORM_ROW_PAD <= y <= bot + _FORM_ROW_PAD:
+        if cur and abs(y - ay) <= _FORM_ROW_PAD + min(ah, half):
             cur.append((x, t))
             top, bot = min(top, y - half), max(bot, y + half)
         else:
             if cur:
-                rows.append(cur)
-            cur, top, bot = [(x, t)], y - half, y + half
+                rows.append((cur, top, bot))
+            cur, top, bot, ay, ah = [(x, t)], y - half, y + half, y, half
     if cur:
-        rows.append(cur)
+        rows.append((cur, top, bot))
 
-    out = []
-    for row in rows:
-        line = ""
-        for x, t in sorted(row):
-            # Each cell starts at its own column, but never on top of (or run
-            # together with) the cell before it — a printed boundary that the
-            # column arithmetic would swallow becomes a single space instead.
-            col = int(round((x - left) / _FORM_CHAR_W))
-            col = min(col, _FORM_MAX_COL)
-            if line:
-                col = max(col, len(line) + 1)
-            line += " " * (col - len(line)) + t
-        out.append(line.rstrip())
-    return out
+    # Every physical line the export will carry, each at the y it stands at
+    # on the page: the text rows, then each horizontal rule as a line of its
+    # own (a rule under a caption reads as the underline it is), then blank
+    # lines for the page's vertical gaps, measured in the text rows' own lead.
+    lines = [{"y": (t + b) / 2, "cells": sorted(row), "rule": False}
+             for row, t, b in rows]
+    vrules, hrules = rules or ((), ())
+    for y, x0, x1 in hrules:
+        if x1 - x0 <= 0:
+            continue
+        lines.append({"y": float(y), "rule": True, "span": (float(x0), float(x1)),
+                      "cells": [(float(x0), _FORM_HRULE
+                                 * max(1, int(round((x1 - x0) / cw))))]})
+    lines.sort(key=lambda l: l["y"])
+    text_ys = sorted((t + b) / 2 for _row, t, b in rows)
+    deltas = [b - a for a, b in zip(text_ys, text_ys[1:]) if b - a > 1.0]
+    lead = statistics.median(deltas) if deltas else 0.0
+    spaced, prev_y = [], None
+    for ln in lines:
+        if prev_y is not None and lead:
+            blanks = max(0, min(int(round((ln["y"] - prev_y) / lead)) - 1,
+                                _VIS_MAX_BLANKS))
+            for k in range(blanks):
+                spaced.append({"y": prev_y + (k + 1) * (ln["y"] - prev_y)
+                               / (blanks + 1), "cells": [], "rule": False})
+        spaced.append(ln)
+        prev_y = ln["y"]
+    # A vertical rule is a bar on every line it crosses — the blank ones
+    # included, so a box reads as a box — except where a horizontal rule
+    # already runs through that x, which is the rule's own junction.
+    for x, y0, y1 in vrules:
+        for ln in spaced:
+            if not (y0 - 1.0 <= ln["y"] <= y1 + 1.0):
+                continue
+            if ln["rule"] and ln["span"][0] - cw <= x <= ln["span"][1] + cw:
+                continue
+            ln["cells"].append((float(x), _FORM_VRULE))
+            ln["cells"].sort()
+    max_col = _FORM_MAX_COL
+    if page_w:
+        max_col = max(max_col, int((float(page_w) - left) / cw) + 2)
+    stops = _column_stops([ln["cells"] for ln in spaced], left, cw, max_col)
+    return [_visual_row_text(ln["cells"], left, cw, stops).rstrip()
+            for ln in spaced]
+
+
+def _form_page_geometry(page):
+    """(grid unit, rules, page width) for `_form_layout` on `page`: the unit
+    measured off the page's spans as every other renderer measures it, and
+    the page's line art read by `_page_rules`."""
+    try:
+        cw = _spans_char_width(_page_text_spans(page), default=_FORM_CHAR_W)
+    except Exception:
+        cw = _FORM_CHAR_W
+    try:
+        # Drawn, not split on: a two-line caption box's edge is ~33 pt and
+        # a checkbox's ~10, so the floor sits between them, where the row
+        # splitter's `_RULE_MIN_LEN` is set for what may BOUND a column.
+        rules = _page_rules(page, min_len=_FORM_RULE_MIN)
+    except Exception:
+        rules = ((), ())
+    try:
+        page_w = float(page.rect.width)
+    except Exception:
+        page_w = None
+    return cw, rules, page_w
 
 
 def _form_banner(page, boxes, checked, unsure=0, source="fields"):
@@ -27635,8 +27739,9 @@ def _form_page_render(page):
     got = _form_page_cells(page)
     if got is not None and got[0]:
         cells, boxes, checked = got
+        cw, rules, page_w = _form_page_geometry(page)
         text = (_form_banner(page, boxes, checked) + "\n"
-                + "\n".join(_form_layout(cells)))
+                + "\n".join(_form_layout(cells, cw, rules, page_w)))
         return {"text": text, "source": "fields", "boxes": boxes,
                 "form_no": _form_page_number(page), "ink": None}
     ink = _ink_form_cells(page)
@@ -27644,8 +27749,9 @@ def _form_page_render(page):
         return None
     cells, boxes, marked, unsure, exact, _consumed = ink
     source = "exact" if exact else "ink"
+    cw, rules, page_w = _form_page_geometry(page)
     text = (_form_banner(page, boxes, marked, unsure, source) + "\n"
-            + "\n".join(_form_layout(cells)))
+            + "\n".join(_form_layout(cells, cw, rules, page_w)))
     return {"text": text, "source": source, "boxes": boxes,
             "form_no": _form_page_number(page), "ink": ink}
 
