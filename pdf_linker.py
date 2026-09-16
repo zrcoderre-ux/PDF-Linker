@@ -4498,6 +4498,16 @@ def _drop_overdrawn_spans(spans, page=None):
 # How far outside a span's box a piece may stick and still count as drawn INSIDE
 # it — one point, for the rounding two renderings of the same row disagree by.
 _SPAN_INSIDE_PAD = 1.0
+# …and how far past ANY edge, as a share of the piece's own size in that
+# direction. An OCR layer's word boxes are the ink's and the type's are the
+# font's, so they disagree — measured on a scanned complaint, the last word of
+# every value overshot the visible run's right edge by 3-8 pt (12-29% of its
+# own width) and the words sat up to 1.2 pt above its top — while an abutting
+# NEXT word overshoots by its whole width and is still refused.
+_SPAN_INSIDE_OVERSHOOT = 0.35
+# …for a piece of at least this many characters; a one-character piece keeps
+# the pad ("50" of "1 - 50" needs the share; "A" in "JANE" must not have it).
+_SPAN_PIECE_MIN = 2
 # Vertical banding for the containment scan, so it compares a span against its
 # own row rather than the whole page.
 _SPAN_BAND_PT = 6.0
@@ -4531,8 +4541,21 @@ def _span_is_redraw_fragment(sp, big):
         return False
     sx0, sy0, sx1, sy1 = sp["bbox"]
     bx0, by0, bx1, by1 = big["bbox"]
-    if not (bx0 - _SPAN_INSIDE_PAD <= sx0 and sx1 <= bx1 + _SPAN_INSIDE_PAD
-            and by0 - _SPAN_INSIDE_PAD <= sy0 and sy1 <= by1 + _SPAN_INSIDE_PAD):
+    small, whole = sp["text"].strip(), big["text"].strip()
+    if not small:
+        return False
+    # The pad grows with the piece: an OCR word's box is the ink's, the type's
+    # box is the font's, and the two disagree by a share of the glyph height
+    # at the top and bottom as they do by a share of the width at the right.
+    # A one-character piece keeps the one-point pad — its text
+    # matches inside almost any run ("A" in "JANE"), so only exact geometry
+    # can vouch for it.
+    pad_x = pad_y = _SPAN_INSIDE_PAD
+    if len(small) >= _SPAN_PIECE_MIN:
+        pad_x = max(pad_x, _SPAN_INSIDE_OVERSHOOT * max(sx1 - sx0, 0.0))
+        pad_y = max(pad_y, _SPAN_INSIDE_OVERSHOOT * max(sy1 - sy0, 0.0))
+    if not (bx0 - pad_x <= sx0 and sx1 <= bx1 + pad_x
+            and by0 - pad_y <= sy0 and sy1 <= by1 + pad_y):
         return False
     # A redraw fragment is a piece of the SAME printed line, so the glyphs are
     # the same size. Without the height check, a big stamp or watermark span
@@ -4543,8 +4566,23 @@ def _span_is_redraw_fragment(sp, big):
     # of one line differ by rounding; a stamp is many times the body height.
     if (by1 - by0) > 2.0 * max(sy1 - sy0, 0.001):
         return False
-    small, whole = sp["text"].strip(), big["text"].strip()
-    return bool(small) and len(small) < len(whole) and small in whole
+    # An INVISIBLE word standing over VISIBLE type is a reading of that type,
+    # whatever it read. A scanned form arrived with its typed values as real
+    # text over the page image and an OCR layer (Tesseract's GlyphLessFont)
+    # laid over the whole page, so every value stood twice — and where the
+    # OCR misread a word ("BERRIINGTON" over "BERRINGTON") the text test above
+    # could never see it. The visible text IS the document at that spot; the
+    # word drawn invisibly inside its box says nothing a reader can see.
+    if _span_is_invisible_reading(sp) and not _span_is_invisible_reading(big):
+        return True
+    return len(small) < len(whole) and small in whole
+
+
+def _span_is_invisible_reading(sp):
+    """True when `sp` is a word of an OCR layer — set in Tesseract's invisible
+    font, the one marker a span dict carries (`_page_text_is_ocr` asks the
+    page's font table the same question)."""
+    return _PN_OCR_INVISIBLE_FONT in str(sp.get("font") or "").lower()
 
 
 def _drop_redrawn_fragments(spans):
@@ -4622,16 +4660,161 @@ def _page_rules(page, min_len=_RULE_MIN_LEN):
                     vert += [(r.x0, r.y0, r.y1), (r.x1, r.y0, r.y1)]
                     horiz += [(r.y0, r.x0, r.x1), (r.y1, r.x0, r.x1)]
 
-    def merge(items):
-        out = []
-        for pos, a, b in sorted(items):
-            if out and pos - out[-1][0] <= _RULE_MERGE_TOL:
-                q, qa, qb = out[-1]
-                out[-1] = ((q + pos) / 2, min(qa, a), max(qb, b))
+    return _merge_rules(vert), _merge_rules(horiz)
+
+
+def _merge_rules(items):
+    """`items` ([(pos, a, b)]) with strokes within `_RULE_MERGE_TOL` of one
+    position read as one rule spanning both."""
+    out = []
+    for pos, a, b in sorted(items):
+        if out and pos - out[-1][0] <= _RULE_MERGE_TOL:
+            q, qa, qb = out[-1]
+            out[-1] = ((q + pos) / 2, min(qa, a), max(qb, b))
+        else:
+            out.append((pos, a, b))
+    return out
+
+
+# A SCANNED page carries its line art as ink in the picture, where
+# `_page_rules` reads nothing: the caption box, the section dividers and the
+# checkboxes of a scanned PLD-PI-001 are pixels. These read them off a render.
+_RASTER_RULE_DPI = 144         # 2 px per pt: a 0.5 pt rule is a pixel or two
+_RASTER_RULE_THICK = 3.0       # pt: a dark band thicker than this is type or
+                               # shading, never a rule
+_RASTER_RULE_GAP = 1           # px: a light gap this short inside a run is the
+                               # scan breaking a line, not the line ending
+                               # (two checkboxes stacked 1 pt apart are 2 px)
+_RASTER_RULE_CLEAR = 0.25      # at most this share of the line beside a band
+                               # may be dark: a word's baseline row is a thin
+                               # band too, with the letters standing on it
+_RASTER_RULE_MARGIN = 8.0      # pt: ink this close to the page edge is the
+                               # scanner's own border
+_RASTER_RULE_COVER = 0.8       # an image covering this much of the page makes
+                               # it a scan
+
+
+def _page_scan_image(page):
+    """True when one IMAGE covers most of `page` — a scanned page, whose
+    boxes and rules are in the picture and nowhere else."""
+    try:
+        area = float(page.rect.width * page.rect.height)
+        if area <= 0:
+            return False
+        for im in page.get_image_info():
+            b = im.get("bbox")
+            if b and (b[2] - b[0]) * (b[3] - b[1]) >= _RASTER_RULE_COVER * area:
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def _raster_bands(lines, dark_re, min_px, lo, hi):
+    """[(first index, last index, start, end)] for every band of dark RUNS —
+    a run at least `min_px` long lying inside (`lo`, `hi`), continued on the
+    next line by a run overlapping its extent. `lines` yields (index, bytes)
+    in order. A rule is a band a few lines thick; a line of type or a shaded
+    block is one many lines thick, and the caller tells them apart."""
+    open_bands, out = [], []
+    for i, line in lines:
+        runs = [(m.start(), m.end()) for m in dark_re.finditer(line)
+                if m.end() - m.start() >= min_px and m.start() > lo and m.end() < hi]
+        nxt = []
+        for a, b in runs:
+            for band in open_bands:
+                if band[1] == i - 1 and a < band[3] and b > band[2] and band not in nxt:
+                    band[1], band[2], band[3] = i, min(band[2], a), max(band[3], b)
+                    nxt.append(band)
+                    break
             else:
-                out.append((pos, a, b))
-        return out
-    return merge(vert), merge(horiz)
+                nxt.append([i, i, a, b])
+        out.extend(band for band in open_bands if band not in nxt)
+        open_bands = nxt
+    out.extend(open_bands)
+    return out
+
+
+def _raster_rules(page, min_len=_RULE_MIN_LEN):
+    """(vertical, horizontal) rules on `page`, in `_page_rules`' own shape,
+    read off a RENDER of the page: a run of dark pixels at least `min_len`
+    long, at most `_RASTER_RULE_THICK` thick, clear of the page's edge. A
+    line of type is dark along its length too, but through its whole
+    x-height, so the thickness is what tells a rule from a word; a shaded
+    band fails the same way. Returns ([], []) where the render cannot be
+    made."""
+    import fitz
+    try:
+        rect = page.rect
+        dpi = _RASTER_RULE_DPI
+        px = (rect.width * dpi / 72.0) * (rect.height * dpi / 72.0)
+        if px > _INK_MAX_PIXELS:
+            dpi = max(36, int(dpi * (_INK_MAX_PIXELS / px) ** 0.5))
+        pix = page.get_pixmap(dpi=dpi, colorspace=fitz.csGRAY, annots=False)
+        buf = bytes(pix.samples)
+    except Exception:
+        return [], []
+    k = dpi / 72.0
+    w, h, st = pix.width, pix.height, pix.stride
+    dark = "[\\x00-\\x%02x]+" % _INK_DARK
+    light = "[^\\x00-\\x%02x]{1,%d}" % (_INK_DARK, _RASTER_RULE_GAP)
+    dark_re = re.compile((dark + "(?:" + light + dark + ")*").encode("ascii"))
+    min_px, margin = int(min_len * k), int(_RASTER_RULE_MARGIN * k)
+    thick = _RASTER_RULE_THICK * k
+    def row(y):
+        return buf[y * st:y * st + w]
+
+    def col(x):
+        return buf[x::st][:h]
+
+    def isolated(line_of, count, i0, i1, a, b):
+        # A rule has LIGHT beside it along its length; a word's baseline row
+        # is a thin dark band too, with the letters standing on it.
+        for i in (i0 - 1, i1 + 1):
+            if 0 <= i < count:
+                seg = line_of(i)[a:b]
+                if sum(1 for v in seg if v <= _INK_DARK) > _RASTER_RULE_CLEAR * len(seg):
+                    return False
+        return True
+
+    segs = []      # (p0, p1) in display points
+    rows = ((y, row(y)) for y in range(h))
+    for i0, i1, a, b in _raster_bands(rows, dark_re, min_px, margin, w - margin):
+        if i1 - i0 + 1 <= thick and isolated(row, h, i0, i1, a, b):
+            y = (i0 + i1 + 1) / 2.0 / k
+            segs.append(((a / k, y), (b / k, y)))
+    cols = ((x, col(x)) for x in range(w))
+    for i0, i1, a, b in _raster_bands(cols, dark_re, min_px, margin, h - margin):
+        if i1 - i0 + 1 <= thick and isolated(col, w, i0, i1, a, b):
+            x = (i0 + i1 + 1) / 2.0 / k
+            segs.append(((x, a / k), (x, b / k)))
+    # The render is DISPLAY space; the spans the rules are laid among are
+    # UNROTATED. Both ends map back through the page's derotation, and the
+    # orientation is read after the mapping, since a quarter turn swaps it.
+    vert, horiz = [], []
+    inv = page.derotation_matrix
+    for (ax, ay), (bx, by) in segs:
+        p1 = fitz.Point(ax + rect.x0, ay + rect.y0) * inv
+        p2 = fitz.Point(bx + rect.x0, by + rect.y0) * inv
+        if abs(p1.x - p2.x) <= 1.5:
+            vert.append(((p1.x + p2.x) / 2, min(p1.y, p2.y), max(p1.y, p2.y)))
+        elif abs(p1.y - p2.y) <= 1.5:
+            horiz.append(((p1.y + p2.y) / 2, min(p1.x, p2.x), max(p1.x, p2.x)))
+    return _merge_rules(vert), _merge_rules(horiz)
+
+
+def _page_art_rules(page, min_len=_RULE_MIN_LEN):
+    """`_page_rules`, falling back to `_raster_rules` on a SCANNED page that
+    draws no line art of its own: the one place the rules are, is the
+    picture. Never on a page that draws any — a vector page's rules are
+    exact, and a render of it would only re-read them a pixel off."""
+    vert, horiz = _page_rules(page, min_len)
+    if vert or horiz or not _page_scan_image(page):
+        return vert, horiz
+    try:
+        return _raster_rules(page, min_len)
+    except Exception:
+        return vert, horiz
 
 
 def _split_row_columns(spans, gap_min=_COLUMN_GAP_MIN, rules=()):
@@ -26676,7 +26859,7 @@ def _page_visual_text(page):
     rules = ((), ())
     if framed is deduped:
         try:
-            rules = _page_rules(page, min_len=_FORM_RULE_MIN)
+            rules = _page_art_rules(page, min_len=_FORM_RULE_MIN)
         except Exception:
             rules = ((), ())
     if not rows:
@@ -27786,7 +27969,7 @@ def _form_page_geometry(page):
         # Drawn, not split on: a two-line caption box's edge is ~33 pt and
         # a checkbox's ~10, so the floor sits between them, where the row
         # splitter's `_RULE_MIN_LEN` is set for what may BOUND a column.
-        rules = _page_rules(page, min_len=_FORM_RULE_MIN)
+        rules = _page_art_rules(page, min_len=_FORM_RULE_MIN)
     except Exception:
         rules = ((), ())
     try:
