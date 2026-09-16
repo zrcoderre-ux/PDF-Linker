@@ -3515,6 +3515,37 @@ the party), so its row stays reversible.
   What is left, stated: an OCR word that WELDED the label to the value
   ("NUMBER:158015" over "158015") is wider than the type and is nobody's
   piece, so that value still reads twice.
+  **…and "invisible" is read off the TEXT TRACE, not the font name**
+  (`_page_invisible_runs`, `_mark_invisible_spans`, `_INVISIBLE_ATTR`). The
+  born-digital copy of that same complaint carried MC-025 attachments that
+  were scans with a FILER's OCR layer — render mode 3 in an ordinary font,
+  which is what ABBYY and a scanner's own software write — so the font test
+  saw nothing and the export read `(lf(If the item`, `CASE NUMBER:CASE
+  NUMBER:` and `refadioalJudicial Council of California Councl Calforia`.
+  `get_text("dict")` carries no render mode; `get_texttrace()` does (`type`
+  3), so the invisible runs are read once per page off the trace, kept on
+  the Document like `_LOW_DPI_ATTR` (a memo keyed on an object id can hand
+  one document another's layer once the id is reused), and every span
+  passed to `_drop_overdrawn_spans` WITH its page is tagged before the
+  fragment pass. Decided on the trace's own TEXT and never on geometry
+  alone — the invisible misreading lies INSIDE the visible run it misread,
+  so a box test tagged the type as well as the reading and nothing was
+  dropped; the words are what say which is which, and a span the extractor
+  merged from several invisible words is found as a run of the joined
+  layer. The trace's chars are code points, not characters. A caller
+  without the page (a bare span list) still has the font-name test.
+  **…and two copies of one VALUE can disagree about the line's height and
+  baseline** (`_spans_overdrawn`, the second test). The exact tier asked
+  for half the smaller box's AREA shared, and a field's burned-in
+  appearance beside the builder's own copy of the same phone number —
+  identical text, the same x, one baseline a few points below the other —
+  shared less than that, so `(850) 883-0184 (850) 883-0184` stood in one
+  cell of a born-digital form. Half the narrower box's WIDTH shared and the
+  centres within half the taller box's height is the second test, and it
+  is safe against the shape it must not take: the next printed row's
+  centre is a whole row pitch away, so the same value on an adjacent row
+  (the sample form's STREET and MAILING addresses, 11 pt apart at 12 pt
+  tall, measured) is never a copy.
   **…and the copies routinely do NOT split their row the same way**
   (`_span_is_redraw_fragment`). Exact-text equality collapses two copies only
   when both cut the row into the same pieces, and an OCR layer emits one span
@@ -4045,6 +4076,14 @@ extraction, which is what keeps the numbering.
   through descenders, a box edge a caption sits hard against — merges into
   the type's band and is not drawn, and the pleading-row path's ruled-table
   fold still reads vector rules only.
+- **…and the form path drops the SIDEWAYS MARGIN as the other renderers
+  do** (`_margin_sideways_dropped`, from `_ink_form_cells`; the spans carry
+  their line's `_dir` for it). A scanned form's e-filing stamp runs up the
+  left margin, and the OCR reads it one word at a time, so the form rows
+  carried `AM`, `09:32`, `07/31/2026` and `Electronically` scattered down
+  the caption at the column their x dictated — the failure
+  `_margin_sideways_dropped` was written for on the exhibit path, arriving
+  on the third renderer. One rule, asked of all three.
 - **The banner and the log both say when a state was inferred**, and ask for a
   check. An inferred checkbox on a default-judgment packet is precisely the fact
   nobody should take on trust, so it is never presented as equal to a widget's.
@@ -4271,6 +4310,17 @@ pleading page for the extra span read, ~1.4 ms for the stops on a 400-row
 page. Accepted, and the same as the layout's own: exports of a delivered
 folder come back with the new spacing on the first FULL re-run, whitespace
 only.
+**…and a stop PUSHED by a row's own text is never clamped to the page
+width** (`_column_stops`). The cap bounds the column x derives — a stray
+far-right cell must not cost a line 500 characters of padding — and it was
+applied to the pushed column too. A scanned form's 6-pt caption labels are
+denser than the page's grid unit (which the 10-pt body sets), so the label
+rows need more columns than the page's width allows; the divider's stop was
+pushed past the cap, clamped back to it, and every cell behind it landed at
+`len(line) + 1`: the right column jammed against the divider on every row,
+the closing corner off the end of the line. The pushed column is bounded by
+the text that pushed it, which is what the cap exists to bound, so it is
+taken as it is.
 **…and two-column PROSE reads COLUMN BY COLUMN** (`_prose_column_bands`,
 `_band_is_prose`, `_cell_reads_as_prose`, `_VIS_COL_*`), at the owner's
 direction. A contract or a terms page printed in two columns is the one

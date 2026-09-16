@@ -3922,16 +3922,30 @@ def _span_text_key(text):
 
 
 def _spans_overdrawn(a, b):
-    """True when `a` and `b` are the same text drawn over the same ink."""
+    """True when `a` and `b` are the same text drawn over the same ink.
+
+    Half the smaller box's area, or — for two copies whose boxes DISAGREE
+    about the line's height and baseline, as a field's burned-in appearance
+    and the builder's own copy of the value do — half the narrower box's
+    WIDTH shared and the two centres within half the taller box's height:
+    the next printed row's centre is a whole row pitch away, so the same
+    value on an adjacent row (a form's STREET and MAILING addresses, 11 pt
+    apart at 12 pt tall) is never taken for a copy."""
     ax0, ay0, ax1, ay1 = a["bbox"]
     bx0, by0, bx1, by1 = b["bbox"]
     w = min(ax1, bx1) - max(ax0, bx0)
     h = min(ay1, by1) - max(ay0, by0)
-    if w <= 0 or h <= 0:
+    if w <= 0:
         return False
-    smaller = min(max((ax1 - ax0) * (ay1 - ay0), 1e-6),
-                  max((bx1 - bx0) * (by1 - by0), 1e-6))
-    return w * h >= _SPAN_OVERDRAW_MIN * smaller
+    if h > 0:
+        smaller = min(max((ax1 - ax0) * (ay1 - ay0), 1e-6),
+                      max((bx1 - bx0) * (by1 - by0), 1e-6))
+        if w * h >= _SPAN_OVERDRAW_MIN * smaller:
+            return True
+    narrower = max(min(ax1 - ax0, bx1 - bx0), 1e-6)
+    taller = max(ay1 - ay0, by1 - by0, 1e-6)
+    return (w >= _SPAN_OVERDRAW_MIN * narrower
+            and abs((ay0 + ay1) - (by0 + by1)) / 2.0 <= 0.5 * taller)
 
 
 # Two spans are two READINGS of one printed run when each covers this much of
@@ -4479,6 +4493,8 @@ def _drop_overdrawn_spans(spans, page=None):
     deletes a reading the page has nowhere else, so it carries its own gates and
     its own page-level floor; `page`, where a caller has one, is what lets the
     export say on its banner that a choice was made."""
+    if page is not None:
+        _mark_invisible_spans(spans, page)
     kept, out = {}, []
     for sp in spans:
         halved = _undouble_strike(sp["text"])
@@ -4493,6 +4509,71 @@ def _drop_overdrawn_spans(spans, page=None):
     if dropped and page is not None:
         _note_doubled_page(page, dropped)
     return _drop_redrawn_fragments(out)
+
+
+# Where a page's INVISIBLE text stands, read off its text trace and kept on
+# the Document ({page number: (runs, joined)}, hung there like `_LOW_DPI_ATTR`
+# so a reused object id can never hand one document another's layer).
+_INVISIBLE_ATTR = "_pdf_linker_invisible_runs"
+
+
+def _page_invisible_runs(page):
+    """([(folded text, bbox)] of every run of INVISIBLE text on `page`, the
+    runs' texts joined) — render mode 3, the mode an OCR layer is drawn in
+    whatever font it names. Tesseract's GlyphLessFont is one such layer and
+    carries its own marker; a filer's OCR (ABBYY, a scanner's own software)
+    draws its words in an ordinary font and the mode is the only thing that
+    says they are not on the page."""
+    try:
+        doc, memo = page.parent, getattr(page.parent, _INVISIBLE_ATTR, None)
+        if memo is None:
+            memo = {}
+            setattr(doc, _INVISIBLE_ATTR, memo)
+        if page.number in memo:
+            return memo[page.number]
+    except Exception:
+        memo = None
+    runs = []
+    try:
+        for sp in page.get_texttrace():
+            chars = sp.get("chars")
+            if chars and sp.get("type") == 3:
+                # a trace char is (code point, glyph, origin, bbox)
+                text = _span_text_key("".join(
+                    chr(c[0]) if isinstance(c[0], int) else str(c[0]) for c in chars))
+                if text:
+                    runs.append((text, tuple(sp["bbox"])))
+    except Exception:
+        runs = []
+    out = (runs, " ".join(t for t, _r in runs))
+    if memo is not None:
+        memo[page.number] = out
+    return out
+
+
+def _mark_invisible_spans(spans, page):
+    """Tag each of `spans` that IS one of `page`'s invisible runs with
+    `_invisible`, so `_span_is_invisible_reading` can answer for a layer
+    whose font name says nothing. Decided on the TEXT, with the box only
+    placing it: an invisible misreading lies inside the visible run it
+    misread, so geometry alone tags the type as well as the reading, and
+    only the words say which is which. A span the extractor merged from
+    several invisible words is found as a run of the joined layer."""
+    runs, joined = _page_invisible_runs(page)
+    if not runs:
+        return
+    keys = {t for t, _r in runs}
+    padded = " " + joined + " "
+    for sp in spans:
+        if not isinstance(sp, dict) or sp.get("_invisible"):
+            continue
+        key = _span_text_key(sp.get("text", ""))
+        if not key or (key not in keys and (" " + key + " ") not in padded):
+            continue
+        x0, y0, x1, y1 = sp["bbox"]
+        if any(rx0 < x1 and rx1 > x0 and ry0 < y1 and ry1 > y0
+               for _t, (rx0, ry0, rx1, ry1) in runs):
+            sp["_invisible"] = True
 
 
 # How far outside a span's box a piece may stick and still count as drawn INSIDE
@@ -4579,10 +4660,12 @@ def _span_is_redraw_fragment(sp, big):
 
 
 def _span_is_invisible_reading(sp):
-    """True when `sp` is a word of an OCR layer — set in Tesseract's invisible
-    font, the one marker a span dict carries (`_page_text_is_ocr` asks the
-    page's font table the same question)."""
-    return _PN_OCR_INVISIBLE_FONT in str(sp.get("font") or "").lower()
+    """True when `sp` is a word of an OCR layer — drawn in render mode 3
+    (`_mark_invisible_spans`, off the page's text trace, where the caller
+    had the page), or set in Tesseract's invisible font, the one marker a
+    span dict carries on its own."""
+    return bool(sp.get("_invisible")) or (
+        _PN_OCR_INVISIBLE_FONT in str(sp.get("font") or "").lower())
 
 
 def _drop_redrawn_fragments(spans):
@@ -26632,7 +26715,14 @@ def _column_stops(rows, left, char_w=_VIS_CHAR_W, max_col=None):
                     continue
                 prev = stops.get(group[float(px)], 0)
                 col = max(col, prev + len(pt) + 1)
-        stops[gx] = min(col, cap)
+        # The cap bounds the column x DERIVES (a stray far-right cell must not
+        # cost a line 500 characters of padding); a stop PUSHED by a row's
+        # own text is bounded by that text and is never clamped. Clamped, a
+        # page whose dense 6-pt labels need more columns than its width
+        # allows piled every right-hand cell at the cap: a scanned form's
+        # caption came out with its right column jammed against the divider
+        # and its closing corner gone.
+        stops[gx] = col
     return {x: stops[g] for x, g in group.items()}
 
 
@@ -27486,14 +27576,24 @@ def _ink_form_cells(page):
         blocks = page.get_text("dict").get("blocks", [])
     except Exception:
         return None
-    spans = [sp for blk in blocks for ln in blk.get("lines", [])
-             for sp in ln.get("spans", []) if str(sp.get("text", "")).strip()]
+    spans = []
+    for blk in blocks:
+        for ln in blk.get("lines", []):
+            d = ln.get("dir") or (1.0, 0.0)
+            for sp in ln.get("spans", []):
+                if str(sp.get("text", "")).strip():
+                    sp["_dir"] = d
+                    spans.append(sp)
     # A form filled and FLATTENED carries each value twice as often as not —
     # the field's appearance burned into the content over the value the
     # builder already printed — and this path read the page's spans raw, so
     # every value stood twice in the export ("90013 90013", "1 1 to 50 50")
-    # while the rows path beside it collapsed the same doubling.
-    spans = _drop_overdrawn_spans(spans, page)
+    # while the rows path beside it collapsed the same doubling. And the
+    # e-filing stamp set up the LEFT MARGIN of a scanned form — its words
+    # read one at a time by the OCR — is the sidebar the other two
+    # renderers already drop; laid into the form's rows it scattered
+    # "AM", "09:32", "07/31/2026", "Electronically" down the caption.
+    spans = _margin_sideways_dropped(_drop_overdrawn_spans(spans, page))
     if not spans:
         return None
     # Plain tuples, compared arithmetically: a real form page runs to hundreds of
