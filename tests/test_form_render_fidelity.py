@@ -23,6 +23,7 @@ def _boxed_form():
     sh = pg.new_shape()
     sh.draw_rect(fitz.Rect(36, 47, 576, 120))          # the caption box
     sh.draw_line(fitz.Point(396, 47), fitz.Point(396, 120))  # its divider
+    sh.draw_line(fitz.Point(200, 47), fitz.Point(200, 80))   # a two-line box's edge, 33 pt
     sh.finish(width=0.6)
     sh.commit()
     pg.insert_text((38, 58), "ATTORNEY OR PARTY WITHOUT ATTORNEY", fontsize=6, fontname="helv")
@@ -58,10 +59,13 @@ def test_rules_are_drawn_and_the_box_reads_as_a_box():
     assert inside, lines
     # every line inside the box carries its left edge, the divider and its right edge
     for l in inside:
-        assert l.count(P._FORM_VRULE) == 3, l
+        assert l.count(P._FORM_VRULE) >= 3, l
     # …and the divider stands at ONE column all the way down
-    cols = {l.index(P._FORM_VRULE, l.index(P._FORM_VRULE) + 1) for l in inside}
+    cols = {l.rindex(P._FORM_VRULE, 0, l.rindex(P._FORM_VRULE)) for l in inside}
     assert len(cols) == 1, cols
+    # the short (33 pt) edge is drawn on the lines it crosses and no others
+    short = [l for l in inside if l.count(P._FORM_VRULE) == 4]
+    assert short and len(short) < len(inside), inside
     # the caption set against the edge follows it, never overprints it
     l = next(l for l in inside if "ATTORNEY OR PARTY" in l)
     assert l.index("ATTORNEY") > l.index(P._FORM_VRULE)
