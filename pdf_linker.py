@@ -26705,7 +26705,7 @@ def _page_visual_text(page):
                    "cells": [(x0, t) for x0, _x1, t in segs]}
                   for i, (r, segs) in enumerate(zip(rows, cells))]
     spaced = _lay_rules(text_lines, rules, char_w, lead)
-    stops = _column_stops([ln["cells"] for ln in spaced], left, char_w)
+    stops, texts = _rule_lines_text(spaced, left, char_w)
     # A run of two-column PROSE reads column by column (see the note above
     # `_VIS_COL_MIN_ROWS`); everything else reads row by row. A band is
     # rendered from its text rows alone, and the rule and blank lines that
@@ -26713,7 +26713,7 @@ def _page_visual_text(page):
     # text that is being read column by column.
     bands = {i0: (i1, sx) for i0, i1, sx in _prose_column_bands(cells)}
     out, past_y = [], None
-    for ln in spaced:
+    for ln, text in zip(spaced, texts):
         if past_y is not None:
             if ln["y"] <= past_y:
                 continue
@@ -26742,7 +26742,7 @@ def _page_visual_text(page):
                     out.append("")
                 out.extend(col_lines)
             continue
-        out.append(_visual_row_text(ln["cells"], left, char_w, stops))
+        out.append(text)
     text = "\n".join(out).rstrip()
     return text or None
 
@@ -26805,10 +26805,8 @@ def _pleading_lines(seg_rows, nums, layout, left, char_w=_VIS_CHAR_W):
              for i, segs in enumerate(seg_rows)]
     lines += [{"y": y, "cells": [], "num": n} for n, y in layout["blank_nums"]]
     spaced = _lay_rules(lines, (vr, hr), char_w, 0.0)
-    stops = _column_stops([ln["cells"] for ln in spaced], left, char_w)
     return ([ln.get("num") for ln in spaced],
-            [_visual_row_text(ln["cells"], left, char_w, stops)
-             for ln in spaced])
+            _rule_lines_text(spaced, left, char_w)[1])
 
 
 # ── Judicial Council / fillable-form pages ──────────────────────────────────
@@ -27556,6 +27554,9 @@ def _form_page_number(page):
 _FORM_RULE_MIN = 20.0        # pt: the shortest line art drawn in the export
 _FORM_HRULE = "\u2500"        # ─
 _FORM_VRULE = "\u2502"        # │
+# The glyph set the export draws line art with: the two rules and the nine
+# junctions a vertical rule makes where it meets a horizontal one.
+_RULE_GLYPHS = "\u2500\u2502\u250c\u2510\u2514\u2518\u251c\u2524\u252c\u2534\u253c"
 
 
 def _lay_rules(lines, rules, cw, lead):
@@ -27594,10 +27595,105 @@ def _lay_rules(lines, rules, cw, lead):
             if not (y0 - 1.0 <= ln["y"] <= y1 + 1.0):
                 continue
             if ln["rule"] and ln["span"][0] - cw <= x <= ln["span"][1] + cw:
+                # A JUNCTION: the bar meets the rule's own run, and is set
+                # into it as a corner, a tee or a cross once the columns are
+                # known (`_rule_lines_text`) — never a cell of its own, which
+                # would be a column stop the run itself pushes.
+                ln.setdefault("joins", []).append((float(x), float(y0), float(y1)))
                 continue
             ln["cells"].append((float(x), _FORM_VRULE))
             ln["cells"].sort()
     return spaced
+
+
+def _rule_join_glyph(top, bot, at_left, at_right):
+    """The box-drawing glyph for a vertical rule meeting a horizontal one:
+    `top`/`bot` when the vertical rule starts/ends at the horizontal one,
+    `at_left`/`at_right` when it meets the run's own end."""
+    if top and not bot:
+        return "\u250c" if at_left else "\u2510" if at_right else "\u252c"   # ┌ ┐ ┬
+    if bot and not top:
+        return "\u2514" if at_left else "\u2518" if at_right else "\u2534"   # └ ┘ ┴
+    return "\u251c" if at_left else "\u2524" if at_right else "\u253c"       # ├ ┤ ┼
+
+
+def _rule_lines_text(spaced, left, cw, max_col=None):
+    """(stops, lines) for `_lay_rules`' output: the page's column stops over
+    every line's cells, each junction set into its rule run at the very
+    column the bar takes on the lines around it, and every line rendered on
+    the grid. The junction is placed from the STOPS and not from the rule's
+    own x, so a bar that runs down twenty lines meets the rule at exactly its
+    own column; a run too short to reach that column is extended to it."""
+    stops = _column_stops([ln["cells"] for ln in spaced], left, cw, max_col)
+
+    def col_of(x):
+        if float(x) in stops:
+            return stops[float(x)]
+        return max(0, min(int(round((x - left) / cw)), _FORM_MAX_COL))
+
+    for ln in spaced:
+        joins = ln.get("joins")
+        if not joins or not ln.get("rule"):
+            continue
+        run_i = next((i for i, (x, t) in enumerate(ln["cells"])
+                      if x == ln["span"][0] and t[:1] == _FORM_HRULE), None)
+        if run_i is None:
+            continue
+        rx, run = ln["cells"][run_i]
+        run_col = col_of(rx)
+        chars = list(run)
+        for x, y0, y1 in sorted(joins):
+            idx = max(0, col_of(x) - run_col)
+            if idx >= len(chars):
+                chars.extend(_FORM_HRULE * (idx - len(chars) + 1))
+            top = abs(y0 - ln["y"]) <= 2.0
+            bot = abs(y1 - ln["y"]) <= 2.0
+            at_left = idx == 0
+            at_right = idx == len(chars) - 1 and not at_left
+            chars[idx] = _rule_join_glyph(top, bot, at_left, at_right)
+        ln["cells"][run_i] = (rx, "".join(chars))
+    return stops, [_visual_row_text(ln["cells"], left, cw, stops) for ln in spaced]
+
+
+def _realign_rule_bars(before, after):
+    """`after` — one display line of `before` scrubbed — with every `│` put
+    back at the column it had in `before`. The form and exhibit renderers lay
+    a page out and scrub the text AFTER, so a stand-in longer than the value
+    it replaced pushed the bar after it along the line and the vertical rule
+    read as jagged. The growth is taken out of the PADDING before the bar,
+    which is what the padding is for; where the text really fills the cell
+    the bar drifts as the text did, since cutting a word would be worse."""
+    if _FORM_VRULE not in before or before == after:
+        return after
+    bcols = [i for i, ch in enumerate(before) if ch == _FORM_VRULE]
+    acols = [i for i, ch in enumerate(after) if ch == _FORM_VRULE]
+    if len(bcols) != len(acols):
+        return after
+    out, pos, width = [], 0, 0
+    for bc, ac in zip(bcols, acols):
+        seg = after[pos:ac]
+        target = bc - width
+        core = seg.rstrip(" ")
+        if core == "" and target >= 0:
+            seg = " " * target
+        elif len(core) + 1 <= target:
+            seg = core + " " * (target - len(core))
+        out.append(seg + _FORM_VRULE)
+        width += len(seg) + 1
+        pos = ac + 1
+    out.append(after[pos:])
+    return "".join(out)
+
+
+def _realign_rule_text(before, after):
+    """`_realign_rule_bars` over every line of a page, where the scrub kept
+    the line count (a stand-in never carries a newline)."""
+    if _FORM_VRULE not in before:
+        return after
+    b, a = before.split("\n"), after.split("\n")
+    if len(b) != len(a):
+        return after
+    return "\n".join(_realign_rule_bars(x, y) for x, y in zip(b, a))
 
 
 def _form_layout(cells, char_w=None, rules=None, page_w=None):
@@ -27638,9 +27734,7 @@ def _form_layout(cells, char_w=None, rules=None, page_w=None):
     max_col = _FORM_MAX_COL
     if page_w:
         max_col = max(max_col, int((float(page_w) - left) / cw) + 2)
-    stops = _column_stops([ln["cells"] for ln in spaced], left, cw, max_col)
-    return [_visual_row_text(ln["cells"], left, cw, stops).rstrip()
-            for ln in spaced]
+    return [t.rstrip() for t in _rule_lines_text(spaced, left, cw, max_col)[1]]
 
 
 def _form_page_geometry(page):
@@ -28138,7 +28232,7 @@ _PN_GUTTER_RE = re.compile(r"^\s*(\d+)\s{2,}\S")
 _PN_GUTTER_BARE_RE = re.compile(r"^ ?(\d{1,2})$")
 # The rules the export draws (`_FORM_HRULE` / `_FORM_VRULE`) are furniture,
 # not prose: a Context quote reads through them.
-_PN_RULE_GLYPH_RE = re.compile("[\u2500\u2502]+")
+_PN_RULE_GLYPH_RE = re.compile("[\u2500\u2502\u250c\u2510\u2514\u2518\u251c\u2524\u252c\u2534\u253c]+")
 
 
 def _pn_page_label(pdf, printed):
@@ -32692,8 +32786,12 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
                 display = "\n".join(
                     ((f"{num:>2}  " if num is not None else "    ") + b).rstrip()
                     for num, b in zip(nums, bodies))
-            else:                           # flowing text
-                display = pz.apply(content) if pz is not None else content
+            else:                           # flowing text, a form, an exhibit
+                display = content
+                if pz is not None:
+                    # Laid out before the scrub, so a stand-in's length
+                    # would push the bar after it: put the bars back.
+                    display = _realign_rule_text(content, pz.apply(content))
             parts.append(f"{header}\n{display}")
         if pz is not None:
             pz.set_page_context()

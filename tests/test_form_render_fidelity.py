@@ -13,6 +13,12 @@ fitz = pytest.importorskip("fitz")
 import pdf_linker as P
 
 
+def _rule_line(l):
+    """A line that is nothing but line art: a rule run with its junctions."""
+    t = l.strip()
+    return bool(t) and P._FORM_HRULE in t and set(t) <= set(P._RULE_GLYPHS)
+
+
 def _boxed_form():
     """A page shaped like a Judicial Council caption: a ruled box with a
     column divider, a checkbox, a caption set hard against the box edge, a
@@ -53,8 +59,8 @@ def _lines(text):
 
 def test_rules_are_drawn_and_the_box_reads_as_a_box():
     lines = _lines(P._form_page_text(_boxed_form()))
-    top = next(i for i, l in enumerate(lines) if set(l.strip()) == {P._FORM_HRULE})
-    bottom = next(i for i, l in enumerate(lines) if i > top and set(l.strip()) == {P._FORM_HRULE})
+    top = next(i for i, l in enumerate(lines) if _rule_line(l))
+    bottom = next(i for i, l in enumerate(lines) if i > top and _rule_line(l))
     inside = lines[top + 1:bottom]
     assert inside, lines
     # every line inside the box carries its left edge, the divider and its right edge
