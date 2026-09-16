@@ -159,7 +159,10 @@ def test_every_checkbox_state_is_rendered_beside_its_caption():
 def test_unchecked_causes_of_action_are_distinguishable():
     # On a discretionary complaint form the checkboxes ARE the pleading: which
     # causes of action are alleged is nothing but their state.
-    text = pl._form_page_text(_pldc001()[0])
+    # The caption sits at its own printed column, so the run of spaces
+    # between the state and it is the page's geometry; the state beside the
+    # caption is what this pins.
+    text = " ".join(pl._form_page_text(_pldc001()[0]).split())
     assert "[X] a. Breach of Contract" in text
     assert "[X] b. Common Counts" in text
     assert "[ ] c. Fraud" in text
