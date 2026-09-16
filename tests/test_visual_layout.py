@@ -157,10 +157,14 @@ class TestPlainPageVisualText:
         ))
         out = P._page_visual_text(pg)
         lines = out.splitlines()
+        # The grid unit is the page's OWN character width, measured off its
+        # spans (`_spans_char_width`), not a constant.
+        cw = P._spans_char_width(P._page_text_spans(pg))
+        assert cw != P._VIS_CHAR_W
         title = next(l for l in lines if "ORDER OF DISMISSAL" in l)
-        assert title.index("ORDER") == round((250 - 72) / P._VIS_CHAR_W)
+        assert title.index("ORDER") == round((250 - 72) / cw)
         date = next(l for l in lines if "Date:" in l)
-        assert date.index("Judge") == round((300 - 72) / P._VIS_CHAR_W)
+        assert date.index("Judge") == round((300 - 72) / cw)
 
     def test_a_real_vertical_gap_is_a_blank_line(self):
         pg = self._page(lambda p: (
@@ -201,7 +205,8 @@ class TestPlainPageVisualText:
         assert P._write_text_version(path, doc, logging.getLogger("t"))
         txt = (tmp_path / "Text Files" / "exhibit.txt").read_text("utf-8")
         line = next(l for l in txt.splitlines() if "EXHIBIT A" in l)
-        assert line.index("EXHIBIT") == round((250 - 72) / P._VIS_CHAR_W)
+        cw = P._spans_char_width(P._page_text_spans(doc[0]))
+        assert line.index("EXHIBIT") == round((250 - 72) / cw)
 
 
 # ── and what is printed SIDEWAYS in the margin is not the document ──────────

@@ -26268,7 +26268,93 @@ def _pn_reconstruct_caption(pseudonymizer, rows):
 # right-aligned cell) picks up padding. Scrubbing happens BEFORE layout, so a
 # fake of a different length shifts what follows it on that line — the honest
 # cost of the text really having changed.
-_VIS_CHAR_W = 6.0
+#
+# The grid unit is MEASURED off the page, and a column is one column all the
+# way DOWN the page — two things the first version got wrong, and both showed
+# as "the columns don't line up". (1) The unit was a fixed 6 pt, sized for 12 pt
+# body text; an exhibit set in 8 pt fits half again as many characters into
+# the same width, so a cell that FIT its printed column on the page overflowed
+# its grid slot in the export, and (2) an overflow was resolved PER ROW — the
+# next cell pushed right on that row alone — so a billing ledger rendered with
+# its short rows aligned and its long rows ragged, which is worse to read than
+# either. Now `_spans_char_width` takes the unit from the page's own type (the
+# length-weighted median of each span's width per character), and
+# `_column_stops` lays the page out in two passes: every cell that starts at
+# one printed x shares one column, and where any row's cell runs past that
+# column the WHOLE column moves right, so the table stays a table. A prose
+# line has one cell and constrains nothing; column 0 still adds nothing, so
+# body text does not move.
+_VIS_CHAR_W = 6.0            # the unit where the page offers nothing to measure
+_VIS_CW_MIN = 2.5            # pt per character: bounds on a measured unit —
+_VIS_CW_MAX = 9.0            # 6 pt type sits near the floor, 14 pt near the cap
+_VIS_CW_MIN_CHARS = 4        # a span shorter than this says little about width
+_VIS_CW_MIN_SAMPLE = 40      # characters of evidence before the measure is used
+_VIS_STOP_TOL = 3.0          # pt: cells starting this close share a column
+
+
+def _spans_char_width(spans, default=_VIS_CHAR_W):
+    """The width of one character of the page's own type, in points — the
+    grid unit `_visual_row_text` divides an x offset by.
+
+    The length-weighted MEDIAN of each span's width per character, so a page
+    that is mostly 10 pt body with one 18 pt heading measures as its body and
+    the heading (whose column is x-derived and needs no unit) cannot pull it.
+    Sideways spans are skipped — their bbox width is their height — and a
+    page offering fewer than `_VIS_CW_MIN_SAMPLE` characters keeps the
+    default, since a slip sheet's two words are no measure of anything."""
+    samples = []
+    for sp in spans:
+        if _span_is_sideways(sp):
+            continue
+        t = str(sp.get("text") or "").rstrip()
+        n = len(t)
+        if n < _VIS_CW_MIN_CHARS:
+            continue
+        x0, _y0, x1, _y1 = sp["bbox"]
+        w = float(x1) - float(x0)
+        if w <= 0:
+            continue
+        samples.append((w / n, n))
+    total = sum(n for _w, n in samples)
+    if total < _VIS_CW_MIN_SAMPLE:
+        return default
+    samples.sort()
+    seen = 0
+    for w, n in samples:
+        seen += n
+        if seen * 2 >= total:
+            return min(_VIS_CW_MAX, max(_VIS_CW_MIN, w))
+    return default
+
+
+def _column_stops(rows, left, char_w=_VIS_CHAR_W):
+    """{cell x: column} for every cell on a page, so a printed column is ONE
+    column of the export all the way down.
+
+    Cell starts within `_VIS_STOP_TOL` of one another are one stop. Stops are
+    settled left to right: a stop's column is where its x puts it, unless some
+    row's cell BEFORE it runs past that — then the stop moves right for every
+    row, which is what keeps a table's rows aligned when one cell is long. A
+    row with a single cell (prose) constrains nothing. `rows` is a list of
+    segment lists, each `[(x, text), ...]`."""
+    xs = sorted({float(x) for segs in rows for x, _t in segs})
+    group, start = {}, None
+    for x in xs:
+        if start is None or x - start > _VIS_STOP_TOL:
+            start = x
+        group[x] = start
+    stops = {}
+    for gx in sorted(set(group.values())):
+        col = max(0, min(int(round((gx - left) / char_w)), _FORM_MAX_COL))
+        for segs in rows:
+            for j in range(1, len(segs)):
+                if group[float(segs[j][0])] != gx:
+                    continue
+                px, pt = segs[j - 1]
+                prev = stops.get(group[float(px)], 0)
+                col = max(col, prev + len(pt) + 1)
+        stops[gx] = min(col, _FORM_MAX_COL)
+    return {x: stops[g] for x, g in group.items()}
 
 
 def _rows_body_left(rows):
@@ -26285,17 +26371,30 @@ def _rows_body_left(rows):
     return min(xs) if xs else 0.0
 
 
-def _visual_row_text(segs, left):
+def _visual_row_text(segs, left, char_w=_VIS_CHAR_W, stops=None):
     """One display line: each segment at the column its x dictates, never on
     top of (or run together with) the segment before it — `_form_layout`'s own
-    rule, shared because the two must read alike beside their pages."""
+    rule, shared because the two must read alike beside their pages. `stops`
+    is the page's `_column_stops` where the caller has the whole page; a row
+    laid out alone takes its columns from x and `char_w` directly."""
     line = ""
     for x, t in segs:
-        col = max(0, min(int(round((x - left) / _VIS_CHAR_W)), _FORM_MAX_COL))
+        if stops is not None and float(x) in stops:
+            col = stops[float(x)]
+        else:
+            col = max(0, min(int(round((x - left) / char_w)), _FORM_MAX_COL))
         if line:
             col = max(col, len(line) + 1)
         line += " " * (col - len(line)) + t
     return line.rstrip()
+
+
+def _visual_rows_text(rows, left, char_w=_VIS_CHAR_W):
+    """Every row of a page laid out on ONE grid: `rows` is a list of segment
+    lists, and the columns are the page's `_column_stops`, so a cell that
+    overflows moves its column for every row rather than breaking its own."""
+    stops = _column_stops(rows, left, char_w)
+    return [_visual_row_text(segs, left, char_w, stops) for segs in rows]
 
 
 # A physical gap this wide between two spans is LAYOUT (a label/value gap, a
@@ -26366,42 +26465,50 @@ def _page_visual_text(page):
         return None
     rows = sorted(rows, key=lambda r: r["y"])
     left = min(s["bbox"][0] for r in rows for s in r["spans"])
+    char_w = _spans_char_width([s for r in rows for s in r["spans"]])
     deltas = [b["y"] - a["y"] for a, b in zip(rows, rows[1:]) if b["y"] - a["y"] > 1.0]
     lead = statistics.median(deltas) if deltas else 0.0
-    out, prev_y = [], None
+    # Pass one: each row's CELLS — a span opens a new cell only across a real
+    # gap, otherwise it glues onto the cell before it (with a space where the
+    # print had one), so running prose is one cell and column placement is
+    # asked only of layout. Pass two lays every row out on one page-wide grid.
+    cells, blanks_before = [], []
+    prev_y = None
     for r in rows:
+        blanks = 0
         if prev_y is not None and lead:
-            blanks = int(round((r["y"] - prev_y) / lead)) - 1
-            out.extend([""] * max(0, min(blanks, _VIS_MAX_BLANKS)))
+            blanks = max(0, min(int(round((r["y"] - prev_y) / lead)) - 1,
+                                _VIS_MAX_BLANKS))
         prev_y = r["y"]
-        line, prev_x1 = "", None
+        segs, prev_x1 = [], None
         for s in sorted(r["spans"], key=lambda s: s["bbox"][0]):
             t = s.get("text", "")
             if not t:
                 continue
             x0, y0, x1, y1 = s["bbox"]
-            col = max(0, min(int(round((x0 - left) / _VIS_CHAR_W)),
-                             _FORM_MAX_COL))
-            if not line:
-                line = " " * col + t
-            elif (col > len(line) + 1 and prev_x1 is not None
-                    and (x0 - prev_x1) >= _VIS_GAP_PT):
-                line += " " * (col - len(line)) + t
+            if not segs or (prev_x1 is not None and (x0 - prev_x1) >= _VIS_GAP_PT):
+                segs.append((float(x0), t))
             else:
-                if (not line[-1].isspace() and not t[:1].isspace()
+                cx, ct = segs[-1]
+                if (not ct[-1].isspace() and not t[:1].isspace()
                         and prev_x1 is not None
                         and (x0 - prev_x1) > 0.2 * (y1 - y0)):
-                    line += " "
-                line += t
+                    ct += " "
+                segs[-1] = (cx, ct + t)
             prev_x1 = x1
-        out.append(line.rstrip())
+        cells.append(segs)
+        blanks_before.append(blanks)
+    out = []
+    for blanks, line in zip(blanks_before, _visual_rows_text(cells, left, char_w)):
+        out.extend([""] * blanks)
+        out.append(line)
     text = "\n".join(out).rstrip()
     return text or None
 
 
-def _pn_apply_page_rows(pseudonymizer, rows):
+def _pn_apply_page_rows(pseudonymizer, rows, char_w=_VIS_CHAR_W):
     """Pseudonymize a pleading page column by column and return one display
-    string per row.
+    string per row. `char_w` is the page's own grid unit (`_spans_char_width`).
 
     The caption party block, when confidently detected and fully attributed,
     is RE-RENDERED from the tracked parties' fakes first (see
@@ -26425,9 +26532,10 @@ def _pn_apply_page_rows(pseudonymizer, rows):
     # note above), with the ORIGINAL x deciding the column and the SCRUBBED
     # text filling it.
     left = _rows_body_left(rows)
-    return [_visual_row_text([(segs[j][0], faked[(i, j)])
-                              for j in range(len(segs))], left)
-            for i, (_num, segs) in enumerate(rows)]
+    return _visual_rows_text([[(segs[j][0], faked[(i, j)])
+                               for j in range(len(segs))]
+                              for i, (_num, segs) in enumerate(rows)],
+                             left, char_w)
 
 
 # ── Judicial Council / fillable-form pages ──────────────────────────────────
@@ -31910,6 +32018,7 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
     page_blocks = []  # (header, rows_or_text) before pseudonymization; rows is
                       # a list of (line_num, segments) for pleading pages, else a str
     block_pages = []  # for each block, the index of its `detect_pages` entry
+    block_char_w = []  # for each block, its page's grid unit (pleading rows)
     has_fields = _doc_has_form_fields(doc)
     forms_seen, ink_seen, tables_seen = [], [], []
     spent = {}          # rendering -> seconds, for the breakdown below
@@ -32049,6 +32158,10 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
                   + " ======")
         page_blocks.append((header, rows if rows is not None else display))
         block_pages.append(len(detect_pages) - 1)   # its detection text
+        # The page's own grid unit for its rows (see `_spans_char_width`);
+        # a plain page measured its own inside `_page_visual_text`.
+        block_char_w.append(_spans_char_width(_page_text_spans(page))
+                            if rows is not None else _VIS_CHAR_W)
 
     elapsed = time.monotonic() - started
     if elapsed >= _EXPORT_SLOW_SEC and spent:
@@ -32127,11 +32240,11 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
                 if pz is not None:
                     # Column by column, so a name the page wrapped mid-name
                     # stays contiguous; rows re-assembled left to right after.
-                    bodies = _pn_apply_page_rows(pz, content)
+                    bodies = _pn_apply_page_rows(pz, content, block_char_w[k])
                 else:
                     left = _rows_body_left(content)
-                    bodies = [_visual_row_text(segs, left)
-                              for _num, segs in content]
+                    bodies = _visual_rows_text([segs for _num, segs in content],
+                                               left, block_char_w[k])
                 # A gutter number owns its first row; continuation rows (a
                 # stacked letterhead/caption line) carry line_num=None and print
                 # under a blank, aligned gutter so the block reads as lines.

@@ -138,7 +138,13 @@ def test_the_shear_moves_y_alone():
     assert [s["bbox"][0] for s in out] == [s["bbox"][0] for s in spans]
     assert [s["bbox"][2] for s in out] == [s["bbox"][2] for s in spans]
     rows = _rows(_scan(1.0)[0])
-    assert rows[5].startswith("   Bringing") and rows[6].startswith("   Temporarily")
+    # Indented past the body lines around them, by the same amount — the
+    # width of that indent is the page's own grid unit (`_spans_char_width`)
+    # and is not pinned here.
+    for r in (rows[5], rows[6]):
+        assert r.startswith(" ") and r.lstrip().startswith(("Bringing", "Temporarily"))
+    assert len(rows[5]) - len(rows[5].lstrip()) == len(rows[6]) - len(rows[6].lstrip())
+    assert not rows[4].startswith(" ")
 
 
 def test_a_rotated_and_skewed_scan_composes_both_frames():
