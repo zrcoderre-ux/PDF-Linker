@@ -232,12 +232,19 @@ class _FakeWidget:
 
 
 def test_widget_is_on_reads_the_pdf_off_state():
-    # `Off` is the state name the PDF spec reserves for off, so anything else is
-    # on — that is what carries the export values real forms use.
+    # `Off` is the state name the PDF spec reserves for off. Where the widget
+    # cannot say what its on-state is, anything else is on — that is what
+    # carries the export values real forms use.
     for val, want in (("Off", False), ("off", False), ("", False), (None, False),
                       (False, False), ("Yes", True), ("On", True), ("1", True),
                       (True, True)):
-        assert pl._widget_is_on(_FakeWidget(None, val)) is want, val
+        assert pl._widget_is_on(_FakeWidget(None, val, on=None)) is want, val
+    # Where it CAN, the value has to name that on-state: a value naming no
+    # appearance the widget has draws nothing (a delivered form's V=1 against
+    # an on-state of 2 was blank on the page).
+    assert pl._widget_is_on(_FakeWidget(None, "Yes", on="Yes")) is True
+    assert pl._widget_is_on(_FakeWidget(None, "On", on="Yes")) is False
+    assert pl._widget_is_on(_FakeWidget(None, "Off", on="Yes")) is False
 
 
 def test_only_the_selected_radio_in_a_group_reads_checked():
