@@ -3459,6 +3459,31 @@ the party), so its row stays reversible.
   the first span starting past the one in hand: on an ordinary page spans abut,
   so that break falls on the first comparison. Measured on a dense 660-span
   page, ~1.7 ms against the pass's own ~6.5 ms.
+  **…and two copies that agree on the WORDS may not agree on the BYTES**
+  (`_span_text_key`, in `_drop_overdrawn_spans` and `_spans_reread`). A
+  form filled and then FLATTENED (a form builder's output through the
+  court's e-filing) carries each value twice — the field's appearance burned
+  into the content over the value the builder had already printed — and the
+  two fonts set the same words differently: one "Plaintiffs’" and the
+  other "Plaintiffs'", one run padded with a trailing space. Compared byte
+  for byte they were two texts, and the pair fell between the tiers — the
+  exact tier asks for equality, and the re-read tier REFUSES a pair that is
+  equal once stripped, precisely so it never deletes a copy the exact tier
+  owns — so every field value and every line of an attachment's prose
+  shipped twice ("ZIP CODE: 90013 90013", "1 1 to 50 50", a whole
+  paragraph each line doubled with a curly apostrophe on one copy and a
+  straight one on the other). The exact tier keys on a FOLDED text now —
+  ends trimmed, blank runs one blank, a typographic quote its straight twin
+  — and nothing else; a copy that differs in a letter is still the re-read
+  tier's, with its gates.
+  **…and BOTH FORM PATHS read the page's spans RAW.** `_ink_form_cells` and
+  `_form_raw_spans` took `get_text` as it came, so on a form page — the one
+  kind of page a flattened field doubles — nothing collapsed the copies at
+  all, while the rows path beside it did; each now passes its spans through
+  `_drop_overdrawn_spans` before a cell is laid. And `_page_rules` reads a
+  QUAD item (`"qu"`, how some producers draw a rectangle) as the rect it
+  spans, so a form's caption box is a box whichever way it was drawn; a
+  form whose boxes are drawn no other way yielded no rule at all.
   **…and the copies routinely do NOT split their row the same way**
   (`_span_is_redraw_fragment`). Exact-text equality collapses two copies only
   when both cut the row into the same pieces, and an OCR layer emits one span

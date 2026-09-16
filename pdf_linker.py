@@ -3905,6 +3905,22 @@ def _despliced_body_spans(page, body_x_min, footer_top):
 _SPAN_OVERDRAW_MIN = 0.5
 
 
+_SPAN_KEY_QUOTES = str.maketrans({"\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"'})
+
+
+def _span_text_key(text):
+    """The text of a span as two copies of one line agree on it: the ends
+    trimmed, a run of blanks one blank, a typographic quote its straight
+    twin. A flattened form's field appearance and the page content it was
+    burned into carry one value in two fonts — one sets "Plaintiffs\u2019" and
+    the other "Plaintiffs'", one pads its run with a trailing space — and
+    compared byte for byte they were two texts, so neither the exact tier
+    (which asks for equality) nor the re-read tier (which refuses a pair that
+    is equal once stripped) took them: every field value and every line of an
+    attachment's prose shipped twice."""
+    return " ".join(str(text or "").translate(_SPAN_KEY_QUOTES).split())
+
+
 def _spans_overdrawn(a, b):
     """True when `a` and `b` are the same text drawn over the same ink."""
     ax0, ay0, ax1, ay1 = a["bbox"]
@@ -3971,7 +3987,7 @@ def _note_doubled_page(page, pairs):
 def _spans_reread(a, b):
     """True when `a` and `b` are two READINGS of one printed run: the same ink,
     the same size of type, and text that does not agree."""
-    ta, tb = str(a.get("text", "")).strip(), str(b.get("text", "")).strip()
+    ta, tb = _span_text_key(a.get("text", "")), _span_text_key(b.get("text", ""))
     if not ta or not tb or ta == tb:
         return False
     ax0, ay0, ax1, ay1 = a["bbox"]
@@ -4468,7 +4484,7 @@ def _drop_overdrawn_spans(spans, page=None):
         halved = _undouble_strike(sp["text"])
         if halved is not None:
             sp = {**sp, "text": halved}
-        same = kept.setdefault(sp["text"], [])
+        same = kept.setdefault(_span_text_key(sp["text"]), [])
         if any(_spans_overdrawn(sp, k) for k in same):
             continue
         same.append(sp)
@@ -4588,8 +4604,11 @@ def _page_rules(page, min_len=_RULE_MIN_LEN):
                 elif abs(p1.y - p2.y) <= 1.5 and abs(p2.x - p1.x) >= min_len:
                     horiz.append(((p1.y + p2.y) / 2, min(p1.x, p2.x),
                                   max(p1.x, p2.x)))
-            elif kind == "re":
-                r = item[1]
+            elif kind in ("re", "qu"):
+                # A quad is how some producers (a form builder's output among
+                # them) draw a rectangle; read as the rect it spans, so a
+                # form's caption box is a box whichever way it was drawn.
+                r = item[1] if kind == "re" else item[1].rect
                 if r.width <= 2.5 and r.height >= min_len:
                     vert.append(((r.x0 + r.x1) / 2, r.y0, r.y1))
                 elif r.height <= 2.5 and r.width >= min_len:
@@ -26928,13 +26947,25 @@ def _form_raw_spans(page):
     Exact where the estimate is not — a header set flush right behind sixty
     padding spaces in another size overshot the page edge by the estimate."""
     blocks = page.get_text("rawdict").get("blocks", [])
-    for blk in blocks:
-        for line in blk.get("lines", []):
+    flat = []
+    for bi, blk in enumerate(blocks):
+        for li, line in enumerate(blk.get("lines", [])):
             for sp in line.get("spans", []):
                 chars = sp.pop("chars", None) or []
                 sp["text"] = "".join(c.get("c", "") for c in chars)
                 vis = next((c for c in chars if not c.get("c", " ").isspace()), None)
                 sp["_vis_x0"] = float(vis["bbox"][0]) if vis else None
+                sp["_ln"] = (bi, li)
+                flat.append(sp)
+    # The static layer with every re-draw removed, as the rows path reads it
+    # (`_drop_overdrawn_spans`): a flattened field's value stands in the
+    # content twice, and read raw it was laid out twice.
+    kept = {}
+    for sp in _drop_overdrawn_spans(flat, page):
+        kept.setdefault(sp.pop("_ln"), []).append(sp)
+    for bi, blk in enumerate(blocks):
+        for li, line in enumerate(blk.get("lines", [])):
+            line["spans"] = kept.get((bi, li), [])
     return blocks
 
 
@@ -27274,6 +27305,12 @@ def _ink_form_cells(page):
         return None
     spans = [sp for blk in blocks for ln in blk.get("lines", [])
              for sp in ln.get("spans", []) if str(sp.get("text", "")).strip()]
+    # A form filled and FLATTENED carries each value twice as often as not —
+    # the field's appearance burned into the content over the value the
+    # builder already printed — and this path read the page's spans raw, so
+    # every value stood twice in the export ("90013 90013", "1 1 to 50 50")
+    # while the rows path beside it collapsed the same doubling.
+    spans = _drop_overdrawn_spans(spans, page)
     if not spans:
         return None
     # Plain tuples, compared arithmetically: a real form page runs to hundreds of
