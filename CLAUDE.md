@@ -5679,6 +5679,63 @@ survive to fail.
   for thirteen minutes between two log lines that named neither end of it,
   which reads exactly like a hang. The convention `_pn_prescan_folder` already
   follows for its own stages.
+- **A FILER'S OCR layer is MEASURED against this run's own reading, word by
+  word, and corrected where ours is confidently better** (`_page_layer_is_filer_ocr`,
+  `_layer_fix_decisions`, `_repair_layer_page`, `_LAYER_FIX_ATTR`; the redraw
+  factored out of the `*` fix as `_pn_layer_words` / `_pn_rewrite_layer`). A
+  scanned exhibit routinely arrives with an OCR layer the filer's software wrote
+  — ABBYY, a scanner's bundled engine — drawn invisibly over the page image, in
+  an ORDINARY font (this one's is Helvetica in render mode 3; `_page_text_is_ocr`'s
+  GlyphLessFont test never saw it, so the population is read off the text
+  trace's mode). `_ocr_image_regions` rendered and read every such page and then
+  had two choices, both wrong: discard the reading because the layer already
+  "covers" the rect (`_image_ocr_already_read`), or overlay it and ship every
+  word twice. A delivered 177-page collective-bargaining exhibit was the case:
+  588 s of one run spent reading 176 pages and keeping none of it, while the
+  layer it kept read the Bates stamp as `Chadwick-Cas tel lano` on 52 pages,
+  `PARry` for PARTY on every header and `Sshsduls` for Schedule — and this run's
+  own Tesseract, at 300 dpi off the same image, read every one of them right.
+  **No SHAPE measure can pick between two readings** — the doubled-layer note
+  records that "Cuore" is as word-shaped as "Customer" — so this asks a
+  different question: at each WORD of the layer, what did our engine read at
+  that PLACE, and how sure was it? Both readings carry boxes, and Tesseract's
+  per-word confidence is the arbiter the doubled-layer pass never had. Validated
+  against the page image on 102 disagreements, then on a sample of the 1,094
+  replacements the rule makes over the whole exhibit (2.6% of 41,742 layer
+  words; 92.8% agree outright). The two engines err DIFFERENTLY, and each screen
+  closes a case that was seen: our confident reading (`_LAYER_FIX_CONF` 85) was
+  right in 65 of 66 plain disagreements, the one miss `ARTICLE I` read as `|`;
+  below it the engines were genuinely at odds (`XXIII` read as `Xxill` at 81,
+  the LAYER right), so the layer stands there; the `I`/`l`/`|`/`1` fold refuses
+  the one class our engine confuses; and a FRAGMENT is joined only where the
+  JOINED word is one the document itself uses whole (`_LAYER_FIX_VOCAB_MIN`,
+  the document as its own dictionary) — where our engine WELDED ("If the" ->
+  "Ifthe") the join is nobody's word. That screen first shipped the other way,
+  "every piece is vocabulary", and refused the stamp it exists for: a stamp's
+  own pieces stand on fifty pages. Two more from the whole-document sample,
+  both alignment and not confidence: pairing is MUTUAL (one stamp PIECE paired
+  with our whole word would have written `Chadwick-Cas tel Chadwick-Castellano`),
+  and ours never replaces a layer word it is a strict substring of — the layer
+  welded a word to its neighbour, we read one of them, and "policy.Participation"
+  -> "policy." deletes the other. After the screens: 84 taken, 18 kept, 0 wrong
+  on the hand-checked set. The layer is rewritten IN THE PDF, through the same
+  redact-and-redraw the operator's `*` fix uses, so the export, the scrub, every
+  leak scan, the citation parse and the next run all read the correction from
+  one source — the `*`-fix doctrine — and the page's banner says how many words
+  moved. It costs the render and the Tesseract call the pass already spent; a
+  born-digital page never enters, a page with visible type over the image is
+  left to the ordinary path (`_pn_rewrite_layer` refuses to redact under
+  visible text anyway), and a page THIS RUN read is the same engine and is
+  skipped. Pairing is banded by row, so it is not the product of the two word
+  lists. Residual, and stated: a word the layer never had at all (a paragraph
+  the filer's engine skipped) is not recovered, since the repair replaces words
+  and never adds them — the overlay path that would have, doubled everything
+  else; a word ours reads at 84 stays the filer's; `L2:01` for 12:01 folds to
+  equality and stays, the accepted cost of refusing the `I`-class whole; and the
+  next run pays the render again, since nothing in the PDF records that the
+  layer is now ours. The `_pn_word_splits` term tolerance above stays load-
+  bearing for the party name a document carries ONLY fragmented, which this
+  cannot join.
 - **A page-wide OCR pass throws the line-number GUTTER away, and the TITLE PAGE
   is what it costs** (`_ocr_gutter_column`, `_gutter_probe_strip`,
   `_gutter_probe_reads_as_numbering`). A pleading's line numbers are a narrow
