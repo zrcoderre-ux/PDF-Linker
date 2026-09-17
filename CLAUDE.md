@@ -4278,7 +4278,8 @@ extraction, which is what keeps the numbering.
   a filled copy carries a matter's values, and the library reads a filled
   AcroForm as well as a blank, so nothing is gained by committing one.
   The folder holds the operator's own download of the civil set — the
-  pleading, service, dismissal, judgment, costs and appeal forms, 38 files
+  pleading, service, dismissal, judgment, costs and appeal forms, plus the
+  expedited minor's-compromise petition, 39 files
   — each checked for a filled widget before it went in (a numeric total
   defaulting to 0 and the Council's own privacy notice in a header field
   are the form's furniture, not a value), and
@@ -4298,6 +4299,42 @@ extraction, which is what keeps the numbering.
   PI-001(4) for it to collide with. Residual, and stated: a form whose
   footer wraps its id in a way the two readers could split differently is
   not matched, and would show as a blank the test above refuses.
+  **…and an EXPEDITED form carries its suffix with no hyphen and no
+  parentheses** (`MC-350EX`, the petition for expedited approval of a minor's
+  compromise, adopted for alternative mandatory use INSTEAD of MC-350). Every
+  id shape refused that shape, so the blank was a file committed for almost
+  nothing: `_template_footer_key` read nothing on six of its seven pages — a
+  scan of one matched no template and got no restored labels, none of the
+  template's own checkbox positions and no classified field values — and the
+  footer stood unprotected from faking, where a two-letter party acronym is a
+  whole-word match inside it (a hyphen is no word character), the `NG-025`
+  failure `_PN_FORM_ID_SPAN_RE` exists for. The SUFFIX is named, not a letter
+  shape, for the reason `-INFO` is: it covers the whole expedited family and
+  admits no production stamp or exhibit code, `MC-025A` staying nothing at
+  all, and a suffix nobody has met is a line to add when a real form carries
+  one. Two things ride with it. `EX` sits inside the NUMBER's own
+  alphanumeric run, where every other id keeps its letters and digits in runs
+  of their own (a hyphen or a parenthesis between them) — which is what makes
+  `_template_form_key`'s positional fold work at all — so one misread digit
+  tipped `MC-3S0EX` into the letter branch and keyed it `mc3soex`; the named
+  suffix is given its own run (`_template_key_runs`), and the runs are NOT
+  split wherever letters meet digits, which would undo the fold the other way
+  and read a garbled `P0S-O40(P)` as `p0so40p`. And the footer of that form's
+  page 1 names the form it REPLACES — "Instead of Form MC-350" above its own
+  "MC-350EX [Rev. January 1, 2021]" — so the first id in the band was another
+  form's, and page 1 indexed under that form's layout while a scan of it was
+  compared against the wrong template. A footer prints its OWN id bare and
+  names another in prose, so a candidate introduced by the word "form" yields
+  to any other (`_footer_own_form_no`, read by the strict reader and by the
+  loose one, since a scan garbles the id and not the prose in front of it);
+  where every candidate is introduced that way nothing is left to prefer and
+  the first stands, which is what the search has always returned. Verified on
+  the blank: seven pages keyed, and each recognises its own template page at
+  share 1.00 with no other page of the form reaching the 0.60 floor. Residual,
+  and stated: TWO misread characters in the number ("MC-3SOEX") still fold to
+  a different key, which the loose footer reader and the two-slip revision
+  tolerance do not reach, and the id is protected as a form id only in the
+  spelling the strict shape reads.
 - **The banner and the log both say when a state was inferred**, and ask for a
   check. An inferred checkbox on a default-judgment packet is precisely the fact
   nobody should take on trust, so it is never presented as equal to a widget's.

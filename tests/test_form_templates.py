@@ -499,6 +499,67 @@ def test_an_information_sheet_is_a_form_with_a_suffix():
     assert P._JC_FORM_NO_RE.search("MC-013, Page 1").group(1) == "MC-013"
 
 
+def test_an_expedited_form_is_a_form_with_a_suffix():
+    """MC-350EX is adopted for alternative mandatory use instead of MC-350,
+    and its suffix stands hard against the number with no hyphen and no
+    parentheses — so every id shape refused it: no template page indexed on
+    six of its seven pages, and nothing saying the id was never a value to
+    fake, where a two-letter party acronym is a whole-word match inside it.
+    The SUFFIX is named, so a production stamp and an exhibit code are no
+    more an id than they were."""
+    assert P._PN_FORM_ID_RE.match("MC-350EX")
+    assert P._pn_is_never_fake("MC-350EX")
+    assert P._PN_FORM_ID_SPAN_RE.search("footed MC-350EX [Rev. January 1, 2021]")
+    m = P._JC_FORM_NO_RE.search("MC-350EX [Rev. January 1, 2021]")
+    assert m and m.group(1) == "MC-350EX"
+    # A scan reads a digit of the number as a letter and the letters of the
+    # suffix ride in the number's own run, so the suffix is folded as a run
+    # of its own — or one slip tips the whole run into the letter branch.
+    for garbled in ("MC-3S0EX", "MC-35OEX", "mc-350ex"):
+        assert P._template_form_key(garbled) == P._template_form_key("MC-350EX")
+    assert P._TEMPLATE_LOOSE_ID_RE.search("MC-3S0EX, Page 2 of 7")
+    # ...and the shapes that must stay out are still out.
+    assert not P._PN_FORM_ID_RE.match("MC-025A")
+    assert not P._PN_FORM_ID_RE.match("RAM-000013")
+    assert P._JC_FORM_NO_RE.search("MC-350, Page 1").group(1) == "MC-350"
+
+
+def test_a_footer_naming_another_form_still_keys_as_its_own(tmp_path, monkeypatch):
+    """The alternative-use block prints "Instead of Form MC-350" above its
+    own "MC-350EX [Rev. ...]", so the FIRST id in the band is the form this
+    one REPLACES — page 1 keyed as MC-350, indexed under another form's
+    layout. A footer prints its own id bare and names another in prose."""
+    band = ("Form Adopted for Alternative Mandatory Use\n"
+            "Instead of Form MC-350\n"
+            "Judicial Council of California\n"
+            "MC-350EX [Rev. January 1, 2021]\n")
+    assert P._footer_own_form_no(band) == "MC-350EX"
+    # Nothing to prefer — every candidate is introduced that way — so the
+    # first stands, which is what the search has always returned.
+    assert P._footer_own_form_no("see Form MC-350 and Form JUD-100") == "MC-350"
+    # An ordinary footer is unmoved, whatever words stand in front of it.
+    assert P._footer_own_form_no(
+        "Form Approved for Optional Use\nJudicial Council of California\n"
+        "POS-040 [Rev. January 1, 2007]") == "POS-040"
+    _library(tmp_path, monkeypatch)
+    doc, page = _scan(footer="Instead of Form MC-350   PLD-PI-001 [Rev. January 1, 2007]")
+    assert P._template_footer_key(page) == P._template_form_key(FORM)
+    assert "WlTHOUT" not in _texts(_settled(page))
+    doc.close()
+
+
+def test_the_expedited_petition_keys_on_every_page():
+    """The blank in the repo, page by page: the failure was six of its seven
+    pages keying nothing at all, which the one-page floor below cannot see."""
+    folder = Path(P.__file__).resolve().parent / "Form Templates"
+    blanks = [p for p in folder.glob("*.pdf") if p.name.startswith("MC-350EX ")]
+    assert len(blanks) == 1, [p.name for p in folder.glob("*.pdf")]
+    doc = fitz.open(blanks[0])
+    keys = [P._template_footer_key(pg) for pg in doc]
+    assert keys == ["mc350ex"] * 7, keys
+    assert {P._template_revision(pg) for pg in doc} == {"january12021"}
+
+
 def test_every_committed_blank_indexes_as_a_template():
     """The repo carries the official blanks in `Form Templates/`, and every
     one of them must yield at least one template page — a blank the library
@@ -516,3 +577,4 @@ def test_every_committed_blank_indexes_as_a_template():
         keyed |= keys
     assert "jud100" in keyed
     assert "pos040p" in keyed
+    assert "mc350ex" in keyed
