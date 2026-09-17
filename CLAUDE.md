@@ -4199,6 +4199,55 @@ extraction, which is what keeps the numbering.
   rendering — which is the next slice, with the field-name schema for
   classifying values and the checkbox positions the template's widgets
   already know.
+- **…and RECOGNITION is asked of a BORN-DIGITAL form, because the boxes are
+  not the labels** (`_template_recognise`, `_restore_template_labels`). The
+  OCR gate above is RESTORATION's — a born-digital form's labels are the
+  template's own already and there is nothing to restore — and it sat on the
+  recognition every renderer of a form page goes through, which also wants the
+  template's CHECKBOX POSITIONS. A form filled on screen and FLATTENED (e-signed
+  through Docusign, which is most of what arrives now) keeps no widgets, and
+  its flattener draws the square for NEITHER state: a checked box is a bare
+  mark glyph and an unchecked one is nothing at all. So `_ink_square_drawings`
+  found nothing, the caption sweep paired nothing, `_ink_form_cells` returned
+  None, and a seven-page MC-350EX exported with its marks standing as stray
+  letters ("a. m Is not the subject of a pending action") and its empty boxes
+  as whitespace — nothing in the export saying which relief the petition
+  requested, on the one kind of document where the checkbox IS the pleading.
+  It cost that filing its own consistency, which is how it showed: this run
+  had OCR'd four images on page 1, so the page carried Tesseract's invisible
+  font, `_page_text_is_ocr` answered True BY ACCIDENT, and page 1 alone got
+  its 13 states read at the template's positions while pages 2-7 of the same
+  form got none. The gate moved to the pass whose reasoning it is;
+  `_template_field_values` carries its own and is unmoved, so the harvest
+  reads a SCAN's fields exactly as before.
+- **…and a FLATTENED form's own content answers both ways, exactly** (the
+  `drawn` branch of `_template_box_cells`). A page with no page-covering scan
+  image, and a text layer that came out of no OCR pass, DRAWS what it draws,
+  so at a position the template gives there is nothing else the page could be
+  saying. A lone GLYPH in the box is the mark, whatever character the
+  flattener chose —
+  `_ink_glyph_state` knows a dingbat font and the ordinary check characters,
+  and the delivered petition drew its checks as a bare "m" and "H" in a text
+  font, which no list will ever hold. The caption sweep cannot afford that
+  rule (a lone character left of a caption is an item letter as often as a
+  check, which is how every numbered paragraph of a PLD-PI-001 once came out
+  `[X]`); at the template's own box there is nothing else it could be, and the
+  glyph is held to the box itself rather than the padded window, position being
+  the whole of the evidence. And NOTHING in the box means UNCHECKED,
+  positively: `_template_rect_fill`'s "no ink in the window is `[?]`, never
+  assumed empty" is a SCAN's rule, where an empty window means the pass failed
+  to find the printed square, and applied to a flattened born-digital form it
+  put `[?]` on every unchecked box on the page — dozens of them, each asking
+  the operator to go and verify what the page says plainly. An OCR'd page keeps
+  the raster and keeps `[?]`: there the box artifact ("cj", "d", "o") is a lone
+  glyph too, and reading one as a mark would report relief nobody requested.
+  Asked PER BOX and not per page: a scan is usually one image covering the
+  whole page, but one pasted in STRIPS covers no single box's worth of it by
+  that measure, and a box with a picture over it has its state IN the picture
+  — which only the raster can read — whatever the rest of the page is made of.
+  Where every box is the page's own the states are `exact`, so the banner does
+  not ask for a check, and no raster is rendered — which is also ~150 ms a page
+  the commonest form filing no longer pays.
 - **…and the template says WHERE EVERY BOX IS, and WHAT EACH FIELD HOLDS**
   (`_template_box_cells`, `_template_rect_fill`, `_template_field_values`,
   `_template_field_class`, `Pseudonymizer.register_form_fields`,
@@ -4422,6 +4471,63 @@ the words never exist: `_pleading_gutter` is Steps 1-2 of
 measure the margin one way. A stamp pasted as a picture above line 1 and a
 signature image in the body are neither wholly left of the gutter nor
 beside the band, and are read as before.
+**…and a page with NO GUTTER has a margin too** (`_page_margin_images`,
+`_SIDEBAR_IMG_ASPECT`). That measurement is the pleading page's own, and a
+court FORM has no line numbers to take it from — so on a form nothing measured
+the margin at all, and the rotated e-filing stamp pasted up the left edge of a
+scanned MC-350EX was rendered and read. The recogniser did NOT detect the
+rotation, so it came back as a band of soup per scanline — twenty words
+("AEIUONIa/3", "PaNaray", "auodjIa|3") — and each earned a form cell, hence a
+column STOP, hence a push: the form's own labels came out ten columns in with
+`CASE NAME:` at column 57, the caption box's left edge more than half way
+across the line. `_margin_sideways_dropped` cannot catch those and is not the
+place to try: it drops a margin span whose own DIRECTION is crosswise, which is
+the reading of the same stamp where Tesseract DID detect the rotation
+("Electronically", "09:32", "AM" — the case that rule was written for), and a
+reading that came back upright is ordinary horizontal text to every renderer.
+So the words have to not exist, which is this pass's own discipline. With no
+gutter the edge is the page's own leftmost UPRIGHT text — the rule
+`_margin_sideways_dropped` already measures a margin by — and the picture must
+also be SHAPED like a margin stamp (taller than wide: a rotated line of 8 pt
+type is 12-15 pt across and hundreds long) and stand BESIDE the text rather
+than above it. Each guard keeps something real: a letterhead logo is square or
+wider than tall, and a stamp pasted above the first line of text is inside the
+text's own x range to begin with. `_SIDEBAR_GUTTER_TOL` runs the CONSERVATIVE
+way here, unlike `_sidebar_spans`' own use of it — there it widens the margin,
+where this decides whether to DISCARD a reading, and a picture wrongly refused
+is real words nothing recovers. Residual, and stated: a label a filing really
+printed sideways in its left margin goes unread with the stamp, exactly as it
+goes unexported on a pleading page.
+**…and the reading an EARLIER run already laid in is DROPPED**
+(`_margin_overlay_dropped`, `_page_margin_image_rects`, from
+`_drop_overdrawn_spans`). Refusing to READ a margin picture protects only a
+PDF no run has met yet. `_ocr_image_regions` lays its reading INTO the page's
+text layer and the tool then replaces the source file, so a folder an earlier
+run touched carries the soup for ever — and the delivered MC-350EX did: its
+twenty stamp words outlived the rule written to prevent them, still pushing
+the form's own labels ten columns in.
+`_margin_sideways_dropped` cannot catch them either, for this section's own
+reason one step on: the recogniser did not detect the rotation, so the overlay
+came back UPRIGHT and reads as ordinary horizontal text to every renderer. So
+the words go at the seam every rendering takes its spans through. Scoped two
+ways, and each is what keeps it safe: to an INVISIBLE span, which is what an
+overlay IS (render mode 3, the mode that pass draws in), so a page's own
+visible type standing over a picture is untouched; and to the picture's own
+RECT, so a page-wide OCR layer, which lies in no margin picture, never loses a
+word and a scanned page reads exactly as it did.
+**…and a picture's own overlay never votes on where the document's text
+begins.** The no-gutter edge is the page's leftmost upright text, and an
+earlier run's reading of the stamp stands further left than anything the page
+prints — so measured with it in, the edge landed inside the margin and nothing
+was ever outside it. The edge is the page's VISIBLE type; where there is none
+(a scan, whose whole layer is invisible) it is every upright span as before,
+and the margin simply yields nothing.
+**…and a margin picture does not cost the page its MARK.** The mark
+(`_IMG_OCR_MARK_KEY`) is checked against the page's images as they STAND, and
+it was written from the regions the pass went on to READ — so a page carrying
+a margin picture disagreed with its own mark and re-rendered every OTHER
+region of itself on every run for ever, which is exactly the cost that mark
+exists to remove. Written from the full list now.
 
 **A TITLE PAGE's caption box is whatever DRAWS it — a rule, or a column of
 RIGHT PARENTHESES** (`_page_brace_rules`, `_brace_rule_segment`,
