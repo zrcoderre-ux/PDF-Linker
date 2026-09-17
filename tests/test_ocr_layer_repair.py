@@ -260,6 +260,24 @@ def test_one_piece_never_pairs_with_our_whole_word():
     assert repl == {}                      # the joined word is nobody's
 
 
+def test_a_fragment_joins_under_the_I_l_fold_where_the_word_is_the_documents():
+    """"Cas teI lano" is the stamp with its l read as I; the joined word's own
+    sixty-six pages settle the spelling. Without them, nothing."""
+    layer = [(_box(100, 40), "Cas"), (_box(145, 20), "teI"), (_box(170, 30), "lano")]
+    ours = [((100, 100, 200, 110), "Castellano", 91)]
+    assert P._layer_fix_decisions(layer, ours, {"castellano": 5})[0] == \
+        {0: "Castellano", 1: "", 2: ""}
+    assert P._layer_fix_decisions(layer, ours, {})[0] == {}
+
+
+def test_furniture_never_becomes_a_letter():
+    """A dash in the layer, read as "e" at 96: the layer word has no letters
+    to be wrong about."""
+    layer = [(_box(100, 8), "-")]
+    ours = [(_box(100, 8), "e", 96)]
+    assert P._layer_fix_decisions(layer, ours, {"e": 9})[0] == {}
+
+
 def test_an_alignment_artifact_is_left_alone():
     """A word of ours spanning two layer words that do NOT join to it."""
     layer = [(_box(100, 40), "Disciplinary"), (_box(145, 20), "or")]

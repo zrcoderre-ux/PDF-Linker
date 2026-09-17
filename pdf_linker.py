@@ -3180,7 +3180,12 @@ def _layer_fix_decisions(layer, ours, vocab):
     corroboration `_pn_word_breaks` states, with the document as the party
     list. Measured the other way round it failed: a stamp's own pieces stand
     on fifty pages, so "every piece is vocabulary" refused the stamp and
-    admitted nothing. Where our engine WELDED ("If the" -> "Ifthe") the join
+    admitted nothing. The join is compared under the `I`/`l`/`|`/`1` FOLD —
+    the opposite of the plain path, and for the reason the plain path
+    refuses: there, fold-equality means the two engines cannot be told
+    apart at that word; here the joined word stands whole elsewhere in the
+    document, which is what settles the spelling ("Cas teI lano" is the
+    stamp with its l read as I, and 66 pages say so). Where our engine WELDED ("If the" -> "Ifthe") the join
     is a word nobody uses and is refused. A plain disagreement is refused
     where it folds to nothing under the `I`/`l`/`|`/`1` map, and where ours
     is a strict substring of the layer's word: the layer welded a word to
@@ -3212,8 +3217,8 @@ def _layer_fix_decisions(layer, ours, vocab):
         L = o_hits[oi]
         if len(L) < 2 or any(l_hits[li] != [oi] for li in L):
             continue
-        joined = _layer_fix_norm("".join(layer[li][1] for li in L))
-        if not joined or joined != _layer_fix_norm(ot):
+        joined = _layer_fix_fold("".join(layer[li][1] for li in L))
+        if not joined or joined != _layer_fix_fold(ot):
             continue
         if oc < _LAYER_FIX_CONF or not readable(ot) or not is_vocab(ot):
             continue
@@ -3230,7 +3235,10 @@ def _layer_fix_decisions(layer, ours, vocab):
         ot = " ".join(ours[oi][1] for oi in O)
         conf = min(ours[oi][2] for oi in O)
         nl, no = _layer_fix_norm(lt), _layer_fix_norm(ot)
-        if not no or conf < _LAYER_FIX_CONF or not readable(ot):
+        # A layer "word" with no letters or digits is furniture — a dash, a
+        # bullet, a leader — and is never turned into a letter (a sampled
+        # correction had made one an "e").
+        if not nl or not no or conf < _LAYER_FIX_CONF or not readable(ot):
             continue
         if len(O) > 1:
             # our engine split what the layer welded: the same letters, the
@@ -3452,7 +3460,6 @@ def _ocr_image_regions(doc, log):
             if n:
                 fixed_words += n
                 fixed_pages += 1
-                done += 1
             continue
         if kept:
             _note_img_ocr(page, kept)
