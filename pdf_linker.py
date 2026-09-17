@@ -4725,7 +4725,8 @@ def _template_form_key(form_no):
 
 
 _TEMPLATE_LOOSE_ID_RE = re.compile(
-    r"(?<![\w-])[A-Z0-9]{2,4}(?:-[A-Z0-9]{1,3})?-[0-9OIlS]{3}(?:\([A-Z0-9]{1,2}\))?(?![\w-])",
+    r"(?<![\w-])[A-Z0-9]{2,4}(?:-[A-Z0-9]{1,3})?-[0-9OIlS]{3}(?:\([A-Z0-9]{1,2}\))?"
+    r"(?:-INFO)?(?![\w-])",
     re.IGNORECASE)
 
 
@@ -12679,8 +12680,12 @@ _PN_NEVER_FAKE = frozenset({
 # discretionary complaint forms carry a numbered attachment per cause of action.
 # Matched on the RAW value (the reduction above strips the hyphens the shape
 # needs) and anchored, so only a whole token can qualify.
+# ...and an INFORMATION SHEET is a form too (`MC-013-INFO`), footed and filed
+# beside the form it explains; the suffix is admitted whole so the sheet is
+# indexed as a template and its id is never faked, and it stays bounded so
+# "MC-013-INFORMATION" is no id at all.
 _PN_FORM_ID_RE = re.compile(
-    r"[A-Z]{2,4}(?:-[A-Z]{1,3})?-\d{3}(?:\([A-Z0-9]{1,2}\))?\Z")
+    r"[A-Z]{2,4}(?:-[A-Z]{1,3})?-\d{3}(?:\([A-Z0-9]{1,2}\))?(?:-INFO)?\Z")
 
 # ...and the same shape as a SPAN, so the id is protected where it STANDS and
 # not merely as a whole value. `_pn_is_never_fake` refuses to build a term FOR
