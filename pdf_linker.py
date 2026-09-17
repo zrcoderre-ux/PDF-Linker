@@ -8737,6 +8737,39 @@ def _is_complete_phrase_rect(page, rect, probe_pt: float = 3.0) -> bool:
 # spelling.)
 _EXHIBIT_PREFIXES = ("Exhibit", "EXHIBIT", "Ex.", "EX.", "Exh.", "EXH.")
 
+# The page screen for `_link_exhibit_references`, and the switch the
+# differential test turns it off with (`test_exhibit_link_prefilter.py`).
+#
+# What `search_for` can accept, measured on PyMuPDF 1.28: it is
+# case-INSENSITIVE, it matches a needle's single space against any run of
+# whitespace on the page (a tab, a no-break space, two spaces, a line break —
+# a match across a line break comes back as one quad per line, which the
+# exact-case clip check below then refuses), it never matches a needle's
+# space against NO whitespace ("Exhibit5" is not "Exhibit 5"), and it folds
+# nothing else — a curly quote is not a straight one and a hyphenated wrap
+# ("Exhi-\nbit") is not the word. So a phrase it can find has every one of
+# its non-blank characters standing on the page, in order, case aside. The
+# screen is the page's text with its case folded and its whitespace REMOVED,
+# and a phrase is asked about by the same reduction: a phrase absent from
+# that string cannot be found by the search, whatever the whitespace between
+# its words. Nothing is decided by the screen but which searches to skip;
+# every phrase that passes it still goes through the search and the
+# exact-case clip check exactly as before.
+_EXHIBIT_LINK_PREFILTER = True
+_EXHIBIT_SCREEN_WS_RE = re.compile(r"\s+")
+
+
+def _exhibit_screen_key(phrase):
+    """`phrase` as the page screen spells it: case-folded, no whitespace."""
+    return _EXHIBIT_SCREEN_WS_RE.sub("", phrase.lower())
+
+
+def _exhibit_page_screen(page):
+    """The page's text as `_exhibit_screen_key` reduces a phrase — one
+    `get_text` per page, against the hundreds of glyph searches it spares."""
+    return _exhibit_screen_key(page.get_text("text"))
+
+
 
 def _link_exhibit_references(doc, log: logging.Logger):
     """Find body references to exhibits and link them to the matching
@@ -8774,6 +8807,23 @@ def _link_exhibit_references(doc, log: logging.Logger):
             # Don't link from within an exhibit's own pages — that would
             # turn the exhibit's header banner into a self-referential link.
             continue
+        # ONE text read per page decides which phrases can be on it at all,
+        # before any glyph search is spent. This loop used to run
+        # `search_for` for every identifier under every prefix in every
+        # quote spelling on EVERY page — 37 exhibits, 6 prefixes and 4+
+        # spellings is ~900 full-page searches a page, 1.8 million on a
+        # 2,043-page evidence compendium, and it cost 83 minutes there and
+        # 93 on a 254-page declaration, in every run that reached them.
+        # Two runs were killed while sitting in it, the log's last line each
+        # time being the citation-link count of that file: a stall this
+        # long reads as a hang. The screen is EXACT — see
+        # `_exhibit_page_screen` — so the accepted set of links is the one
+        # the unscreened loop produced (`test_exhibit_link_prefilter.py`
+        # pins that differentially, through `_EXHIBIT_LINK_PREFILTER`).
+        screen = _exhibit_page_screen(page) if _EXHIBIT_LINK_PREFILTER else None
+        if screen is not None and not any(
+                _exhibit_screen_key(pfx) in screen for pfx in _EXHIBIT_PREFIXES):
+            continue          # no exhibit prefix stands anywhere on the page
         existing_links = page.get_links()
         # For each known exhibit identifier, look for every spelling of
         # "<prefix> <ident>" on this page. PyMuPDF's search_for is
@@ -8811,55 +8861,67 @@ def _link_exhibit_references(doc, log: logging.Logger):
                 for sp in spellings
                 for form in (sp, f"\"{sp}\"", f"\u201c{sp}\u201d", f"''{sp}''")
             )
+            # The prefixes come in casing PAIRS ("Exhibit"/"EXHIBIT"), and
+            # `search_for` is case-insensitive, so each pair's two searches
+            # returned the same quads and the exact-case check below picked
+            # the one that matched. One search per distinct folded phrase
+            # now, accepted where the clipped glyphs spell ANY casing of it
+            # — the same acceptance, at half the searches.
+            groups: dict = {}
             for prefix in _EXHIBIT_PREFIXES:
                 for ident_form in ident_forms:
                     phrase = f"{prefix} {ident_form}"
-                    quads = page.search_for(phrase, quads=True)
-                    for q in quads:
-                        rect = q.rect
-                        # PyMuPDF's search_for is case-insensitive, so a search
-                        # for "Exhibit A" also matches lowercase "exhibit a"
-                        # which is almost always natural English text rather
-                        # than a cite. Clip the rect and confirm the glyph
-                        # text matches the requested case exactly.
-                        clipped = page.get_text("text", clip=rect).strip()
-                        if clipped != phrase:
-                            continue
-                        # Reject quads that are fragments of longer tokens
-                        # (e.g. "Exhibit 1" inside "Exhibit 12"). See the
-                        # docstring of _is_complete_phrase_rect for the rule.
-                        if not _is_complete_phrase_rect(page, rect):
-                            continue
-                        # Skip if an existing link annotation already covers
-                        # this span — handles dedup across the multiple
-                        # spellings ("Exhibit 1" / "EXHIBIT 1" both find the
-                        # same glyph rect on a case-insensitive search) and
-                        # also avoids stomping a TOC entry that happens to
-                        # read "Exhibit 5 — Police Report".
-                        already = False
-                        for el in existing_links:
-                            er = el.get("from")
-                            if er and rect.intersects(er):
-                                already = True
-                                break
-                        if already:
-                            continue
-                        page.insert_link({
-                            "kind": fitz.LINK_GOTO,
-                            "from": rect,
-                            "page": target,
-                            "to": fitz.Point(0, 0),
-                        })
-                        underline_y = rect.y1 - 0.5
-                        page.draw_line(
-                            fitz.Point(rect.x0, underline_y),
-                            fitz.Point(rect.x1, underline_y),
-                            color=LINK_COLOUR,
-                            width=1.0,
-                        )
-                        linked += 1
-                        existing_links.append({"from": rect,
-                                               "kind": fitz.LINK_GOTO})
+                    groups.setdefault(phrase.lower(), []).append(phrase)
+            for folded, phrases in groups.items():
+                if screen is not None and _exhibit_screen_key(folded) not in screen:
+                    continue
+                quads = page.search_for(phrases[0], quads=True)
+                for q in quads:
+                    rect = q.rect
+                    # PyMuPDF's search_for is case-insensitive, so a search
+                    # for "Exhibit A" also matches lowercase "exhibit a"
+                    # which is almost always natural English text rather
+                    # than a cite. Clip the rect and confirm the glyph
+                    # text matches a requested casing exactly.
+                    clipped = page.get_text("text", clip=rect).strip()
+                    if clipped not in phrases:
+                        continue
+                    phrase = clipped
+                    # Reject quads that are fragments of longer tokens
+                    # (e.g. "Exhibit 1" inside "Exhibit 12"). See the
+                    # docstring of _is_complete_phrase_rect for the rule.
+                    if not _is_complete_phrase_rect(page, rect):
+                        continue
+                    # Skip if an existing link annotation already covers
+                    # this span — handles dedup across the multiple
+                    # spellings ("Exhibit 1" / "EXHIBIT 1" both find the
+                    # same glyph rect on a case-insensitive search) and
+                    # also avoids stomping a TOC entry that happens to
+                    # read "Exhibit 5 — Police Report".
+                    already = False
+                    for el in existing_links:
+                        er = el.get("from")
+                        if er and rect.intersects(er):
+                            already = True
+                            break
+                    if already:
+                        continue
+                    page.insert_link({
+                        "kind": fitz.LINK_GOTO,
+                        "from": rect,
+                        "page": target,
+                        "to": fitz.Point(0, 0),
+                    })
+                    underline_y = rect.y1 - 0.5
+                    page.draw_line(
+                        fitz.Point(rect.x0, underline_y),
+                        fitz.Point(rect.x1, underline_y),
+                        color=LINK_COLOUR,
+                        width=1.0,
+                    )
+                    linked += 1
+                    existing_links.append({"from": rect,
+                                           "kind": fitz.LINK_GOTO})
 
     if linked:
         log.info(f"  Linked {linked} exhibit reference(s) to exhibit pages "
