@@ -4232,6 +4232,17 @@ extraction, which is what keeps the numbering.
   empty `Form Templates` folder beside the config and says so, and says once
   when it holds no PDF. Only the default: a folder the setting or the env var
   names is the operator's, and a path typed wrong is reported, never made.
+  **…and the blanks are TRACKED IN THE REPO**, at the owner's direction. The
+  folder was gitignored for one commit, on the ground that it sits inside a
+  checkout and holds the operator's files — and that costs the operator
+  dropping the same blanks into every machine's checkout by hand, for
+  documents that are public forms in the first place. So `Form Templates/`
+  is committed with the official blanks in it (JUD-100, POS-040(P),
+  POS-040(D) to start), a `git pull` carries a new blank to every machine,
+  and `_ensure_form_templates_dir` is left for the checkout that somehow
+  lacks it and for a config that lives elsewhere. Only a BLANK is committed:
+  a filled copy carries a matter's values, and the library reads a filled
+  AcroForm as well as a blank, so nothing is gained by committing one.
 - **The banner and the log both say when a state was inferred**, and ask for a
   check. An inferred checkbox on a default-judgment packet is precisely the fact
   nobody should take on trust, so it is never presented as equal to a widget's.
