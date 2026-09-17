@@ -4612,6 +4612,24 @@ _TEMPLATE_ENV = "PDF_LINKER_FORM_TEMPLATES"
 _TEMPLATE_ATTR = "_pdf_linker_template_pages"      # {page number: (form, n)}
 _TEMPLATE_FIT_ATTR = "_pdf_linker_template_fits"   # {page number: fit | None}
 _TEMPLATE_CHARS_ATTR = "_pdf_linker_template_chars"  # {page number: char boxes}
+_TEMPLATE_BOX_PAD = 3.0        # pt: the window around a template box, each side
+# What a field's NAME says it holds, read off its last path component ("AttyName",
+# "Party1", "PersonServed_ft", "CaseNumber"): the caption block and the roster
+# attachments name their fields, the body fields are "FillText10" and say
+# nothing. A COURT field is named so it is never harvested — the courthouse's
+# street is the venue, kept the way a city is.
+_TEMPLATE_COURT_WORDS = frozenset({"court", "crt", "branch", "county", "judge",
+                                   "dept", "department", "judicial", "officer"})
+_TEMPLATE_CONTACT_WORDS = frozenset({"street", "address", "add", "city", "zip",
+                                     "state", "mailing", "phone", "fax", "email",
+                                     "bar", "barno", "date", "amount", "numeric",
+                                     "tel", "telephone", "sbn"})
+_TEMPLATE_CASE_WORDS = frozenset({"case", "casenumber", "caseno", "docket"})
+_TEMPLATE_NAME_WORDS = frozenset({"party", "plaintiff", "defendant", "petitioner",
+                                  "respondent", "name", "firm", "person", "persons",
+                                  "claimant", "decedent", "guardian", "conservatee",
+                                  "witness", "declarant", "atty", "attorney",
+                                  "served", "debtor", "creditor", "applicant"})
 _TEMPLATE_MIN_SHARE = 0.6      # of the template's label words matched
 _TEMPLATE_MIN_MATCHED = 8      # and at least this many, whatever the share
 _TEMPLATE_MIN_ANCHORS = 4      # exact, unique word pairs a fit needs
@@ -4621,7 +4639,7 @@ _TEMPLATE_FIT_TOL = 6.0        # pt: residual an anchor may leave the fit
 _TEMPLATE_SCALE_RANGE = (0.85, 1.15)
 _TEMPLATE_WORD_RE = re.compile(r"\S+")
 _TEMPLATE_REV_RE = re.compile(
-    r"Rev(?:ised|\.)?\s*([A-Za-z]{3,9}\.?\s+\d{1,2},?\s+\d{4}|[A-Za-z]{3,9}"
+    r"(?:Rev(?:ised|\.)?|New)\s*([A-Za-z]{3,9}\.?\s+\d{1,2},?\s+\d{4}|[A-Za-z]{3,9}"
     r"\.?\s+\d{4}|\d{1,2}/\d{1,2}/\d{2,4})", re.IGNORECASE)
 # What one setting/environment override names, resolved once per process so
 # the hook deep inside the span dedupe needs no config handed down to it.
@@ -4658,8 +4676,47 @@ def _template_word_key(text):
 
 def _template_form_key(form_no):
     """The form id folded for comparison: case-insensitive, since a scan
-    reads the I of PLD-PI-001 as an l about as often as not."""
-    return re.sub(r"[^a-z0-9]", "", str(form_no or "").casefold().replace("l", "i"))
+    reads the I of PLD-PI-001 as an l about as often as not, and with the
+    confusable pairs folded by POSITION — a digit read for a letter in the
+    letter runs ("P0S"), a letter read for a digit in the number ("O40")."""
+    s = str(form_no or "").casefold()
+    out = []
+    for run in re.findall(r"[a-z0-9]+", s):
+        letters = sum(c.isalpha() for c in run)
+        if letters >= len(run) - letters:
+            run = run.replace("0", "o").replace("1", "i").replace("5", "s").replace("l", "i")
+        else:
+            run = run.replace("o", "0").replace("i", "1").replace("l", "1").replace("s", "5")
+        out.append(run)
+    return "".join(out)
+
+
+_TEMPLATE_LOOSE_ID_RE = re.compile(
+    r"(?<![\w-])[A-Z0-9]{2,4}(?:-[A-Z0-9]{1,3})?-[0-9OIlS]{3}(?:\([A-Z0-9]{1,2}\))?(?![\w-])",
+    re.IGNORECASE)
+
+
+def _template_footer_key(page):
+    """The form-id key of `page`'s footer: the strict id where one reads,
+    else the loosest shape a scan makes of one — a digit inside the letter
+    run, a letter inside the number — folded by `_template_form_key`, so a
+    "P0S-O40(P)" still names POS-040(P). Loose ONLY here: the ink gate and
+    the id's own protection keep the strict shape, since a misread id costs
+    those a discarded pass and this a comparison against the library."""
+    strict = _form_page_number(page)
+    if strict:
+        return _template_form_key(strict)
+    try:
+        import fitz
+        r = page.rect
+        foot = fitz.Rect(r.x0, r.y1 - (r.y1 - r.y0) * 0.18, r.x1, r.y1)
+        foot = fitz.Rect(foot * page.derotation_matrix)
+        foot.normalize()
+        text = page.get_text("text", clip=foot)
+    except Exception:
+        return ""
+    m = _TEMPLATE_LOOSE_ID_RE.search(text or "")
+    return _template_form_key(m.group()) if m else ""
 
 
 def _template_revision(page):
@@ -4718,26 +4775,58 @@ def _template_page_words(page, widget_rects):
     return words
 
 
+def _template_field_class(name):
+    """What a widget's name says its field holds: "name" (a party, a person,
+    a firm), "case_number", "contact" (a phone, an address, a bar number),
+    "court" (the venue), or None for a name that says nothing ("FillText10").
+    Read off the LAST path component with its `[n]` index and `_ft` / `_dc`
+    suffix dropped, split at case changes and underscores."""
+    last = str(name or "").split(".")[-1]
+    last = re.sub(r"\[\d+\]", "", last)
+    last = re.sub(r"_(?:ft|dc|cb|rb|bt|sf)$", "", last)
+    tokens = {t.lower() for t in re.findall(r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+", last)}
+    if tokens & _TEMPLATE_COURT_WORDS:
+        return "court"
+    if tokens & _TEMPLATE_CASE_WORDS:
+        return "case_number"
+    if tokens & _TEMPLATE_CONTACT_WORDS:
+        return "contact"
+    if tokens & _TEMPLATE_NAME_WORDS:
+        return "name"
+    return None
+
+
 def _template_index_page(page, source):
-    """One template page: its form id, revision, label words and widget
-    rects — or None where the footer names no form id, since a page nothing
-    can recognise is not a template of anything."""
+    """One template page: its form id, revision, label words, widget rects,
+    checkbox rects and classified text fields — or None where the footer
+    names no form id, since a page nothing can recognise is not a template
+    of anything."""
     form_no = _form_page_number(page)
     if not form_no:
         return None
-    rects = []
+    rects, boxes, fields = [], [], []
     try:
+        import fitz
         for w in page.widgets():
             r = w.rect
-            rects.append((float(r.x0), float(r.y0), float(r.x1), float(r.y1)))
+            rect = (float(r.x0), float(r.y0), float(r.x1), float(r.y1))
+            rects.append(rect)
+            if w.field_type in (fitz.PDF_WIDGET_TYPE_CHECKBOX,
+                                fitz.PDF_WIDGET_TYPE_RADIOBUTTON):
+                boxes.append(rect)
+            elif w.field_type == fitz.PDF_WIDGET_TYPE_TEXT:
+                cls = _template_field_class(w.field_name)
+                if cls:
+                    fields.append((cls, str(w.field_name or ""), rect))
     except Exception:
-        rects = []
+        rects, boxes, fields = rects, boxes, fields
     words = _template_page_words(page, rects)
     if len(words) < _TEMPLATE_MIN_MATCHED:
         return None
     return {"form": form_no, "form_key": _template_form_key(form_no),
             "revision": _template_revision(page), "words": words,
-            "widgets": rects, "source": f"{source}#{page.number + 1}",
+            "widgets": rects, "boxes": boxes, "fields": fields,
+            "source": f"{source}#{page.number + 1}",
             "width": float(page.rect.width), "height": float(page.rect.height)}
 
 
@@ -4998,7 +5087,7 @@ def _template_recognise(page, spans, log=None):
     try:
         library = _template_library(log)
         if library and _page_text_is_ocr(page):
-            form_key = _template_form_key(_form_page_number(page))
+            form_key = _template_footer_key(page)
             cands = [t for t in library if form_key and t["form_key"] == form_key]
             if cands:
                 rev = _template_revision(page)
@@ -5028,24 +5117,142 @@ def _template_recognise(page, spans, log=None):
     return result
 
 
-def _note_template_page(page, form, count):
-    """Record that `count` label word(s) on `page` were restored from the
-    `form` template, so the export's banner can say so. The LARGEST count
-    seen, as `_note_doubled_page` keeps it: several renderers restore one
-    page and describe one restoration."""
+def _note_template_page(page, form, labels=None, boxes=None):
+    """Record what the `form` template gave `page` — `labels` restored,
+    `boxes` read at its own checkbox positions — so the export's banner can
+    say so. Each the LARGEST count seen, as `_note_doubled_page` keeps it:
+    several renderers restore one page and describe one restoration. True
+    when a count grew."""
     try:
         doc = page.parent
         seen = getattr(doc, _TEMPLATE_ATTR, None)
         if seen is None:
             seen = {}
             setattr(doc, _TEMPLATE_ATTR, seen)
-        prev = seen.get(page.number)
-        if prev is None or count > prev[1]:
-            seen[page.number] = (form, count)
-            return True
+        prev = seen.get(page.number) or {"form": form, "labels": 0, "boxes": 0}
+        grew = False
+        for key, val in (("labels", labels), ("boxes", boxes)):
+            if val is not None and val > prev[key]:
+                prev[key] = val
+                grew = True
+        seen[page.number] = prev
+        return grew
     except Exception:
         pass
     return False
+
+
+def _template_box_cells(page, spans, bbs, tpl, fit, all_rects):
+    """The checkbox STATE cells of a recognised form, read at the template's
+    own box positions: (cells, seen centres, consumed rects, claimed span
+    indexes, boxes, marked, unsure, exact, raster). The template says where
+    every box is, so no caption has to be paired with one and no box can be
+    missed or doubled; the state is still MEASURED, by the three sources the
+    ink pass ranks — a glyph inside the box, a vector path inside it, and
+    the raster ink of the scanned square, which `box_fill` finds in the
+    window and measures inside its border. A box the raster cannot find at
+    all is `[?]`, never assumed empty."""
+    import fitz
+    sx, sy, tx, ty = fit
+    cells, seen, consumed, claimed = [], [], [], set()
+    boxes = marked = unsure = 0
+    exact, raster = True, None
+    pad = _TEMPLATE_BOX_PAD
+    for (x0, y0, x1, y1) in tpl["boxes"]:
+        rect = fitz.Rect(sx * x0 + tx, sy * y0 + ty, sx * x1 + tx, sy * y1 + ty)
+        rect.normalize()
+        win = fitz.Rect(rect.x0 - pad, rect.y0 - pad, rect.x1 + pad, rect.y1 + pad)
+        inside = [j for j, bb in enumerate(bbs)
+                  if win.contains(fitz.Point((bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2))]
+        state, stands = None, []
+        for j in inside:
+            g = _ink_glyph_state(spans[j])
+            if g is not None:
+                state = g if state is not True else True
+                stands.append(j)
+        if state is None and all_rects:
+            inner = fitz.Rect(rect)
+            inner.x0 += rect.width * 0.2
+            inner.x1 -= rect.width * 0.2
+            inner.y0 += rect.height * 0.2
+            inner.y1 -= rect.height * 0.2
+            if any(inner.intersects(r) and r.width < rect.width * 0.95
+                   for r in all_rects):
+                state = True
+            elif any(abs(r.x0 - rect.x0) <= 2 and abs(r.x1 - rect.x1) <= 2
+                     and abs(r.y0 - rect.y0) <= 2 and abs(r.y1 - rect.y1) <= 2
+                     for r in all_rects):
+                state = False            # the drawn square, nothing in it
+        if state is None:
+            if raster is None:
+                try:
+                    raster = _InkRaster(page)
+                except Exception:
+                    raster = False
+            got = raster.box_fill(win) if raster else None
+            exact = False
+            if got is not None:
+                fill, rect = got
+                state = _ink_state_from_fill(fill)
+            elif raster:
+                fill = _template_rect_fill(raster, rect)
+                if fill is not None:
+                    state = _ink_state_from_fill(fill)
+        boxes += 1
+        marked += 1 if state is True else 0
+        unsure += 1 if state is None else 0
+        mark = "[X]" if state is True else "[ ]" if state is False else "[?]"
+        cy = (rect.y0 + rect.y1) / 2
+        cells.append(_form_cell(cy, (rect.y1 - rect.y0) / 2, rect.x0, mark))
+        seen.append(((rect.x0 + rect.x1) / 2, cy))
+        claimed.update(stands)
+        for j in inside:
+            bb = bbs[j]
+            if j in stands or rect.contains(
+                    fitz.Point((bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2)):
+                consumed.append(fitz.Rect(bb))
+    return cells, seen, consumed, claimed, boxes, marked, unsure, exact, raster
+
+
+def _template_field_values(page, spans=None):
+    """[(class, field name, text)] for every classified field of the form
+    `page` is recognised as, holding what the scan's words say stands inside
+    the field's box — the typed value, as the OCR read it and never
+    restored. Rows are kept apart with a newline. Nothing for a page not
+    recognised, or one whose text layer did not come from OCR."""
+    try:
+        if not _template_library() or not _page_text_is_ocr(page):
+            return []
+        if spans is None:
+            spans = _drop_overdrawn_spans(_page_text_spans(page), page)
+        got = _template_recognise(page, spans)
+        if got is None or not got[0]["fields"]:
+            return []
+        tpl, (sx, sy, tx, ty) = got
+        words = _template_scan_words(spans, page)
+    except Exception:
+        return []
+    out = []
+    for cls, name, (x0, y0, x1, y1) in tpl["fields"]:
+        X0, Y0, X1, Y1 = sx * x0 + tx, sy * y0 + ty, sx * x1 + tx, sy * y1 + ty
+        inside = []
+        for w in words:
+            b = w[2]
+            cx, cy = (b[0] + b[2]) / 2, (b[1] + b[3]) / 2
+            if X0 <= cx <= X1 and Y0 <= cy <= Y1:
+                inside.append((cy, b[0], w[1], b[3] - b[1]))
+        if not inside:
+            continue
+        inside.sort(key=lambda t: (t[0], t[1]))
+        rows, row_y = [], None
+        for cy, x, text, h in inside:
+            if row_y is None or abs(cy - row_y) > max(h, 1.0) * 0.6:
+                rows.append([])
+                row_y = cy
+            rows[-1].append((x, text))
+        text = "\n".join(" ".join(t for _x, t in sorted(r)) for r in rows)
+        out.append((cls, name, text))
+    return out
 
 
 def _restore_template_labels(spans, page, log=None):
@@ -5064,7 +5271,7 @@ def _restore_template_labels(spans, page, log=None):
     s_words = _template_scan_words(spans, page)
     hits, _matched, _share = _template_match(tpl, fit, s_words)
     if not hits:
-        _note_template_page(page, tpl["form"], 0)
+        _note_template_page(page, tpl["form"], labels=0)
         return spans
     sx, sy, tx, ty = fit
     widgets = [(sx * r[0] + tx, sy * r[1] + ty, sx * r[2] + tx, sy * r[3] + ty)
@@ -5101,7 +5308,7 @@ def _restore_template_labels(spans, page, log=None):
         spans[si]["text"] = "".join(pieces)
     # Logged once per page: the export, the detection copy and the form
     # renderer each restore the page, and they describe one restoration.
-    if _note_template_page(page, tpl["form"], restored) and restored:
+    if _note_template_page(page, tpl["form"], labels=restored) and restored:
         (log or logging.getLogger("pdf_linker")).info(f"  Form templates: page {page.number + 1} restored {restored} "
                  f"label word(s) from the {tpl['form']} template ({tpl['source']})")
     return spans
@@ -12440,7 +12647,7 @@ _PN_NEVER_FAKE = frozenset({
 # Matched on the RAW value (the reduction above strips the hyphens the shape
 # needs) and anchored, so only a whole token can qualify.
 _PN_FORM_ID_RE = re.compile(
-    r"[A-Z]{2,4}(?:-[A-Z]{1,3})?-\d{3}(?:\(\d{1,2}\))?\Z")
+    r"[A-Z]{2,4}(?:-[A-Z]{1,3})?-\d{3}(?:\([A-Z0-9]{1,2}\))?\Z")
 
 # ...and the same shape as a SPAN, so the id is protected where it STANDS and
 # not merely as a whole value. `_pn_is_never_fake` refuses to build a term FOR
@@ -21050,6 +21257,42 @@ class Pseudonymizer:
             _pn_append_name_terms(new, raw, "document", self.registry)
             self._add_terms(new)
 
+    def register_form_fields(self, values):
+        """Register the NAMES typed into a recognised court form's own name
+        fields — `_template_field_values`' (class, field name, text) rows —
+        as document-harvested terms. The field's name is the corroboration
+        ("AttyName", "Party1", "PersonServed"): a value there is a party, a
+        person or a firm, standing where no role prefix, label or caption
+        column reaches it. A short-title field ("Rasho v. Quillmark") is
+        split at its "v.", a row of a multi-line value is a name of its
+        own, and every piece takes the screens a label-anchored harvest
+        takes: two words at least, no role word inside it, never a bare
+        role, a protected locality or form furniture. Returns how many
+        pieces were registered. Idempotent; call before apply()."""
+        count = 0
+        for cls, _name, text in values:
+            if cls != "name":
+                continue
+            for line in str(text or "").splitlines():
+                for piece in re.split(r"\s+(?:v|vs)\.?\s+", line, flags=re.IGNORECASE):
+                    words = piece.strip(" ,;:").split()
+                    while len(words) > 1 and _pn_is_role_token(words[0]):
+                        words = words[1:]
+                    piece = " ".join(words)
+                    if (len(words) < 2 or len(words) > 8
+                            or not re.search(r"[A-Za-z]{2}", piece)
+                            or _pn_is_party_role(piece)
+                            or _pn_is_protected_locality(piece)
+                            or _pn_is_never_fake(piece)
+                            or any(_pn_is_role_token(w) for w in words)):
+                        continue
+                    new = []
+                    _pn_append_name_terms(new, piece, "document", self.registry)
+                    if new:
+                        self._add_terms(new)
+                        count += 1
+        return count
+
     def register_salutation_names(self, text):
         """"Dear Mr. Kowalczyk:" — a letter addressed to a SURNAME behind a
         title. The one-word value is refused by every harvest's two-word
@@ -28072,6 +28315,32 @@ class _InkRaster:
         return fill, rect
 
 
+_TEMPLATE_BOX_INSET = 0.36     # of a template-placed box, discarded as border
+
+
+def _template_rect_fill(raster, rect):
+    """The interior ink fraction of a box whose place the TEMPLATE gives, or
+    None where the window holds no ink at all. `box_fill` finds the printed
+    square first and measures inside its own border, which is exact and is
+    tried first; a light scan whose border is broken, or a box a caption's
+    rule runs into, leaves it nothing to find, and here the template's
+    rect is trusted for the position and the inset for the border."""
+    import fitz
+    try:
+        rows, (wx0, wx1) = raster._dark_rows(fitz.Rect(rect))
+    except Exception:
+        return None
+    if not any(rows):
+        return None
+    h, w = len(rows), wx1 - wx0
+    dy, dx = round(h * _TEMPLATE_BOX_INSET), round(w * _TEMPLATE_BOX_INSET)
+    iy0, iy1, ix0, ix1 = dy, h - 1 - dy, wx0 + dx, wx1 - dx
+    if iy1 <= iy0 or ix1 <= ix0:
+        return None
+    dark = sum(1 for y in range(iy0, iy1 + 1) for x in rows[y] if ix0 <= x <= ix1)
+    return dark / ((ix1 - ix0 + 1) * (iy1 - iy0 + 1))
+
+
 def _ink_state_from_fill(fill):
     """Marked / empty / UNREADABLE from a measured interior ink fraction.
 
@@ -28164,6 +28433,25 @@ def _ink_form_cells(page):
     seen = []                # centres of the boxes already reported
     claimed = set()          # spans already standing for a state box
     uscore = {}              # span index -> its underscore slot rect
+    # A page recognised as a form in the template library has its boxes
+    # read FIRST, at the template's own positions (`_template_box_cells`):
+    # every box the form prints, none doubled, whether or not a caption is
+    # in reach of it. The caption sweep below then reports only a box the
+    # template did not name, since `seen` already holds these.
+    tpl_got = _template_recognise(page, spans)
+    if tpl_got is not None and tpl_got[0]["boxes"]:
+        tb = _template_box_cells(page, spans, bbs, tpl_got[0], tpl_got[1], all_rects)
+        t_cells, t_seen, t_consumed, t_claimed, t_boxes, t_marked, t_unsure, t_exact, raster = tb
+        cells.extend(t_cells)
+        seen.extend(t_seen)
+        consumed.extend(t_consumed)
+        claimed.update(t_claimed)
+        boxes += t_boxes
+        marked += t_marked
+        unsure += t_unsure
+        exact = exact and t_exact
+        raster = raster or None
+        _note_template_page(page, tpl_got[0]["form"], boxes=t_boxes)
     for idx, sp in enumerate(spans):
         bb = bbs[idx]
         ym = (bb[1] + bb[3]) / 2
@@ -33568,9 +33856,12 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
                      f"disagree; {doubled} piece(s) of the earlier reading "
                      f"were dropped and the later one is shown"
                      if doubled else "")
-                  + (f" — NOTE: {restored[1]} pre-printed label word(s) were "
-                     f"RESTORED from the {restored[0]} form template"
-                     if restored and restored[1] else "")
+                  + (f" — NOTE: {restored['labels']} pre-printed label "
+                     f"word(s) were RESTORED from the {restored['form']} form "
+                     f"template" if restored and restored["labels"] else "")
+                  + (f" — NOTE: {restored['boxes']} checkbox state(s) were "
+                     f"read at the {restored['form']} form template's own box "
+                     f"positions" if restored and restored["boxes"] else "")
                   + " ======")
         page_blocks.append((header, rows if rows is not None else display))
         block_pages.append(len(detect_pages) - 1)   # its detection text
@@ -34144,15 +34435,23 @@ def _pn_prescan_folder(pdfs, pseudonymizer, log, extra_texts=()):
     # did it — which is the difference between a diagnosable crash and a run
     # that "just stops".
     _read_t0 = time.time()
+    form_fields = {}          # stem -> the recognised forms' classified fields
     for i, pdf in enumerate(pdfs, 1):
         log.info(f"    Pre-scan {i}/{total}: {pdf.name}")
         try:
             with fitz.open(pdf) as doc:
                 text = "\n\f\n".join(_page_detect_text(page) for page in doc)
+                # …and the values typed into a recognised form's own NAME
+                # fields, which the template says are names (the detection
+                # copy above has already recognised each page, so this is
+                # a lookup per page and never a second fit).
+                fields = [v for page in doc for v in _template_field_values(page)]
         except Exception as e:  # a corrupt file must not abort the whole run
             log.warning(f"  Pseudonymize: could not pre-scan {pdf.name}: {e}")
             continue
         corpus.append((pdf.stem, text))
+        if fields:
+            form_fields[pdf.stem] = fields
     for j, (stem, text) in enumerate(extra_texts, len(pdfs) + 1):
         log.info(f"    Pre-scan {j}/{total}: {stem}")
         corpus.append((stem, text))
@@ -34211,6 +34510,11 @@ def _pn_prescan_folder(pdfs, pseudonymizer, log, extra_texts=()):
         for i, (stem, text) in enumerate(corpus, 1):
             log.info(f"      Harvest {i}/{len(corpus)}: {stem}")
             _pn_learn_from_text(pseudonymizer, text, stem)
+            if form_fields.get(stem):
+                n = pseudonymizer.register_form_fields(form_fields[stem])
+                if n:
+                    log.info(f"        Form templates: {n} name(s) read out of "
+                             f"{stem}'s own form fields")
     _stage(f"harvesting names, localities and identifiers from {total} file(s)",
            _learn)
     added = len(pseudonymizer.terms) - before
