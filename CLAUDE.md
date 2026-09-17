@@ -4811,6 +4811,45 @@ across all N — that was O(cites×pages)). `_repair_link_uris` fixes a PyMuPDF
 annotation-naming splice. Declarations/complaints skip linking
 (`should_skip_linking`).
 
+**An exhibit reference is searched for only on a page whose TEXT can hold
+it** (`_exhibit_page_screen`, `_exhibit_screen_key`, `_EXHIBIT_LINK_PREFILTER`,
+in `_link_exhibit_references`). The body-reference pass ran `page.search_for`
+for every exhibit identifier under every prefix in every quote spelling on
+EVERY page: 37 exhibits, 6 prefixes and 4+ spellings is ~900 full-page glyph
+searches a page, 1.8 million on a 2,043-page evidence compendium. A delivered
+folder's log put 83 minutes there on that file and 93 on a 254-page
+declaration with 38 exhibits, in every run that reached them — 5 of an
+11.7-hour run — and two runs of that folder were KILLED while sitting in it,
+the log's last line each time being the citation-link count of that file: a
+stall that long reads as a hang, and it was reported as one, blamed on the
+harvest (which took 166 s). One `get_text` per page now decides which phrases
+can be on it at all. The screen is EXACT because of what `search_for` can
+accept, measured on PyMuPDF 1.28: it is case-insensitive, it matches a
+needle's one space against any whitespace run on the page (a tab, a no-break
+space, a line break — the cross-line match comes back one quad per line and
+the exact-case clip check then refuses it), it never matches a space against
+no whitespace, and it folds nothing else (a curly quote is not a straight
+one, a hyphenated wrap is not the word). So every non-blank character of a
+findable phrase stands on the page in order, case aside, and the page's text
+case-folded with its whitespace REMOVED contains the phrase reduced the same
+way; a phrase absent from that string is skipped, and every phrase present
+still goes through the search and the exact-case clip check exactly as
+before. A page carrying no prefix at all is skipped whole. The prefixes also
+come in casing PAIRS and the search is case-insensitive, so each pair's two
+searches returned the same quads and the clip check picked the casing: one
+search per distinct folded phrase now, accepted where the clipped glyphs
+spell ANY casing of it — the same acceptance at half the searches. Measured
+on a 400-page synthetic compendium with 37 exhibits: 298.7 s -> 3.3 s, the
+links byte-identical (`test_exhibit_link_prefilter.py`, which runs the pass
+with the screen off through the switch, over every spelling the loop meets,
+and pins the two produce the same links). Residual, and stated, found on
+the way: `_is_complete_phrase_rect` probes 3 pt past a match for a
+continuing word, and at 10-pt type a following word lands inside the probe
+before the space does, so "Exhibit 6 for" set in footnote size is refused as
+a fragment; body text at 11 pt and up is unaffected, and the probe is
+untouched here. The cover scan `_find_exhibit_cover_pages` measured 0.7 s on
+those 400 pages and is left unmemoised.
+
 **Bookmarks are DETECTED structure, and a detector that reads the wrong text
 mints junk the reader has to scroll past.** A petition with one
 printed-webpage exhibit shipped four Document bookmarks — the petition's
