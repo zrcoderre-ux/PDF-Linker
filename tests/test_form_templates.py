@@ -481,3 +481,38 @@ def test_the_default_folder_is_created_beside_the_config(tmp_path, monkeypatch):
     assert P._ensure_form_templates_dir(log) is False
     assert not (tmp_path / "elsewhere").exists()
     P._set_form_templates_dir("")
+
+
+def test_an_information_sheet_is_a_form_with_a_suffix():
+    """MC-013-INFO is footed and filed beside the form it explains, and the
+    id shapes refused its suffix: no template page indexed, and nothing
+    saying the id was never a value to fake. The suffix is admitted whole
+    and stays bounded, so a longer word behind the hyphen is no id."""
+    assert P._PN_FORM_ID_RE.match("MC-013-INFO")
+    assert P._pn_is_never_fake("MC-013-INFO")
+    m = P._JC_FORM_NO_RE.search("MC-013-INFO, Page 1 of 3")
+    assert m and m.group(1) == "MC-013-INFO"
+    assert P._TEMPLATE_LOOSE_ID_RE.search("MC-O13-INFO, Page 2 of 3")
+    assert P._template_form_key("MC-O13-INFO") == P._template_form_key("MC-013-INFO")
+    assert not P._JC_FORM_NO_RE.search("MC-013-INFORMATION")
+    assert not P._PN_FORM_ID_RE.match("MC-013-INFORMATION")
+    assert P._JC_FORM_NO_RE.search("MC-013, Page 1").group(1) == "MC-013"
+
+
+def test_every_committed_blank_indexes_as_a_template():
+    """The repo carries the official blanks in `Form Templates/`, and every
+    one of them must yield at least one template page — a blank the library
+    cannot key is a file the operator committed for nothing."""
+    import logging
+    folder = Path(P.__file__).resolve().parent / "Form Templates"
+    pdfs = sorted(folder.glob("*.pdf"))
+    assert len(pdfs) >= 39
+    keyed = set()
+    for pdf in pdfs:
+        doc = fitz.open(pdf)
+        keys = {P._template_footer_key(pg) for pg in doc}
+        keys.discard("")
+        assert keys, pdf.name
+        keyed |= keys
+    assert "mc013info" in keyed
+    assert "jud100" in keyed
