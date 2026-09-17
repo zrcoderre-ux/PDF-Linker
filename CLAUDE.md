@@ -6563,6 +6563,57 @@ new file passes by construction — leaves it alone.
   the keep spans, the survivors and the scrubbed output alike. A speed-up
   that changed one answer would be a scrub that faked less or a scan that
   reported less, which is the one trade this project never makes for time.
+- **A REPEATED citation is searched only on the pages that can carry it**
+  (`_PN_CITE_PAGE_SCREEN`, the `_cite_page_keys` screen in `process_pdf`). A
+  citation occurring once in the document was already searched on its own
+  page; one occurring twice was searched on EVERY page with a glyph search
+  apiece, and a delivered 2,043-page evidence compendium with 415 citations
+  spent 21 minutes there linking nothing. Each page's text is reduced once
+  the way the exhibit linker reduces it (`_exhibit_screen_key`, case folded
+  and whitespace removed), and a repeated citation is searched where the
+  reduced page carries the reduced needle — or, for a wrapped citation, one
+  of the SAFE fragments `_safe_search_for_citation` would fall back to,
+  since that fallback can link from one fragment alone. Exact for the
+  exhibit screen's reason: `search_for` folds case and whitespace runs and
+  nothing else. Pinned differentially through the switch
+  (`test_citation_link_page_screen.py`).
+- **The corpus prunes read a ONE-PASS word index, and scan the corpus in
+  CHUNKS** (`_corpus_word_stats`, `_PN_WORD_TOKEN_RE`, `_PN_ODD_FOLD_RE`,
+  `_PN_CORPUS_WORD_INDEX`; `_scan_matches(corpus=True)`,
+  `_PN_SCAN_CORPUS_CHUNK`). The current run's log put the five prunes at
+  39 minutes on a 10 MB corpus — prose 675 s, heading 671, citation-only
+  415, cited-party 391, fragment 208 — where the notes below record them at
+  seconds on 755 KB. Linear, and a thousand full-corpus regex scans long:
+  each ran one `(?<!\w)WORD(?!\w)` scan of the whole corpus per candidate,
+  and a candidate is a word the corpus carries, so the lead screen spared
+  almost none. A candidate is a run of ASCII letters (`_corpus_prunable`),
+  and under IGNORECASE its pattern matches exactly the `\w+` tokens that
+  equal it lower-cased, so the corpus is tokenised ONCE, per line, into
+  `{token: [lower-case count, capitalised count, capitalised on a prose
+  line]}`, and the prose, heading and fragment prunes are dictionary
+  lookups (the fragment prune's inside-a-longer-run test is a substring of
+  the lowered text). Exact only where `lower()` equality IS regex
+  case-insensitivity, which fails for the handful of letters Python's `re`
+  folds oddly (`re._casefix._EXTRA_CASES`: a long s onto s, a dotted or
+  dotless i onto i, the micro sign, Greek and Cyrillic variants) — so a
+  corpus carrying one is refused (`_PN_ODD_FOLD_RE`) and those prunes keep
+  their regex path, and a candidate that is not ASCII letters keeps it too.
+  The citation-only and cited-party prunes run each term's own pattern and
+  take the chunked scanner in CORPUS mode instead: 100 KB chunks, an
+  inverted index of plain words without the adjacent runs (the memory
+  reason `_corpus_lead_words` states), and a break-tolerant term scanned
+  whole — the exemption `_corpus_lead_skip` already makes, and one no prune
+  meets, since they screen document-harvested guesses and only the
+  operator's own template and `--term` build a break-tolerant pattern. The
+  chunk plan is an inverted index generally now, `{word: chunk ids}`, so a
+  term's chunks are the intersection of its words' sets and the strings are
+  held once each. Measured on a 1.5 MB synthetic corpus with 11,199 terms,
+  the same terms dropped each way: citation-only **138 s -> 28 s**, prose
+  **24.5 -> 0.2**, heading **19.6 -> 0.1**, fragment **345 -> 8.5**, and
+  cited-party unmoved at 10, its cost being the citation mask. All of it
+  pinned differentially against the regex path and the whole scan
+  (`test_prescan_prune_equivalence.py`), including a corpus that folds
+  oddly.
 - **The PRE-SCAN's corpus-wide block is the OTHER long silence, and it now
   names its stages** (`_pn_prescan_folder`). The file loop names each document
   before it opens it, so a folder being READ is legible. What follows it was

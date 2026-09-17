@@ -335,12 +335,12 @@ def test_the_chunked_scan_yields_exactly_the_whole_scan(seed=None):
                     z.apply(body, count=False))
         with _with_chunking(True):
             _fresh(z)
-            plan = z._scan_plan(body)
+            bounds, _index = z._scan_plan(body)
             fast = (_cands(z, body), z._keep_spans(body),
                     [r["real"] for r in z._surviving_records(body)],
                     z.apply(body, count=False))
         assert fast == slow, (trial, body[:200])
-        assert len(plan) > 3, "the constants should cut the body into chunks"
+        assert len(bounds) > 3, "the constants should cut the body into chunks"
     # …and at least one trial met an unsafe window, so the fallback ran.
     rnd = random.Random(31)
     z = _pz(NAMES)
@@ -348,7 +348,7 @@ def test_the_chunked_scan_yields_exactly_the_whole_scan(seed=None):
     with _with_chunking(True):
         for _ in range(30):
             _fresh(z)
-            seen_unsafe |= any(u for *_r, u in z._scan_plan(_random_body(rnd)))
+            seen_unsafe |= any(u for *_r, u in z._scan_plan(_random_body(rnd))[0])
     assert seen_unsafe
 
 
@@ -362,10 +362,10 @@ def test_a_match_crossing_a_chunk_cut_is_found_once():
     rx = z._compiled(z.terms[0].pattern, z.terms[0].flags)
     with _with_chunking(True, chunk=104, overlap=200):
         _fresh(z)
-        plan = z._scan_plan(body)
+        bounds, _index = z._scan_plan(body)
         # The cut falls at the newline INSIDE the name: "Helen\n" closes the
         # first chunk and " 7  Rasho" opens the second.
-        assert plan[0][1] == 107, plan[0]
+        assert bounds[0][1] == 107, bounds[0]
         got = [m.span() for m in z._scan_matches(body, rx, z.terms[0].words,
                                                  "Helen Rasho")]
     assert got == [m.span() for m in rx.finditer(body)]

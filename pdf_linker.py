@@ -8871,6 +8871,7 @@ _EXHIBIT_PREFIXES = ("Exhibit", "EXHIBIT", "Ex.", "EX.", "Exh.", "EXH.")
 # every phrase that passes it still goes through the search and the
 # exact-case clip check exactly as before.
 _EXHIBIT_LINK_PREFILTER = True
+_PN_CITE_PAGE_SCREEN = True
 _EXHIBIT_SCREEN_WS_RE = re.compile(r"\s+")
 
 
@@ -16579,6 +16580,20 @@ _PN_LEAD_CATS = frozenset({"person", "person-token", "entity", "entity-token",
                            "short-name", "display-name"})
 _PN_LEAD_WORD_RE = re.compile(r"[^\W\d_]+")
 _PN_LEAD_PREFILTER = True
+# The `\w+` tokens a `(?<!\w)WORD(?!\w)` pattern can match, and the letters
+# whose IGNORECASE partner is NOT their own lower case — Python's `re` folds
+# a handful of characters onto others (`re._casefix._EXTRA_CASES`: a long s
+# onto s, a dotted or dotless i onto i, the micro sign onto mu, and Greek and
+# Cyrillic variants), and a text carrying any of them cannot be matched by
+# `lower()` equality. `_corpus_word_stats` refuses such a text and the prunes
+# keep their regex path there; a folder of English filings never carries one.
+_PN_WORD_TOKEN_RE = re.compile(r"\w+")
+_PN_ODD_FOLD_RE = re.compile(
+    "[\u00b5\u0130\u0131\u017f\u0345\u0390\u03b0\u03b2\u03b5\u03b8\u03b9"
+    "\u03ba\u03bc\u03c0\u03c1\u03c2\u03c3\u03c6\u03d0\u03d1\u03d5\u03d6"
+    "\u03f0\u03f1\u03f5\u0432\u0434\u043e\u0441\u0442\u044a\u0463"
+    "\u1c80-\u1c88\u1e61\u1e9b\u1fbe\u1fd3\u1fe3\ua64b\ufb05\ufb06]")
+_PN_CORPUS_WORD_INDEX = True
 _PN_LEAD_GLUE_RE = re.compile(r"[a-z]([A-Z][^\W\d_]*)$")
 
 
@@ -16676,6 +16691,13 @@ def _pn_words_in(words, ws):
 # every boundary case is exercised on a page of text.
 _PN_CHUNK_SCAN = True
 _PN_SCAN_CHUNK = 3000
+# A CORPUS scan (the pre-scan's prunes over the whole folder) walks bigger
+# chunks and indexes plain words only — no adjacent runs, for the memory
+# reason `_corpus_lead_words` states — so a break-tolerant term is scanned
+# whole there, exactly as `_corpus_lead_skip` exempts it. No prune ever
+# meets one: they screen document-harvested guesses, and only the
+# operator's own template and `--term` build a break-tolerant pattern.
+_PN_SCAN_CORPUS_CHUNK = 100000
 _PN_SCAN_OVERLAP = 4000
 _PN_SCAN_MAX_REAL = 400
 _PN_SCAN_MAX_WORDS = 30
@@ -16684,16 +16706,19 @@ _PN_SCAN_MAX_WORDS = 30
 _PN_SCAN_LONG_WS_RE = re.compile(r"\s{100,}")
 
 
-def _pn_words_index(text):
+def _pn_words_index(text, runs=True):
     """The words of `text`, lower-cased, every adjacent run of up to
-    `_PN_WORD_BREAK_MAX` + 1 of them joined, and the capitalised tail of a
-    word glued behind a lower-case run — the set a term's words are looked
-    up in. Pure; `Pseudonymizer._lead_words` is the memoised form."""
+    `_PN_WORD_BREAK_MAX` + 1 of them joined (unless `runs` is off), and the
+    capitalised tail of a word glued behind a lower-case run — the set a
+    term's words are looked up in. Pure; `Pseudonymizer._lead_words` is the
+    memoised form."""
     raw = _PN_LEAD_WORD_RE.findall(text)
     words = [w.lower() for w in raw]
     ws = set(words)
-    for n in range(2, _PN_WORD_BREAK_MAX + 2):
-        ws.update("".join(words[i:i + n]) for i in range(len(words) - n + 1))
+    if runs:
+        for n in range(2, _PN_WORD_BREAK_MAX + 2):
+            ws.update("".join(words[i:i + n])
+                      for i in range(len(words) - n + 1))
     for w in raw:
         m = _PN_LEAD_GLUE_RE.search(w)
         if m:
@@ -20830,7 +20855,7 @@ def _pn_case_party_shapes(masked):
     return live
 
 
-def _pn_case_party_evidence(masked, term, sites=None):
+def _pn_case_party_evidence(masked, term, sites=None, scan=None):
     """Why `term` (a `_PnTerm`) is a party of THIS case according to the
     citation-masked corpus `masked` — the name of the site that says so — or
     "" when no such site carries it. See `_PN_CASE_PARTY_SITES`.
@@ -20844,7 +20869,10 @@ def _pn_case_party_evidence(masked, term, sites=None):
                             term.flags)
         except re.error:
             continue          # a term pattern that cannot compile matches nothing
-        if rx.search(masked):
+        # `scan(rx)` is the caller's chunked search of the same corpus
+        # (`Pseudonymizer._scan_matches`): a site shape carries the term's
+        # own words, so it can only match where they stand.
+        if (next(scan(rx), None) if scan else rx.search(masked)):
             return label
     return ""
 
@@ -21366,7 +21394,10 @@ class Pseudonymizer:
             # cites a decision a hundred times is a second product. `finditer`
             # is lazy and `_PnSpanIndex` answers in log time, so both go.
             try:
-                ms = self._compiled(t.pattern, t.flags).finditer(text)
+                ms = self._scan_matches(
+                    text, self._compiled(t.pattern, t.flags), t.words,
+                    str(t.real), corpus=True,
+                    breakable=_pn_term_is_breakable(t.category, t.source))
                 seen = False
                 for m in ms:
                     seen = True
@@ -21463,6 +21494,8 @@ class Pseudonymizer:
         loaded = getattr(self, "_loaded_reals", ())
         covered = self._multiword_covered_words()
         ws = self._corpus_lead_words(text)
+        stats = (self._corpus_word_stats(text) if _PN_CORPUS_WORD_INDEX
+                 else None)
         doomed = []
         for t in list(self.terms):
             # A DERIVED spelling is one this tool invented, so it is screened
@@ -21475,13 +21508,18 @@ class Pseudonymizer:
                     # under the two-hit floor, so the term was never doomed.
                     or self._corpus_lead_skip(t, ws)):
                 continue
-            low = cap = 0
-            for m in self._compiled(r"(?<!\w)" + re.escape(t.real) + r"(?!\w)",
-                                    re.IGNORECASE).finditer(text):
-                if m.group(0).islower():
-                    low += 1
-                else:
-                    cap += 1
+            if stats is not None and t.real.isascii() and t.real.isalpha():
+                st = stats.get(t.real.lower())
+                low, cap = (st[0], st[1]) if st else (0, 0)
+            else:
+                low = cap = 0
+                for m in self._compiled(r"(?<!\w)" + re.escape(t.real)
+                                        + r"(?!\w)",
+                                        re.IGNORECASE).finditer(text):
+                    if m.group(0).islower():
+                        low += 1
+                    else:
+                        cap += 1
             if low >= 2 and low >= cap:
                 doomed.append(t)
         for t in doomed:
@@ -21550,12 +21588,19 @@ class Pseudonymizer:
             line_start.append(line_start[-1] + len(ln) + 1)
         covered = self._multiword_covered_words()
         ws = self._corpus_lead_words(text)
+        stats = (self._corpus_word_stats(text) if _PN_CORPUS_WORD_INDEX
+                 else None)
         doomed = []
         for t in list(self.terms):
             if (not self._corpus_prunable(t, loaded, covered)
                     # Nowhere in the corpus: `seen` stays False, and a term with
                     # no occurrence at all is left alone rather than dropped.
                     or self._corpus_lead_skip(t, ws)):
+                continue
+            if stats is not None and t.real.isascii() and t.real.isalpha():
+                st = stats.get(t.real.lower())
+                if st is not None and not st[2]:
+                    doomed.append(t)
                 continue
             rx = self._compiled(r"(?<!\w)" + re.escape(t.real) + r"(?!\w)",
                                 re.IGNORECASE)
@@ -21860,7 +21905,11 @@ class Pseudonymizer:
             # lead word the mask left nowhere cannot be found at any of them.
             if self._corpus_lead_skip(t, masked_ws):
                 continue
-            why = _pn_case_party_evidence(masked, t, sites)
+            why = _pn_case_party_evidence(
+                masked, t, sites,
+                scan=lambda rx, t=t: self._scan_matches(
+                    masked, rx, t.words, str(t.real), corpus=True,
+                    breakable=_pn_term_is_breakable(t.category, t.source)))
             if why:
                 doomed.remove(t)
                 spared.append((t.real, why))
@@ -21899,12 +21948,24 @@ class Pseudonymizer:
         text = _NFKC(text)
         self._pruned_reals = getattr(self, "_pruned_reals", set())
         loaded = getattr(self, "_loaded_reals", ())
+        stats = (self._corpus_word_stats(text) if _PN_CORPUS_WORD_INDEX
+                 else None)
+        lowered = text.lower() if stats is not None else None
         doomed = []
         for t in list(self.terms):
             if (t.source != "document"
                     or t.real.lower() in loaded
                     or t.category not in ("person", "entity", "person-token",
                                           "entity-token", "short-name")):
+                continue
+            if stats is not None and t.real.isascii() and t.real.isalpha():
+                # A run of ASCII letters stands as a word where a `\w+`
+                # token equals it, and inside a longer run where the lowered
+                # text contains it — both exact on a plainly folding text.
+                if t.real.lower() in stats:
+                    continue
+                if t.real.lower() in lowered:
+                    doomed.append(t)
                 continue
             # Compiled through the run's own cache, never `re`'s: that one
             # evicts past 512 entries, which a large case blows through, so
@@ -22839,52 +22900,78 @@ class Pseudonymizer:
         del memo[2:]
         return ws
 
-    def _scan_plan(self, text):
-        """The chunks `_scan_matches` walks `text` in: `(start, end, wend,
-        words, unsafe)` per chunk — its span, the end of its window, the
-        window's word index, and whether a match starting in it could reach
-        past the window (a long whitespace run inside), in which case the
-        chunk is scanned whole. Memoised two deep on the text, like every
-        other per-text index here, since the passes alternate between the
-        export body and its column-ordered twin."""
+    def _scan_plan(self, text, corpus=False):
+        """The chunks `_scan_matches` walks `text` in: a list of `(start, end,
+        wend, unsafe)` per chunk — its span, the end of its window, and
+        whether a match starting in it could reach past the window (a long
+        whitespace run inside), in which case the chunk is scanned whole —
+        and an INVERTED index, {word: set of chunk ids whose window carries
+        it}, so a term's chunks are the intersection of its words' sets and
+        no chunk is visited that cannot match. The strings are held once
+        each, whatever number of windows carry them. Memoised two deep on
+        the text and mode, like every other per-text index here, since the
+        passes alternate between the export body and its column-ordered
+        twin. `corpus` walks `_PN_SCAN_CORPUS_CHUNK` chunks and indexes
+        words without their adjacent runs (see `_PN_SCAN_CORPUS_CHUNK`)."""
         memo = getattr(self, "_scan_plan_memo", None)
         if memo is None:
             memo = self._scan_plan_memo = []
-        for k, plan in memo:
-            if k is text or k == text:
+        for k, c, plan in memo:
+            if c == corpus and (k is text or k == text):
                 return plan
         n = len(text)
-        plan = []
+        size = _PN_SCAN_CORPUS_CHUNK if corpus else _PN_SCAN_CHUNK
+        bounds, index = [], {}
         start = 0
         while start < n:
-            end = min(n, start + _PN_SCAN_CHUNK)
+            end = min(n, start + size)
             if end < n:
                 nl = text.find("\n", end)
                 end = n if nl < 0 else nl + 1
             wend = min(n, end + _PN_SCAN_OVERLAP)
             window = text[start:wend]
             unsafe = wend < n and bool(_PN_SCAN_LONG_WS_RE.search(window))
-            plan.append((start, end, wend, _pn_words_index(window), unsafe))
+            cid = len(bounds)
+            bounds.append((start, end, wend, unsafe))
+            for w in _pn_words_index(window, runs=not corpus):
+                s = index.get(w)
+                if s is None:
+                    index[w] = {cid}
+                else:
+                    s.add(cid)
             start = end
-        memo.insert(0, (text, plan))
+        plan = (bounds, index)
+        memo.insert(0, (text, corpus, plan))
         del memo[2:]
         return plan
 
-    def _scan_matches(self, text, rx, words, real):
+    def _scan_matches(self, text, rx, words, real, corpus=False,
+                      breakable=False):
         """Every match of `rx` in `text`, in order — what `rx.finditer(text)`
         yields — found chunk by chunk where the term's `words` allow it. See
-        the note above `_PN_CHUNK_SCAN` for why this is exact."""
+        the note above `_PN_CHUNK_SCAN` for why this is exact. A CORPUS scan
+        indexes no adjacent runs, so a `breakable` term is scanned whole
+        there."""
         if (not _PN_CHUNK_SCAN or words is None or len(real) > _PN_SCAN_MAX_REAL
-                or len(real.split()) > _PN_SCAN_MAX_WORDS):
+                or len(real.split()) > _PN_SCAN_MAX_WORDS
+                or (corpus and breakable)):
             yield from rx.finditer(text)
             return
+        bounds, index = self._scan_plan(text, corpus)
+        hit = None
+        for w in words:
+            s = index.get(w)
+            if not s:
+                return
+            hit = s if hit is None else (hit & s)
+            if not hit:
+                return
         n = len(text)
         last_end = 0
-        for start, end, wend, ws, unsafe in self._scan_plan(text):
+        for cid in sorted(hit):
+            start, end, wend, unsafe = bounds[cid]
             if last_end >= end:
                 continue              # the last match already covers this chunk
-            if not _pn_words_in(words, ws):
-                continue
             pos = max(start, last_end)
             if unsafe:
                 yield from rx.finditer(text, pos)
@@ -22927,6 +23014,48 @@ class Pseudonymizer:
             return list(items)
         ws = self._lead_words(text)
         return [it for it in items if _pn_words_in(words_of(it), ws)]
+
+    def _corpus_word_stats(self, text):
+        """ONE pass over the corpus for the three prunes that ask, per
+        one-word candidate, how the corpus WRITES that word: `{lower-cased
+        token: [lower-case occurrences, capitalised occurrences, whether it
+        opens capitalised on a PROSE line]}` — or None for a text that does
+        not fold plainly (see `_PN_ODD_FOLD_RE`), which sends the prunes down
+        their regex path unchanged. Memoised two deep on the text.
+
+        Each of those prunes ran one regex over the whole corpus per
+        candidate, and on a 10 MB corpus that was 675 s for the prose prune,
+        671 for the heading prune and 208 for the fragment prune of one run:
+        linear, and a thousand full scans long. A candidate is a run of
+        ASCII letters, and its pattern `(?<!\\w)X(?!\\w)` under IGNORECASE
+        matches exactly the `\\w+` tokens that equal it once lower-cased —
+        so the tokens are counted once, and every candidate is a dictionary
+        lookup."""
+        memo = getattr(self, "_corpus_stats_memo", None)
+        if memo is None:
+            memo = self._corpus_stats_memo = []
+        for k, stats in memo:
+            if k is text or k == text:
+                return stats
+        stats = None
+        if not _PN_ODD_FOLD_RE.search(text):
+            stats = {}
+            for line in text.split("\n"):
+                prose = _pn_line_is_prose(line)
+                for m in _PN_WORD_TOKEN_RE.finditer(line):
+                    w = m.group(0)
+                    st = stats.get(w.lower())
+                    if st is None:
+                        st = stats[w.lower()] = [0, 0, False]
+                    if w.islower():
+                        st[0] += 1
+                    else:
+                        st[1] += 1
+                    if prose and w[:1].isupper():
+                        st[2] = True
+        memo.insert(0, (text, stats))
+        del memo[2:]
+        return stats
 
     def _corpus_lead_words(self, text):
         """`_lead_words` for a CORPUS-WIDE pass: the distinct words of `text`
@@ -36730,6 +36859,19 @@ def process_pdf(pdf_path: Path, log: logging.Logger,
         for _pt in page_texts:
             _cite_page_starts.append(_acc)
             _acc += len(_pt) + len("\n\f\n")
+        # …and each page's text reduced the way `_exhibit_page_screen`
+        # reduces it, for the pages a REPEATED citation is searched on. A
+        # citation occurring once is searched on its own page; one occurring
+        # twice was searched on EVERY page of the document with a glyph
+        # search apiece, and a 2,043-page evidence compendium with 415
+        # citations spent 21 minutes there linking nothing. The screen is
+        # exact for the reason the exhibit linker's is (`_exhibit_screen_key`):
+        # `search_for` folds case and whitespace runs and nothing else, so a
+        # page can carry a hit only where the reduced page carries the
+        # reduced needle — or, for a wrapped citation, one of the safe
+        # fragments `_safe_search_for_citation` would fall back to.
+        _cite_page_keys = ([_exhibit_screen_key(_pt) for _pt in page_texts]
+                           if _PN_CITE_PAGE_SCREEN else None)
 
     # For each citation, locate occurrences on each page using PyMuPDF's
     # search_for, and add (1) a clickable link annotation and (2) a blue
@@ -36792,8 +36934,17 @@ def process_pdf(pdf_path: Path, log: logging.Logger,
             hp = bisect.bisect_right(_cite_page_starts, cite["span"][0]) - 1
             hp = max(0, min(hp, len(doc) - 1))
             pages_iter = (doc[hp],)
-        else:
+        elif _cite_page_keys is None:
             pages_iter = doc
+        else:
+            keys = [_exhibit_screen_key(match_text)]
+            if "\n" in match_text:
+                keys += [_exhibit_screen_key(f.strip())
+                         for f in match_text.splitlines()
+                         if f.strip() and _is_safe_fragment(f.strip())]
+            keys = [k for k in keys if k]
+            pages_iter = [doc[i] for i, pk in enumerate(_cite_page_keys)
+                          if any(k in pk for k in keys)]
         found_anywhere = False
         for page in pages_iter:
             quads = _safe_search_for_citation(page, match_text, cite)
