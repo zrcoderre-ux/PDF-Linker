@@ -5772,9 +5772,43 @@ survive to fail.
   else; a word ours reads at 84 stays the filer's; `L2:01` for 12:01 folds to
   equality and stays, the accepted cost of refusing the `I`-class whole; and the
   next run pays the render again, since nothing in the PDF records that the
-  layer is now ours. The `_pn_word_splits` term tolerance above stays load-
-  bearing for the party name a document carries ONLY fragmented, which this
-  cannot join.
+  layer is now ours — closed by the mark below. The `_pn_word_splits` term
+  tolerance above stays load-bearing for the party name a document carries
+  ONLY fragmented, which this cannot join.
+- **…and the pass MARKS the page in the PDF, so the next run renders none of
+  it again** (`_IMG_OCR_MARK_KEY`, `_IMG_OCR_MARK_VERSION`,
+  `_image_ocr_fingerprint`, `_image_ocr_marked`, `_image_ocr_mark`,
+  `_IMG_OCR_TOUCHED_ATTR`, `_image_ocr_touched`). Every rule in this pass
+  decides what to do with a reading AFTER the reading has been paid for, and
+  the tool replaces the source PDF, so the next run opens a file in which
+  every decision has already landed — and paid again: a delivered folder's
+  log shows 494 image regions of a 2,043-page evidence file read at 300 dpi
+  on every run, 11 minutes on the desktop and 27 on the laptop, to keep
+  nothing and correct the same 41 layer words each time. A page the pass
+  has finished with now carries a key in its own page dictionary holding a
+  fingerprint of what was read — the rule version, the render dpi and
+  config, the page rotation, and the images by xref and placement — and a
+  page whose mark matches is not rendered. The page's TEXT is deliberately
+  not in it: between runs it changes only through this tool and only by
+  ADDING or CORRECTING words (the overlay, the layer repair, the gutter
+  digits, the operator's `*` fix), none of which can turn "this image adds
+  nothing the page lacks" into its opposite, while a text digest would have
+  re-read every scanned pleading page the gutter probe touched, which is the
+  population the pass costs most on. A page this run's own page-wide OCR
+  wrote is marked as well — same engine, same dpi, and the next run had no
+  way to know — and a page any region of which could not be read is left
+  unmarked and retried. A changed picture, or a bumped version, reads once
+  more. Two things ride with it. The mark and the layer repair are both
+  writes to the PDF that the region count never reported, and on a PDF
+  ALREADY LINKED the fast path in `process_pdf` closes the file unsaved
+  unless OCR says it changed something — so the repair was made, logged,
+  and lost, and the same words were corrected again on the next run. The
+  pass now records that it TOUCHED the file whatever it kept, and
+  `process_pdf` saves on that (`test_image_ocr_mark.py` pins the check on
+  the source, between the call and the fast path). And the key survives
+  `doc.save(garbage=3)` and is ignored by every viewer, as
+  `_PDF_LINK_STAMP` is; a page dictionary is the one place a per-page fact
+  about the file can live in the file.
 - **A page-wide OCR pass throws the line-number GUTTER away, and the TITLE PAGE
   is what it costs** (`_ocr_gutter_column`, `_gutter_probe_strip`,
   `_gutter_probe_reads_as_numbering`). A pleading's line numbers are a narrow

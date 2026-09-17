@@ -2914,6 +2914,101 @@ _IMG_OCR_MIN_PT = 24.0
 _IMG_OCR_MIN_NEW = 2
 _IMG_OCR_WORD_RE = re.compile(r"[A-Za-z]{3,}")
 
+# ── The image-OCR pass leaves a MARK in the PDF, so the next run does not pay
+# for it again ─────────────────────────────────────────────────────────────
+# Every rule in this pass decides what to do with a reading AFTER the reading
+# has been paid for — the render and the Tesseract call — and the tool
+# REPLACES the source PDF, so the next run opens a file in which every one of
+# those decisions has already landed: the overlay is in the layer, the layer
+# repair is in the layer, and a region that carried nothing new carries
+# nothing new. Yet nothing in the PDF said so, and the run that produced the
+# evidence for this read 494 image regions of a 2,043-page evidence file at
+# 300 dpi, 27 minutes on the laptop and 11 on the desktop, to keep NOTHING
+# and correct 41 words — in every run of that folder, five runs in a week.
+#
+# So a page this pass has finished with is MARKED, in the PDF itself, with a
+# fingerprint of what was read (`_image_ocr_fingerprint`): the pass's own
+# rule version, the render dpi and config, and the page's images by xref and
+# placement. A page carrying a matching mark is not rendered again. The page's
+# TEXT is deliberately not in the fingerprint: between runs it changes only
+# through this tool, and only by ADDING or CORRECTING words (this overlay, the
+# layer repair, the gutter digits `_ocr_gutter_column` lays in, the operator's
+# `*` fix) — none of which can turn "this image adds nothing the page lacks"
+# into its opposite, while a digest of it would have re-read every scanned
+# pleading page the gutter probe touched, the population this pass costs most
+# on. A page this run's own page-wide OCR wrote is marked too: same engine,
+# same dpi, a second reading of its image adds nothing, and the next run had
+# no way to know that. A page any region of which could not be read is left
+# UNMARKED, so it is retried. Stored as a key in the page's own dictionary
+# (`_IMG_OCR_MARK_KEY`), which `doc.save(garbage=3)` keeps and every viewer
+# ignores, and written only through `doc.save` — so the pass reports that it
+# TOUCHED the PDF (`_IMG_OCR_TOUCHED_ATTR`) whether or not a region was kept,
+# and `process_pdf` saves on that. The layer repair needed the same: it
+# rewrote the page and the return value said nothing, so on a PDF already
+# linked the "already linked" fast path closed the file unsaved and the same
+# 41 words were corrected again on the next run.
+#
+# Bump `_IMG_OCR_MARK_VERSION` when a rule above changes what the pass would
+# decide about a region it has already looked at; every earlier mark then
+# reads as absent and the page is read once more.
+_IMG_OCR_MARK_KEY = "PDFLinkerImageOCR"
+_IMG_OCR_MARK_VERSION = 1
+_IMG_OCR_TOUCHED_ATTR = "_pdf_linker_img_ocr_touched"
+
+
+def _image_ocr_fingerprint(page, rects):
+    """What this pass would read on `page`, as a short hex digest — see the
+    note above `_IMG_OCR_MARK_KEY` for what is in it and what is not."""
+    import hashlib
+    try:
+        xrefs = sorted({im[0] for im in page.get_images(full=True)})
+    except Exception:
+        xrefs = []
+    parts = [str(_IMG_OCR_MARK_VERSION), str(_ocr_base_dpi(page)), _OCR_CONFIG,
+             str(int(page.rotation)), ",".join(str(x) for x in xrefs)]
+    parts.extend(f"{r.x0:.1f},{r.y0:.1f},{r.x1:.1f},{r.y1:.1f}"
+                 for r in sorted(rects, key=lambda r: (r.y0, r.x0, r.y1, r.x1)))
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:24]
+
+
+def _image_ocr_marked(page, rects):
+    """True when the PDF says this pass has already finished with `page`'s
+    images as they now stand."""
+    try:
+        kind, val = page.parent.xref_get_key(page.xref, _IMG_OCR_MARK_KEY)
+    except Exception:
+        return False
+    if kind != "string" or not val:
+        return False
+    return val == _image_ocr_fingerprint(page, rects)
+
+
+def _image_ocr_mark(page, rects):
+    """Record in the PDF that this pass has finished with `page`'s images."""
+    try:
+        doc = page.parent
+        want = _image_ocr_fingerprint(page, rects)
+        kind, val = doc.xref_get_key(page.xref, _IMG_OCR_MARK_KEY)
+        if kind == "string" and val == want:
+            return
+        doc.xref_set_key(page.xref, _IMG_OCR_MARK_KEY, f"({want})")
+        _note_pdf_touched(doc)
+    except Exception:
+        pass
+
+
+def _note_pdf_touched(doc):
+    """This pass changed the PDF, mark or layer, and it must be saved."""
+    try:
+        setattr(doc, _IMG_OCR_TOUCHED_ATTR, True)
+    except Exception:
+        pass
+
+
+def _image_ocr_touched(doc):
+    return bool(getattr(doc, _IMG_OCR_TOUCHED_ATTR, False))
+
+
 
 def _note_img_ocr(page, count):
     """Record that `count` image region(s) on `page` were read by OCR, so the
@@ -3370,21 +3465,32 @@ def _ocr_image_regions(doc, log):
     # renders: the page's own text and its image rectangles are both cheap.
     done = 0
     already = 0
+    marked = 0
     todo = []
     for page in doc:
         text = page.get_text("text")
         if not text.strip():
             continue                 # no text at all: `_ocr_pdf`'s page to take
+        rects = _image_ocr_rects(page)
         if _page_read_by_this_run(page):
             already += 1
+            if rects:
+                _image_ocr_mark(page, rects)   # durable — see _IMG_OCR_MARK_KEY
             continue                 # our own reading — see `_OCR_READ_ATTR`
-        rects = _image_ocr_rects(page)
-        if rects:
-            todo.append((page, text, rects))
+        if not rects:
+            continue
+        if _image_ocr_marked(page, rects):
+            marked += 1              # an earlier run finished with these images
+            continue
+        todo.append((page, text, rects))
     if already:
         log.info(f"  Image OCR: {already} page(s) left unread — this run's own "
                  f"page-wide OCR wrote their text, so reading an image of the "
                  f"same page again at the same resolution can add nothing")
+    if marked:
+        log.info(f"  Image OCR: {marked} page(s) left unread — an earlier run "
+                 f"read their images and the PDF carries its mark; the images "
+                 f"have not changed since, so nothing is rendered again")
     if not todo:
         return 0
     log.info(f"  Image OCR: reading {sum(len(r) for _p, _t, r in todo)} image "
@@ -3415,6 +3521,7 @@ def _ocr_image_regions(doc, log):
         # this run's reading is confidently different — see `_LAYER_FIX_ATTR`.
         repair = _page_layer_is_filer_ocr(page)
         ours = []
+        unread = False       # a region that could not be read: no mark, retry
         for rect in rects:
             try:
                 # `get_pixmap(clip=)` takes DISPLAY-space coordinates while
@@ -3440,6 +3547,7 @@ def _ocr_image_regions(doc, log):
                 log.warning(f"  Image OCR: page {page.number + 1} region "
                             f"({rect.width:.0f}x{rect.height:.0f} pt) could not "
                             f"be read ({e}); leaving it")
+                unread = True
                 continue
             new = _image_ocr_new_words(found, have_low)
             if len(new) < _IMG_OCR_MIN_NEW:
@@ -3460,7 +3568,9 @@ def _ocr_image_regions(doc, log):
             except Exception as e:
                 log.warning(f"  Image OCR: could not overlay page "
                             f"{page.number + 1} ({e})")
+                unread = True
                 continue
+            _note_pdf_touched(doc)
             have_low.update(w.lower() for w in new)
             kept += 1
             log.info(f"  Image OCR: page {page.number + 1} region recovered "
@@ -3471,10 +3581,15 @@ def _ocr_image_regions(doc, log):
             if n:
                 fixed_words += n
                 fixed_pages += 1
+                _note_pdf_touched(doc)
+            if not unread:
+                _image_ocr_mark(page, rects)
             continue
         if kept:
             _note_img_ocr(page, kept)
             done += kept
+        if not unread:
+            _image_ocr_mark(page, rects)
     # Reported whatever the count, elapsed included: a pass that found nothing
     # still SPENT the renders, and a cost that leaves no trace is a cost nobody
     # can find later.
@@ -36319,6 +36434,11 @@ def process_pdf(pdf_path: Path, log: logging.Logger,
     # `_ocr_image_regions`. Additive and non-fatal: nothing is redacted.
     try:
         ocr_changed = bool(_ocr_image_regions(doc, log)) or ocr_changed
+        # …and a pass that kept NO region may still have written to the PDF:
+        # a layer repair, or the mark that spares the next run the render
+        # (`_IMG_OCR_MARK_KEY`). Either is lost unless the file is saved, and
+        # the "already linked" fast path below closes it unsaved otherwise.
+        ocr_changed = _image_ocr_touched(doc) or ocr_changed
     except Exception as e:
         log.warning(f"  Image-region OCR failed (non-fatal): {e}")
 
