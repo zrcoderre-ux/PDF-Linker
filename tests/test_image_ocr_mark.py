@@ -165,3 +165,29 @@ def test_the_pass_reports_a_layer_repair_as_a_change_to_save():
     i = src.index("_ocr_image_regions(doc, log)")
     j = src.index("_pdf_is_stamped(doc) and not relink")
     assert "_image_ocr_touched(doc)" in src[i:j]
+
+
+def test_a_margin_picture_does_not_cost_the_page_its_mark(monkeypatch, tmp_path):
+    """The MARK is the page's images as they stand, because that is what the
+    next run checks it against. Marking only the regions the pass went on to
+    READ left the two disagreeing, so a page carrying a margin picture — a
+    firm's sidebar, an e-filing stamp — re-rendered every other region of
+    itself on every run for ever."""
+    calls = _stub_tesseract(monkeypatch, SIGNATURE)
+    doc = _doc()
+    pg = doc[0]
+    # A rotated stamp up the left margin, wholly left of the page's own text
+    # (which starts at x=72), tall and narrow.
+    pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 32, 400))
+    pix.clear_with(255)
+    pg.insert_image(fitz.Rect(8, 100, 40, 500), pixmap=pix)
+    rects = P._image_ocr_rects(pg)
+    assert len(P._page_margin_images(pg, rects)) == 1, "the stamp is in the margin"
+
+    assert P._ocr_image_regions(doc, log) == 1      # the signature, not the stamp
+    doc = _save_and_reopen(doc, tmp_path, "margin.pdf")
+    assert P._image_ocr_marked(doc[0], P._image_ocr_rects(doc[0]))
+    n = len(calls)
+    assert P._ocr_image_regions(doc, log) == 0
+    assert len(calls) == n, "the next run rendered a region again"
+    doc.close()

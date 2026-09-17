@@ -3497,23 +3497,32 @@ def _ocr_image_regions(doc, log):
              f"region(s) on {len(todo)} page(s)")
     started = time.monotonic()
     fixed_words = fixed_pages = 0
-    for page, text, rects in todo:
-        # A picture in the margin OUTSIDE a pleading's gutter is a firm's
-        # mark, set up the side of the page hard against the line numbers,
-        # and reading it puts the firm's name — or, read upside down, a
-        # letter-soup of it — into a text layer that then reaches every
-        # export of every page. Not rendered at all: the words are not the
-        # document's, and `_sidebar_spans` would only have to drop them again.
-        gutter = _pleading_gutter(page)
-        if gutter is not None:
-            side = [r for r in rects if _sidebar_image_rect(r, gutter[1])]
-            if side:
-                log.info(f"  Image OCR: page {page.number + 1} — {len(side)} "
-                         f"image(s) in the margin outside the line-number "
-                         f"gutter (a firm's sidebar) left unread")
-                rects = [r for r in rects if not _sidebar_image_rect(r, gutter[1])]
-                if not rects:
-                    continue
+    for page, text, all_page_rects in todo:
+        # The MARK is the page's images as they stand, because that is what the
+        # next run checks it against (`_image_ocr_marked`, asked of the full
+        # list above). Marking only the regions this pass went on to read left
+        # the two disagreeing, so a page carrying a margin picture re-rendered
+        # every other region of itself on every run for ever.
+        rects = all_page_rects
+        # A picture in the MARGIN is a firm's mark set up the side of the
+        # page, or an e-filing stamp pasted beside it, and reading it puts
+        # the firm's name — or, read the wrong way round, a letter-soup of
+        # it — into a text layer that then reaches every export of every
+        # page. Not rendered at all: the words are not the document's, and
+        # the renderers would only have to drop them again. Measured off the
+        # line-number gutter where there is one and off the page's own
+        # leftmost text where there is not, since a court FORM has no gutter
+        # and that is the page this reached the operator on
+        # (`_page_margin_images`).
+        side = _page_margin_images(page, rects)
+        if side:
+            log.info(f"  Image OCR: page {page.number + 1} — {len(side)} "
+                     f"image(s) in the margin outside the document (a "
+                     f"sidebar or an e-filing stamp) left unread")
+            drop = {id(r) for r in side}
+            rects = [r for r in rects if id(r) not in drop]
+            if not rects:
+                continue
         have_low = {w.lower() for w in _IMG_OCR_WORD_RE.findall(text)}
         kept = 0
         # A page whose text is a FILER's OCR layer is not overlaid and not
@@ -3583,13 +3592,13 @@ def _ocr_image_regions(doc, log):
                 fixed_pages += 1
                 _note_pdf_touched(doc)
             if not unread:
-                _image_ocr_mark(page, rects)
+                _image_ocr_mark(page, all_page_rects)
             continue
         if kept:
             _note_img_ocr(page, kept)
             done += kept
         if not unread:
-            _image_ocr_mark(page, rects)
+            _image_ocr_mark(page, all_page_rects)
     # Reported whatever the count, elapsed included: a pass that found nothing
     # still SPENT the renders, and a cost that leaves no trace is a cost nobody
     # can find later.
@@ -5038,9 +5047,12 @@ def _page_invisible_runs(page):
 # standing inside a template widget rect is never touched at all. So the
 # worst case of a wrong recognition is a label misspelled into another
 # label's words of the same form, at the same place — and the gate is what
-# keeps that from being reached. Asked only of a page whose text layer came
-# out of OCR (this run's or the filer's), because a born-digital form's labels
-# are the template's own already and the fit would cost a page for nothing.
+# keeps that from being reached. RESTORATION is asked only of a page whose
+# text layer came out of OCR (this run's or the filer's), because a
+# born-digital form's labels are the template's own already and there is
+# nothing to restore. RECOGNITION is asked of any form page, because the
+# template also says where every CHECKBOX is and a flattened form that reads
+# perfectly has no other way to find one (`_template_recognise`).
 # The page banner says how many labels moved and from which template, and
 # the fit is memoised per page on the Document so the export, the detection
 # copy and the form renderer describe one restoration.
@@ -5567,9 +5579,29 @@ def _template_match(tpl, fit, s_words):
 
 
 def _template_recognise(page, spans, log=None):
-    """The (template, fit) this scanned page is recognised as, or None. Asked
-    once per page and memoised on the Document, so every renderer of the page
-    reads one answer."""
+    """The (template, fit) this page is recognised as, or None. Asked once per
+    page and memoised on the Document, so every renderer of the page reads one
+    answer.
+
+    Asked of a BORN-DIGITAL page as well as a scanned one, and the reason is
+    the CHECKBOXES rather than the labels. A form that was filled on screen
+    and FLATTENED — e-signed through Docusign, which is most of what arrives
+    now — keeps no widgets, and its flattener draws the square for neither
+    state: a checked box is a bare mark glyph and an unchecked one is nothing
+    at all. So the ink pass found no box on any page, `_ink_form_cells`
+    returned None, and a seven-page MC-350EX exported with its marks standing
+    as stray letters ("a. m Is not the subject of a pending action") and its
+    empty boxes as whitespace — the export unable to say which relief the
+    petition requested, on the one kind of document where the checkbox IS the
+    pleading. The template knows where every box is, and the gate that kept it
+    out was `_restore_template_labels`' (a born-digital page's labels are the
+    template's own already), which says nothing about a box. It now sits on
+    that pass, where its reasoning is.
+    It cost page 1 of that filing its own consistency, which is how it showed:
+    this run had OCR'd four images on page 1, so the page carried Tesseract's
+    invisible font, `_page_text_is_ocr` answered True by accident and page 1
+    alone got its 13 states read at the template's positions while pages 2-7
+    of the same form got none."""
     try:
         doc = page.parent
         memo = getattr(doc, _TEMPLATE_FIT_ATTR, None)
@@ -5589,7 +5621,7 @@ def _template_recognise(page, spans, log=None):
     result = None
     try:
         library = _template_library(log)
-        if library and _page_text_is_ocr(page):
+        if library:
             form_key = _template_footer_key(page)
             cands = [t for t in library if form_key and t["form_key"] == form_key]
             if cands:
@@ -5661,6 +5693,42 @@ def _template_box_cells(page, spans, bbs, tpl, fit, all_rects):
     boxes = marked = unsure = 0
     exact, raster = True, None
     pad = _TEMPLATE_BOX_PAD
+    # A page with no page-covering scan image, and a text layer that came out
+    # of no OCR pass, DRAWS exactly what it draws — so at a position the
+    # template gives, the page's own content answers both ways, and exactly:
+    #
+    #   a lone GLYPH in the box is the mark, whatever character the flattener
+    #   chose for it — `_ink_glyph_state` knows a dingbat font and the
+    #   ordinary check characters, and a Docusign-flattened MC-350EX drew its
+    #   checks as a bare "m" and "H" in a text font, which no list will ever
+    #   hold. The caption sweep cannot afford that rule (a lone character
+    #   left of a caption is an item letter as often as a check, which is how
+    #   every numbered paragraph of a PLD-PI-001 once came out "[X]"); at the
+    #   template's own box there is nothing else it could be.
+    #
+    #   and NOTHING in the box means UNCHECKED, positively. The raster's
+    #   "no ink in the window is `[?]`, never assumed empty" is a SCAN's rule,
+    #   where an empty window means the pass failed to find the printed
+    #   square — and applied to a flattened born-digital form it put "[?]" on
+    #   every unchecked box on the page, dozens of them, each asking the
+    #   operator to go and verify what the page says plainly.
+    #
+    # An OCR'd page keeps the raster and keeps `[?]`: there the box artifact
+    # ("cj", "d", "o") is a lone glyph too, and reading one as a mark would
+    # report relief nobody requested. And the question is asked PER BOX, not
+    # per page: a scan is usually one image covering the whole page, but one
+    # pasted in strips covers no single box's worth of it by that measure,
+    # and a box with a picture over it has its state IN the picture — which
+    # only the raster can read — whatever the rest of the page is made of.
+    drawn = False
+    pictures = ()
+    try:
+        drawn = not _page_text_is_ocr(page)
+        if drawn:
+            pictures = [fitz.Rect(im["bbox"]) for im in page.get_image_info()
+                        if im.get("bbox")]
+    except Exception:
+        drawn, pictures = False, ()
     for (x0, y0, x1, y1) in tpl["boxes"]:
         rect = fitz.Rect(sx * x0 + tx, sy * y0 + ty, sx * x1 + tx, sy * y1 + ty)
         rect.normalize()
@@ -5668,11 +5736,24 @@ def _template_box_cells(page, spans, bbs, tpl, fit, all_rects):
         inside = [j for j, bb in enumerate(bbs)
                   if win.contains(fitz.Point((bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2))]
         state, stands = None, []
+        # ...so a box with a picture over it is the raster's, not the page's.
+        shown = drawn and not any(r.intersects(rect) for r in pictures)
         for j in inside:
             g = _ink_glyph_state(spans[j])
             if g is not None:
                 state = g if state is not True else True
                 stands.append(j)
+        if state is None and shown:
+            # A glyph of the flattener's own choosing. Held to the box itself
+            # rather than the padded window, since position is the whole of
+            # the evidence here.
+            for j in inside:
+                t = _ink_span_text(spans[j])
+                bb = bbs[j]
+                if (0 < len(t) <= 2 and rect.contains(
+                        fitz.Point((bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2))):
+                    state = True
+                    stands.append(j)
         if state is None and all_rects:
             inner = fitz.Rect(rect)
             inner.x0 += rect.width * 0.2
@@ -5686,6 +5767,8 @@ def _template_box_cells(page, spans, bbs, tpl, fit, all_rects):
                      and abs(r.y0 - rect.y0) <= 2 and abs(r.y1 - rect.y1) <= 2
                      for r in all_rects):
                 state = False            # the drawn square, nothing in it
+        if state is None and shown:
+            state = False                # the page draws nothing in this box
         if state is None:
             if raster is None:
                 try:
@@ -5764,8 +5847,15 @@ def _restore_template_labels(spans, page, log=None):
     the page is not recognised as a form in the library. Word for word, at
     the matched positions only, and never a word standing inside a template
     widget rect — that is where a value stands, and the template knows
-    nothing about values."""
-    if not spans:
+    nothing about values.
+
+    Asked only of a page whose text layer came out of OCR (this run's or the
+    filer's), because a born-digital form's labels are the template's own
+    already and there is nothing to restore. The gate lives HERE and not in
+    `_template_recognise`, which every renderer of a form page asks for the
+    template's CHECKBOX POSITIONS as well: a flattened form reads perfectly
+    and still needs those (see there)."""
+    if not spans or not _page_text_is_ocr(page):
         return spans
     got = _template_recognise(page, spans, log)
     if got is None:
@@ -6336,6 +6426,70 @@ def _sidebar_image_rect(rect, line_col):
     band_bot = max(s["y1"] for s in line_col) + tol
     return (rect.x1 <= gutter_left
             and not (rect.y1 < band_top or rect.y0 > band_bot))
+
+
+# A margin stamp runs UP the side of the page, so it is far taller than it is
+# wide — a rotated line of 8pt type is 10-15pt across and 200pt long. A
+# letterhead logo is square or wider than tall. The shape is what the no-gutter
+# arm of `_page_margin_images` stands on; a gutter needs no shape test, being
+# itself the page's own statement that this is pleading paper.
+_SIDEBAR_IMG_ASPECT = 1.5
+
+
+def _page_margin_images(page, rects):
+    """Which of `rects` — the image rects of `page` — stand in the MARGIN
+    outside the document, and so must never be READ.
+
+    `_sidebar_image_rect` measures that off the line-number GUTTER, which is a
+    pleading page's own statement of where its left margin ends. A court FORM
+    has no gutter, so nothing measured it at all: the rotated e-filing stamp
+    pasted up the left edge of a scanned MC-350EX was rendered and read, and
+    because the recogniser did NOT detect the rotation it came back as a band
+    of soup per scanline — "AEIUONIa/3", "PaNaray", "auodjIa|3", twenty such
+    words, laid into the form's own rows.
+
+    `_margin_sideways_dropped` cannot catch those. It drops a margin span whose
+    own direction is crosswise, which is the reading of the SAME stamp where
+    Tesseract did detect the rotation ("Electronically", "09:32", "AM", the
+    case that rule was written for); a reading that came back UPRIGHT is
+    ordinary horizontal text to every renderer. So the words have to not
+    exist, which is this pass's own discipline (`_sidebar_image_rect`): the
+    reading is not the document's, and no renderer should have to drop it
+    again.
+
+    With no gutter the edge is the page's own leftmost UPRIGHT text — the rule
+    `_margin_sideways_dropped` already measures a margin by — and the picture
+    must also be SHAPED like a margin stamp and stand BESIDE the text rather
+    than above it. Each guard keeps something real: a letterhead logo is
+    square or wider than tall, and a stamp pasted above the first line of text
+    is inside the text's own x range to begin with. Residual, and stated: a
+    label a filing really printed sideways in its left margin goes unread with
+    the stamp, exactly as it goes unexported on a pleading page."""
+    if not rects:
+        return []
+    try:
+        gutter = _pleading_gutter(page)
+        if gutter is not None:
+            return [r for r in rects if _sidebar_image_rect(r, gutter[1])]
+        upright = [sp["bbox"] for sp in _page_text_spans(page)
+                   if not _span_is_sideways(sp)]
+    except Exception:
+        return []
+    if not upright:
+        return []                # a page that is all picture is not a margin
+    # The tolerance runs the CONSERVATIVE way here, unlike `_sidebar_spans`'
+    # own use of it: there it widens the margin (slack in favour of calling a
+    # span furniture, which costs one line of an export), where this decides
+    # whether to DISCARD a reading altogether, and a picture wrongly refused
+    # is real words nothing recovers. So a picture must stand CLEARLY left of
+    # the page's own text.
+    left = min(b[0] for b in upright) - _SIDEBAR_GUTTER_TOL
+    top = min(b[1] for b in upright)
+    bot = max(b[3] for b in upright)
+    return [r for r in rects
+            if r.x1 <= left
+            and r.y1 - r.y0 > (r.x1 - r.x0) * _SIDEBAR_IMG_ASPECT
+            and not (r.y1 < top or r.y0 > bot)]
 
 
 def _pair_stacked_rows(stacks, tol):
