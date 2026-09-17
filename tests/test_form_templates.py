@@ -49,6 +49,11 @@ FIELDS = [("AttyName", (40, 70, 400, 110)), ("Phone", (110, 112, 210, 126)),
           ("CrtCounty", (300, 180, 560, 194))]
 # The form's checkboxes, each just left of the caption it governs.
 BOXES = [(46, 432, 55, 441), (66, 452, 75, 461), (46, 492, 55, 501)]
+# The CAPTION BOX the form prints around its attorney and court blocks —
+# vertical as (x, y0, y1), horizontal as (y, x0, x1), `_page_rules`' own
+# shape. A scan keeps none of it: the lines are ink in the picture.
+RULES_V = [(36, 46, 290), (370, 290, 340), (576, 46, 290)]
+RULES_H = [(46, 36, 576), (180, 36, 576), (290, 36, 576), (340, 36, 576)]
 VALUES = [("Helen Rasho, Esq. (SBN 123456)", 44, 82),
           ("(213) 555-0100", 114, 123), ("25STCV37838", 384, 320),
           ("HELEN RASHO", 104, 304)]
@@ -65,6 +70,10 @@ def _blank_template(path):
     for text, x, y in LABELS:
         page.insert_text((x, y), text, fontsize=8, fontname="helv")
     page.insert_text((40, 775), FOOTER, fontsize=7, fontname="helv")
+    for x, y0, y1 in RULES_V:
+        page.draw_line(fitz.Point(x, y0), fitz.Point(x, y1), width=0.8)
+    for y, x0, x1 in RULES_H:
+        page.draw_line(fitz.Point(x0, y), fitz.Point(x1, y), width=0.8)
     for name, rect in FIELDS:
         w = fitz.Widget()
         w.field_name = name
