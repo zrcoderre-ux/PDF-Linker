@@ -186,3 +186,200 @@ def test_the_joined_context_search_matches_the_per_line_one():
                 # the same first-hit rule: a hit iff the old scan found one
                 assert bool(quote) == (want is not None and needle != ""), (
                     needle, within, bounded, want, quote)
+
+
+# ── the screen asks about EVERY word, not the first ─────────────────────────
+# A case has a hundred parties sharing twenty given names, each with its
+# near-miss spellings minted beside it, so on a page that says "Maria" once
+# the lead screen let every person term opening on Maria — and every variant
+# of one — run its whole pattern over the whole page. Every letter run of the
+# real has to stand on the page for the pattern to match (`_pn_term_words`),
+# and a KEEP value's plainer pattern needs the same, so both are screened on
+# all their words now. Exact, and pinned as such: the reference is the
+# unscreened pass, through the same switch.
+
+def test_a_term_whose_later_word_is_absent_is_skipped():
+    z = _pz(["Helen Rasho", "Helen Tavquen", "Helen Quillmark-Tavquen"])
+    page = "Helen Rasho signed. Helen said so. Tavquen else did."
+    kept = {t.real for t in z._words_present(page, z.terms, lambda t: t.words)}
+    assert "Helen Rasho" in kept
+    assert "Helen Quillmark-Tavquen" not in kept    # "quillmark" is not there
+    # "Helen Tavquen" has both runs on the page (apart), so it is scanned —
+    # the screen only ever refuses, the pattern still decides.
+    assert "Helen Tavquen" in kept
+    assert P._pn_term_words("Sean O'Brien", "person") == ("sean", "o", "brien")
+    assert P._pn_term_words("25STCV37838", "case_number") is None
+
+
+def test_the_all_words_screen_changes_no_answer_on_random_pages():
+    """Randomized differential over the three passes that read the screen:
+    pages built from the fixture's own spellings (broken, wrapped, possessive,
+    glued, all-caps), with keeps that are sometimes on the page and sometimes
+    not, and a term list carrying names that share a given name with a real
+    party but never appear."""
+    rnd = random.Random(23)
+    pieces = [s.strip() for s in re.split(r"[.;]\s*", TEXT) if s.strip()]
+    absent = ["Vadim Nobody", "Helen Elsewhere", "Sara Nowhere", "Manuel Absent"]
+    for trial in range(12):
+        z = _pz(NAMES + absent)
+        z.keep_soft = {"and", "the", "court", "motion", "signed", "unseen"}
+        z.keep_nuclear = {"reply", "trust", "neverhere"}
+        page = " ".join(rnd.choice(pieces) for _ in range(rnd.randint(2, 6)))
+        if rnd.random() < 0.5:
+            page = "Helen Rasho was left standing. " + page
+        with _with_prefilter(False):
+            z._lead_memo = []; z._keep_span_memo = {}; z._survivor_memo = {}
+            slow = (_cands(z, page), z._keep_spans(page),
+                    [r["real"] for r in z._surviving_records(page)])
+        with _with_prefilter(True):
+            z._lead_memo = []; z._keep_span_memo = {}; z._survivor_memo = {}
+            fast = (_cands(z, page), z._keep_spans(page),
+                    [r["real"] for r in z._surviving_records(page)])
+        assert fast == slow, (trial, page)
+        skipped = [t for t in z.terms
+                   if t.words and not P._pn_words_in(t.words, z._lead_words(page))]
+        assert skipped, "the screen should refuse the absent names"
+
+
+def test_a_keep_absent_from_the_page_is_not_scanned(monkeypatch):
+    z = _pz()
+    z.keep_soft = {"court", "unseenword"}
+    page = "The court took the motion under submission."
+    seen = []
+    orig = z._compiled
+
+    def spy(pattern, flags):
+        seen.append(pattern)
+        return orig(pattern, flags)
+    monkeypatch.setattr(z, "_compiled", spy)
+    z._keep_span_memo = {}
+    spans = z._keep_spans(page)
+    assert spans, "the present keep is still found"
+    assert not any("unseenword" in p for p in seen)
+    assert any("court" in p for p in seen)
+
+
+# ── a whole-text scan is run chunk by chunk, and yields the same matches ────
+# The constants are SHRUNK so a page of text is dozens of chunks and every
+# boundary case is met: a name wrapped across a chunk cut, a gutter seam at
+# one, a match that would reach a window's end, a long run of whitespace
+# that makes a window unsafe, a glued first word behind a boundary, and
+# matches abutting one another. The invariant the shrunken constants must
+# keep is the one the production ones keep: a match longer than the overlap
+# holds a whitespace run at least as long as the unsafe threshold.
+
+def _with_chunking(flag, chunk=120, overlap=200, max_real=60, max_words=6,
+                   long_ws=12):
+    assert (overlap - max_real - max_words * 6) / max_words > long_ws
+
+    class _Ctx:
+        def __enter__(self):
+            self.old = (P._PN_CHUNK_SCAN, P._PN_SCAN_CHUNK, P._PN_SCAN_OVERLAP,
+                        P._PN_SCAN_MAX_REAL, P._PN_SCAN_MAX_WORDS,
+                        P._PN_SCAN_LONG_WS_RE)
+            P._PN_CHUNK_SCAN = flag
+            P._PN_SCAN_CHUNK, P._PN_SCAN_OVERLAP = chunk, overlap
+            P._PN_SCAN_MAX_REAL, P._PN_SCAN_MAX_WORDS = max_real, max_words
+            P._PN_SCAN_LONG_WS_RE = re.compile(r"\s{%d,}" % long_ws)
+
+        def __exit__(self, *a):
+            (P._PN_CHUNK_SCAN, P._PN_SCAN_CHUNK, P._PN_SCAN_OVERLAP,
+             P._PN_SCAN_MAX_REAL, P._PN_SCAN_MAX_WORDS,
+             P._PN_SCAN_LONG_WS_RE) = self.old
+    return _Ctx()
+
+
+def _fresh(z):
+    z._lead_memo = []; z._keep_span_memo = {}; z._survivor_memo = {}
+    z._scan_plan_memo = []
+
+
+def _random_body(rnd):
+    """Prose with the fixture's spellings, wraps, gutter seams, a stretch of
+    whitespace long enough to make a window unsafe, and names glued behind
+    lower-case runs, so chunk cuts land inside every shape."""
+    bits = [s.strip() for s in re.split(r"[.;]\s*", TEXT) if s.strip()]
+    filler = "the parties agreed that the work would proceed on the schedule".split()
+    out = []
+    for _ in range(rnd.randint(30, 60)):
+        r = rnd.random()
+        if r < 0.25:
+            out.append(rnd.choice(bits))
+        elif r < 0.35:
+            out.append("Helen\n" + rnd.choice(["", " 7  ", "12  "]) + "Rasho")
+        elif r < 0.40:
+            out.append("Midland\nStates Bank")
+        elif r < 0.45:
+            out.append(" " * rnd.randint(8, 40))
+        elif r < 0.48:
+            out.append("ofQUILLMARK")
+        elif r < 0.52:
+            out.append("Ken Cranston Ken")
+        else:
+            out.append(" ".join(rnd.choice(filler) for _ in range(rnd.randint(2, 9))))
+        out.append(rnd.choice([" ", "\n", ".\n", " and "]))
+    return "".join(out)
+
+
+def test_the_chunked_scan_yields_exactly_the_whole_scan(seed=None):
+    rnd = random.Random(31)
+    for trial in range(30):
+        z = _pz(NAMES + ["Quillmark Builders LLC", "Helen Nowhere"])
+        z.keep_soft = {"and", "the", "court", "motion", "signed", "schedule"}
+        z.keep_nuclear = {"reply", "trust", "parties"}
+        body = _random_body(rnd)
+        with _with_chunking(False):
+            _fresh(z)
+            slow = (_cands(z, body), z._keep_spans(body),
+                    [r["real"] for r in z._surviving_records(body)],
+                    z.apply(body, count=False))
+        with _with_chunking(True):
+            _fresh(z)
+            plan = z._scan_plan(body)
+            fast = (_cands(z, body), z._keep_spans(body),
+                    [r["real"] for r in z._surviving_records(body)],
+                    z.apply(body, count=False))
+        assert fast == slow, (trial, body[:200])
+        assert len(plan) > 3, "the constants should cut the body into chunks"
+    # …and at least one trial met an unsafe window, so the fallback ran.
+    rnd = random.Random(31)
+    z = _pz(NAMES)
+    seen_unsafe = False
+    with _with_chunking(True):
+        for _ in range(30):
+            _fresh(z)
+            seen_unsafe |= any(u for *_r, u in z._scan_plan(_random_body(rnd)))
+    assert seen_unsafe
+
+
+def test_a_match_crossing_a_chunk_cut_is_found_once():
+    """A name wrapped across the cut, with the gutter seam the export prints
+    there, is matched from the chunk it starts in and never again from the
+    next — `finditer` resumes at the last match's end, and so does this."""
+    z = _pz(["Helen Rasho"])
+    line = "x" * 100 + "\n"
+    body = line + "Helen\n 7  Rasho" + "\n" + line * 3
+    rx = z._compiled(z.terms[0].pattern, z.terms[0].flags)
+    with _with_chunking(True, chunk=104, overlap=200):
+        _fresh(z)
+        plan = z._scan_plan(body)
+        # The cut falls at the newline INSIDE the name: "Helen\n" closes the
+        # first chunk and " 7  Rasho" opens the second.
+        assert plan[0][1] == 107, plan[0]
+        got = [m.span() for m in z._scan_matches(body, rx, z.terms[0].words,
+                                                 "Helen Rasho")]
+    assert got == [m.span() for m in rx.finditer(body)]
+    assert len(got) == 1
+
+
+def test_the_regex_facts_the_chunked_scan_rests_on():
+    """A lookbehind at `pos` sees the characters before it; a lookahead at
+    `endpos` does not see past it. Both are what the design assumes, and a
+    Python that changed either would make the chunked scan inexact."""
+    rx = re.compile(r"(?<!\w)Smith(?!\w)")
+    t = "xSmith Smith Smithx"
+    assert [m.span() for m in rx.finditer(t, 1)] == [(7, 12)]     # 'x' before pos
+    glue = re.compile(r"(?:(?<!\w)|(?-i:(?<=[a-z])(?=[A-Z])))Smith(?!\w)", re.I)
+    assert [m.span() for m in glue.finditer("ofSmith", 2)] == [(2, 7)]
+    assert [m.span() for m in rx.finditer(t, 0, 18)] == [(7, 12), (13, 18)]
+    assert [m.span() for m in rx.finditer(t)] == [(7, 12)]
