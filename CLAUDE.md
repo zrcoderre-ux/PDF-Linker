@@ -5618,6 +5618,35 @@ offsets untouched, a newline at each seam so a " v." closing one page still
 reads as " v. ". `_surviving_records` needs nothing: it reads the whole
 export, where both pages are one text.
 
+**An OCR change on an ALREADY-LINKED PDF is SAVED, and nothing is re-linked**
+(`process_pdf`'s fast path, `_save_linked_pdf`). The stamp says the links,
+the underlines and the bookmark tree are in the file, and the fast path
+skipped the whole detect-and-save pass on the strength of it — unless an
+OCR pass had changed the document this run, where it fell through to the
+FULL pass so the change would be saved. The full pass could only re-derive
+what was already there: the citation loop found every rect linked and
+added nothing ("Linked 0"), and the heading scan, the exhibit search and
+the bookmark build simply ran again. On a delivered 2,043-page evidence
+compendium a 41-word repair to the filer's OCR layer therefore cost two
+hours of exactly that, on every run — the layer repair recurred until the
+image-OCR mark closed it, and the OCR fix pass and the page-wide OCR of a
+new scanned page can still report a change. The change is now saved
+through the one tail both paths share and the detection passes are not
+run; `--relink` still forces them. Pinned by counting the passes
+(`test_takeover.py`): a stamped PDF whose OCR pass reports a change is
+re-saved with its links intact and none of the detectors called.
+**This is what makes a re-run of a finished folder CHEAP**, and it is the
+half of "do not redo the work" that can be had without a checkpoint: the
+OCR passes are marked or idempotent, the link pass is skipped, and what a
+finished file still pays is the export walk, the scrub and the leak scans
+— which it MUST pay, since the term world moves with every document added
+and every worksheet answered, and the export is scrubbed column by column
+from the page's own geometry, so nothing short of the walk reproduces it.
+The records the key is written from come out of that same walk, which is
+also why a finished document can never be skipped outright: a harvested
+name matched only there would have count 0 and no row, and the fake
+standing in its export would reverse to nothing.
+
 **A page must be APPENDABLE before anything is inserted into it**
 (`_repair_page_annots`, called once after the already-linked fast path so a
 document we would not have touched is never dirtied). `/Annots 175 0 R` is legal
@@ -6255,6 +6284,29 @@ ends. RE-ENTRANT per process (the hazard is two processes) and it FAILS OPEN: if
 the lock cannot be taken for any reason other than "someone holds it", the run
 proceeds, because a lock that cannot be acquired must never stop legitimate
 work. `PDF_LINKER_NO_LOCK=1` skips it.
+
+**…and a run can be TAKEN OVER, keeping what it finished** (`--takeover`,
+`_take_over_folder`, `_lock_note_pid`, `_lock_holder_pid`, `_runs_of_folder`,
+`_end_run`), at the owner's direction. A second start on a locked folder
+used to exit, which is right for a stray click and wrong for the one case
+that matters: a newer build, or a corrected key, while a run that has hours
+left is grinding on the old one. So the lock file now carries its holder's
+PID — from BYTE 1, since on Windows the lock IS byte 0 and another process
+reading a locked byte gets a PermissionError — and `--takeover` ends that
+run (`taskkill /T`, so its Tesseracts go with it; TERM then KILL elsewhere),
+takes the lock and proceeds. A lock an older build wrote names nobody, so
+the run is found on the process table instead (`Get-CimInstance
+Win32_Process`; `/proc` on Linux, since `ps` cuts the command line at a
+terminal width it has no terminal to measure): a process naming BOTH the
+tool and the folder's resolved path, this run and its parent excluded. With
+nothing to end it says so and exits as before. BOTH launchers pass it, for
+the reason they pass `--no-defer`: a double-click is the operator asking for
+THIS run now. What that costs is bounded by the fast path below — the run
+ended loses the file it was on and the pre-scan, and every PDF it linked
+stays linked — and nothing it wrote at the end (the key, the worksheet) is
+lost, because it never reached the end. A run is killed mid-file cleanly by
+construction: a `_temp.pdf` it left is debris `process_pdf` already removes,
+an export it was writing is rewritten, and the PDF replacement is a rename.
 
 **`_InkRaster` caps its render** (`_INK_MAX_PIXELS`, mirroring
 `_OCR_MAX_PIXELS`). A bitmap scales with page AREA, so an oversized page asks

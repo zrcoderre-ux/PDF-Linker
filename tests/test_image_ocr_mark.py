@@ -163,5 +163,5 @@ def test_the_pass_reports_a_layer_repair_as_a_change_to_save():
     import inspect
     src = inspect.getsource(P.process_pdf)
     i = src.index("_ocr_image_regions(doc, log)")
-    j = src.index("_pdf_is_stamped(doc) and not relink and not ocr_changed")
+    j = src.index("_pdf_is_stamped(doc) and not relink")
     assert "_image_ocr_touched(doc)" in src[i:j]

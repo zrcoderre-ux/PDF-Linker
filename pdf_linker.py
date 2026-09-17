@@ -36875,11 +36875,27 @@ def process_pdf(pdf_path: Path, log: logging.Logger,
     # When OCR actually MODIFIED the doc this run (a page gained its text
     # layer), fall through instead: skipping would discard the OCR and re-pay
     # the 300-dpi render on every subsequent run without ever persisting it.
-    if _pdf_is_stamped(doc) and not relink and not ocr_changed:
-        log.info(f"  Already linked; skipped the link/save pass, regenerated "
-                 f".txt only (use --relink to force): {pdf_path.name}")
-        doc.close()
-        return True
+    if _pdf_is_stamped(doc) and not relink:
+        if not ocr_changed:
+            log.info(f"  Already linked; skipped the link/save pass, "
+                     f"regenerated .txt only (use --relink to force): "
+                     f"{pdf_path.name}")
+            doc.close()
+            return True
+        # …and when an OCR pass DID change the document, the change is SAVED
+        # and nothing else is redone. The links, the underlines and the
+        # bookmark tree are already in the file — that is what the stamp
+        # says — so the detection passes below could only re-derive what is
+        # there (the citation loop found every rect already linked and added
+        # nothing; the exhibit search, the heading scan and the bookmark
+        # build simply ran again). On a 2,043-page evidence compendium a
+        # 41-word repair to a filer's OCR layer cost two hours of exactly
+        # that, on every run, and the run that dies mid-file is the run that
+        # never reaches its DONE stamp. `--relink` still forces the full pass.
+        log.info(f"  Already linked; saving this run's OCR change(s) and "
+                 f"skipping the link/bookmark passes, which are already in "
+                 f"the file (use --relink to force): {pdf_path.name}")
+        return _save_linked_pdf(doc, temp_path, out_path, log)
 
     # From here on the document WILL be written to, so make its pages
     # appendable first: a page whose /Annots is an indirect reference to a null
@@ -37165,6 +37181,14 @@ def process_pdf(pdf_path: Path, log: logging.Logger,
     except Exception as e:
         log.warning(f"  Bookmark build failed (non-fatal): {e}")
 
+    return _save_linked_pdf(doc, temp_path, out_path, log)
+
+
+def _save_linked_pdf(doc, temp_path, out_path, log):
+    """Save `doc` beside the original and replace it — the one tail every
+    write to a PDF goes out through, so the full link pass and the
+    OCR-change-only save on an already-linked file cannot save differently.
+    Closes `doc`. True on success."""
     try:
         # Undo PyMuPDF's annotation-naming splice: insert_link names each link
         # by str-replacing the FIRST "/Link" in the annot source with
@@ -38345,9 +38369,167 @@ def _acquire_folder_lock(folder, log):
         fh.close()
         return True                       # locking unsupported here: fail open
     _folder_lock_fh, _folder_lock_path = fh, path
+    _lock_note_pid(fh)
     import atexit
     atexit.register(_release_folder_lock, path)
     return True
+
+
+def _lock_note_pid(fh):
+    """Write this process's PID into the lock file it holds, so a later
+    `--takeover` can name the run to end. FROM BYTE 1: on Windows the lock IS
+    byte 0 (`msvcrt.locking` locks a range, and the holder's range is the one
+    byte), and another process reading a locked byte gets a PermissionError,
+    so the byte the lock lives on carries a placeholder and the PID sits after
+    it. The file is opened in append mode, so it is truncated first — a
+    crashed run's PID would otherwise still be in it. Best effort: a lock
+    whose PID could not be written is still a lock, and the takeover falls
+    back to finding the run by its command line."""
+    try:
+        fh.truncate(0)
+        fh.seek(0)
+        fh.write(b"\0" + f"pid={os.getpid()}\n".encode("ascii"))
+        fh.flush()
+    except Exception:
+        pass
+
+
+_LOCK_PID_RE = re.compile(rb"pid=(\d+)")
+
+
+def _lock_holder_pid(path):
+    """The PID written into `path` by the run holding it, or None (an older
+    build's lock, or a file this build could not write). Reads from byte 1
+    for the reason `_lock_note_pid` writes there; the LAST pid in the file
+    wins, since a holder that could truncate nothing appended after a dead
+    run's."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(1)
+            found = _LOCK_PID_RE.findall(f.read())
+    except OSError:
+        return None
+    return int(found[-1]) if found else None
+
+
+def _runs_of_folder(folder):
+    """PIDs of every OTHER PDF-Linker process whose command line names
+    `folder` — the fallback for a lock an older build wrote with no PID in
+    it, which is exactly the run in flight on the day this ships. Read off
+    the process table (`Get-CimInstance Win32_Process` on Windows, `ps`
+    elsewhere) and matched on the tool's own name AND the folder's resolved
+    path, case-folded as the lock key is: the launcher's cmd.exe names the
+    folder too but not `pdf_linker`, and this process names both and is
+    excluded by PID. Best effort — an empty list where the table cannot be
+    read, never an exception."""
+    import subprocess
+    want = os.path.normcase(str(Path(folder).resolve()))
+    try:
+        if os.name == "nt":
+            out = subprocess.run(
+                ["powershell", "-NoProfile", "-Command",
+                 "Get-CimInstance Win32_Process | ForEach-Object { "
+                 "'{0}\t{1}' -f $_.ProcessId, $_.CommandLine }"],
+                capture_output=True, text=True, timeout=60).stdout
+        elif os.path.isdir("/proc"):
+            # The kernel's own table, whole: `ps` cuts the command line at
+            # the terminal's width where there is no terminal to measure,
+            # and a folder path is exactly what falls off the end.
+            rows = []
+            for d in os.listdir("/proc"):
+                if not d.isdigit():
+                    continue
+                try:
+                    with open(f"/proc/{d}/cmdline", "rb") as f:
+                        raw = f.read()
+                except OSError:
+                    continue
+                rows.append(f"{d} " + raw.replace(b"\0", b" ")
+                            .decode("utf-8", "replace"))
+            out = "\n".join(rows)
+        else:
+            out = subprocess.run(["ps", "-e", "-ww", "-o", "pid=,args="],
+                                 capture_output=True, text=True,
+                                 timeout=60).stdout
+    except Exception:
+        return []
+    pids = []
+    for line in out.splitlines():
+        parts = line.strip().split(None, 1)
+        if len(parts) != 2 or not parts[0].isdigit():
+            continue
+        pid, cmd = int(parts[0]), parts[1]
+        if pid in (os.getpid(), os.getppid()):
+            continue        # this run, and the shell or launcher it came from
+        if "pdf_linker" not in cmd.lower():
+            continue
+        if want in os.path.normcase(cmd):
+            pids.append(pid)
+    return pids
+
+
+def _end_run(pid, log):
+    """End the run at `pid`, and its Tesseract children with it: `taskkill /T`
+    on Windows, a TERM then a KILL elsewhere. True once it is gone."""
+    import subprocess
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                           capture_output=True, timeout=60)
+            return True
+        import signal
+        os.kill(pid, signal.SIGTERM)
+        for _ in range(20):
+            time.sleep(0.25)
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                return True
+        os.kill(pid, signal.SIGKILL)
+        time.sleep(0.25)
+        return True
+    except ProcessLookupError:
+        return True
+    except Exception as e:
+        log.warning(f"  Could not end the run at PID {pid}: {e}")
+        return False
+
+
+def _take_over_folder(folder, log, wait=30.0):
+    """End the run holding `folder` and take its lock. The PID comes off the
+    lock file where this build wrote it, and off the process table where an
+    older build held the folder with no PID recorded. True once this process
+    holds the lock; False when nothing to end could be found, or the lock
+    was still held after `wait` seconds — in which case the caller exits as
+    it always has, rather than competing."""
+    pids = []
+    lock_pid = _lock_holder_pid(_folder_lock_file(folder))
+    if lock_pid and lock_pid != os.getpid():
+        pids.append(lock_pid)
+    for pid in _runs_of_folder(folder):
+        if pid not in pids:
+            pids.append(pid)
+    if not pids:
+        log.warning("--takeover: another run holds this folder but no PID "
+                    "could be found for it (the lock file names none and no "
+                    "process names this folder) — end it by hand and run "
+                    "again.")
+        return False
+    for pid in pids:
+        log.warning(f"--takeover: ending the run at PID {pid} that holds "
+                    f"this folder. What it had finished stays on disk; the "
+                    f"file it was on is redone.")
+        _end_run(pid, log)
+    deadline = time.monotonic() + wait
+    while True:
+        if _acquire_folder_lock(folder, log):
+            log.info("--takeover: this run now holds the folder.")
+            return True
+        if time.monotonic() >= deadline:
+            log.warning("--takeover: the folder is still locked after the "
+                        "run was ended — exiting rather than competing.")
+            return False
+        time.sleep(0.5)
 
 
 def _release_folder_lock(path):
@@ -38816,19 +38998,26 @@ def _rerun_launcher_spec(exe, script, provider, want_key, windows,
     # `defer_run = on` in the config. Without it, that setting would make every
     # double-click rewrite the launcher and exit — the deferral could never end,
     # and the folder would never be processed by any route the operator has.
+    # `--takeover` for the same reason: a double-click while a run is in
+    # flight is the operator asking for THIS run (a newer build, a corrected
+    # key), and the run it ends loses only the file it was on — every PDF it
+    # linked stays linked and is not re-linked (see `process_pdf`'s fast
+    # path). The cost of a stray second click is that one file and the
+    # pre-scan, which is what makes the trade affordable.
     app = None if frozen else script
     if windows:
         pre, prog = _launcher_resolve_bat(exe, app)
         key = ' --key "%~dp0pseudonym_key.xlsx"' if want_key else ""
         content = _bg_launcher_bat(
             title, notes,
-            f'{prog} "%~dp0." --provider {provider}{key} --no-defer',
+            f'{prog} "%~dp0." --provider {provider}{key} --no-defer --takeover',
             preamble=pre)
         return f"{stem}.bat", content, False
     pre, prog = _launcher_resolve_sh(exe, app)
     key = ' --key "$(dirname "$0")/pseudonym_key.xlsx"' if want_key else ""
     content = _bg_launcher_sh(
-        notes, f'{prog} "$(dirname "$0")" --provider {provider}{key} --no-defer',
+        notes, f'{prog} "$(dirname "$0")" --provider {provider}{key} '
+               f'--no-defer --takeover',
         preamble=pre)
     return f"{stem}.command", content, True
 
@@ -40299,6 +40488,14 @@ def main():
              "<folder>/pseudonym_key.xlsx).",
     )
     parser.add_argument(
+        "--takeover", action="store_true",
+        help="If another PDF-Linker run is already working in this folder, "
+             "end it and take over instead of exiting. What it had finished "
+             "is kept: a PDF it already linked is not re-linked, and its "
+             "exports are regenerated from the PDFs. The file it was on is "
+             "redone.",
+    )
+    parser.add_argument(
         "--first", action="store_true",
         help="Finish THIS folder soonest: the run keeps the machine's OCR "
              "cores and any other PDF-Linker run narrows to one core until "
@@ -40370,12 +40567,17 @@ def main():
     # One run per folder — see _acquire_folder_lock. A second double-click while
     # the first is still working is not a second run, it is two runs fighting
     # over the same files.
-    if not _acquire_folder_lock(folder, log):
+    # …unless this run was told to TAKE OVER (`--takeover`, which every
+    # launcher passes): the run in flight is ended, its finished work stays
+    # on disk, and this run picks the folder up — see `_take_over_folder`.
+    if not _acquire_folder_lock(folder, log) and not (
+            args.takeover and _take_over_folder(folder, log)):
         log.warning(
             "Another PDF-Linker run is already working in this folder — this "
             "one is exiting rather than competing with it (both would rewrite "
             "the same exports, key and PDFs). Watch pdf_linker.log; a "
-            '"DONE <time>.txt" file appears here when the first run finishes.')
+            '"DONE <time>.txt" file appears here when the first run finishes, '
+            "or run again with --takeover to end it and continue in its place.")
         sys.exit(0)
 
     # Resolve pseudonymization on/off: an explicit --pseudonymize /
