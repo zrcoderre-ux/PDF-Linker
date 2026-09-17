@@ -191,3 +191,86 @@ def test_a_box_with_a_picture_over_it_is_the_rasters(tmp_path, monkeypatch):
         assert render["text"].count("[X]") == 1
     finally:
         doc.close()
+
+
+# ── the CAPTION BOX: the template draws what a scan lost ─────────────────────
+
+def _no_line_art(marked=()):
+    """A recognised form page that draws NO line art of its own — the shape a
+    SCAN takes, its rules being ink in the picture where `_page_rules` reads
+    nothing — plus the one short underline that stopped `_page_art_rules`
+    reaching its raster fallback on the delivered petition."""
+    doc, page = _flattened(marked=marked)
+    page.draw_line(fitz.Point(120, 600), fitz.Point(180, 600), width=0.6)
+    return doc, page
+
+
+def test_a_scanned_form_draws_the_caption_box_from_its_template(tmp_path, monkeypatch):
+    """The user's report: page 1 came out with no caption box at all."""
+    from test_form_templates import RULES_H, RULES_V
+    _library(tmp_path, monkeypatch)
+    doc, page = _no_line_art(marked=(1,))
+    try:
+        own_v, own_h = P._page_rules(page, min_len=P._FORM_RULE_MIN)
+        assert not own_v            # the page draws the caption box nowhere
+        assert len(own_h) == 1      # ...only its one underline
+        _cw, (vert, horiz), _w = P._form_page_geometry(page)
+        # Every rule of the blank form is placed, and the page's own kept.
+        for x, _y0, _y1 in RULES_V:
+            assert any(abs(x - q) <= 1.5 for q, _a, _b in vert), x
+        for y, _x0, _x1 in RULES_H:
+            assert any(abs(y - q) <= 1.5 for q, _a, _b in horiz), y
+        assert any(abs(600 - q) <= 1.5 for q, _a, _b in horiz)
+        text = P._form_page_render(page)["text"]
+        assert "│" in text     # ...and the export draws the box
+        assert text.count("─") > 20
+    finally:
+        doc.close()
+
+
+def test_a_form_that_draws_its_own_rules_is_rendered_exactly_as_it_was(tmp_path, monkeypatch):
+    """A born-digital form draws every one of the template's rules itself, so
+    the template adds nothing and the export does not move."""
+    _library(tmp_path, monkeypatch)
+    from test_form_templates import RULES_H, RULES_V
+    doc, page = _flattened(marked=(1,))
+    try:
+        for x, y0, y1 in RULES_V:
+            page.draw_line(fitz.Point(x, y0), fitz.Point(x, y1), width=0.8)
+        for y, x0, x1 in RULES_H:
+            page.draw_line(fitz.Point(x0, y), fitz.Point(x1, y), width=0.8)
+        own = P._page_rules(page, min_len=P._FORM_RULE_MIN)
+        _cw, laid, _w = P._form_page_geometry(page)
+        assert len(laid[0]) == len(own[0]) and len(laid[1]) == len(own[1])
+        for (a, b, c), (d, e, f) in zip(laid[0] + laid[1], own[0] + own[1]):
+            assert abs(a - d) < 0.6 and abs(b - e) < 0.6 and abs(c - f) < 0.6
+    finally:
+        doc.close()
+
+
+def test_the_page_keeps_a_rule_the_template_does_not_name(tmp_path, monkeypatch):
+    """A rule the FILER drew — a stamp's frame, a table typed into an
+    attachment — is the page's own and is never dropped for the template's."""
+    _library(tmp_path, monkeypatch)
+    doc, page = _no_line_art()
+    try:
+        page.draw_line(fitz.Point(450, 620), fitz.Point(450, 700), width=0.8)
+        _cw, (vert, _h), _w = P._form_page_geometry(page)
+        kept = [r for r in vert if abs(r[0] - 450) <= 1.5]
+        assert kept and kept[0][1] > 600
+    finally:
+        doc.close()
+
+
+def test_a_page_the_library_does_not_recognise_draws_only_its_own(tmp_path, monkeypatch):
+    """No template, no rules laid: the one safety of taking line art from a
+    blank form is that the recognition has to pass first."""
+    monkeypatch.setattr(P, "_TEMPLATE_CACHE", {})
+    monkeypatch.setenv("PDF_LINKER_FORM_TEMPLATES", str(tmp_path / "none"))
+    doc, page = _no_line_art(marked=(1,))
+    try:
+        assert P._template_recognise(page, P._page_text_spans(page)) is None
+        _cw, (vert, horiz), _w = P._form_page_geometry(page)
+        assert not vert and len(horiz) == 1
+    finally:
+        doc.close()

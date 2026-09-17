@@ -5401,9 +5401,14 @@ def _template_index_page(page, source):
     words = _template_page_words(page, rects)
     if len(words) < _TEMPLATE_MIN_MATCHED:
         return None
+    try:
+        rules = _page_rules(page, min_len=_FORM_RULE_MIN)
+    except Exception:
+        rules = ((), ())
     return {"form": form_no, "form_key": _template_form_key(form_no),
             "revision": _template_revision(page), "words": words,
             "widgets": rects, "boxes": boxes, "fields": fields,
+            "rules": rules,
             "source": f"{source}#{page.number + 1}",
             "width": float(page.rect.width), "height": float(page.rect.height)}
 
@@ -5738,6 +5743,50 @@ def _note_template_page(page, form, labels=None, boxes=None):
     except Exception:
         pass
     return False
+
+
+def _template_rules(tpl, fit, rules):
+    """`rules` — the page's own (vertical, horizontal), in `_page_rules`'
+    shape — with the TEMPLATE's line art laid in under `fit`.
+
+    A form's rules are predetermined exactly as its labels and its checkbox
+    positions are: the caption box, its "FOR COURT USE ONLY" divider and the
+    section rules are the same lines on every copy of that form ever filed.
+    A SCAN loses every one of them — they are ink in the picture, where
+    `_page_rules` reads nothing — and `_page_art_rules`' raster fallback runs
+    only on a page that draws NO line art at all, so a scanned MC-350EX
+    carrying one rule of its own (the underline under a statutory cite in
+    the notice paragraph) never reached it: page 1 exported with its caption
+    as a bare list of labels beside a page of ruled boxes, on the page a
+    reader starts from, while pages 2 and 3 of the same filing drew their
+    boxes in full. The blank form in the library says where every rule is,
+    and under the same fit that places the boxes they are placed too.
+
+    The template's rule WINS where the two describe one line — the same
+    position, extents overlapping — because the template's is the form's own
+    statement of that line's extent while the page's is whatever a scan's
+    vector layer happened to keep of it; the page's own rule is kept
+    wherever the template names none, since that one is what the FILER drew
+    (a stamp's frame, a table typed into an attachment) and nothing the page
+    draws is this tool's to drop. A born-digital form draws every one of the
+    template's rules at its own position and is therefore rendered exactly
+    as it was."""
+    sx, sy, tx, ty = fit
+    t_vert, t_horiz = tpl.get("rules") or ((), ())
+    p_vert, p_horiz = rules or ((), ())
+
+    def lay(theirs, ours, pos_s, pos_t, ext_s, ext_t):
+        out = [(pos_s * pos + pos_t, ext_s * a + ext_t, ext_s * b + ext_t)
+               for pos, a, b in theirs]
+        for pos, a, b in ours:
+            if any(abs(pos - q) <= _RULE_MERGE_TOL and a < qb and b > qa
+                   for q, qa, qb in out):
+                continue                 # the same printed line, said better
+            out.append((pos, a, b))
+        return _merge_rules(out)
+
+    return (lay(t_vert, p_vert, sx, tx, sy, ty),
+            lay(t_horiz, p_horiz, sy, ty, sx, tx))
 
 
 def _template_box_cells(page, spans, bbs, tpl, fit, all_rects):
@@ -30202,10 +30251,13 @@ def _form_layout(cells, char_w=None, rules=None, page_w=None):
     return [t.rstrip() for t in _rule_lines_text(spaced, left, cw, max_col)[1]]
 
 
-def _form_page_geometry(page):
+def _form_page_geometry(page, spans=None):
     """(grid unit, rules, page width) for `_form_layout` on `page`: the unit
     measured off the page's spans as every other renderer measures it, and
-    the page's line art read by `_page_rules`."""
+    the page's line art read by `_page_rules` — with the TEMPLATE's own rules
+    laid in where the page is recognised as a form in the library
+    (`_template_rules`), which is the only thing that draws the caption box of
+    a SCANNED form."""
     try:
         cw = _spans_char_width(_page_text_spans(page), default=_FORM_CHAR_W)
     except Exception:
@@ -30217,6 +30269,20 @@ def _form_page_geometry(page):
         rules = _page_art_rules(page, min_len=_FORM_RULE_MIN)
     except Exception:
         rules = ((), ())
+    try:
+        # The recognition is memoised per page, and the ink pass has asked
+        # for it already on every page that reaches this by that route — so
+        # the spans are read here only for a widget form, and the refusal
+        # memo is shared because the pipeline is the ink pass's own.
+        have = spans
+        if have is None:
+            have = _margin_sideways_dropped(
+                _drop_overdrawn_spans(_page_text_spans(page), page))
+        got = _template_recognise(page, have)
+        if got is not None:
+            rules = _template_rules(got[0], got[1], rules)
+    except Exception:
+        pass
     try:
         page_w = float(page.rect.width)
     except Exception:

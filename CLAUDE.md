@@ -4299,6 +4299,38 @@ extraction, which is what keeps the numbering.
   a POS-040(P) with values typed into their fields: every named field
   read, the attorney, both parties and the persons served registered, the
   county and the address not.
+  **…and it says WHERE EVERY RULE IS, which is the only thing that draws a
+  SCANNED form's caption box** (`_template_rules`, the `rules` key of
+  `_template_index_page`, read by `_form_page_geometry`). The index carried
+  the form id, the revision, every label word with its box, the widget rects,
+  the checkbox rects and the classified fields — and not the LINE ART, though
+  a form's rules are as predetermined as its labels: the caption box, its
+  "FOR COURT USE ONLY" divider and the section rules are the same lines on
+  every copy of that form ever filed. A scan keeps none of them. They are ink
+  in the picture, where `_page_rules` reads nothing, and `_page_art_rules`'
+  raster fallback runs only on a page that draws NO line art at all — so a
+  scanned MC-350EX carrying one rule of its own (the underline under a
+  statutory cite in the notice paragraph) never reached it, and page 1
+  exported with its caption as a bare list of labels beside a page of ruled
+  boxes, on the page a reader starts from, while pages 2 and 3 of the same
+  filing drew their boxes in full. Under the same fit that places the boxes
+  the template's rules are placed too, at every renderer of a form page since
+  `_form_page_geometry` is the one place the rules are read for one. The
+  template's rule WINS where the two describe ONE line — the same position,
+  extents overlapping — because the template's is the form's own statement of
+  that line's extent while the page's is whatever a scan's vector layer
+  happened to keep of it; the page's own rule is kept wherever the template
+  names none, since that one is what the FILER drew (a stamp's frame, a table
+  typed into an attachment) and nothing the page draws is this tool's to
+  drop. So a born-digital form, which draws every one of the template's rules
+  at its own position, is rendered exactly as it was — verified on the
+  committed blank, whose seven pages come back bar for bar and dash for dash.
+  The safety is the recognition's own: no template, no rules laid, and the
+  worst case of a wrong one is a bar drawn in the wrong column of a text
+  export, where a wrong LABEL restoration would put another form's words in
+  this one. Residual, and stated: a rule the scan's own vector layer kept a
+  FRAGMENT of at a position the template also names is replaced by the
+  template's full extent, which is the direction this chooses on purpose.
   **A form id has a LETTER suffix, and a scan misreads the id itself.**
   `_PN_FORM_ID_RE` admits `POS-040(P)` and `POS-040(D)` whole, where it
   took `(1)` only, so the two attachments to a proof of service are two
