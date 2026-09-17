@@ -6497,6 +6497,28 @@ def _sidebar_image_rect(rect, line_col):
 # arm of `_page_margin_images` stands on; a gutter needs no shape test, being
 # itself the page's own statement that this is pleading paper.
 _SIDEBAR_IMG_ASPECT = 1.5
+# ...and it stands in the OUTER margin — a binding margin, not the body. What
+# this bounds is the band-relative edge below: text standing to the RIGHT of a
+# picture makes that picture "wholly left of the text beside it" wherever it
+# sits, and a margin is the only place that may mean anything.
+_SIDEBAR_IMG_MARGIN = 72.0
+
+
+def _margin_text_edge(boxes, y0, y1):
+    """The left edge of the text standing BESIDE a thing spanning `y0`..`y1` —
+    the leftmost x0 of `boxes` whose own band overlaps it — or None where
+    nothing does.
+
+    Measured in the thing's OWN band, because a margin is what a picture
+    stands beside and not what stands above it. A delivered MC-350EX settled
+    this: its e-filing stamp runs up the left margin at x 13-25, the form's
+    own text beside it begins at x 35, and the Docusign envelope header
+    across the TOP of the page opens at x 17 — so the leftmost text on the
+    page was that header, the edge came out at 17, and the stamp was never
+    outside it. Asked of the stamp's own band the header is not in reach and
+    the edge is the form's 35, which is what the eye reads as the margin."""
+    xs = [b[0] for b in boxes if b[1] < y1 and b[3] > y0]
+    return min(xs) if xs else None
 
 
 def _page_margin_images(page, rects, spans=None):
@@ -6524,14 +6546,17 @@ def _page_margin_images(page, rects, spans=None):
     reading is not the document's, and no renderer should have to drop it
     again.
 
-    With no gutter the edge is the page's own leftmost UPRIGHT text — the rule
-    `_margin_sideways_dropped` already measures a margin by — and the picture
-    must also be SHAPED like a margin stamp and stand BESIDE the text rather
-    than above it. Each guard keeps something real: a letterhead logo is
-    square or wider than tall, and a stamp pasted above the first line of text
-    is inside the text's own x range to begin with. Residual, and stated: a
-    label a filing really printed sideways in its left margin goes unread with
-    the stamp, exactly as it goes unexported on a pleading page."""
+    With no gutter the picture must clear three guards. It stands in the OUTER
+    margin (`_SIDEBAR_IMG_MARGIN`), so nothing in the body is ever in reach.
+    It is SHAPED like a margin stamp — taller than wide, a rotated line of
+    8 pt type being 12-15 pt across and hundreds long, where a letterhead logo
+    is square or wider. And it ends left of the text standing BESIDE it, in
+    its own band (`_margin_text_edge`) rather than anywhere on the page: the
+    delivered MC-350EX is why, its Docusign envelope header opening at x 17
+    across the top while the stamp it was measured against runs from x 13 to
+    25 with the form's own text at x 35. Residual, and stated: a label a
+    filing really printed sideways in its left margin goes unread with the
+    stamp, exactly as it goes unexported on a pleading page."""
     if not rects:
         return []
     try:
@@ -6550,23 +6575,27 @@ def _page_margin_images(page, rects, spans=None):
         seen = [sp["bbox"] for sp in have
                 if not _span_is_sideways(sp) and not _span_is_invisible_reading(sp)]
         upright = seen or upright
+        edge = page.rect.x0 + _SIDEBAR_IMG_MARGIN
     except Exception:
         return []
     if not upright:
         return []                # a page that is all picture is not a margin
-    # The tolerance runs the CONSERVATIVE way here, unlike `_sidebar_spans`'
-    # own use of it: there it widens the margin (slack in favour of calling a
-    # span furniture, which costs one line of an export), where this decides
-    # whether to DISCARD a reading altogether, and a picture wrongly refused
-    # is real words nothing recovers. So a picture must stand CLEARLY left of
-    # the page's own text.
-    left = min(b[0] for b in upright) - _SIDEBAR_GUTTER_TOL
-    top = min(b[1] for b in upright)
-    bot = max(b[3] for b in upright)
-    return [r for r in rects
-            if r.x1 <= left
-            and r.y1 - r.y0 > (r.x1 - r.x0) * _SIDEBAR_IMG_ASPECT
-            and not (r.y1 < top or r.y0 > bot)]
+    out = []
+    for r in rects:
+        if r.x1 > edge:
+            continue             # in the body, whatever stands beside it
+        if r.y1 - r.y0 <= (r.x1 - r.x0) * _SIDEBAR_IMG_ASPECT:
+            continue             # a logo is square or wider than tall
+        beside = _margin_text_edge(upright, r.y0, r.y1)
+        # The tolerance runs as `_sidebar_spans`' own does — a thing ending
+        # just inside the text edge is still margin furniture. It ran the
+        # other way while the edge was the whole page's leftmost text, where
+        # slack could only widen an already-loose reference; measured against
+        # the text this picture actually stands beside, one point decided the
+        # delivered stamp (ink to x 24.5, a padded rect further, text at 35.5).
+        if beside is not None and r.x1 <= beside + _SIDEBAR_GUTTER_TOL:
+            out.append(r)
+    return out
 
 
 def _pair_stacked_rows(stacks, tol):
