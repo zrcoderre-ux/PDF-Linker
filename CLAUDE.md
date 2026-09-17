@@ -5801,7 +5801,7 @@ survive to fail.
   more. Two things ride with it. The mark and the layer repair are both
   writes to the PDF that the region count never reported, and on a PDF
   ALREADY LINKED the fast path in `process_pdf` closes the file unsaved
-  unless OCR says it changed something — so the repair was made, logged,
+  unless an OCR pass reported a change — so the repair was made, logged,
   and lost, and the same words were corrected again on the next run. The
   pass now records that it TOUCHED the file whatever it kept, and
   `process_pdf` saves on that (`test_image_ocr_mark.py` pins the check on
@@ -6506,6 +6506,63 @@ new file passes by construction — leaves it alone.
   scan (3 ms a row against 0.1 ms). The profiled file went from 276 s to
   65 s with the same output; what remains is the citation parse per page and
   the fuzzy sweep, which are the next two.
+- **A term is screened on EVERY word, and a whole-export scan is run CHUNK
+  by CHUNK** (`_pn_term_words`, `_pn_words_in`, `_words_present`,
+  `_pn_words_index`, `_scan_plan`, `_scan_matches`, `_PN_CHUNK_SCAN`,
+  `_PN_SCAN_CHUNK`, `_PN_SCAN_OVERLAP`, `_PN_SCAN_MAX_REAL`,
+  `_PN_SCAN_MAX_WORDS`, `_PN_SCAN_LONG_WS_RE`). The lead-word screen above
+  let a term through on its FIRST word, and a case has a hundred parties
+  sharing twenty given names, each with its near-miss spellings minted
+  beside it — so on a page that said "Maria" once, every person term
+  opening on Maria, and every variant of one, ran its whole pattern over the
+  whole text. And the leak block runs its cures and scans over the WHOLE
+  EXPORT — the column copy, both survivor passes, the keep pass — where
+  "does the word stand anywhere in the text" is true of every party the
+  case has: a delivered 2,043-page evidence file spent 79 minutes in that
+  block, 1,365 s in the survivor scan and 1,356 s in the survivor cure,
+  583 s in the column copy, and 19 of the survivor scan's seconds on a
+  485 KB synthetic were the KEEP pass — a thousand master-sheet values,
+  each scanned over the whole text whether or not one of its words was
+  there. Two exact cuts. The screen asks about every letter run of the real
+  (`register_short_names` had already found this): a term matches its words
+  VERBATIM joined on whitespace, so every run of the real stands in the
+  text as a run — or as the pieces `_lead_words` indexes joined, or the glue
+  tail — and `_PN_LEAD_WORD_RE` reads letters only on both sides, so the
+  apostrophe class and the affixes cost nothing. A keep value's plainer
+  pattern is screened the same way, in `_keep_spans` and for the phrase
+  punch. And a scan of a text longer than a page walks it in chunks of
+  `_PN_SCAN_CHUNK` characters cut at a newline, each with a window reaching
+  `_PN_SCAN_OVERLAP` further, and runs a pattern over a chunk only where the
+  window carries every word of it: measured, the same 1,513 matches of
+  1,043 document-screened terms cost 25.7 s whole and 0.3 s chunked, because
+  a page carries a dozen of the case's names and the document a thousand.
+  It yields EXACTLY what `finditer` over the whole text yields, in order, on
+  four facts: `finditer(text, pos, endpos)` sees the characters BEFORE
+  `pos`, so a lookbehind at a chunk cut reads what it always read (pinned in
+  `test_the_regex_facts_the_chunked_scan_rests_on`); a match starting in a
+  chunk has the whole window as its right context, and one reaching the
+  window's end — where `endpos` lets a lookahead see nothing — is not
+  trusted, the rest of the text being scanned whole from there; a match can
+  reach PAST the window only by spanning more than the overlap, and a
+  term's own text is bounded (`_PN_SCAN_MAX_REAL`, `_PN_SCAN_MAX_WORDS`,
+  else scanned whole), so such a match holds a whitespace run of at least
+  `_PN_SCAN_LONG_WS_RE` inside the window and a window carrying one is
+  scanned whole; and `finditer` is non-overlapping, so each chunk's search
+  starts at the later of its own start and the last match's end. The
+  survivor scan's lazy stop is untouched — the generator is consumed
+  chunk by chunk and stops at the first survivor. Measured on a 485 KB
+  synthetic export with 12,136 terms and 1,000 keeps: the scrub
+  **100 s -> 8 s**, the survivor scan **15.3 s -> 4.2 s**, of which the
+  citation parse is now 3.0 — the next thing on this path, since every text
+  the cures rewrite is parsed again. Both cuts are pinned differentially
+  (`test_scan_prefilter_equivalence.py`: the screen through
+  `_PN_LEAD_PREFILTER`, the chunked scan through `_PN_CHUNK_SCAN` with the
+  constants shrunk so a page of text is dozens of chunks and every boundary
+  shape — a name wrapped across a cut, a gutter seam at one, a glued word,
+  a long whitespace run, abutting matches — is met), over the candidates,
+  the keep spans, the survivors and the scrubbed output alike. A speed-up
+  that changed one answer would be a scrub that faked less or a scan that
+  reported less, which is the one trade this project never makes for time.
 - **The PRE-SCAN's corpus-wide block is the OTHER long silence, and it now
   names its stages** (`_pn_prescan_folder`). The file loop names each document
   before it opens it, so a folder being READ is legible. What follows it was

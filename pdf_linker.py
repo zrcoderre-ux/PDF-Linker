@@ -16600,10 +16600,111 @@ def _pn_term_lead(real, category):
     return m.group(0).lower() if m else None
 
 
+def _pn_term_words(real, category):
+    """EVERY letter run of `real`, lower-cased, as a tuple — the key a text is
+    screened on before the term's own pattern runs — or None for a term the
+    screen must never skip. `_pn_term_lead` one word further, and for the
+    same reason it is exact: a term matches its words VERBATIM (the pattern
+    escapes each one), joined on whitespace, so wherever the pattern can
+    match, every letter run of the real stands in the text as a run of its
+    own — or, for a break-tolerant name, as adjacent pieces `_lead_words`
+    also indexes joined, and for the first word under `glue_left`, as the
+    capitalised tail `_lead_words` indexes too. The apostrophe class and the
+    affixes change nothing: `_PN_LEAD_WORD_RE` reads letters only, on both
+    sides, so "O'Brien" and "O’Brien" are the same two runs.
+
+    Why the FIRST word was not enough. The lead screen let a term through
+    on its given name, and a case has a hundred parties who share twenty
+    given names, each with its near-miss spellings minted beside it, so on
+    a page of prose that says "Maria" once every person term opening on
+    Maria — and every variant of one — ran its whole pattern over the whole
+    page. Measured on a 485 KB export with 12,136 terms: the scrub 100 s,
+    and the survivor scan's keep pass 11 s of its 15, every KEEP value on
+    the master sheet being scanned over the whole text whether or not one
+    of its words was there. A name is several words and a rare one refuses
+    it, which is what `register_short_names` had already found."""
+    if category not in _PN_LEAD_CATS:
+        return None
+    ws = tuple(w.lower() for w in _PN_LEAD_WORD_RE.findall(str(real)))
+    return ws or None
+
+
+def _pn_words_in(words, ws):
+    """True when every run of `words` stands in the text whose runs `ws` are —
+    or when there is nothing to screen on (`words` is None)."""
+    if words is None:
+        return True
+    for w in words:
+        if w not in ws:
+            return False
+    return True
+
+
+# ── A whole-export scan is run CHUNK by CHUNK, each chunk screened on its
+# own words ─────────────────────────────────────────────────────────────────
+# The all-words screen above asks whether a term's words stand ANYWHERE in the
+# text it is about to scan, and for a whole export the answer is yes for
+# every party the case has: measured on a 485 KB body with 12,136 terms, 1,043
+# passed the document-wide screen and their patterns then cost 25.7 s over
+# the whole text, where the same 1,513 matches cost 0.3 s scanned page by
+# page with a per-page screen — a page carries a dozen of the case's names,
+# the document carries a thousand. The leak block runs its cures and scans
+# over the whole export (the column copy, both survivor passes, the keep
+# pass), so on a delivered 2,043-page evidence file each of them was that
+# document-wide scan: 79 minutes of leak block on one file.
+#
+# So `_scan_matches` walks the text in chunks of `_PN_SCAN_CHUNK` characters
+# (cut at a newline), each with a WINDOW reaching `_PN_SCAN_OVERLAP` further,
+# and runs a pattern over a chunk only where every word of its real stands in
+# the window. It yields EXACTLY the matches `finditer` over the whole text
+# yields, in the same order, and that rests on four things. `finditer(text,
+# pos, endpos)` sees the characters BEFORE `pos`, so a lookbehind at a chunk
+# boundary reads what it would have read (measured, and pinned); a match
+# starting in a chunk is searched for with the whole window as its right
+# context, and one that reaches the window's END — where `endpos` would have
+# let a lookahead see nothing — is not trusted: the pattern is re-run over the
+# rest of the text from there, whole. A match can extend PAST the window only
+# by spanning more than `_PN_SCAN_OVERLAP` characters, and a term's own text
+# is bounded (`_PN_SCAN_MAX_REAL` characters, `_PN_SCAN_MAX_WORDS` words,
+# else it is scanned whole), so such a match holds a run of whitespace at
+# least `_PN_SCAN_LONG_WS_RE` long inside the window: a window carrying one is
+# scanned whole. And `finditer` is non-overlapping — it resumes where the last
+# match ended — so each chunk's search starts at the later of its own start
+# and the last match's end, never yielding a match the whole scan would have
+# stepped over. `test_scan_prefilter_equivalence.py` pins all of it against
+# the unchunked scan, through `_PN_CHUNK_SCAN`, with the constants shrunk so
+# every boundary case is exercised on a page of text.
+_PN_CHUNK_SCAN = True
+_PN_SCAN_CHUNK = 3000
+_PN_SCAN_OVERLAP = 4000
+_PN_SCAN_MAX_REAL = 400
+_PN_SCAN_MAX_WORDS = 30
+# With the bounds above, a match longer than the overlap carries at least
+# (4000 - 400 - 30*6) / 30 > 100 characters of whitespace in ONE run.
+_PN_SCAN_LONG_WS_RE = re.compile(r"\s{100,}")
+
+
+def _pn_words_index(text):
+    """The words of `text`, lower-cased, every adjacent run of up to
+    `_PN_WORD_BREAK_MAX` + 1 of them joined, and the capitalised tail of a
+    word glued behind a lower-case run — the set a term's words are looked
+    up in. Pure; `Pseudonymizer._lead_words` is the memoised form."""
+    raw = _PN_LEAD_WORD_RE.findall(text)
+    words = [w.lower() for w in raw]
+    ws = set(words)
+    for n in range(2, _PN_WORD_BREAK_MAX + 2):
+        ws.update("".join(words[i:i + n]) for i in range(len(words) - n + 1))
+    for w in raw:
+        m = _PN_LEAD_GLUE_RE.search(w)
+        if m:
+            ws.add(m.group(1).lower())
+    return ws
+
+
 class _PnTerm:
     __slots__ = ("category", "real", "fake", "pattern", "flags", "priority",
                  "source", "whole_word", "count", "loaded", "derived",
-                 "cap_only", "lead", "ocr_fix")
+                 "cap_only", "lead", "words", "ocr_fix")
 
     def __init__(self, category, real, fake, *, whole_word, case_sensitive,
                  priority, source, derived=False, follow=None):
@@ -16634,6 +16735,7 @@ class _PnTerm:
         # occurrence — see `_pn_term_is_cap_only`.
         self.cap_only = _pn_term_is_cap_only(category)
         self.lead = None if follow else _pn_term_lead(real, category)
+        self.words = None if follow else _pn_term_words(real, category)
 
 
 # ── Spreadsheet key (the E-Court order-template export) ──────────────────────
@@ -20974,6 +21076,7 @@ class Pseudonymizer:
                 "derived": getattr(t, "derived", False),
                 "ocr_fix": getattr(t, "ocr_fix", False),
                 "lead": getattr(t, "lead", None),
+                "words": getattr(t, "words", None),
                 "cap_only": _pn_term_is_cap_only(t.category)}
         # Real values pre-bound from a reused key: authoritative, so the
         # citation-only prune must never drop one (a party that happens to
@@ -21067,6 +21170,7 @@ class Pseudonymizer:
                 "derived": getattr(t, "derived", False),
                 "ocr_fix": getattr(t, "ocr_fix", False),
                 "lead": getattr(t, "lead", None),
+                "words": getattr(t, "words", None),
                 "cap_only": _pn_term_is_cap_only(t.category)}
             added = True
         if added:
@@ -22721,28 +22825,82 @@ class Pseudonymizer:
         for k, ws in memo:
             if k is text or k == text:
                 return ws
-        raw = _PN_LEAD_WORD_RE.findall(text)
-        words = [w.lower() for w in raw]
-        ws = set(words)
         # Every adjacent RUN of up to `_PN_WORD_BREAK_MAX` + 1 pieces, joined.
         # Pairs alone were exact while a name could come apart only ONCE; a
         # scan breaks a small-type word as often as it likes ("Cas tel lano",
         # "Cas tel la no"), and the pieces the tokeniser yields join to the word
         # the term is looking for only when the whole run is indexed. Skip one
         # of these and the prefilter silently drops the term — the pattern
-        # still tolerates the break and is never asked.
-        for n in range(2, _PN_WORD_BREAK_MAX + 2):
-            ws.update("".join(words[i:i + n])
-                      for i in range(len(words) - n + 1))
-        # …and the capitalised tail of a word glued behind a lower-case run
-        # ("ofQUILLMARK" -> "quillmark"), the shape `glue_left` admits.
-        for w in raw:
-            m = _PN_LEAD_GLUE_RE.search(w)
-            if m:
-                ws.add(m.group(1).lower())
+        # still tolerates the break and is never asked. And the capitalised
+        # tail of a word glued behind a lower-case run ("ofQUILLMARK" ->
+        # "quillmark"), the shape `glue_left` admits. See `_pn_words_index`.
+        ws = _pn_words_index(text)
         memo.insert(0, (text, ws))
         del memo[2:]
         return ws
+
+    def _scan_plan(self, text):
+        """The chunks `_scan_matches` walks `text` in: `(start, end, wend,
+        words, unsafe)` per chunk — its span, the end of its window, the
+        window's word index, and whether a match starting in it could reach
+        past the window (a long whitespace run inside), in which case the
+        chunk is scanned whole. Memoised two deep on the text, like every
+        other per-text index here, since the passes alternate between the
+        export body and its column-ordered twin."""
+        memo = getattr(self, "_scan_plan_memo", None)
+        if memo is None:
+            memo = self._scan_plan_memo = []
+        for k, plan in memo:
+            if k is text or k == text:
+                return plan
+        n = len(text)
+        plan = []
+        start = 0
+        while start < n:
+            end = min(n, start + _PN_SCAN_CHUNK)
+            if end < n:
+                nl = text.find("\n", end)
+                end = n if nl < 0 else nl + 1
+            wend = min(n, end + _PN_SCAN_OVERLAP)
+            window = text[start:wend]
+            unsafe = wend < n and bool(_PN_SCAN_LONG_WS_RE.search(window))
+            plan.append((start, end, wend, _pn_words_index(window), unsafe))
+            start = end
+        memo.insert(0, (text, plan))
+        del memo[2:]
+        return plan
+
+    def _scan_matches(self, text, rx, words, real):
+        """Every match of `rx` in `text`, in order — what `rx.finditer(text)`
+        yields — found chunk by chunk where the term's `words` allow it. See
+        the note above `_PN_CHUNK_SCAN` for why this is exact."""
+        if (not _PN_CHUNK_SCAN or words is None or len(real) > _PN_SCAN_MAX_REAL
+                or len(real.split()) > _PN_SCAN_MAX_WORDS):
+            yield from rx.finditer(text)
+            return
+        n = len(text)
+        last_end = 0
+        for start, end, wend, ws, unsafe in self._scan_plan(text):
+            if last_end >= end:
+                continue              # the last match already covers this chunk
+            if not _pn_words_in(words, ws):
+                continue
+            pos = max(start, last_end)
+            if unsafe:
+                yield from rx.finditer(text, pos)
+                return
+            for m in rx.finditer(text, pos, wend):
+                if m.start() >= end:
+                    break
+                if m.end() >= wend and wend < n:
+                    # The match reaches the window's end, where `endpos` let a
+                    # lookahead see nothing: not trusted. The rest of the text
+                    # is scanned whole from here, which finds this match again
+                    # with its true right context, or does not.
+                    yield from rx.finditer(text, m.start())
+                    return
+                yield m
+                last_end = m.end()
 
     def _leads_present(self, text, items, lead_of):
         """`items` whose lead word (`lead_of(item)`) stands in `text` — or
@@ -22756,6 +22914,19 @@ class Pseudonymizer:
             return list(items)
         ws = self._lead_words(text)
         return [it for it in items if (lead_of(it) is None or lead_of(it) in ws)]
+
+    def _words_present(self, text, items, words_of):
+        """`items` every one of whose words (`words_of(item)`, the tuple
+        `_pn_term_words` builds) stands in `text` — or that have no words and
+        are always scanned. `_leads_present` asked about the FIRST word; this
+        asks about all of them, through the same page index, and is exact by
+        the same argument taken one word further (see `_pn_term_words`).
+        Off when `_PN_LEAD_PREFILTER` is False, which the equivalence tests
+        use to obtain the unscreened reference."""
+        if not _PN_LEAD_PREFILTER:
+            return list(items)
+        ws = self._lead_words(text)
+        return [it for it in items if _pn_words_in(words_of(it), ws)]
 
     def _corpus_lead_words(self, text):
         """`_lead_words` for a CORPUS-WIDE pass: the distinct words of `text`
@@ -22825,8 +22996,9 @@ class Pseudonymizer:
 
     def _term_cands(self, text):
         out = []
-        for t in self._leads_present(text, self.terms, lambda t: t.lead):
-            for m in self._compiled(t.pattern, t.flags).finditer(text):
+        for t in self._words_present(text, self.terms, lambda t: t.words):
+            for m in self._scan_matches(text, self._compiled(t.pattern, t.flags),
+                                        t.words, str(t.real)):
                 if m.start() == m.end():
                     continue
                 # A bare word split out of a longer name is the party only where
@@ -23407,10 +23579,11 @@ class Pseudonymizer:
             return hit
         # Spans of full party-name matches, which override EITHER kind of keep.
         party = []
-        for t in self._leads_present(text, self.terms, lambda t: t.lead):
+        for t in self._words_present(text, self.terms, lambda t: t.words):
             if t.category not in _PN_PARTY_OVERRIDE_CATS:
                 continue
-            for m in self._compiled(t.pattern, t.flags).finditer(text):
+            for m in self._scan_matches(text, self._compiled(t.pattern, t.flags),
+                                        t.words, str(t.real)):
                 if m.start() != m.end():
                     party.append((m.start(), m.end()))
         party = _PnSpanIndex(party)
@@ -23423,9 +23596,25 @@ class Pseudonymizer:
 
         spans = []
 
+        # A keep's pattern is `_pn_build_pattern(v, whole_word=True)` — its
+        # words verbatim, joined on whitespace, no break tolerance and no
+        # glue — so a value one of whose letter runs stands nowhere in the
+        # text matches nowhere, and its scan is skipped (`_pn_term_words`'
+        # argument, on a plainer pattern). A master sheet holds a thousand
+        # keeps, and every one of them was scanned over the whole export on
+        # every call of this: 11 of the survivor scan's 15 seconds on a 485 KB
+        # body, and this is asked of every text the leak block rewrites.
+        page_ws = self._lead_words(text) if _PN_LEAD_PREFILTER else None
+
+        def _runs(v):
+            return tuple(w.lower() for w in _PN_LEAD_WORD_RE.findall(str(v))) or None
+
+        def _present(v):
+            return page_ws is None or _pn_words_in(_runs(v), page_ws)
+
         def collect(values, soft, party_wins=True, party_wider_only=False):
             for v in sorted(values, key=len, reverse=True):
-                if not v:
+                if not v or not _present(v):
                     continue
                 # The name-run release only makes sense for a single-word keep
                 # (a `no` on one word); a multi-word phrase or a structured value
@@ -23445,7 +23634,7 @@ class Pseudonymizer:
                 # worksheet row to say so (kept values are suppressed there).
                 keep_rx = self._compiled(_pn_build_pattern(v, whole_word=True),
                                          re.IGNORECASE)
-                for m in keep_rx.finditer(text):
+                for m in self._scan_matches(text, keep_rx, _runs(v), str(v)):
                     s, e = m.span()
                     if s == e or (party_wins and in_party(s, e, party_wider_only)):
                         continue      # a full party match here — party fakes it
@@ -23484,9 +23673,12 @@ class Pseudonymizer:
         if spans and phrase_texts:
             holes = []
             for ph in phrase_texts:
+                if not _present(ph):
+                    continue
                 rx = self._compiled(_pn_build_pattern(ph, whole_word=True),
                                     re.IGNORECASE)
-                holes.extend(m.span() for m in rx.finditer(text)
+                holes.extend(m.span() for m in
+                             self._scan_matches(text, rx, _runs(ph), str(ph))
                              if m.start() != m.end())
             if holes:
                 spans = _pn_punch_spans(spans, holes)
@@ -24041,15 +24233,17 @@ class Pseudonymizer:
                             + self._whitelisted_url_spans(guard_body)
                             + self._form_id_spans(guard_body))
         out = []
-        for rec in self._leads_present(text, self.records.values(),
-                                       lambda r: r.get("lead")):
+        for rec in self._words_present(text, self.records.values(),
+                                       lambda r: r.get("words")):
             if nuclear and str(rec["real"]).lower() in nuclear:
                 continue
             if (kept and rec["category"] not in _PN_PARTY_OVERRIDE_CATS
                     and str(rec["real"]).lower() in kept):
                 continue
             try:
-                ms = self._compiled(rec["pattern"], rec["flags"]).finditer(text)
+                ms = self._scan_matches(
+                    text, self._compiled(rec["pattern"], rec["flags"]),
+                    rec.get("words"), str(rec["real"]))
             except re.error:
                 continue
             # MIRROR `_substitute`. A name-shaped value standing in a citation-
@@ -31029,6 +31223,7 @@ def _pn_apply_weld_follows(terms, follows, log=None):
             glue_left=(t.category in ("person", "entity")
                        and len(str(t.real).split()) >= 2))
         t.lead = None          # may now butt against the kept text: no prefilter
+        t.words = None
         if log:
             log.info(f"  KEEP-PART: {str(t.real)!r} may butt straight against "
                      f"the kept {kept!r} — the bracketed value welds them.")
