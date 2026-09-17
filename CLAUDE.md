@@ -164,7 +164,7 @@ after the name it spells and before the tokens; a one-word fold sits under
 the token it is a slip of, wherever that token was written; one level only,
 or two spellings a slip apart would each claim the other. Which spelling
 holds the pool word is the registry's business for a fold it INFERRED (the
-shortest-first pre-bind drew `Palladina` before `Palladino`), and the one that
+shortest-first pre-bind drew `Castellna` before `Castellano`), and the one that
 folded onto it is written under it; a `~` settles it, because the starred
 spelling always holds the pool word (the alias rule, below), and where the
 party itself was built from the misspelling the starred spelling takes the
@@ -1132,8 +1132,8 @@ the party), so its row stays reversible.
   here is only half the change.
 - **OCR/typo folding** (`_PnFakeRegistry.token`): a name token near an already-
   bound token (min length `_PN_NAME_FOLD_MIN`) folds onto a *typo of that token's
-  fake* (`_pn_typo_variants`), so "Palladina"/"Pallading" read as typos of the one
-  "Keswick" the canonical "Palladino" got, each still keeping its own distinct
+  fake* (`_pn_typo_variants`), so "Castellna"/"Castellng" read as typos of the one
+  "Keswick" the canonical "Castellano" got, each still keeping its own distinct
   (reversible) stand-in. The op mirrors the real's deviation so lengths track
   (insert↔duplicate, delete↔drop, sub↔visual confusable, adjacent-transpose↔swap).
   "Near" is **OSA / Damerau-Levenshtein** (`_pn_osa_distance`, so a swapped pair
@@ -1272,6 +1272,40 @@ the party), so its row stays reversible.
   stands in the export, locatable, the word visible — instead of `idland` or
   `ZQUEZ`. The corroboration window is measured from the lead, or the lead
   letter is the capitalised word it finds.
+  **…and a scan does not break a word ONCE and stop** (`_pn_word_splits`,
+  `_PN_WORD_BREAK_MAX`, `_PN_SPLIT_MULTI_MIN`). The tolerance shipped as a
+  single break — the kern gap, the speck — and a Bates stamp set in small type
+  does not oblige. A delivered 177-page exhibit set stamped every page
+  `<defendant>-<plaintiff> 000249`: the stamp read WHOLE on 50 pages and the
+  plaintiff's surname was faked on every one of them, and it came apart on 52
+  others (`Cas tel lano`, `Cas tel la no`) where the REAL NAME shipped in the
+  clear. Every tier was silent, for the reason this section already states from
+  the other end — a whole-word term cannot match the broken spelling and
+  `_surviving_records` scans with that same pattern, so replacement and
+  detection are blind TOGETHER and the gate passes the file. Worse than a plain
+  leak again: two pages carry both readings of a doubled layer side by side
+  (`Chadwick-Hepworth Chadwick-Ca! tell ano`), one copy faked and one copy not,
+  which reads as two different parties. The corroboration never was the pieces
+  — it is the CONCATENATION, and `Cas tel lano` spells the party's own token
+  exactly — so admitting more breaks does not weaken it; what weakens is the
+  word left to concatenate, and a split into three or more pieces is therefore
+  offered only from `_PN_SPLIT_MULTI_MIN` letters up, scaled by the word's own
+  length for the reason `_pn_name_fold_dist` scales the typo fold by it. The
+  shortest split is offered first, so an intact-but-once-broken spelling is
+  never read as a word that fell apart three times. `_lead_words` had to move
+  WITH it: that prefilter is EXACT by construction and indexed adjacent PAIRS,
+  which is every run a one-break name can make and not every run a three-break
+  one can — left alone it drops the term before its pattern is ever asked, and
+  the tolerance is dead code. Measured on 695 surnames, 51,405 break branches
+  and 2.8 MB of real filings and this repo's own prose, `cap_only` enforced as
+  the scan enforces it: ZERO false matches, the same count the one-break rule
+  measured. It mints nothing — no pool word, no term, no key row — so a folder
+  already delivered re-runs byte-identically but for the leak it closes.
+  Residual, and stated: a break that also SUBSTITUTES a character
+  (`Cas teI lano`, `Ca! tel lano` — the l read as I or !) is still the fuzzy
+  scan's business, reported and never repaired, and 10 of that batch's 52
+  broken stamps are of that kind; closing those means folding confusables into
+  the concatenation, which is a decision about that doctrine and not a bug fix.
 - **Registry** (`_PnFakeRegistry`): injective, deterministic real→fake fakes,
   seeded on the real value (same input → same fake across runs, no two reals
   collide onto one fake). Draw every fake through it so the used-pool stays

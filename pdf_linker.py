@@ -10299,7 +10299,7 @@ def _pn_mirror_op(prev, low):
     swapped, else a confusable 'sub'.
 
     The SAME op is then applied to the fake, so the stand-in deviates the way
-    the real value did and the two lengths track — "Palladino"/"Palladina" ->
+    the real value did and the two lengths track — "Castellano"/"Castellna" ->
     "Keswick"/"Keswicka" rather than two unrelated pool words."""
     dl = len(low) - len(prev)
     if dl > 0:
@@ -10591,8 +10591,8 @@ class _PnFakeRegistry:
             if cand is not None:
                 return cand
         # Fold an OCR/typo near-variant (edit distance 1) onto a TYPO of the
-        # base token's fake, so "Palladina"/"Pallading" read as typos of the
-        # same "Keswick" the canonical "Palladino" got, instead of three
+        # base token's fake, so "Castellna"/"Castellng" read as typos of the
+        # same "Keswick" the canonical "Castellano" got, instead of three
         # unrelated stand-ins. Each still keeps its OWN fake (a distinct typo),
         # so the key round-trips one-to-one.
         if len(low) >= _PN_NAME_FOLD_MIN:
@@ -11300,6 +11300,14 @@ _PN_WORD_BREAK = r"[\s.,]"
 # allowed either way — and is exactly where the observed breaks fell.
 _PN_WORD_BREAK_MARK = r"[.,]"
 _PN_WORD_BREAK_TAIL_MIN = 2
+# A word is matched across MORE THAN ONE break only from this length up. The
+# corroboration is the CONCATENATION, and it is carried by the whole word
+# rather than by any one piece — "Cas tel lano" has no piece longer than three
+# letters and is unmistakable, while a five-letter name cut into three is
+# mostly single letters and says very little. Scaled by the word's own length
+# for the reason `_pn_name_fold_dist` scales the typo fold by it: a longer
+# token plausibly carries more independent damage.
+_PN_SPLIT_MULTI_MIN = 6
 
 
 def _pn_word_breaks(word):
@@ -11373,6 +11381,100 @@ def _pn_word_breaks(word):
         out.append((left, right,
                     _PN_WORD_BREAK if len(right) >= _PN_WORD_BREAK_TAIL_MIN
                     else _PN_WORD_BREAK_MARK))
+    return out
+
+
+# The most breaks one printed word may be matched across. A SCAN does not break
+# a word once and stop: a Bates stamp set in small type came back as
+# "Cas tel lano", "Cas tel la no" and "Ca! tel la no" on 52 pages of one delivered
+# exhibit set, where the same stamp read whole on 50 others — so the party was
+# faked wherever the recogniser held together and shipped IN THE CLEAR wherever
+# it did not, with every leak tier silent (a whole-word term cannot match the
+# broken spelling, and `_surviving_records` scans with that same pattern, so
+# replacement and detection were blind together).
+#
+# Bounded rather than free, because each extra break is another guess about how
+# the word came apart: the corroboration is the CONCATENATION, and it weakens as
+# the pieces get shorter and more numerous. Measured over 695 surnames, 51,405
+# break branches and 2.8 MB of real filings and this repo's own prose, with
+# `cap_only` enforced as the scan enforces it: ZERO false matches, the same
+# count the ONE-break rule measures — see `test_multi_break_word_name.py`.
+_PN_WORD_BREAK_MAX = 3
+
+
+def _pn_word_splits(core, max_breaks=_PN_WORD_BREAK_MAX):
+    """`[(pieces, breaks)]` — every way `core` may have been printed with up to
+    `max_breaks` stray breaks in it, `breaks[i]` being what may sit between
+    `pieces[i]` and `pieces[i + 1]`.
+
+    The general form of `_pn_word_breaks`, which answers the same question for
+    ONE break and is what the doctrine above is written about. A scan breaks a
+    word as often as the type is small: the exhibit set that motivated this
+    carried its Bates stamp as `Cas tel lano` and `Cas tel la no`, two and three
+    breaks, while the ONE-break rule matched `Castel lano` and `Castell ano`
+    perfectly — so the same stamp was faked on 50 pages and left in the clear on
+    52.
+
+    Every screen the one-break rule applies is applied here to the WHOLE split,
+    and two are strengthened because more pieces mean weaker corroboration:
+
+    * a split whose pieces are ALL ordinary vocabulary is refused, the rule that
+      keeps "As he" off "Ashe" and "New man" off "Newman" — asked of every piece
+      rather than of two halves; and
+    * a split into three or more pieces is offered only for a word of
+      `_PN_SPLIT_MULTI_MIN` letters. At one break the two halves are long
+      enough to carry the corroboration between them; cutting a five-letter
+      name into three leaves mostly single letters, which say very little.
+
+    The break class follows the one-break rule's own reasoning, asked per cut: a
+    space is admitted except before a piece that is a SINGLE LETTER AND LAST,
+    which is how a filing writes a middle initial ("Debora H" must not rewrite
+    Debora H. Smith as Deborah). A single letter with pieces still to come is
+    not that shape — it is the "i" of `Cas tel la no` — and takes a space.
+
+    Pieces are letters only and a cut always has a letter hard against it on
+    both sides, so a printed boundary (a hyphen, an inner dot) is never read as
+    a break; the word's affixes stay outside, in `_pn_build_pattern`."""
+    if len(core) < _PN_WORD_BREAK_MIN or not core[0].isupper():
+        return []
+    n = len(core)
+    # A cut may fall only BETWEEN LETTERS — the one-break rule's own test, asked
+    # once per position here rather than once per branch.
+    cuts = [i for i in range(1, n) if core[i - 1].isalpha() and core[i].isalpha()]
+    out = []
+
+    def emit(chosen):
+        pieces = []
+        prev = 0
+        for c in chosen:
+            pieces.append(core[prev:c])
+            prev = c
+        pieces.append(core[prev:])
+        lows = [p.lower() for p in pieces]
+        if all(_pn_is_generic_token(p) for p in lows):
+            return
+        if len(pieces) > 2 and len(core) < _PN_SPLIT_MULTI_MIN:
+            return
+        last = len(pieces) - 1
+        breaks = tuple(
+            _PN_WORD_BREAK_MARK
+            if i + 1 == last and len(pieces[-1]) < _PN_WORD_BREAK_TAIL_MIN
+            else _PN_WORD_BREAK
+            for i in range(last))
+        out.append((tuple(pieces), breaks))
+
+    def walk(start, chosen):
+        if chosen:
+            emit(chosen)
+        if len(chosen) == max_breaks:
+            return
+        for j in range(start, len(cuts)):
+            walk(j + 1, chosen + [cuts[j]])
+
+    walk(0, [])
+    # Shortest split first, so an intact-but-once-broken spelling is preferred
+    # over a reading that assumes the scan fell apart three times.
+    out.sort(key=lambda s: (len(s[0]), s[0]))
     return out
 
 
@@ -15831,8 +15933,11 @@ def _pn_build_pattern(term, *, whole_word, follow=None, breakable=False,
         for w in words:
             pre, core, post = _pn_word_affixes(w)
             alts = [re.escape(w)]
-            alts += [re.escape(pre + left) + brk + re.escape(right + post)
-                     for left, right, brk in _pn_word_breaks(core)]
+            for pieces, breaks in _pn_word_splits(core):
+                built = re.escape(pre + pieces[0])
+                for brk, piece in zip(breaks, pieces[1:]):
+                    built += brk + re.escape(piece)
+                alts.append(built + re.escape(post))
             parts.append(alts[0] if len(alts) == 1
                          else "(?:" + "|".join(alts) + ")")
         body = _PN_TERM_SEP.join(parts)
@@ -17110,7 +17215,7 @@ def _pn_key_word_fold(real, fake, preal, pfake):
     """True when the binding `real -> fake` is a FOLDED SPELLING of the
     binding `preal -> pfake` — the same slip of the same name, the way
     `_PnFakeRegistry.fold_onto` mints one for an OCR near-miss the tool infers
-    ("Palladina" beside "Palladino") or a misspelling the operator declares
+    ("Castellna" beside "Castellano") or a misspelling the operator declares
     with `*` ("Vatquel" beside "Vazquez").
 
     Decided from the four words ALONE and never from registry state, because
@@ -22099,15 +22204,17 @@ class Pseudonymizer:
         return rx
 
     def _lead_words(self, text):
-        """The words of `text`, lower-cased, plus every ADJACENT PAIR joined —
+        """The words of `text`, lower-cased, plus every ADJACENT RUN joined —
         the set a term's lead word is looked up in before its pattern runs.
 
-        The pairs are what keep the prefilter EXACT for a break-tolerant
+        The runs are what keep the prefilter EXACT for a break-tolerant
         name: extraction reads a kerned "VADIM" as "V ADIM" and a scan as
-        "V.ADIM", and either way the two pieces the tokeniser yields join to
-        the word the term is looking for. Memoized on the text for the same
-        reason `_keep_spans` is, two entries deep, because the passes
-        alternate between a page and its column-ordered twin."""
+        "V.ADIM", and a scanned Bates stamp as "Cas tel la no" — either way
+        the pieces the tokeniser yields join to the word the term is looking
+        for, so every run up to `_PN_WORD_BREAK_MAX` + 1 long is indexed.
+        Memoized on the text for the same reason `_keep_spans` is, two
+        entries deep, because the passes alternate between a page and its
+        column-ordered twin."""
         memo = getattr(self, "_lead_memo", None)
         if memo is None:
             memo = self._lead_memo = []
@@ -22117,7 +22224,16 @@ class Pseudonymizer:
         raw = _PN_LEAD_WORD_RE.findall(text)
         words = [w.lower() for w in raw]
         ws = set(words)
-        ws.update(a + b for a, b in zip(words, words[1:]))
+        # Every adjacent RUN of up to `_PN_WORD_BREAK_MAX` + 1 pieces, joined.
+        # Pairs alone were exact while a name could come apart only ONCE; a
+        # scan breaks a small-type word as often as it likes ("Cas tel lano",
+        # "Cas tel la no"), and the pieces the tokeniser yields join to the word
+        # the term is looking for only when the whole run is indexed. Skip one
+        # of these and the prefilter silently drops the term — the pattern
+        # still tolerates the break and is never asked.
+        for n in range(2, _PN_WORD_BREAK_MAX + 2):
+            ws.update("".join(words[i:i + n])
+                      for i in range(len(words) - n + 1))
         # …and the capitalised tail of a word glued behind a lower-case run
         # ("ofQUILLMARK" -> "quillmark"), the shape `glue_left` admits.
         for w in raw:
@@ -26064,7 +26180,7 @@ class Pseudonymizer:
 
         **A misspelling in the export has two possible authors, and they have
         opposite remedies.** The typo fold mints one on purpose: a source that
-        spells a party several ways — "Palladino", "Palladina", "Pallading" —
+        spells a party several ways — "Castellano", "Castellna", "Castellng" —
         must give each spelling its own reversible stand-in, and folding them
         onto typos of the one fake ("Paget", "Pagct", "Poget") is what keeps
         them reading as one person instead of three. That is correct output.
