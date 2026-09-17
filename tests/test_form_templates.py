@@ -467,3 +467,17 @@ def test_a_misread_form_id_still_names_the_form(tmp_path, monkeypatch):
     assert P._form_page_number(page) == ""            # the strict gate refuses it
     assert P._template_footer_key(page) == P._template_form_key(FORM)
     assert "WlTHOUT" not in _texts(_settled(page))
+
+
+def test_the_default_folder_is_created_beside_the_config(tmp_path, monkeypatch):
+    monkeypatch.delenv(P._TEMPLATE_ENV, raising=False)
+    monkeypatch.setattr(P, "_config_path", lambda: tmp_path / "pdf_linker.config")
+    P._set_form_templates_dir("")
+    assert P._ensure_form_templates_dir(log) is True
+    assert (tmp_path / P._TEMPLATE_DIR_NAME).is_dir()
+    assert P._ensure_form_templates_dir(log) is False      # already there
+    # A folder the operator NAMED is never made for them.
+    P._set_form_templates_dir(str(tmp_path / "elsewhere"))
+    assert P._ensure_form_templates_dir(log) is False
+    assert not (tmp_path / "elsewhere").exists()
+    P._set_form_templates_dir("")

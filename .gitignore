@@ -22,5 +22,10 @@ Apply Leak Fixes.bat
 master_leaks.xlsx
 master_leaks.xlsx.tmp
 
+# The blank Judicial Council forms the run indexes as templates. They sit
+# beside pdf_linker.config (inside a checkout), the run creates the folder
+# itself, and an operator's blanks are theirs — never source.
+Form Templates/
+
 # Claude Code agent worktrees (runtime, never committed)
 .claude/worktrees/

@@ -4226,6 +4226,12 @@ extraction, which is what keeps the numbering.
   the id's own protection keep the strict shape, since a misread id costs
   those a discarded pass and this a comparison against the library. A
   "[New January 1, 2005]" footer states a revision as "[Rev. …]" does.
+  **…and the DEFAULT folder is made by the run** (`_ensure_form_templates_dir`,
+  from `main`). The library was read from a folder nothing wrote, so the
+  operator had to guess its name and its place; the run now creates the
+  empty `Form Templates` folder beside the config and says so, and says once
+  when it holds no PDF. Only the default: a folder the setting or the env var
+  names is the operator's, and a path typed wrong is reported, never made.
 - **The banner and the log both say when a state was inferred**, and ask for a
   check. An inferred checkbox on a default-judgment packet is precisely the fact
   nobody should take on trust, so it is never presented as equal to a widget's.

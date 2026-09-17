@@ -4667,6 +4667,39 @@ def _form_templates_dir():
     return _config_path().with_name(_TEMPLATE_DIR_NAME)
 
 
+def _ensure_form_templates_dir(log=None):
+    """Create the DEFAULT `Form Templates` folder beside the config where none
+    exists, and say so — the library is read from a folder nothing wrote, so
+    the operator had to guess its name and place. Only the default: a folder
+    the setting or the env var names is theirs, and a path they typed wrong
+    is better reported than silently made. Says once, too, when the folder
+    stands empty, since an empty library costs nothing and does nothing."""
+    folder = _form_templates_dir()
+    named = _TEMPLATE_DIR_OVERRIDE is not None or bool(
+        (os.environ.get(_TEMPLATE_ENV) or "").strip())
+    try:
+        if not folder.exists():
+            if named:
+                if log is not None:
+                    log.warning(f"Form templates: the folder named for them does "
+                                f"not exist: {folder}")
+                return False
+            folder.mkdir(parents=True, exist_ok=True)
+            if log is not None:
+                log.info(f"Form templates: created an empty folder for the blank "
+                         f"Judicial Council forms at {folder} — drop the blank "
+                         f"PDFs in it and they are indexed on the next run")
+            return True
+        if log is not None and not any(
+                p.suffix.lower() == ".pdf" for p in folder.iterdir() if p.is_file()):
+            log.info(f"Form templates: {folder} holds no PDF yet — a scanned "
+                     f"form is read against its blank only once one is there")
+    except Exception as exc:
+        if log is not None:
+            log.warning(f"Form templates: could not create {folder}: {exc}")
+    return False
+
+
 def _template_word_key(text):
     """The comparison form of a label word: case-folded, with the marks a
     scan reads unreliably (a speck period, a comma) trimmed from its ends
@@ -39305,6 +39338,7 @@ def main():
     # here so the log says what it holds before the first page asks for it.
     _set_form_templates_dir(cfg.get("form_templates"))
     try:
+        _ensure_form_templates_dir(log)
         _template_library(log)
     except Exception as exc:
         log.warning(f"Form templates: library not indexed: {exc}")
