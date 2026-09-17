@@ -264,3 +264,77 @@ def test_a_site_written_in_CAPITALS_is_not_screened_out():
     actually carried."""
     masked = "ACME WIDGETS, INC.’S REPLY IN SUPPORT OF ITS MOTION TO COMPEL\n"
     assert "the filing title" in [l for l, _ in P._pn_case_party_shapes(masked)]
+
+
+# ── the word index and the chunked corpus scan answer what the regex did ────
+# On a 10 MB corpus the prose prune took 675 s, the heading prune 671 and the
+# fragment prune 208 — one whole-corpus regex per candidate. Each now reads a
+# one-pass token index (`_corpus_word_stats`), and the citation-only and
+# authority prunes scan the corpus chunk by chunk (`_scan_matches` in corpus
+# mode). Both are switched off here to obtain the reference, over the fixture
+# corpus and over one carrying a letter Python's regex folds oddly (a long s),
+# which must send the index-reading prunes back down their regex path.
+
+def _with_corpus_fast(flag):
+    class _Ctx:
+        def __enter__(self):
+            self.old = (P._PN_CORPUS_WORD_INDEX, P._PN_CHUNK_SCAN)
+            P._PN_CORPUS_WORD_INDEX = flag
+            P._PN_CHUNK_SCAN = flag
+
+        def __exit__(self, *a):
+            P._PN_CORPUS_WORD_INDEX, P._PN_CHUNK_SCAN = self.old
+    return _Ctx()
+
+
+@pytest.mark.parametrize("name", PRUNES)
+def test_the_word_index_and_the_chunked_corpus_scan_change_no_prune(name):
+    with _with_corpus_fast(False):
+        slow = _run(_pz(), name)
+    with _with_corpus_fast(True):
+        fast = _run(_pz(), name)
+    assert fast == slow and slow, (name, slow)
+
+
+def test_a_corpus_that_folds_oddly_takes_the_regex_path():
+    z = _pz()
+    odd = FULL + "\nThe long ſ in Caſtellano is a letter the regex folds.\n"
+    assert z._corpus_word_stats(odd) is None
+    assert z._corpus_word_stats(FULL) is not None
+    for name in ("prune_prose_word_terms", "prune_heading_only_terms",
+                 "prune_fragment_terms"):
+        with _with_corpus_fast(False):
+            slow = sorted(v.lower() for v in getattr(_pz(), name)(odd))
+        with _with_corpus_fast(True):
+            fast = sorted(v.lower() for v in getattr(_pz(), name)(odd))
+        assert fast == slow, name
+
+
+def test_the_word_stats_count_what_the_pattern_matched():
+    z = _pz()
+    stats = z._corpus_word_stats("Draft the draft. Draft again.\nMOTION TO QUASH\nthe motion to quash it")
+    assert stats["draft"][:2] == [1, 2]              # one lower, two capitalised
+    assert stats["quash"][2] is False                # never capitalised on a prose line
+    assert stats["motion"][2] is False and stats["motion"][0] == 1
+    stats = z._corpus_word_stats("Mabry was served at his residence.")
+    assert stats["mabry"][2] is True                 # capitalised, on a prose line
+
+
+def test_a_break_tolerant_term_is_scanned_whole_in_corpus_mode():
+    """A corpus plan indexes no adjacent runs, so a term whose pattern may
+    match across a printed break cannot be screened by it and is scanned
+    whole — the same exemption `_corpus_lead_skip` makes."""
+    z = _pz()
+    calls = []
+    orig = z._scan_plan
+
+    def spy(text, corpus=False):
+        calls.append(corpus)
+        return orig(text, corpus)
+    z._scan_plan = spy
+    rx = re.compile(r"Helen")
+    list(z._scan_matches(FULL, rx, ("helen",), "Helen", corpus=True,
+                         breakable=True))
+    assert calls == []                               # never planned: scanned whole
+    list(z._scan_matches(FULL, rx, ("helen",), "Helen", corpus=True))
+    assert calls == [True]
