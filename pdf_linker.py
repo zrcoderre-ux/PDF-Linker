@@ -3083,13 +3083,17 @@ _LAYER_FIX_CONF = 85
 # document's vocabulary, and a layer "fragment" made of nothing but vocabulary
 # ("If the", "An employee") is the layer being right and our engine welding.
 _LAYER_FIX_VOCAB_MIN = 3
-# The glyphs our engine confuses with each other; a disagreement that folds to
-# equality under this map is left to the layer.
-_LAYER_FIX_FOLD_RE = re.compile(r"[il|1]")
+# The glyphs a scan confuses with each other (a tall l reads as I, |, 1 or !);
+# a plain disagreement that folds to equality under this map is left to the
+# layer, and a fragment whose pieces join to our word under it is joined.
+_LAYER_FIX_FOLD_RE = re.compile(r"[il|1!]")
 _LAYER_FIX_NORM_RE = re.compile(r"[^a-z0-9]")
 # Rows are banded this many points tall for the pairing; two words whose
 # centres are more than a band and a half apart can never overlap.
 _LAYER_FIX_BAND = 16.0
+# Visible characters a filer-OCR'd page may carry, as a share of its invisible
+# layer: an e-filing stamp is a line or two against a page of text.
+_LAYER_FIX_VISIBLE_MAX = 0.05
 
 
 def _layer_fix_norm(s):
@@ -3097,7 +3101,10 @@ def _layer_fix_norm(s):
 
 
 def _layer_fix_fold(s):
-    return _LAYER_FIX_FOLD_RE.sub("i", _layer_fix_norm(s))
+    # Folded BEFORE the normaliser strips punctuation, since "!" — a scan's
+    # rendering of a tall l ("Pa! lad ino") — is one of the class and would
+    # otherwise be stripped as a mark rather than read as the letter.
+    return _LAYER_FIX_NORM_RE.sub("", _LAYER_FIX_FOLD_RE.sub("i", str(s).casefold()))
 
 
 def _page_layer_is_filer_ocr(page):
@@ -3105,9 +3112,12 @@ def _page_layer_is_filer_ocr(page):
     write — the population the repair is for. Read off the text trace's
     render mode, not the font name: a filer's engine draws its words in an
     ordinary font (this exhibit's layer is Helvetica), and only the mode says
-    they are not on the page. A page with visible type over the image
-    (a form's typed values, an e-filing stamp) is left to the ordinary path;
-    `_pn_rewrite_layer` refuses to redact under visible text anyway."""
+    they are not on the page. A little VISIBLE type is admitted — a filed
+    scan routinely carries an e-filing stamp in its margin, and requiring
+    none at all would have excluded every such page silently — bounded at
+    `_LAYER_FIX_VISIBLE_MAX` of the layer, since a page with typed values
+    over the image is a form's and not a scan's; and visible type that
+    OVERLAPS the layer is `_pn_rewrite_layer`'s own refusal, which stands."""
     try:
         doc = page.parent
         if (page.number in getattr(doc, _OCR_READ_ATTR, set())
@@ -3121,7 +3131,7 @@ def _page_layer_is_filer_ocr(page):
                 inv += len(chars)
             else:
                 vis += len(chars)
-        return inv > 0 and vis == 0
+        return inv > 0 and vis <= _LAYER_FIX_VISIBLE_MAX * inv
     except Exception:
         return False
 

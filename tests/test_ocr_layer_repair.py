@@ -152,10 +152,28 @@ def test_an_invisible_layer_in_an_ordinary_font_is_a_filer_layer():
     assert P._page_layer_is_filer_ocr(doc[0])
 
 
-def test_a_page_with_visible_type_is_not():
+def test_a_marginal_stamp_does_not_exclude_the_page():
+    """A filed scan carries a visible e-filing stamp; requiring no visible
+    type at all excluded every such page silently."""
     doc = _doc()
-    doc[0].insert_text((100, 700), "typed over the scan", fontsize=12)
+    doc[0].insert_text((100, 780), "Electronically Received 1/2/2026", fontsize=7)
+    assert P._page_layer_is_filer_ocr(doc[0])
+
+
+def test_a_page_of_typed_values_over_the_image_is_not():
+    doc = _doc()
+    for y in range(400, 700, 14):
+        doc[0].insert_text((300, y), "typed value typed value typed value", fontsize=12)
     assert not P._page_layer_is_filer_ocr(doc[0])
+
+
+def test_visible_type_over_the_layer_refuses_the_rewrite(monkeypatch):
+    doc = _doc()
+    doc[0].insert_text((100, 104), "over the layer", fontsize=12)   # on PARry's line
+    _stub(monkeypatch, doc[0])
+    P._ocr_image_regions(doc, log)
+    assert "PARry" in doc[0].get_text("text")
+    assert not getattr(doc, P._LAYER_FIX_ATTR, {})
 
 
 def test_a_page_this_run_read_itself_is_not():
@@ -264,6 +282,16 @@ def test_a_fragment_joins_under_the_I_l_fold_where_the_word_is_the_documents():
     """"Cas teI lano" is the stamp with its l read as I; the joined word's own
     sixty-six pages settle the spelling. Without them, nothing."""
     layer = [(_box(100, 40), "Cas"), (_box(145, 20), "teI"), (_box(170, 30), "lano")]
+    ours = [((100, 100, 200, 110), "Castellano", 91)]
+    assert P._layer_fix_decisions(layer, ours, {"castellano": 5})[0] == \
+        {0: "Castellano", 1: "", 2: ""}
+    assert P._layer_fix_decisions(layer, ours, {})[0] == {}
+
+
+def test_a_bang_is_a_scans_l_inside_a_fragment():
+    """"Ca! tel lano" — the tall l read as "!" — joins where the word stands
+    whole elsewhere; without that, nothing."""
+    layer = [(_box(100, 40), "Ca!"), (_box(145, 20), "tel"), (_box(170, 30), "lano")]
     ours = [((100, 100, 200, 110), "Castellano", 91)]
     assert P._layer_fix_decisions(layer, ours, {"castellano": 5})[0] == \
         {0: "Castellano", 1: "", 2: ""}
