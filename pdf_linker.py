@@ -3092,8 +3092,9 @@ _LAYER_FIX_NORM_RE = re.compile(r"[^a-z0-9]")
 # centres are more than a band and a half apart can never overlap.
 _LAYER_FIX_BAND = 16.0
 # Visible characters a filer-OCR'd page may carry, as a share of its invisible
-# layer: an e-filing stamp is a line or two against a page of text.
-_LAYER_FIX_VISIBLE_MAX = 0.05
+# layer: an e-filing stamp is a line or two against a page of text, and a
+# form's typed values over a scan are a third of it or more.
+_LAYER_FIX_VISIBLE_MAX = 0.10
 
 
 def _layer_fix_norm(s):

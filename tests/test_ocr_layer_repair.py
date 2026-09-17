@@ -156,7 +156,7 @@ def test_a_marginal_stamp_does_not_exclude_the_page():
     """A filed scan carries a visible e-filing stamp; requiring no visible
     type at all excluded every such page silently."""
     doc = _doc()
-    doc[0].insert_text((100, 780), "Electronically Received 1/2/2026", fontsize=7)
+    doc[0].insert_text((100, 780), "FILED 1/2/26", fontsize=7)
     assert P._page_layer_is_filer_ocr(doc[0])
 
 
@@ -289,9 +289,9 @@ def test_a_fragment_joins_under_the_I_l_fold_where_the_word_is_the_documents():
 
 
 def test_a_bang_is_a_scans_l_inside_a_fragment():
-    """"Ca! tel lano" — the tall l read as "!" — joins where the word stands
+    """"Cas te! lano" — the tall l read as "!" — joins where the word stands
     whole elsewhere; without that, nothing."""
-    layer = [(_box(100, 40), "Ca!"), (_box(145, 20), "tel"), (_box(170, 30), "lano")]
+    layer = [(_box(100, 40), "Cas"), (_box(145, 20), "te!"), (_box(170, 30), "lano")]
     ours = [((100, 100, 200, 110), "Castellano", 91)]
     assert P._layer_fix_decisions(layer, ours, {"castellano": 5})[0] == \
         {0: "Castellano", 1: "", 2: ""}
