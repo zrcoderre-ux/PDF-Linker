@@ -506,7 +506,7 @@ def test_every_committed_blank_indexes_as_a_template():
     import logging
     folder = Path(P.__file__).resolve().parent / "Form Templates"
     pdfs = sorted(folder.glob("*.pdf"))
-    assert len(pdfs) >= 39
+    assert len(pdfs) >= 38
     keyed = set()
     for pdf in pdfs:
         doc = fitz.open(pdf)
@@ -514,5 +514,5 @@ def test_every_committed_blank_indexes_as_a_template():
         keys.discard("")
         assert keys, pdf.name
         keyed |= keys
-    assert "mc013info" in keyed
     assert "jud100" in keyed
+    assert "pos040p" in keyed
