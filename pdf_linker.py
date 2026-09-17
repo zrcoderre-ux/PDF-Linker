@@ -3046,6 +3046,281 @@ def _image_ocr_new_words(found, have_low):
     return out
 
 
+# ── A FILER'S OCR layer is measured against this run's own reading ──────────
+# A scanned exhibit routinely arrives with an OCR layer the FILER's software
+# wrote — ABBYY, a scanner's bundled engine — drawn invisibly over the page
+# image. `_ocr_image_regions` renders every such page and reads it again, and
+# then had two choices, both wrong: discard the reading because the layer
+# already "covers" the rect (`_image_ocr_already_read`), or overlay it and ship
+# every word twice. A delivered 177-page collective-bargaining exhibit was the
+# first case: its Bates stamp read `Chadwick-Cas tel lano` on 52 pages, `PARry`
+# for PARTY on every header, `Sshsduls` for Schedule — and this run's own
+# Tesseract, at 300 dpi off the same image, read every one of them right. The
+# reading was paid for (588 s of the run) and thrown away.
+#
+# No SHAPE measure can say which of two readings is right — the doubled-layer
+# notes record that "Cuore" is as word-shaped as "Customer" — so this asks a
+# different question: at each WORD of the layer, what did our engine read at
+# that place, and how sure was it? Validated against the page image on 102
+# disagreements of that exhibit, and the two engines err in different ways:
+# our confident reading (`_LAYER_FIX_CONF`) was right in 65 of 66 plain
+# disagreements, the one miss being `I` read as `|`; below it the engines were
+# genuinely at odds (`XXIII` read as `Xxill` at 81 — the LAYER right); and the
+# only fragment "repairs" that were wrong (`If the` -> `Ifthe`) had every layer
+# piece standing on its own elsewhere in the document. So three screens:
+# confidence, the `I`/`l`/`|`/`1` class our engine confuses, and the
+# document's own vocabulary — the `prune_prose_word_terms` doctrine, asked of
+# the pieces. After them: 84 taken, 18 kept, 0 wrong. The cost is the render
+# and the Tesseract call the pass already spends; a born-digital page never
+# enters, and a page this run read itself is the same engine and is skipped.
+_LAYER_FIX_ATTR = "_pdf_linker_layer_fix_pages"
+_LAYER_VOCAB_ATTR = "_pdf_linker_layer_vocab"
+# Tesseract's per-word confidence (0-100) below which our reading is not
+# preferred to the filer's. Measured: right in 65/66 at or above it, and the
+# band beneath split both ways.
+_LAYER_FIX_CONF = 85
+# A word standing this often on its own in the document's layer is the
+# document's vocabulary, and a layer "fragment" made of nothing but vocabulary
+# ("If the", "An employee") is the layer being right and our engine welding.
+_LAYER_FIX_VOCAB_MIN = 3
+# The glyphs a scan confuses with each other (a tall l reads as I, |, 1 or !);
+# a plain disagreement that folds to equality under this map is left to the
+# layer, and a fragment whose pieces join to our word under it is joined.
+_LAYER_FIX_FOLD_RE = re.compile(r"[il|1!]")
+_LAYER_FIX_NORM_RE = re.compile(r"[^a-z0-9]")
+# Rows are banded this many points tall for the pairing; two words whose
+# centres are more than a band and a half apart can never overlap.
+_LAYER_FIX_BAND = 16.0
+# Visible characters a filer-OCR'd page may carry, as a share of its invisible
+# layer: an e-filing stamp is a line or two against a page of text, and a
+# form's typed values over a scan are a third of it or more.
+_LAYER_FIX_VISIBLE_MAX = 0.10
+
+
+def _layer_fix_norm(s):
+    return _LAYER_FIX_NORM_RE.sub("", str(s).casefold())
+
+
+def _layer_fix_fold(s):
+    # Folded BEFORE the normaliser strips punctuation, since "!" — a scan's
+    # rendering of a tall l ("Pa! lad ino") — is one of the class and would
+    # otherwise be stripped as a mark rather than read as the letter.
+    return _LAYER_FIX_NORM_RE.sub("", _LAYER_FIX_FOLD_RE.sub("i", str(s).casefold()))
+
+
+def _page_layer_is_filer_ocr(page):
+    """True when `page`'s text is an invisible OCR layer THIS RUN did not
+    write — the population the repair is for. Read off the text trace's
+    render mode, not the font name: a filer's engine draws its words in an
+    ordinary font (this exhibit's layer is Helvetica), and only the mode says
+    they are not on the page. A little VISIBLE type is admitted — a filed
+    scan routinely carries an e-filing stamp in its margin, and requiring
+    none at all would have excluded every such page silently — bounded at
+    `_LAYER_FIX_VISIBLE_MAX` of the layer, since a page with typed values
+    over the image is a form's and not a scan's; and visible type that
+    OVERLAPS the layer is `_pn_rewrite_layer`'s own refusal, which stands."""
+    try:
+        doc = page.parent
+        if (page.number in getattr(doc, _OCR_READ_ATTR, set())
+                or page.number in getattr(doc, _REOCR_ATTR, {})):
+            return False
+        inv = vis = 0
+        for sp in page.get_texttrace():
+            chars = sp.get("chars") or ()
+            font = str(sp.get("font") or "").lower()
+            if sp.get("type") == 3 or _PN_OCR_INVISIBLE_FONT in font:
+                inv += len(chars)
+            else:
+                vis += len(chars)
+        return inv > 0 and vis <= _LAYER_FIX_VISIBLE_MAX * inv
+    except Exception:
+        return False
+
+
+def _doc_layer_vocab(doc):
+    """`{normalised word: count}` over every page's layer — the document as
+    its own dictionary. Built once per Document and hung on it."""
+    memo = getattr(doc, _LAYER_VOCAB_ATTR, None)
+    if memo is not None:
+        return memo
+    memo = {}
+    try:
+        for pg in doc:
+            for w in pg.get_text("words"):
+                k = _layer_fix_norm(w[4])
+                if k:
+                    memo[k] = memo.get(k, 0) + 1
+    except Exception:
+        pass
+    try:
+        setattr(doc, _LAYER_VOCAB_ATTR, memo)
+    except Exception:
+        pass
+    return memo
+
+
+def _layer_fix_overlap(a, b):
+    """Two word boxes stand at the same place: half the narrower one's width
+    shared, centres within half the taller one's height."""
+    ix = min(a[2], b[2]) - max(a[0], b[0])
+    w = min(a[2] - a[0], b[2] - b[0])
+    cy = abs((a[1] + a[3]) / 2 - (b[1] + b[3]) / 2)
+    h = max(a[3] - a[1], b[3] - b[1])
+    return ix > 0.5 * max(w, 1.0) and cy < 0.5 * h
+
+
+def _layer_fix_decisions(layer, ours, vocab):
+    """`({layer word index: new text}, [(old, new)])` — where our reading
+    replaces the filer's, by the rule the module note above records.
+
+    `layer` is `[(bbox, text)]` in stream order, `ours` is
+    `[(bbox, text, conf)]` in page coordinates. Every pairing is MUTUAL —
+    a word of ours is matched to exactly the layer words that match back to
+    it and to nothing else — because the first shape of this rule paired one
+    stamp PIECE with our whole word and would have written
+    `Chadwick-Cas tel Chadwick-Castellano`. So a word of ours over several
+    layer pieces that JOIN to it is the layer fragmented (the Bates stamp);
+    a layer word under several of ours that join to it is the layer welded
+    ("MileageIncrements"); one against one is a plain disagreement; anything
+    else is an alignment artifact and is left alone.
+
+    Every replacement needs our confidence at `_LAYER_FIX_CONF` and a word
+    that reads as text at all (a logo's "™m®" is not written into a layer).
+    A fragment is joined only where the JOINED word is one the document
+    itself uses whole (`_LAYER_FIX_VOCAB_MIN`) — the concatenation
+    corroboration `_pn_word_breaks` states, with the document as the party
+    list. Measured the other way round it failed: a stamp's own pieces stand
+    on fifty pages, so "every piece is vocabulary" refused the stamp and
+    admitted nothing. The join is compared under the `I`/`l`/`|`/`1` FOLD —
+    the opposite of the plain path, and for the reason the plain path
+    refuses: there, fold-equality means the two engines cannot be told
+    apart at that word; here the joined word stands whole elsewhere in the
+    document, which is what settles the spelling ("Cas teI lano" is the
+    stamp with its l read as I, and 66 pages say so). Where our engine WELDED ("If the" -> "Ifthe") the join
+    is a word nobody uses and is refused. A plain disagreement is refused
+    where it folds to nothing under the `I`/`l`/`|`/`1` map, and where ours
+    is a strict substring of the layer's word: the layer welded a word to
+    its neighbour and we read one of them, and replacing would delete the
+    other ("policy.Participation" -> "policy.")."""
+    repl, done = {}, []
+    is_vocab = lambda t: (vocab.get(_layer_fix_norm(t), 0)
+                          >= _LAYER_FIX_VOCAB_MIN)
+    readable = lambda t: any(ch.isalnum() for ch in t) and all(
+        ch.isprintable() for ch in t)
+    l_hits = [[] for _ in layer]
+    o_hits = [[] for _ in ours]
+    # Banded by ROW, so a page pays for the words that share a line and not
+    # for the product of its two word lists: a candidate pair's centres must
+    # sit within half a line of each other, and `_LAYER_FIX_BAND` is wider
+    # than any line this pass meets.
+    bands = {}
+    for li, (lb, _lt) in enumerate(layer):
+        band = int((lb[1] + lb[3]) / (2 * _LAYER_FIX_BAND))
+        bands.setdefault(band, []).append(li)
+    for oi, (ob, _ot, _oc) in enumerate(ours):
+        k = int((ob[1] + ob[3]) / (2 * _LAYER_FIX_BAND))
+        near = sorted(li for b in (k - 1, k, k + 1) for li in bands.get(b, ()))
+        for li in near:
+            if _layer_fix_overlap(ob, layer[li][0]):
+                l_hits[li].append(oi)
+                o_hits[oi].append(li)
+    for oi, (_ob, ot, oc) in enumerate(ours):
+        L = o_hits[oi]
+        if len(L) < 2 or any(l_hits[li] != [oi] for li in L):
+            continue
+        joined = _layer_fix_fold("".join(layer[li][1] for li in L))
+        if not joined or joined != _layer_fix_fold(ot):
+            continue
+        if oc < _LAYER_FIX_CONF or not readable(ot) or not is_vocab(ot):
+            continue
+        repl[L[0]] = ot
+        for li in L[1:]:
+            repl[li] = ""
+        done.append((" ".join(layer[li][1] for li in L), ot))
+    for li, (_lb, lt) in enumerate(layer):
+        if li in repl:
+            continue
+        O = l_hits[li]
+        if not O or any(o_hits[oi] != [li] for oi in O):
+            continue
+        ot = " ".join(ours[oi][1] for oi in O)
+        conf = min(ours[oi][2] for oi in O)
+        nl, no = _layer_fix_norm(lt), _layer_fix_norm(ot)
+        # A layer "word" with no letters or digits is furniture — a dash, a
+        # bullet, a leader — and is never turned into a letter (a sampled
+        # correction had made one an "e").
+        if not nl or not no or conf < _LAYER_FIX_CONF or not readable(ot):
+            continue
+        if len(O) > 1:
+            # our engine split what the layer welded: the same letters, the
+            # layer's word nobody's vocabulary, every piece of ours somebody's
+            if no != nl or is_vocab(lt) or not all(is_vocab(ours[oi][1])
+                                                    for oi in O):
+                continue
+        else:
+            if no == nl or _layer_fix_fold(ot) == _layer_fix_fold(lt):
+                continue
+            if no in nl and len(nl) - len(no) >= 2:
+                continue
+        repl[li] = ot
+        done.append((lt, ot))
+    return repl, done
+
+
+def _note_layer_fix(page, count):
+    """Record that `count` word(s) of `page`'s filer-written OCR layer were
+    replaced by this run's own reading, for the export's banner."""
+    try:
+        doc = page.parent
+        seen = getattr(doc, _LAYER_FIX_ATTR, None)
+        if seen is None:
+            seen = {}
+            setattr(doc, _LAYER_FIX_ATTR, seen)
+        seen[page.number] = seen.get(page.number, 0) + count
+    except Exception:
+        pass
+
+
+def _repair_layer_page(page, ours, log):
+    """Apply `_layer_fix_decisions` to `page`'s invisible layer. `ours` is
+    every word this run read off the page's image regions, in unrotated page
+    coordinates. Returns the number of layer words changed."""
+    import fitz
+    invisible, visible = _pn_pdf_invisible_spans(page)
+    if not invisible:
+        return 0
+    words, refused = _pn_layer_words(invisible)
+    if refused:
+        log.info(f"  Image OCR: page {page.number + 1} layer left as it is — "
+                 f"{refused}")
+        return 0
+    texts = ["".join(chr(c[0]) for c in run) for run, _s, _a in words]
+    layer = []
+    for (run, _s, _a), t in zip(words, texts):
+        r = fitz.Rect(run[0][3])
+        for c in run[1:]:
+            r |= fitz.Rect(c[3])
+        layer.append((tuple(r), t))
+    repl, done = _layer_fix_decisions(layer, ours,
+                                      _doc_layer_vocab(page.parent))
+    if not repl:
+        return 0
+    ok, why = _pn_rewrite_layer(page, invisible, visible, words, texts, repl,
+                                log, "", "Image OCR")
+    if why:
+        log.info(f"  Image OCR: page {page.number + 1} layer left as it is — "
+                 f"{why}")
+        return 0
+    if not ok:
+        return 0
+    shown = "; ".join(f"{a!r} -> {b!r}" for a, b in done[:4])
+    log.info(f"  Image OCR: page {page.number + 1}: corrected {len(done)} "
+             f"word(s) of the filer's OCR layer to this run's own reading "
+             f"({shown}{'; …' if len(done) > 4 else ''})")
+    _note_layer_fix(page, len(done))
+    return len(done)
+
+
 def _ocr_image_regions(doc, log):
     """Read the text inside an IMAGE sitting on a page whose OWN text layer is
     sound — a signature block, an e-filing stamp, a scanned exhibit pasted into
@@ -3115,6 +3390,7 @@ def _ocr_image_regions(doc, log):
     log.info(f"  Image OCR: reading {sum(len(r) for _p, _t, r in todo)} image "
              f"region(s) on {len(todo)} page(s)")
     started = time.monotonic()
+    fixed_words = fixed_pages = 0
     for page, text, rects in todo:
         # A picture in the margin OUTSIDE a pleading's gutter is a firm's
         # mark, set up the side of the page hard against the line numbers,
@@ -3134,6 +3410,11 @@ def _ocr_image_regions(doc, log):
                     continue
         have_low = {w.lower() for w in _IMG_OCR_WORD_RE.findall(text)}
         kept = 0
+        # A page whose text is a FILER's OCR layer is not overlaid and not
+        # discarded: it is READ, and the layer is corrected word by word where
+        # this run's reading is confidently different — see `_LAYER_FIX_ATTR`.
+        repair = _page_layer_is_filer_ocr(page)
+        ours = []
         for rect in rects:
             try:
                 # `get_pixmap(clip=)` takes DISPLAY-space coordinates while
@@ -3143,8 +3424,13 @@ def _ocr_image_regions(doc, log):
                 # read. Map the rect through the rotation first.
                 clip = fitz.Rect(rect * page.rotation_matrix)
                 clip.normalize()
-                pix = page.get_pixmap(dpi=_ocr_base_dpi(page), clip=clip)
+                dpi = _ocr_base_dpi(page)
+                pix = page.get_pixmap(dpi=dpi, clip=clip)
                 img = Image.open(io.BytesIO(pix.tobytes("png")))
+                if repair:
+                    ours.extend(_ocr_words_in_page_space(
+                        pytesseract, img, clip, dpi, page))
+                    continue
                 ocr_bytes = pytesseract.image_to_pdf_or_hocr(
                     img, extension="pdf", config=_OCR_CONFIG,
                     timeout=_ocr_page_timeout())
@@ -3180,6 +3466,12 @@ def _ocr_image_regions(doc, log):
             log.info(f"  Image OCR: page {page.number + 1} region recovered "
                      f"{len(new)} word(s) the text layer lacked "
                      f"({' '.join(new[:8])}…)")
+        if repair and ours:
+            n = _repair_layer_page(page, ours, log)
+            if n:
+                fixed_words += n
+                fixed_pages += 1
+            continue
         if kept:
             _note_img_ocr(page, kept)
             done += kept
@@ -3188,8 +3480,39 @@ def _ocr_image_regions(doc, log):
     # can find later.
     log.info(f"  Image OCR: read {done} image region(s) whose text the page's "
              f"own layer did not carry, in "
-             f"{time.monotonic() - started:.1f}s")
+             f"{time.monotonic() - started:.1f}s"
+             + (f" — and corrected {fixed_words} word(s) of a filer-written "
+                f"OCR layer on {fixed_pages} page(s) to this run's own reading"
+                if fixed_pages else ""))
     return done
+
+
+def _ocr_words_in_page_space(pytesseract, img, clip, dpi, page):
+    """`[(bbox, text, conf)]` of every word Tesseract reads in `img` — the
+    render of `clip` at `dpi` — mapped back to unrotated page coordinates,
+    which is where the layer's own words live."""
+    import fitz
+    out_t = getattr(getattr(pytesseract, "Output", None), "DICT", "dict")
+    d = pytesseract.image_to_data(img, config=_OCR_CONFIG,
+                                  timeout=_ocr_page_timeout(),
+                                  output_type=out_t)
+    sc = dpi / 72.0
+    inv = ~page.rotation_matrix
+    out = []
+    for i in range(len(d.get("text", ()))):
+        t = str(d["text"][i]).strip()
+        try:
+            conf = float(d["conf"][i])
+        except (TypeError, ValueError):
+            continue
+        if not t or conf < 0:
+            continue
+        x, y = clip.x0 + d["left"][i] / sc, clip.y0 + d["top"][i] / sc
+        r = fitz.Rect(x, y, x + d["width"][i] / sc, y + d["height"][i] / sc)
+        r = r * inv
+        r.normalize()
+        out.append((tuple(r), t, conf))
+    return out
 
 
 # ── The gutter a page-wide OCR pass threw away ──────────────────────────────
@@ -10299,7 +10622,7 @@ def _pn_mirror_op(prev, low):
     swapped, else a confusable 'sub'.
 
     The SAME op is then applied to the fake, so the stand-in deviates the way
-    the real value did and the two lengths track — "Palladino"/"Palladina" ->
+    the real value did and the two lengths track — "Castellano"/"Castellna" ->
     "Keswick"/"Keswicka" rather than two unrelated pool words."""
     dl = len(low) - len(prev)
     if dl > 0:
@@ -10591,8 +10914,8 @@ class _PnFakeRegistry:
             if cand is not None:
                 return cand
         # Fold an OCR/typo near-variant (edit distance 1) onto a TYPO of the
-        # base token's fake, so "Palladina"/"Pallading" read as typos of the
-        # same "Keswick" the canonical "Palladino" got, instead of three
+        # base token's fake, so "Castellna"/"Castellng" read as typos of the
+        # same "Keswick" the canonical "Castellano" got, instead of three
         # unrelated stand-ins. Each still keeps its OWN fake (a distinct typo),
         # so the key round-trips one-to-one.
         if len(low) >= _PN_NAME_FOLD_MIN:
@@ -11300,6 +11623,14 @@ _PN_WORD_BREAK = r"[\s.,]"
 # allowed either way — and is exactly where the observed breaks fell.
 _PN_WORD_BREAK_MARK = r"[.,]"
 _PN_WORD_BREAK_TAIL_MIN = 2
+# A word is matched across MORE THAN ONE break only from this length up. The
+# corroboration is the CONCATENATION, and it is carried by the whole word
+# rather than by any one piece — "Cas tel lano" has no piece longer than three
+# letters and is unmistakable, while a five-letter name cut into three is
+# mostly single letters and says very little. Scaled by the word's own length
+# for the reason `_pn_name_fold_dist` scales the typo fold by it: a longer
+# token plausibly carries more independent damage.
+_PN_SPLIT_MULTI_MIN = 6
 
 
 def _pn_word_breaks(word):
@@ -11373,6 +11704,100 @@ def _pn_word_breaks(word):
         out.append((left, right,
                     _PN_WORD_BREAK if len(right) >= _PN_WORD_BREAK_TAIL_MIN
                     else _PN_WORD_BREAK_MARK))
+    return out
+
+
+# The most breaks one printed word may be matched across. A SCAN does not break
+# a word once and stop: a Bates stamp set in small type came back as
+# "Cas tel lano", "Cas tel la no" and "Ca! tel la no" on 52 pages of one delivered
+# exhibit set, where the same stamp read whole on 50 others — so the party was
+# faked wherever the recogniser held together and shipped IN THE CLEAR wherever
+# it did not, with every leak tier silent (a whole-word term cannot match the
+# broken spelling, and `_surviving_records` scans with that same pattern, so
+# replacement and detection were blind together).
+#
+# Bounded rather than free, because each extra break is another guess about how
+# the word came apart: the corroboration is the CONCATENATION, and it weakens as
+# the pieces get shorter and more numerous. Measured over 695 surnames, 51,405
+# break branches and 2.8 MB of real filings and this repo's own prose, with
+# `cap_only` enforced as the scan enforces it: ZERO false matches, the same
+# count the ONE-break rule measures — see `test_multi_break_word_name.py`.
+_PN_WORD_BREAK_MAX = 3
+
+
+def _pn_word_splits(core, max_breaks=_PN_WORD_BREAK_MAX):
+    """`[(pieces, breaks)]` — every way `core` may have been printed with up to
+    `max_breaks` stray breaks in it, `breaks[i]` being what may sit between
+    `pieces[i]` and `pieces[i + 1]`.
+
+    The general form of `_pn_word_breaks`, which answers the same question for
+    ONE break and is what the doctrine above is written about. A scan breaks a
+    word as often as the type is small: the exhibit set that motivated this
+    carried its Bates stamp as `Cas tel lano` and `Cas tel la no`, two and three
+    breaks, while the ONE-break rule matched `Castel lano` and `Castell ano`
+    perfectly — so the same stamp was faked on 50 pages and left in the clear on
+    52.
+
+    Every screen the one-break rule applies is applied here to the WHOLE split,
+    and two are strengthened because more pieces mean weaker corroboration:
+
+    * a split whose pieces are ALL ordinary vocabulary is refused, the rule that
+      keeps "As he" off "Ashe" and "New man" off "Newman" — asked of every piece
+      rather than of two halves; and
+    * a split into three or more pieces is offered only for a word of
+      `_PN_SPLIT_MULTI_MIN` letters. At one break the two halves are long
+      enough to carry the corroboration between them; cutting a five-letter
+      name into three leaves mostly single letters, which say very little.
+
+    The break class follows the one-break rule's own reasoning, asked per cut: a
+    space is admitted except before a piece that is a SINGLE LETTER AND LAST,
+    which is how a filing writes a middle initial ("Debora H" must not rewrite
+    Debora H. Smith as Deborah). A single letter with pieces still to come is
+    not that shape — it is the "i" of `Cas tel la no` — and takes a space.
+
+    Pieces are letters only and a cut always has a letter hard against it on
+    both sides, so a printed boundary (a hyphen, an inner dot) is never read as
+    a break; the word's affixes stay outside, in `_pn_build_pattern`."""
+    if len(core) < _PN_WORD_BREAK_MIN or not core[0].isupper():
+        return []
+    n = len(core)
+    # A cut may fall only BETWEEN LETTERS — the one-break rule's own test, asked
+    # once per position here rather than once per branch.
+    cuts = [i for i in range(1, n) if core[i - 1].isalpha() and core[i].isalpha()]
+    out = []
+
+    def emit(chosen):
+        pieces = []
+        prev = 0
+        for c in chosen:
+            pieces.append(core[prev:c])
+            prev = c
+        pieces.append(core[prev:])
+        lows = [p.lower() for p in pieces]
+        if all(_pn_is_generic_token(p) for p in lows):
+            return
+        if len(pieces) > 2 and len(core) < _PN_SPLIT_MULTI_MIN:
+            return
+        last = len(pieces) - 1
+        breaks = tuple(
+            _PN_WORD_BREAK_MARK
+            if i + 1 == last and len(pieces[-1]) < _PN_WORD_BREAK_TAIL_MIN
+            else _PN_WORD_BREAK
+            for i in range(last))
+        out.append((tuple(pieces), breaks))
+
+    def walk(start, chosen):
+        if chosen:
+            emit(chosen)
+        if len(chosen) == max_breaks:
+            return
+        for j in range(start, len(cuts)):
+            walk(j + 1, chosen + [cuts[j]])
+
+    walk(0, [])
+    # Shortest split first, so an intact-but-once-broken spelling is preferred
+    # over a reading that assumes the scan fell apart three times.
+    out.sort(key=lambda s: (len(s[0]), s[0]))
     return out
 
 
@@ -15831,8 +16256,11 @@ def _pn_build_pattern(term, *, whole_word, follow=None, breakable=False,
         for w in words:
             pre, core, post = _pn_word_affixes(w)
             alts = [re.escape(w)]
-            alts += [re.escape(pre + left) + brk + re.escape(right + post)
-                     for left, right, brk in _pn_word_breaks(core)]
+            for pieces, breaks in _pn_word_splits(core):
+                built = re.escape(pre + pieces[0])
+                for brk, piece in zip(breaks, pieces[1:]):
+                    built += brk + re.escape(piece)
+                alts.append(built + re.escape(post))
             parts.append(alts[0] if len(alts) == 1
                          else "(?:" + "|".join(alts) + ")")
         body = _PN_TERM_SEP.join(parts)
@@ -17110,7 +17538,7 @@ def _pn_key_word_fold(real, fake, preal, pfake):
     """True when the binding `real -> fake` is a FOLDED SPELLING of the
     binding `preal -> pfake` — the same slip of the same name, the way
     `_PnFakeRegistry.fold_onto` mints one for an OCR near-miss the tool infers
-    ("Palladina" beside "Palladino") or a misspelling the operator declares
+    ("Castellna" beside "Castellano") or a misspelling the operator declares
     with `*` ("Vatquel" beside "Vazquez").
 
     Decided from the four words ALONE and never from registry state, because
@@ -22099,15 +22527,17 @@ class Pseudonymizer:
         return rx
 
     def _lead_words(self, text):
-        """The words of `text`, lower-cased, plus every ADJACENT PAIR joined —
+        """The words of `text`, lower-cased, plus every ADJACENT RUN joined —
         the set a term's lead word is looked up in before its pattern runs.
 
-        The pairs are what keep the prefilter EXACT for a break-tolerant
+        The runs are what keep the prefilter EXACT for a break-tolerant
         name: extraction reads a kerned "VADIM" as "V ADIM" and a scan as
-        "V.ADIM", and either way the two pieces the tokeniser yields join to
-        the word the term is looking for. Memoized on the text for the same
-        reason `_keep_spans` is, two entries deep, because the passes
-        alternate between a page and its column-ordered twin."""
+        "V.ADIM", and a scanned Bates stamp as "Cas tel la no" — either way
+        the pieces the tokeniser yields join to the word the term is looking
+        for, so every run up to `_PN_WORD_BREAK_MAX` + 1 long is indexed.
+        Memoized on the text for the same reason `_keep_spans` is, two
+        entries deep, because the passes alternate between a page and its
+        column-ordered twin."""
         memo = getattr(self, "_lead_memo", None)
         if memo is None:
             memo = self._lead_memo = []
@@ -22117,7 +22547,16 @@ class Pseudonymizer:
         raw = _PN_LEAD_WORD_RE.findall(text)
         words = [w.lower() for w in raw]
         ws = set(words)
-        ws.update(a + b for a, b in zip(words, words[1:]))
+        # Every adjacent RUN of up to `_PN_WORD_BREAK_MAX` + 1 pieces, joined.
+        # Pairs alone were exact while a name could come apart only ONCE; a
+        # scan breaks a small-type word as often as it likes ("Cas tel lano",
+        # "Cas tel la no"), and the pieces the tokeniser yields join to the word
+        # the term is looking for only when the whole run is indexed. Skip one
+        # of these and the prefilter silently drops the term — the pattern
+        # still tolerates the break and is never asked.
+        for n in range(2, _PN_WORD_BREAK_MAX + 2):
+            ws.update("".join(words[i:i + n])
+                      for i in range(len(words) - n + 1))
         # …and the capitalised tail of a word glued behind a lower-case run
         # ("ofQUILLMARK" -> "quillmark"), the shape `glue_left` admits.
         for w in raw:
@@ -26064,7 +26503,7 @@ class Pseudonymizer:
 
         **A misspelling in the export has two possible authors, and they have
         opposite remedies.** The typo fold mints one on purpose: a source that
-        spells a party several ways — "Palladino", "Palladina", "Pallading" —
+        spells a party several ways — "Castellano", "Castellna", "Castellng" —
         must give each spelling its own reversible stand-in, and folding them
         onto typos of the one fake ("Paget", "Pagct", "Poget") is what keeps
         them reading as one person instead of three. That is correct output.
@@ -30962,6 +31401,110 @@ def _pn_pdf_invisible_spans(page):
 _PN_OCR_TEXT_ANGLES = {(1, 0): 0, (0, -1): 90, (-1, 0): 180, (0, 1): 270}
 
 
+def _pn_layer_words(invisible):
+    """`([(chars, size, angle)], refused)` — the WORDS of an invisible OCR
+    layer in content-stream order, each a run of trace chars split at the
+    layer's own whitespace, or a reason the layer cannot be re-drawn (text at
+    an angle no `_PN_OCR_TEXT_ANGLES` entry covers). Shared by the operator's
+    `*` fix and the layer repair, so the two walk one layer one way."""
+    words = []
+    for sp in invisible:
+        d = sp.get("dir") or (1, 0)
+        key = (int(round(d[0])), int(round(d[1])))
+        angle = _PN_OCR_TEXT_ANGLES.get(key)
+        if angle is None:
+            return words, f"text drawn at an angle ({d[0]:.2f}, {d[1]:.2f})"
+        size = float(sp.get("size") or 0) or 10.0
+        run = []
+        for ch in sp["chars"]:
+            if chr(ch[0]).isspace():
+                if run:
+                    words.append((run, size, angle))
+                run = []
+            else:
+                run.append(ch)
+        if run:
+            words.append((run, size, angle))
+    return words, None
+
+
+def _pn_rewrite_layer(page, invisible, visible, words, texts, repl, log, tag,
+                      label):
+    """Redact `page`'s invisible OCR layer and re-draw it word by word in
+    stream order with `repl` (`{word index: new text}`, "" to drop a piece)
+    applied — the mechanism `_pn_fix_ocr_in_pdf` documents. Returns
+    `(rewritten, refusal)`: a refusal names why the page is left as it is
+    (visible text lies over the layer, and redaction would take it too), so
+    the caller can say what it does about that instead; a mechanical failure
+    is logged here and returns `(False, None)`."""
+    import fitz
+    inv_rects = [fitz.Rect(sp["bbox"]) for sp in invisible]
+    if any(fitz.Rect(v).intersects(r) for v in visible for r in inv_rects):
+        return False, ("visible text lies over its OCR layer, and redacting "
+                       "the layer would take that text with it")
+    keep_img = getattr(fitz, "PDF_REDACT_IMAGE_NONE", 0)
+    keep_art = getattr(fitz, "PDF_REDACT_LINE_ART_NONE", 0)
+    try:
+        links = page.get_links()
+    except Exception:
+        links = []
+    try:
+        for r in inv_rects:
+            page.add_redact_annot(r, fill=False)
+        try:
+            page.apply_redactions(images=keep_img, graphics=keep_art)
+        except TypeError:
+            page.apply_redactions(images=keep_img)
+    except Exception as e:
+        log.warning(f"  {label}: {tag}could not rewrite the text layer of "
+                    f"page {page.number + 1}: {e}")
+        return False, None
+    try:
+        shape = page.new_shape()
+        for k, (run, size, angle) in enumerate(words):
+            text = repl.get(k, texts[k])
+            if not text:
+                continue
+            boxes = [c[3] for c in run]
+            if angle in (0, 180):
+                width = max(b[2] for b in boxes) - min(b[0] for b in boxes)
+            else:
+                width = max(b[3] for b in boxes) - min(b[1] for b in boxes)
+            origin = fitz.Point(run[0][2])
+            natural = fitz.get_text_length(text, fontname="helv",
+                                           fontsize=size)
+            sx = width / natural if natural > 0 and width > 0 else 1.0
+            sx = max(0.2, min(sx, 5.0))
+            mat = (fitz.Matrix(sx, 1) if angle in (0, 180)
+                   else fitz.Matrix(1, sx))
+            shape.insert_text(origin, text, fontsize=size, fontname="helv",
+                              render_mode=3, rotate=angle,
+                              morph=(origin, mat))
+        shape.commit()
+    except Exception as e:
+        log.warning(f"  {label}: {tag}could not re-draw the text layer of "
+                    f"page {page.number + 1} after correcting it: {e}")
+        return False, None
+    # Redaction takes the links under the layer with it; put back any
+    # that went.
+    try:
+        after = {(tuple(round(x, 1) for x in l["from"]), l.get("uri"))
+                 for l in page.get_links()}
+        for l in links:
+            if (tuple(round(x, 1) for x in l["from"]), l.get("uri")) \
+                    not in after:
+                page.insert_link(l)
+    except Exception:
+        pass
+    # A reading of the OLD layer memoised on the Document would describe a
+    # layer that no longer exists.
+    try:
+        getattr(page.parent, _INVISIBLE_ATTR, {}).pop(page.number, None)
+    except Exception:
+        pass
+    return True, None
+
+
 def _pn_fix_ocr_in_pdf(doc, corrections, log, name="", applied=None):
     """Correct every OCR fix in `corrections` IN THE PDF's own text layer, so
     the document itself reads as the correction says and every later reading
@@ -31015,8 +31558,6 @@ def _pn_fix_ocr_in_pdf(doc, corrections, log, name="", applied=None):
     if not fixes:
         return 0
     fixes.sort(key=lambda f: -len(f[0]))     # a longer garble claims first
-    keep_img = getattr(fitz, "PDF_REDACT_IMAGE_NONE", 0)
-    keep_art = getattr(fitz, "PDF_REDACT_LINE_ART_NONE", 0)
     tag = f"{name}: " if name else ""
 
     changed = 0
@@ -31035,26 +31576,7 @@ def _pn_fix_ocr_in_pdf(doc, corrections, log, name="", applied=None):
                      f"and the original copy are corrected at the text level.")
             continue
         # The layer's WORDS in stream order: (chars, size, angle).
-        words = []
-        refused = None
-        for sp in invisible:
-            d = sp.get("dir") or (1, 0)
-            key = (int(round(d[0])), int(round(d[1])))
-            angle = _PN_OCR_TEXT_ANGLES.get(key)
-            if angle is None:
-                refused = f"text drawn at an angle ({d[0]:.2f}, {d[1]:.2f})"
-                break
-            size = float(sp.get("size") or 0) or 10.0
-            run = []
-            for ch in sp["chars"]:
-                if chr(ch[0]).isspace():
-                    if run:
-                        words.append((run, size, angle))
-                    run = []
-                else:
-                    run.append(ch)
-            if run:
-                words.append((run, size, angle))
+        words, refused = _pn_layer_words(invisible)
         if refused:
             log.warning(f"  OCR FIX: {tag}page {page.number + 1} is left as it "
                         f"is — {refused} — and its garble is corrected in "
@@ -31096,66 +31618,15 @@ def _pn_fix_ocr_in_pdf(doc, corrections, log, name="", applied=None):
                      f"export and the original copy are corrected at the "
                      f"text level.")
             continue
-        inv_rects = [fitz.Rect(sp["bbox"]) for sp in invisible]
-        if any(fitz.Rect(v).intersects(r) for v in visible for r in inv_rects):
+        ok, why = _pn_rewrite_layer(page, invisible, visible, words, texts,
+                                    repl, log, tag, "OCR FIX")
+        if why:
             log.warning(f"  OCR FIX: {tag}page {page.number + 1} is left as it "
-                        f"is — visible text lies over its OCR layer, and "
-                        f"redacting the layer would take that text with it. "
-                        f"The garble is corrected in the export and the "
-                        f"original copy only.")
+                        f"is — {why}. The garble is corrected in the export "
+                        f"and the original copy only.")
             continue
-        try:
-            links = page.get_links()
-        except Exception:
-            links = []
-        try:
-            for r in inv_rects:
-                page.add_redact_annot(r, fill=False)
-            try:
-                page.apply_redactions(images=keep_img, graphics=keep_art)
-            except TypeError:
-                page.apply_redactions(images=keep_img)
-        except Exception as e:
-            log.warning(f"  OCR FIX: {tag}could not rewrite the text layer of "
-                        f"page {page.number + 1}: {e}")
+        if not ok:
             continue
-        try:
-            shape = page.new_shape()
-            for k, (run, size, angle) in enumerate(words):
-                text = repl.get(k, texts[k])
-                if not text:
-                    continue
-                boxes = [c[3] for c in run]
-                if angle in (0, 180):
-                    width = max(b[2] for b in boxes) - min(b[0] for b in boxes)
-                else:
-                    width = max(b[3] for b in boxes) - min(b[1] for b in boxes)
-                origin = fitz.Point(run[0][2])
-                natural = fitz.get_text_length(text, fontname="helv",
-                                               fontsize=size)
-                sx = width / natural if natural > 0 and width > 0 else 1.0
-                sx = max(0.2, min(sx, 5.0))
-                mat = (fitz.Matrix(sx, 1) if angle in (0, 180)
-                       else fitz.Matrix(1, sx))
-                shape.insert_text(origin, text, fontsize=size, fontname="helv",
-                                  render_mode=3, rotate=angle,
-                                  morph=(origin, mat))
-            shape.commit()
-        except Exception as e:
-            log.warning(f"  OCR FIX: {tag}could not re-draw the text layer of "
-                        f"page {page.number + 1} after correcting it: {e}")
-            continue
-        # Redaction takes the links under the layer with it; put back any
-        # that went.
-        try:
-            after = {(tuple(round(x, 1) for x in l["from"]), l.get("uri"))
-                     for l in page.get_links()}
-            for l in links:
-                if (tuple(round(x, 1) for x in l["from"]), l.get("uri")) \
-                        not in after:
-                    page.insert_link(l)
-        except Exception:
-            pass
         changed += 1
         shown = "; ".join(f"{a!r} -> {b!r}" for a, b in done[:4])
         log.info(f"  OCR FIX: {tag}page {page.number + 1}: corrected "
@@ -33855,6 +34326,11 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         # a signature block, an e-filing stamp — and the reader has to be able
         # to tell which is which.
         img_ocr = getattr(doc, _IMG_OCR_ATTR, {}).get(i)
+        # …and a page whose FILER-written OCR layer was corrected against this
+        # run's own reading. What changed is said by count, as the template
+        # restoration says it: one word is a speck, forty is a layer the
+        # filer's engine could not read.
+        layer_fix = getattr(doc, _LAYER_FIX_ATTR, {}).get(i)
         # …and a page NOTHING READ AT ALL, which is the one the other three
         # banners do not cover: not an inferred reading but the absence of one.
         # The page has no text layer, the OCR pass that would have supplied it
@@ -33888,6 +34364,9 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
                      "GUESSES" if rebuilt else "")
                   + (f" — REVIEW: {img_ocr} image region(s) on this page were "
                      f"READ BY OCR; those words are guesses" if img_ocr else "")
+                  + (f" — REVIEW: {layer_fix} word(s) of this page's OCR layer "
+                     f"were CORRECTED to this run's own reading" if layer_fix
+                     else "")
                   + (f" — REVIEW: recognised at only {low_dpi} dpi, "
                      f"text is LOW CONFIDENCE" if low_dpi else "")
                   + (f" — REVIEW: this page carried TWO text layers that "

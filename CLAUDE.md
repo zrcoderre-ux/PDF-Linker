@@ -164,7 +164,7 @@ after the name it spells and before the tokens; a one-word fold sits under
 the token it is a slip of, wherever that token was written; one level only,
 or two spellings a slip apart would each claim the other. Which spelling
 holds the pool word is the registry's business for a fold it INFERRED (the
-shortest-first pre-bind drew `Palladina` before `Palladino`), and the one that
+shortest-first pre-bind drew `Castellna` before `Castellano`), and the one that
 folded onto it is written under it; a `~` settles it, because the starred
 spelling always holds the pool word (the alias rule, below), and where the
 party itself was built from the misspelling the starred spelling takes the
@@ -1132,8 +1132,8 @@ the party), so its row stays reversible.
   here is only half the change.
 - **OCR/typo folding** (`_PnFakeRegistry.token`): a name token near an already-
   bound token (min length `_PN_NAME_FOLD_MIN`) folds onto a *typo of that token's
-  fake* (`_pn_typo_variants`), so "Palladina"/"Pallading" read as typos of the one
-  "Keswick" the canonical "Palladino" got, each still keeping its own distinct
+  fake* (`_pn_typo_variants`), so "Castellna"/"Castellng" read as typos of the one
+  "Keswick" the canonical "Castellano" got, each still keeping its own distinct
   (reversible) stand-in. The op mirrors the real's deviation so lengths track
   (insert↔duplicate, delete↔drop, sub↔visual confusable, adjacent-transpose↔swap).
   "Near" is **OSA / Damerau-Levenshtein** (`_pn_osa_distance`, so a swapped pair
@@ -1272,6 +1272,40 @@ the party), so its row stays reversible.
   stands in the export, locatable, the word visible — instead of `idland` or
   `ZQUEZ`. The corroboration window is measured from the lead, or the lead
   letter is the capitalised word it finds.
+  **…and a scan does not break a word ONCE and stop** (`_pn_word_splits`,
+  `_PN_WORD_BREAK_MAX`, `_PN_SPLIT_MULTI_MIN`). The tolerance shipped as a
+  single break — the kern gap, the speck — and a Bates stamp set in small type
+  does not oblige. A delivered 177-page exhibit set stamped every page
+  `<defendant>-<plaintiff> 000249`: the stamp read WHOLE on 50 pages and the
+  plaintiff's surname was faked on every one of them, and it came apart on 52
+  others (`Cas tel lano`, `Cas tel la no`) where the REAL NAME shipped in the
+  clear. Every tier was silent, for the reason this section already states from
+  the other end — a whole-word term cannot match the broken spelling and
+  `_surviving_records` scans with that same pattern, so replacement and
+  detection are blind TOGETHER and the gate passes the file. Worse than a plain
+  leak again: two pages carry both readings of a doubled layer side by side
+  (`Chadwick-Hepworth Chadwick-Ca! tell ano`), one copy faked and one copy not,
+  which reads as two different parties. The corroboration never was the pieces
+  — it is the CONCATENATION, and `Cas tel lano` spells the party's own token
+  exactly — so admitting more breaks does not weaken it; what weakens is the
+  word left to concatenate, and a split into three or more pieces is therefore
+  offered only from `_PN_SPLIT_MULTI_MIN` letters up, scaled by the word's own
+  length for the reason `_pn_name_fold_dist` scales the typo fold by it. The
+  shortest split is offered first, so an intact-but-once-broken spelling is
+  never read as a word that fell apart three times. `_lead_words` had to move
+  WITH it: that prefilter is EXACT by construction and indexed adjacent PAIRS,
+  which is every run a one-break name can make and not every run a three-break
+  one can — left alone it drops the term before its pattern is ever asked, and
+  the tolerance is dead code. Measured on 695 surnames, 51,405 break branches
+  and 2.8 MB of real filings and this repo's own prose, `cap_only` enforced as
+  the scan enforces it: ZERO false matches, the same count the one-break rule
+  measured. It mints nothing — no pool word, no term, no key row — so a folder
+  already delivered re-runs byte-identically but for the leak it closes.
+  Residual, and stated: a break that also SUBSTITUTES a character
+  (`Cas teI lano`, `Ca! tel lano` — the l read as I or !) is still the fuzzy
+  scan's business, reported and never repaired, and 10 of that batch's 52
+  broken stamps are of that kind; closing those means folding confusables into
+  the concatenation, which is a decision about that doctrine and not a bug fix.
 - **Registry** (`_PnFakeRegistry`): injective, deterministic real→fake fakes,
   seeded on the real value (same input → same fake across runs, no two reals
   collide onto one fake). Draw every fake through it so the used-pool stays
@@ -5645,6 +5679,63 @@ survive to fail.
   for thirteen minutes between two log lines that named neither end of it,
   which reads exactly like a hang. The convention `_pn_prescan_folder` already
   follows for its own stages.
+- **A FILER'S OCR layer is MEASURED against this run's own reading, word by
+  word, and corrected where ours is confidently better** (`_page_layer_is_filer_ocr`,
+  `_layer_fix_decisions`, `_repair_layer_page`, `_LAYER_FIX_ATTR`; the redraw
+  factored out of the `*` fix as `_pn_layer_words` / `_pn_rewrite_layer`). A
+  scanned exhibit routinely arrives with an OCR layer the filer's software wrote
+  — ABBYY, a scanner's bundled engine — drawn invisibly over the page image, in
+  an ORDINARY font (this one's is Helvetica in render mode 3; `_page_text_is_ocr`'s
+  GlyphLessFont test never saw it, so the population is read off the text
+  trace's mode). `_ocr_image_regions` rendered and read every such page and then
+  had two choices, both wrong: discard the reading because the layer already
+  "covers" the rect (`_image_ocr_already_read`), or overlay it and ship every
+  word twice. A delivered 177-page collective-bargaining exhibit was the case:
+  588 s of one run spent reading 176 pages and keeping none of it, while the
+  layer it kept read the Bates stamp as `Chadwick-Cas tel lano` on 52 pages,
+  `PARry` for PARTY on every header and `Sshsduls` for Schedule — and this run's
+  own Tesseract, at 300 dpi off the same image, read every one of them right.
+  **No SHAPE measure can pick between two readings** — the doubled-layer note
+  records that "Cuore" is as word-shaped as "Customer" — so this asks a
+  different question: at each WORD of the layer, what did our engine read at
+  that PLACE, and how sure was it? Both readings carry boxes, and Tesseract's
+  per-word confidence is the arbiter the doubled-layer pass never had. Validated
+  against the page image on 102 disagreements, then on a sample of the 1,094
+  replacements the rule makes over the whole exhibit (2.6% of 41,742 layer
+  words; 92.8% agree outright). The two engines err DIFFERENTLY, and each screen
+  closes a case that was seen: our confident reading (`_LAYER_FIX_CONF` 85) was
+  right in 65 of 66 plain disagreements, the one miss `ARTICLE I` read as `|`;
+  below it the engines were genuinely at odds (`XXIII` read as `Xxill` at 81,
+  the LAYER right), so the layer stands there; the `I`/`l`/`|`/`1` fold refuses
+  the one class our engine confuses; and a FRAGMENT is joined only where the
+  JOINED word is one the document itself uses whole (`_LAYER_FIX_VOCAB_MIN`,
+  the document as its own dictionary) — where our engine WELDED ("If the" ->
+  "Ifthe") the join is nobody's word. That screen first shipped the other way,
+  "every piece is vocabulary", and refused the stamp it exists for: a stamp's
+  own pieces stand on fifty pages. Two more from the whole-document sample,
+  both alignment and not confidence: pairing is MUTUAL (one stamp PIECE paired
+  with our whole word would have written `Chadwick-Cas tel Chadwick-Castellano`),
+  and ours never replaces a layer word it is a strict substring of — the layer
+  welded a word to its neighbour, we read one of them, and "policy.Participation"
+  -> "policy." deletes the other. After the screens: 84 taken, 18 kept, 0 wrong
+  on the hand-checked set. The layer is rewritten IN THE PDF, through the same
+  redact-and-redraw the operator's `*` fix uses, so the export, the scrub, every
+  leak scan, the citation parse and the next run all read the correction from
+  one source — the `*`-fix doctrine — and the page's banner says how many words
+  moved. It costs the render and the Tesseract call the pass already spent; a
+  born-digital page never enters, a page with visible type over the image is
+  left to the ordinary path (`_pn_rewrite_layer` refuses to redact under
+  visible text anyway), and a page THIS RUN read is the same engine and is
+  skipped. Pairing is banded by row, so it is not the product of the two word
+  lists. Residual, and stated: a word the layer never had at all (a paragraph
+  the filer's engine skipped) is not recovered, since the repair replaces words
+  and never adds them — the overlay path that would have, doubled everything
+  else; a word ours reads at 84 stays the filer's; `L2:01` for 12:01 folds to
+  equality and stays, the accepted cost of refusing the `I`-class whole; and the
+  next run pays the render again, since nothing in the PDF records that the
+  layer is now ours. The `_pn_word_splits` term tolerance above stays load-
+  bearing for the party name a document carries ONLY fragmented, which this
+  cannot join.
 - **A page-wide OCR pass throws the line-number GUTTER away, and the TITLE PAGE
   is what it costs** (`_ocr_gutter_column`, `_gutter_probe_strip`,
   `_gutter_probe_reads_as_numbering`). A pleading's line numbers are a narrow
