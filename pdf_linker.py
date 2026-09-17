@@ -4948,6 +4948,9 @@ def _drop_overdrawn_spans(spans, page=None):
     export say on its banner that a choice was made."""
     if page is not None:
         _mark_invisible_spans(spans, page)
+        # …and the reading an EARLIER run laid over a picture in the margin
+        # goes before anything else looks at it (`_margin_overlay_dropped`).
+        spans = _margin_overlay_dropped(spans, page)
     kept, out = {}, []
     for sp in spans:
         halved = _undouble_strike(sp["text"])
@@ -4971,6 +4974,66 @@ def _drop_overdrawn_spans(spans, page=None):
     if page is not None:
         out = _restore_template_labels(out, page)
     return out
+
+
+# The pictures of a page that stand in its MARGIN, kept on the Document
+# ({page number: [rect]}) because every rendering of the page asks.
+_MARGIN_IMG_ATTR = "_pdf_linker_margin_images"
+
+
+def _page_margin_image_rects(page, spans=None):
+    """`_page_margin_images` for `page`'s own pictures, memoised."""
+    try:
+        doc = page.parent
+        memo = getattr(doc, _MARGIN_IMG_ATTR, None)
+        if memo is None:
+            memo = {}
+            setattr(doc, _MARGIN_IMG_ATTR, memo)
+        if page.number not in memo:
+            rects = _image_ocr_rects(page)
+            memo[page.number] = (_page_margin_images(page, rects, spans)
+                                 if rects else [])
+        return memo[page.number]
+    except Exception:
+        return []
+
+
+def _margin_overlay_dropped(spans, page):
+    """`spans` less the OCR OVERLAY of a picture standing in the page's
+    MARGIN — a firm's mark set up the side of the page, an e-filing stamp
+    pasted beside it.
+
+    `_page_margin_images` stops that picture being READ, and that protects
+    only a PDF no run has met yet: `_ocr_image_regions` lays its reading
+    INTO the page's text layer and the tool then replaces the source file,
+    so a folder an earlier run touched carries the soup for ever. A
+    delivered MC-350EX is the case — its e-filing stamp read as a band per
+    scanline ("AEIUONIa/3", "PaNaray", "GZOZ/0Z80"), twenty words that
+    outlived the rule written to prevent them, each earning a form cell and
+    so a column stop, so the form's own labels sat ten columns in.
+    `_margin_sideways_dropped` cannot catch them either — the recogniser did
+    not detect the rotation, so the overlay came back UPRIGHT and reads as
+    ordinary horizontal text to every renderer.
+
+    Scoped two ways, and each is what keeps it safe. To an INVISIBLE span,
+    which is what an overlay is (render mode 3, the mode `_ocr_image_regions`
+    draws in) — so a page's own VISIBLE type standing over a picture is
+    untouched, the rule `_span_is_invisible_reading` already states. And to
+    the picture's own RECT, so a page-wide OCR layer, which lies in no margin
+    picture, never loses a word: a scanned page reads exactly as it did."""
+    rects = _page_margin_image_rects(page, spans)
+    if not rects:
+        return spans
+    import fitz
+    kept = []
+    for sp in spans:
+        if _span_is_invisible_reading(sp):
+            b = sp["bbox"]
+            if any(r.contains(fitz.Point((b[0] + b[2]) / 2,
+                                         (b[1] + b[3]) / 2)) for r in rects):
+                continue
+        kept.append(sp)
+    return kept or spans
 
 
 # Where a page's INVISIBLE text stands, read off its text trace and kept on
@@ -6436,9 +6499,13 @@ def _sidebar_image_rect(rect, line_col):
 _SIDEBAR_IMG_ASPECT = 1.5
 
 
-def _page_margin_images(page, rects):
+def _page_margin_images(page, rects, spans=None):
     """Which of `rects` — the image rects of `page` — stand in the MARGIN
-    outside the document, and so must never be READ.
+    outside the document, and so must never be READ (nor, once an earlier
+    run has read one, have its reading kept — see `_margin_overlay_dropped`).
+
+    `spans` is the page's spans where the caller already holds them, since
+    the no-gutter arm measures the page's own text edge off them.
 
     `_sidebar_image_rect` measures that off the line-number GUTTER, which is a
     pleading page's own statement of where its left margin ends. A court FORM
@@ -6471,8 +6538,18 @@ def _page_margin_images(page, rects):
         gutter = _pleading_gutter(page)
         if gutter is not None:
             return [r for r in rects if _sidebar_image_rect(r, gutter[1])]
-        upright = [sp["bbox"] for sp in _page_text_spans(page)
-                   if not _span_is_sideways(sp)]
+        have = spans if spans is not None else _page_text_spans(page)
+        upright = [sp["bbox"] for sp in have if not _span_is_sideways(sp)]
+        # A picture's OWN overlay must not vote on where the document's text
+        # begins: an earlier run's reading of this very stamp stands further
+        # left than anything the page prints, so measured with it in, the
+        # edge lands inside the margin and nothing is ever outside it. The
+        # page's VISIBLE type is the document; where there is none (a scan,
+        # whose whole layer is invisible) the edge is every upright span, as
+        # it was, and the margin simply yields nothing.
+        seen = [sp["bbox"] for sp in have
+                if not _span_is_sideways(sp) and not _span_is_invisible_reading(sp)]
+        upright = seen or upright
     except Exception:
         return []
     if not upright:

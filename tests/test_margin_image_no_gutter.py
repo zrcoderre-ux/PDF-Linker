@@ -113,3 +113,72 @@ def test_a_pleading_page_still_measures_from_its_gutter(monkeypatch):
         assert P._page_margin_images(page, [inside]) == []
     finally:
         doc.close()
+
+
+# ── the reading an EARLIER run already laid into the PDF ─────────────────────
+
+def _overlay(page, rect, words):
+    """Tesseract's own overlay, as `_ocr_image_regions` leaves it: invisible
+    text (render mode 3) inside the picture's rect."""
+    y = rect.y0 + 8
+    for w in words:
+        page.insert_text((rect.x0 + 1, y), w, fontsize=6, render_mode=3)
+        y += 8
+
+
+def test_a_margin_pictures_overlay_is_dropped(tmp_path):
+    """`_page_margin_images` stops the picture being READ, and that protects
+    only a PDF no run has met yet: the reading is laid INTO the text layer
+    and the tool replaces the source file, so a folder an earlier run touched
+    carries the soup for ever."""
+    doc, page = _form_page()
+    try:
+        pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 32, 400))
+        pix.clear_with(255)
+        page.insert_image(STAMP, pixmap=pix)
+        _overlay(page, STAMP, ["AEIUONIa/3", "PaNaray", "GZOZ/0Z80"])
+        raw = P._page_text_spans(page)
+        assert any("PaNaray" in sp["text"] for sp in raw), "fixture is wrong"
+        kept = P._drop_overdrawn_spans(raw, page)
+        text = " ".join(sp["text"] for sp in kept)
+        assert "PaNaray" not in text and "AEIUONIa/3" not in text
+        assert "ATTORNEY OR PARTY WITHOUT ATTORNEY" in text
+    finally:
+        doc.close()
+
+
+def test_the_pages_own_visible_type_over_a_picture_stays(tmp_path):
+    """Scoped to an INVISIBLE span: the visible text IS the document at that
+    spot, whatever stands under it."""
+    doc, page = _form_page()
+    try:
+        pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 32, 400))
+        pix.clear_with(255)
+        page.insert_image(STAMP, pixmap=pix)
+        page.insert_text((STAMP.x0 + 1, STAMP.y0 + 8), "EXHIBIT A", fontsize=6)
+        kept = P._drop_overdrawn_spans(P._page_text_spans(page), page)
+        assert "EXHIBIT A" in " ".join(sp["text"] for sp in kept)
+    finally:
+        doc.close()
+
+
+def test_a_page_wide_ocr_layer_loses_nothing(tmp_path):
+    """The other scope: a picture that is not in a MARGIN holds no margin
+    overlay, so a scanned page reads exactly as it did."""
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    try:
+        pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 612, 792))
+        pix.clear_with(255)
+        page.insert_image(page.rect, pixmap=pix)
+        y = 80
+        for line in ("SUPERIOR COURT OF CALIFORNIA", "COUNTY OF LOS ANGELES",
+                     "the whole page is a scan and its words are the layer"):
+            page.insert_text((40, y), line, fontsize=10, render_mode=3)
+            y += 20
+        kept = P._drop_overdrawn_spans(P._page_text_spans(page), page)
+        text = " ".join(sp["text"] for sp in kept)
+        assert "SUPERIOR COURT OF CALIFORNIA" in text
+        assert "the whole page is a scan" in text
+    finally:
+        doc.close()

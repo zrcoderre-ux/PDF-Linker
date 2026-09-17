@@ -4498,6 +4498,30 @@ where this decides whether to DISCARD a reading, and a picture wrongly refused
 is real words nothing recovers. Residual, and stated: a label a filing really
 printed sideways in its left margin goes unread with the stamp, exactly as it
 goes unexported on a pleading page.
+**…and the reading an EARLIER run already laid in is DROPPED**
+(`_margin_overlay_dropped`, `_page_margin_image_rects`, from
+`_drop_overdrawn_spans`). Refusing to READ a margin picture protects only a
+PDF no run has met yet. `_ocr_image_regions` lays its reading INTO the page's
+text layer and the tool then replaces the source file, so a folder an earlier
+run touched carries the soup for ever — and the delivered MC-350EX did: its
+twenty stamp words outlived the rule written to prevent them, still pushing
+the form's own labels ten columns in.
+`_margin_sideways_dropped` cannot catch them either, for this section's own
+reason one step on: the recogniser did not detect the rotation, so the overlay
+came back UPRIGHT and reads as ordinary horizontal text to every renderer. So
+the words go at the seam every rendering takes its spans through. Scoped two
+ways, and each is what keeps it safe: to an INVISIBLE span, which is what an
+overlay IS (render mode 3, the mode that pass draws in), so a page's own
+visible type standing over a picture is untouched; and to the picture's own
+RECT, so a page-wide OCR layer, which lies in no margin picture, never loses a
+word and a scanned page reads exactly as it did.
+**…and a picture's own overlay never votes on where the document's text
+begins.** The no-gutter edge is the page's leftmost upright text, and an
+earlier run's reading of the stamp stands further left than anything the page
+prints — so measured with it in, the edge landed inside the margin and nothing
+was ever outside it. The edge is the page's VISIBLE type; where there is none
+(a scan, whose whole layer is invisible) it is every upright span as before,
+and the margin simply yields nothing.
 **…and a margin picture does not cost the page its MARK.** The mark
 (`_IMG_OCR_MARK_KEY`) is checked against the page's images as they STAND, and
 it was written from the regions the pass went on to READ — so a page carrying
