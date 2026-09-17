@@ -4165,6 +4165,67 @@ extraction, which is what keeps the numbering.
   rendering — which is the next slice, with the field-name schema for
   classifying values and the checkbox positions the template's widgets
   already know.
+- **…and the template says WHERE EVERY BOX IS, and WHAT EACH FIELD HOLDS**
+  (`_template_box_cells`, `_template_rect_fill`, `_template_field_values`,
+  `_template_field_class`, `Pseudonymizer.register_form_fields`,
+  `_template_footer_key`), at the owner's direction. Two more things a
+  recognised form's template knows that a scan cannot say for itself.
+  **The CHECKBOXES.** The ink pass finds a box by sweeping a window left of
+  each caption and pairing what it finds, which is a guess twice over — a
+  caption out of reach loses its box, two captions in reach of one square
+  report it twice — and the template's checkbox widgets are the form's own
+  statement of where every box is. So on a recognised page the boxes are
+  read FIRST at the template's rects under the fit, none missed and none
+  doubled, and the caption sweep is left only what the template did not
+  name. The STATE is still measured, by the ink pass's own three sources in
+  its own order: a glyph inside the box, a vector path inside it, the
+  raster ink of the printed square (`box_fill`, which finds the square in
+  the window and measures inside its border). Where the raster cannot
+  isolate the square — a light scan whose border is broken, a box a
+  caption's rule runs into — the template's rect is trusted for the
+  POSITION and a deeper inset for the border (`_template_rect_fill`), and a
+  box with no ink at all in its window is `[?]`, never assumed empty. The
+  banner says how many states were read at the template's positions, and
+  the states stay inferred: `exact` is false, the ink banner still asks for
+  a check. Measured on the two pages of a real JUD-100 with its squares
+  printed and five and four boxes crossed: 26 of 26 and 31 of 31 read, every
+  crossed box `[X]` and no other, none unreadable, at a 0.8 pt and a 0.4 pt
+  stroke alike, ~280 ms a page of which the raster render is most.
+  **The FIELDS.** A widget's NAME says what its field holds where the form
+  names it — the caption block and the roster attachments do (`AttyName`,
+  `AttyFirm`, `AttyFor`, `Party1`, `PersonServed_ft`, `CaseNumber_ft`),
+  the body fields do not (`FillText10`, `EXPN`) — so `_template_field_class`
+  reads the last path component into `name`, `case_number`, `contact`,
+  `court` or nothing, and the court's own fields are named so they are
+  never harvested: the courthouse's street is the venue, kept the way a
+  city is. On a recognised scan the words standing inside a classified
+  field's rect are its VALUE, as the OCR read them and never restored, and
+  the pre-scan registers a `name` field's value as a document-harvested
+  term (`register_form_fields`, called beside the text harvest): the
+  field's name is the corroboration, a value there being a party, a person
+  or a firm standing where no role prefix, label or caption column reaches
+  it. A short title ("Rasho v. Quillmark") is split at its "v.", each row
+  of a multi-line value is a name of its own, and every piece takes the
+  screens a label-anchored harvest takes — two words at least, no role word
+  inside it, never a bare role, a protected locality or form furniture — so
+  a one-word value ("RASHO", "ACME") is refused as it is everywhere, and
+  the caption or the template reaches that party. Nothing is done with a
+  `case_number` or `contact` value yet: the label-anchored identifier and
+  the detectors already read those by shape, and the restored labels are
+  what make the label-anchored one reach a scan. Measured on a JUD-100 and
+  a POS-040(P) with values typed into their fields: every named field
+  read, the attorney, both parties and the persons served registered, the
+  county and the address not.
+  **A form id has a LETTER suffix, and a scan misreads the id itself.**
+  `_PN_FORM_ID_RE` admits `POS-040(P)` and `POS-040(D)` whole, where it
+  took `(1)` only, so the two attachments to a proof of service are two
+  forms and not one; and a footer reading "P0S-O40(P)" — a digit for a
+  letter in the letter run, a letter for a digit in the number, which is
+  what a scan does to an id — still names the form to the LIBRARY
+  (`_template_footer_key`, folding by position), while the ink gate and
+  the id's own protection keep the strict shape, since a misread id costs
+  those a discarded pass and this a comparison against the library. A
+  "[New January 1, 2005]" footer states a revision as "[Rev. …]" does.
 - **The banner and the log both say when a state was inferred**, and ask for a
   check. An inferred checkbox on a default-judgment packet is precisely the fact
   nobody should take on trust, so it is never presented as equal to a widget's.

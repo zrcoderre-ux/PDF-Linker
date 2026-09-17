@@ -45,7 +45,10 @@ LABELS = [
 # Field rects — where a VALUE stands, and the words the blank form prints
 # inside one (a default) are never labels.
 FIELDS = [("AttyName", (40, 70, 400, 110)), ("Phone", (110, 112, 210, 126)),
-          ("CaseNo", (380, 310, 560, 326)), ("Party1", (100, 292, 370, 308))]
+          ("CaseNo", (380, 310, 560, 326)), ("Party1", (100, 292, 370, 308)),
+          ("CrtCounty", (300, 180, 560, 194))]
+# The form's checkboxes, each just left of the caption it governs.
+BOXES = [(46, 432, 55, 441), (66, 452, 75, 461), (46, 492, 55, 501)]
 VALUES = [("Helen Rasho, Esq. (SBN 123456)", 44, 82),
           ("(213) 555-0100", 114, 123), ("25STCV37838", 384, 320),
           ("HELEN RASHO", 104, 304)]
@@ -68,6 +71,12 @@ def _blank_template(path):
         w.field_type = fitz.PDF_WIDGET_TYPE_TEXT
         w.rect = fitz.Rect(*rect)
         page.add_widget(w)
+    for i, rect in enumerate(BOXES):
+        w = fitz.Widget()
+        w.field_name = f"CheckBox{i}"
+        w.field_type = fitz.PDF_WIDGET_TYPE_CHECKBOX
+        w.rect = fitz.Rect(*rect)
+        page.add_widget(w)
     doc.save(str(path))
     doc.close()
 
@@ -82,15 +91,42 @@ def _library(tmp_path, monkeypatch, name="PLD-PI-001.pdf"):
     return lib
 
 
+def _printed_image(marked, dpi=200, broken=False):
+    """The page as PRINTED and scanned: labels, the three checkbox squares,
+    an X drawn in each box in `marked`, rendered to a grayscale image. With
+    `broken` the squares lose their right edge, as a light scan loses one."""
+    v = fitz.open()
+    pg = v.new_page(width=612, height=792)
+    for text, x, y in LABELS:
+        pg.insert_text((x, y), text, fontsize=8, fontname="helv")
+    sh = pg.new_shape()
+    for i, (x0, y0, x1, y1) in enumerate(BOXES):
+        if broken:
+            sh.draw_polyline([(x1, y0), (x0, y0), (x0, y1), (x1, y1)])
+        else:
+            sh.draw_rect(fitz.Rect(x0, y0, x1, y1))
+        if i in marked:
+            sh.draw_line((x0 + 1.5, y0 + 1.5), (x1 - 1.5, y1 - 1.5))
+            sh.draw_line((x0 + 1.5, y1 - 1.5), (x1 - 1.5, y0 + 1.5))
+    sh.finish(width=0.8, color=(0, 0, 0))
+    sh.commit()
+    pix = pg.get_pixmap(dpi=dpi, colorspace=fitz.csGRAY)
+    v.close()
+    return pix
+
+
 def _scan(misreads=MISREADS, footer=FOOTER, scale=1.0, dx=0.0, dy=0.0,
-          ocr=True, values=VALUES):
+          ocr=True, values=VALUES, marked=None, broken=False):
     """A scanned copy: the labels as the OCR read them, INVISIBLE (render
     mode 3) at their printed places, the typed values as visible text, and
     the page marked as read by OCR — under a scale and offset where asked,
-    which is what a scanner's feed does to the page."""
+    which is what a scanner's feed does to the page. With `marked` given
+    the page carries the PICTURE of the printed form too, its boxes drawn
+    and those in `marked` crossed, so the ink pass has a raster to read."""
     doc = fitz.open()
     page = doc.new_page(width=612, height=792)
-    tw = fitz.TextWriter(page.rect)
+    if marked is not None:
+        page.insert_image(page.rect, pixmap=_printed_image(set(marked), broken=broken))
     for text, x, y in LABELS:
         words = []
         for w in text.split():
@@ -125,7 +161,8 @@ def test_the_library_indexes_a_blank_form_by_its_footer(tmp_path, monkeypatch):
     tpl = pages[0]
     assert tpl["form"] == FORM
     assert tpl["revision"] == "january12007"
-    assert len(tpl["widgets"]) == len(FIELDS)
+    assert len(tpl["widgets"]) == len(FIELDS) + len(BOXES)
+    assert len(tpl["boxes"]) == len(BOXES)
     keys = {w[0] for w in tpl["words"]}
     assert "without" in keys and "attorney" in keys
     # A word the blank form prints INSIDE a field is a default, not a label.
@@ -171,8 +208,8 @@ def test_misread_labels_are_restored_and_values_are_not(tmp_path, monkeypatch):
     # The values the filer typed are exactly as read.
     for text, _x, _y in VALUES:
         assert text in out
-    form, n = getattr(doc, P._TEMPLATE_ATTR)[page.number]
-    assert form == FORM and n >= 6
+    rec = getattr(doc, P._TEMPLATE_ATTR)[page.number]
+    assert rec["form"] == FORM and rec["labels"] >= 6
 
 
 def test_a_value_that_reads_like_a_label_is_never_touched(tmp_path, monkeypatch):
@@ -310,3 +347,123 @@ def test_the_config_names_the_setting():
     assert "form_templates" in keys
     live = P._config_live(P._CONFIG_TEMPLATE)
     assert live["form_templates"] == ""
+
+
+# ── the form's own boxes and fields ─────────────────────────────────────────
+
+def test_a_letter_suffix_is_part_of_the_form_id():
+    assert P._PN_FORM_ID_RE.match("POS-040(P)")
+    assert P._PN_FORM_ID_RE.match("PLD-PI-001(1)")
+    assert P._template_form_key("POS-040(P)") != P._template_form_key("POS-040(D)")
+    assert P._template_form_key("PLD-Pl-001") == P._template_form_key("PLD-PI-001")
+
+
+def test_a_new_form_states_its_revision_with_new(tmp_path, monkeypatch):
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.insert_text((40, 775), "POS-040(D) [New January 1, 2005]", fontsize=7)
+    assert P._template_revision(page) == "january12005"
+
+
+def test_a_field_is_classified_by_its_name():
+    cls = P._template_field_class
+    assert cls("JUD-100[0].Page1[0].P1Caption[0].AttyInfo[0].AttyName[0]") == "name"
+    assert cls("topmostSubform[0].Page1[0].PersonServed_ft[3]") == "name"
+    assert cls("JUD-100[0].Page1[0].P1Caption[0].TitlePartyName[0].Party1[0]") == "name"
+    assert cls("JUD-100[0].Page1[0].P1Caption[0].AttyInfo[0].AttyFor[0]") == "name"
+    assert cls("JUD-100[0].Page1[0].P1Caption[0].AttyInfo[0].AttyFirm[0]") == "name"
+    assert cls("topmostSubform[0].Page1[0].CaseNumber_ft[0]") == "case_number"
+    assert cls("JUD-100[0].Page1[0].P1Caption[0].AttyInfo[0].AttyBarNo_dc[0]") == "contact"
+    assert cls("JUD-100[0].Page1[0].P1Caption[0].AttyInfo[0].Phone[0]") == "contact"
+    assert cls("JUD-100[0].Page1[0].P1Caption[0].CourtInfo[0].CrtCounty[0]") == "court"
+    assert cls("JUD-100[0].Page1[0].P1Caption[0].CourtInfo[0].Street[0]") == "contact"
+    assert cls("JUD-100[0].Page1[0].List3[0].Lia[0].FillText10[0]") is None
+    assert cls("JUD-100[0].Page2[0].List6[0].Lia[0].Table1[0].EXPN[0]") is None
+
+
+def test_the_values_typed_into_the_form_are_read_by_field(tmp_path, monkeypatch):
+    _library(tmp_path, monkeypatch)
+    doc, page = _scan(values=VALUES + [("LOS ANGELES", 304, 191)])
+    got = {name: (cls, text) for cls, name, text in P._template_field_values(page)}
+    assert got["AttyName"] == ("name", "Helen Rasho, Esq. (SBN 123456)")
+    assert got["Party1"] == ("name", "HELEN RASHO")
+    assert got["CaseNo"] == ("case_number", "25STCV37838")
+    assert got["Phone"][0] == "contact"
+    assert got["CrtCounty"] == ("court", "LOS ANGELES")
+
+
+def test_a_name_field_registers_its_value_as_a_party(tmp_path, monkeypatch):
+    _library(tmp_path, monkeypatch)
+    doc, page = _scan(values=VALUES + [("LOS ANGELES", 304, 191)])
+    values = P._template_field_values(page)
+    reg = P._PnFakeRegistry()
+    pz = P.Pseudonymizer([], {}, registry=reg)
+    n = pz.register_form_fields(values)
+    reals = {t.real.lower() for t in pz.terms}
+    assert "helen rasho" in reals
+    assert n >= 1
+    # The court's county is the venue and is never a party; a docket is not
+    # a name; a one-word value clears no screen.
+    assert "los angeles" not in reals and "25stcv37838" not in reals
+    assert pz.register_form_fields([("name", "Party1", "ACME")]) == 0
+    # A short title is two parties.
+    pz2 = P.Pseudonymizer([], {}, registry=P._PnFakeRegistry())
+    pz2.register_form_fields([("name", "Party_ft", "HELEN RASHO v. QUILLMARK BUILDERS LLC")])
+    reals2 = {t.real.lower() for t in pz2.terms}
+    assert "helen rasho" in reals2 and "quillmark builders llc" in reals2
+
+
+def test_checkbox_states_are_read_at_the_templates_box_positions(tmp_path, monkeypatch):
+    _library(tmp_path, monkeypatch)
+    doc, page = _scan(marked={1})
+    got = P._ink_form_cells(page)
+    assert got is not None
+    cells, boxes, marked, unsure, exact, _consumed = got
+    assert (boxes, marked, unsure) == (3, 1, 0)
+    assert exact is False                      # read off the raster, and said
+    states = sorted((round(y), t) for y, _h, _x, t in cells if t in ("[X]", "[ ]", "[?]"))
+    assert [t for _y, t in states] == ["[ ]", "[X]", "[ ]"]
+    # Laid where the printed box is: the raster's own measurement of it.
+    for (y, _t), (_x0, y0, _x1, y1) in zip(states, BOXES):
+        assert abs(y - (y0 + y1) / 2) <= 2
+    rec = getattr(doc, P._TEMPLATE_ATTR)[page.number]
+    assert rec["boxes"] == 3
+    render = P._form_page_render(page)
+    assert render is not None and render["boxes"] == 3
+    assert "[X] Amount demanded does not exceed $10,000" in render["text"]
+
+
+def test_the_banner_names_the_boxes_read_from_the_template(tmp_path, monkeypatch):
+    _library(tmp_path, monkeypatch)
+    doc, page = _scan(marked={0, 2})
+    pdf = tmp_path / "Complaint.pdf"
+    doc.save(str(pdf))
+    doc.close()
+    d = fitz.open(str(pdf))
+    setattr(d, P._OCR_READ_ATTR, {0})
+    assert P._write_text_version(pdf, d, log)
+    text = (tmp_path / "Text Files" / "Complaint.txt").read_text(encoding="utf-8")
+    assert f"3 checkbox state(s) were read at the {FORM} form template's own box positions" in text
+    assert "[X] ACTION IS A LIMITED CIVIL CASE" in text
+    assert "[X] ACTION IS AN UNLIMITED CIVIL CASE" in text
+    assert "[ ] Amount demanded does not exceed $10,000" in text
+    d.close()
+
+
+def test_a_box_whose_border_the_scan_broke_is_still_read(tmp_path, monkeypatch):
+    _library(tmp_path, monkeypatch)
+    doc, page = _scan(marked={2}, broken=True)
+    cells, boxes, marked, unsure, exact, _consumed = P._ink_form_cells(page)
+    assert (boxes, marked, unsure) == (3, 1, 0)
+    states = [t for _y, _h, _x, t in sorted(cells) if t in ("[X]", "[ ]", "[?]")]
+    assert states == ["[ ]", "[ ]", "[X]"]
+
+
+def test_a_misread_form_id_still_names_the_form(tmp_path, monkeypatch):
+    assert P._template_form_key("P0S-O40(P)") == P._template_form_key("POS-040(P)")
+    assert P._template_form_key("PLD-Pl-0O1") == P._template_form_key("PLD-PI-001")
+    _library(tmp_path, monkeypatch)
+    doc, page = _scan(footer="P1D-PI-0O1 [Rev. January 1, 2007]")
+    assert P._form_page_number(page) == ""            # the strict gate refuses it
+    assert P._template_footer_key(page) == P._template_form_key(FORM)
+    assert "WlTHOUT" not in _texts(_settled(page))
