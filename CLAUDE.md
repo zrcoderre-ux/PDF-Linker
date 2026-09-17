@@ -4793,6 +4793,40 @@ only. Residual, and stated: the exhibit renderer's lead is the median of
 ALL row gaps, so on a sparse page a real gap can round to no blank line,
 and a rule that sits inside a two-column prose band is stepped over, since
 a bar cannot stand in one column of text read column by column.
+**…and the tool's OWN hyperlink underline is not one of the page's rules**
+(`_link_underlines`, `_is_link_underline`, in `_page_rules` and
+`_raster_rules`). A citation link is drawn with a blue underline
+(`LINK_COLOUR`, at `rect.y1 - 0.5` across the link's own rect) and the tool
+REPLACES the source PDF, so every run after the first opens a file whose line
+art carries one thin horizontal stroke per linked citation. `_page_rules` read
+each as a rule of the page's own and `_lay_rules` drew it as a `─` run on a
+LINE OF ITS OWN: a brief came back with a rule line under every cite — lines
+the document does not have, in text this tool put there itself, and on a form
+a run of them reads as the section dividers the caption box is made of. Two
+conditions, each keeping something. The COLOUR is `LINK_COLOUR` exactly, which
+nothing a filing draws its rules in matches by accident — asked only of the
+VECTOR reader, since a render has no colour to give, and a blue underline is
+dark in grayscale. And the stroke lies along the BOTTOM EDGE of a link
+annotation and inside its width, which is where this tool puts one and where a
+form's own rule does not sit, so a caption box's edge running under a linked
+cite is kept. The links are read once per page off `get_links()` and kept on
+the Document, as the invisible-run index is. It reaches every renderer at
+once, `_page_rules` being where they all read the line art, and it also keeps
+`_ruled_table` from reading a page of cites as a grid. The FIRST run never
+meets one: the export is written before any linking, from a document opened
+off disk, so the underlines this run is about to draw are not there yet — and
+PyMuPDF caches a page's link list, so a test must round-trip through a save to
+reproduce the re-run at all. Residual, and stated: an underline of ours whose
+link annotation was removed but whose stroke was left is read as a rule again,
+and a rule the page draws in that exact blue along a link's bottom edge is
+dropped — one line of a text export, against a line under every citation.
+**…and it is no HEADING CUE either** (`_page_underline_strokes`). The same
+stroke reaches the heading detector, where an underline counts like bold on
+both heading paths and carries a centred outline-labelled heading on its own
+— so a body row ending in a linked citation read as underlined and could mint
+a bookmark off a line the tool drew itself. Excluded by the same two
+conditions at that reader, the filled-rectangle arm untouched since nothing
+here draws one.
 **…and a VERTICAL rule is one unbroken line, through every junction and
 every scrubbed row** (`_rule_lines_text`, `_rule_join_glyph`, `_RULE_GLYPHS`,
 `_realign_rule_bars`, `_realign_rule_text`), at the owner's direction — the

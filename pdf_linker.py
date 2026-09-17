@@ -6170,6 +6170,62 @@ _RULE_MIN_LEN = 40.0
 _RULE_MERGE_TOL = 2.5
 
 
+# A citation hyperlink is drawn with a blue UNDERLINE (`LINK_COLOUR`, at
+# `rect.y1 - 0.5` across the link's own rect), and this tool replaces the
+# source PDF — so on every run after the first, the page's line art carries
+# one thin horizontal stroke per linked citation. `_page_rules` read them as
+# the page's own rules and `_lay_rules` drew each as a `─` run on a LINE OF
+# ITS OWN, so a brief came back with a rule line under every cite: lines the
+# document does not have, in text this tool put there itself. Worse than
+# noise on a form, where a run of them reads as the section dividers the
+# caption box is made of, and where `_ruled_table` can read a page of them
+# as a grid.
+_LINK_RULE_TOL = 1.0           # pt: the draw is exact; this is for rounding
+_LINK_UNDER_ATTR = "_pdf_linker_link_unders"
+
+
+def _link_underlines(page):
+    """[(y, x0, x1)] where this tool's own hyperlink underlines lie on
+    `page` — the bottom edge of every link annotation, which is exactly
+    where `page.draw_line` put one. Read once per page and kept on the
+    Document, as the invisible-run index is."""
+    try:
+        doc = page.parent
+        memo = getattr(doc, _LINK_UNDER_ATTR, None)
+        if memo is None:
+            memo = {}
+            setattr(doc, _LINK_UNDER_ATTR, memo)
+        if page.number not in memo:
+            out = []
+            for lk in page.get_links() or ():
+                r = lk.get("from")
+                if r is not None:
+                    out.append((float(r.y1) - 0.5, float(r.x0), float(r.x1)))
+            memo[page.number] = out
+        return memo[page.number]
+    except Exception:
+        return []
+
+
+def _is_link_underline(y, x0, x1, unders, colour=None):
+    """True when the horizontal stroke (`y`, `x0`..`x1`) is one this tool
+    drew under a hyperlink. Two conditions, and each keeps something: the
+    COLOUR is `LINK_COLOUR` exactly, which nothing a filing draws its rules
+    in matches by accident (asked only where the drawing states one — a
+    raster read has no colour to give); and the stroke lies along the BOTTOM
+    EDGE of a link annotation, inside its width, which is where this tool
+    puts one and where a form's own rule does not sit."""
+    if colour is not None and any(
+            abs(float(a) - float(b)) > 0.02
+            for a, b in zip(tuple(colour)[:3], LINK_COLOUR)):
+        return False
+    for uy, ux0, ux1 in unders:
+        if (abs(y - uy) <= _LINK_RULE_TOL
+                and x0 >= ux0 - _LINK_RULE_TOL and x1 <= ux1 + _LINK_RULE_TOL):
+            return True
+    return False
+
+
 def _page_rules(page, min_len=_RULE_MIN_LEN):
     """(vertical, horizontal) rules on `page`, from its own line art:
     vertical as [(x, y0, y1)], horizontal as [(y, x0, x1)], each the merged
@@ -6182,7 +6238,9 @@ def _page_rules(page, min_len=_RULE_MIN_LEN):
         drawings = page.get_drawings()
     except Exception:
         return [], []
+    unders = _link_underlines(page)
     for d in drawings:
+        colour = d.get("color")
         for item in d.get("items", []):
             kind = item[0]
             if kind == "l":
@@ -6191,8 +6249,13 @@ def _page_rules(page, min_len=_RULE_MIN_LEN):
                     vert.append(((p1.x + p2.x) / 2, min(p1.y, p2.y),
                                  max(p1.y, p2.y)))
                 elif abs(p1.y - p2.y) <= 1.5 and abs(p2.x - p1.x) >= min_len:
-                    horiz.append(((p1.y + p2.y) / 2, min(p1.x, p2.x),
-                                  max(p1.x, p2.x)))
+                    y = (p1.y + p2.y) / 2
+                    a, b = min(p1.x, p2.x), max(p1.x, p2.x)
+                    # ...unless it is the blue underline this tool drew under
+                    # a hyperlink on an earlier run (`_is_link_underline`).
+                    if unders and _is_link_underline(y, a, b, unders, colour):
+                        continue
+                    horiz.append((y, a, b))
             elif kind in ("re", "qu"):
                 # A quad is how some producers (a form builder's output among
                 # them) draw a rectangle; read as the rect it spans, so a
@@ -6344,13 +6407,21 @@ def _raster_rules(page, min_len=_RULE_MIN_LEN):
     # orientation is read after the mapping, since a quarter turn swaps it.
     vert, horiz = [], []
     inv = page.derotation_matrix
+    unders = _link_underlines(page)
     for (ax, ay), (bx, by) in segs:
         p1 = fitz.Point(ax + rect.x0, ay + rect.y0) * inv
         p2 = fitz.Point(bx + rect.x0, by + rect.y0) * inv
         if abs(p1.x - p2.x) <= 1.5:
             vert.append(((p1.x + p2.x) / 2, min(p1.y, p2.y), max(p1.y, p2.y)))
         elif abs(p1.y - p2.y) <= 1.5:
-            horiz.append(((p1.y + p2.y) / 2, min(p1.x, p2.x), max(p1.x, p2.x)))
+            y = (p1.y + p2.y) / 2
+            a, b = min(p1.x, p2.x), max(p1.x, p2.x)
+            # A render has no colour to give, so the link rect alone decides
+            # here — a blue underline is dark in grayscale and would come
+            # back as a rule the picture does not have.
+            if unders and _is_link_underline(y, a, b, unders):
+                continue
+            horiz.append((y, a, b))
     return _merge_rules(vert), _merge_rules(horiz)
 
 
@@ -8308,17 +8379,28 @@ def _page_underline_strokes(page):
     as a vector line or a hair-thin filled rectangle — it is not a span
     flag, which is why the heading detector historically could not see
     the single most common heading style in filings: centered or
-    outline-labelled, body-size, not bold, UNDERLINED."""
+    outline-labelled, body-size, not bold, UNDERLINED.
+
+    Never this tool's OWN hyperlink underline (`_is_link_underline`), which
+    would make the heading cue out of a line the tool drew itself: a body row
+    ending in a linked citation reads as underlined, and underline counts
+    like bold on both heading paths.
+    """
     out = []
     try:
+        unders = _link_underlines(page)
         for d in page.get_drawings():
+            colour = d.get("color")
             for item in d.get("items", []):
                 if item[0] == "l":
                     p1, p2 = item[1], item[2]
                     if (abs(p1.y - p2.y) <= 1.5
                             and abs(p2.x - p1.x) >= 10.0):
-                        out.append((min(p1.x, p2.x), max(p1.x, p2.x),
-                                    (p1.y + p2.y) / 2))
+                        y = (p1.y + p2.y) / 2
+                        a, b = min(p1.x, p2.x), max(p1.x, p2.x)
+                        if unders and _is_link_underline(y, a, b, unders, colour):
+                            continue
+                        out.append((a, b, y))
                 elif item[0] == "re":
                     r = item[1]
                     if r.height <= 2.5 and r.width >= 10.0:
