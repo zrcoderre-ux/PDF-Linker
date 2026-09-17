@@ -4244,18 +4244,20 @@ extraction, which is what keeps the numbering.
   a filled copy carries a matter's values, and the library reads a filled
   AcroForm as well as a blank, so nothing is gained by committing one.
   The folder holds the operator's own download of the civil set — the
-  pleading, service, dismissal, judgment, costs and appeal forms, 39 files
+  pleading, service, dismissal, judgment, costs and appeal forms, 38 files
   — each checked for a filled widget before it went in (a numeric total
   defaulting to 0 and the Council's own privacy notice in a header field
   are the form's furniture, not a value), and
   `test_every_committed_blank_indexes_as_a_template` fails on a blank the
   library cannot key, since that is a file committed for nothing. Two
-  things the set taught. An INFORMATION SHEET (`MC-013-INFO`) is footed
-  and filed beside the form it explains, and every id shape refused its
-  suffix — so it indexed nothing and nothing said the id was never a value
-  to fake; `-INFO` is admitted whole in `_PN_FORM_ID_RE` (and so in the
-  span, the ink gate and the loose footer key) and stays bounded, so a
-  longer word behind the hyphen is no id. And the official PLD-PI-001(4)
+  things the set taught. An INFORMATION SHEET (`MC-013-INFO`) came in
+  with the download by mistake and was taken out again at the owner's
+  direction — it is instructions, not a form anyone files — but it showed
+  that every id shape refused the suffix, so a scan of one attached to a
+  packet would have had its id read as a value to fake; `-INFO` stays
+  admitted whole in `_PN_FORM_ID_RE` (and so in the span, the ink gate and
+  the loose footer key) and bounded, so a longer word behind the hyphen is
+  no id. And the official PLD-PI-001(4)
   WRAPS its own footer id — "PLD-" closes one line and "PI-001(4)" opens
   the next — so it keys as `pi0014`; consistent, because a scan of a filed
   copy reads the same ink through the same reader, and no form is named
