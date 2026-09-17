@@ -5145,6 +5145,30 @@ def _template_word_key(text):
     return str(text or "").strip().strip(".,;:()[]{}'\"").casefold()
 
 
+# The EX suffix rides in the NUMBER's run ("350ex"), and the fold below reads a
+# run by which side of it is in the majority — so one misread digit tips
+# "3S0EX" into the letter branch and it keys as "3soex" where the template keys
+# "350ex". Every other id keeps its letters and its digits in runs of their own
+# (a hyphen or a parenthesis between them), which is what makes the positional
+# fold work at all, so the named suffix is given its own run rather than the
+# runs being split wherever letters meet digits — splitting them all would
+# undo the fold the other way and read a garbled "P0S-O40(P)" as "p0so40p".
+# The head is whatever stands in front of the suffix and is not required to end
+# in a DIGIT: an O read for the 0 of "35O" is exactly the misreading being
+# folded. Splitting a pure-letter run that happens to end in the suffix
+# ("APEX-100") changes nothing, both halves taking the letter branch.
+_TEMPLATE_KEY_SUFFIX_RE = re.compile(r"(.+)(ex)\Z")
+
+
+def _template_key_runs(s):
+    """The alphanumeric runs of `s`, the named suffix standing as its own."""
+    runs = []
+    for run in re.findall(r"[a-z0-9]+", s):
+        m = _TEMPLATE_KEY_SUFFIX_RE.match(run)
+        runs.extend(m.groups() if m else (run,))
+    return runs
+
+
 def _template_form_key(form_no):
     """The form id folded for comparison: case-insensitive, since a scan
     reads the I of PLD-PI-001 as an l about as often as not, and with the
@@ -5152,7 +5176,7 @@ def _template_form_key(form_no):
     letter runs ("P0S"), a letter read for a digit in the number ("O40")."""
     s = str(form_no or "").casefold()
     out = []
-    for run in re.findall(r"[a-z0-9]+", s):
+    for run in _template_key_runs(s):
         letters = sum(c.isalpha() for c in run)
         if letters >= len(run) - letters:
             run = run.replace("0", "o").replace("1", "i").replace("5", "s").replace("l", "i")
@@ -5163,8 +5187,8 @@ def _template_form_key(form_no):
 
 
 _TEMPLATE_LOOSE_ID_RE = re.compile(
-    r"(?<![\w-])[A-Z0-9]{2,4}(?:-[A-Z0-9]{1,3})?-[0-9OIlS]{3}(?:\([A-Z0-9]{1,2}\))?"
-    r"(?:-INFO)?(?![\w-])",
+    r"(?<![\w-])[A-Z0-9]{2,4}(?:-[A-Z0-9]{1,3})?-[0-9OIlS]{3}(?:EX)?"
+    r"(?:\([A-Z0-9]{1,2}\))?(?:-INFO)?(?![\w-])",
     re.IGNORECASE)
 
 
@@ -5187,8 +5211,15 @@ def _template_footer_key(page):
         text = page.get_text("text", clip=foot)
     except Exception:
         return ""
-    m = _TEMPLATE_LOOSE_ID_RE.search(text or "")
-    return _template_form_key(m.group()) if m else ""
+    first = ""
+    for m in _TEMPLATE_LOOSE_ID_RE.finditer(text or ""):
+        first = first or m.group()
+        # The "Instead of Form MC-350" rule, asked of the loose shape too: a
+        # scan of that page garbles the id and not the prose in front of it.
+        if not _JC_FORM_NO_MENTION_RE.search(text[:m.start()]):
+            first = m.group()
+            break
+    return _template_form_key(first) if first else ""
 
 
 def _template_revision(page):
@@ -13286,8 +13317,20 @@ _PN_NEVER_FAKE = frozenset({
 # beside the form it explains; the suffix is admitted whole so the sheet is
 # indexed as a template and its id is never faked, and it stays bounded so
 # "MC-013-INFORMATION" is no id at all.
+# ...and an EXPEDITED form carries its suffix hard against the number, with no
+# hyphen and no parentheses ("MC-350EX", adopted for alternative mandatory use
+# instead of MC-350). Refused, the id was no id at all: `_template_footer_key`
+# read nothing on six of that form's seven pages, so a scan of one matched no
+# template and got no restored labels, no template checkbox positions and no
+# classified field values; and the footer stood unprotected, where a two-letter
+# party acronym is a whole-word match inside it (a hyphen is no word
+# character) — the "NG-025" failure the span rule below states. The SUFFIX is
+# named, not a letter shape, for the reason `-INFO` is: it covers the whole
+# expedited family without admitting a production stamp or an exhibit code
+# ("MC-025A" is still nothing), and a suffix nobody has met is a line to add
+# when a real form carries one.
 _PN_FORM_ID_RE = re.compile(
-    r"[A-Z]{2,4}(?:-[A-Z]{1,3})?-\d{3}(?:\([A-Z0-9]{1,2}\))?(?:-INFO)?\Z")
+    r"[A-Z]{2,4}(?:-[A-Z]{1,3})?-\d{3}(?:EX)?(?:\([A-Z0-9]{1,2}\))?(?:-INFO)?\Z")
 
 # ...and the same shape as a SPAN, so the id is protected where it STANDS and
 # not merely as a whole value. `_pn_is_never_fake` refuses to build a term FOR
@@ -29550,8 +29593,29 @@ def _form_page_number(page):
         text = page.get_text("text", clip=foot)
     except Exception:
         return ""
-    m = _JC_FORM_NO_RE.search(text or "")
-    return m.group(1) if m else ""
+    return _footer_own_form_no(text or "")
+
+
+# A footer sometimes names ANOTHER form, and the first id in the band is then
+# not this page's. The alternative-use block prints "Instead of Form MC-350"
+# above its own "MC-350EX [Rev. January 1, 2021]", so the first match keyed
+# page 1 of MC-350EX as MC-350 — a page indexed under the form it REPLACES,
+# and a scan of it compared against that form's layout. A footer prints its
+# own id BARE and names another one in prose, so a candidate introduced by the
+# word "form" is that prose and yields to any other; where every candidate is
+# introduced that way nothing is left to prefer and the first stands, which is
+# what the search has always returned.
+_JC_FORM_NO_MENTION_RE = re.compile(r"\bforms?\s*$", re.IGNORECASE)
+
+
+def _footer_own_form_no(text):
+    """The form id `text` (a footer band) prints as its OWN, or ""."""
+    first = ""
+    for m in _JC_FORM_NO_RE.finditer(text or ""):
+        first = first or m.group(1)
+        if not _JC_FORM_NO_MENTION_RE.search(text[:m.start(1)]):
+            return m.group(1)
+    return first
 
 
 # The form rendering mirrors the PAGE, so a person can read the export beside
