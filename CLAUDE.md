@@ -4486,18 +4486,28 @@ the reading of the same stamp where Tesseract DID detect the rotation
 ("Electronically", "09:32", "AM" — the case that rule was written for), and a
 reading that came back upright is ordinary horizontal text to every renderer.
 So the words have to not exist, which is this pass's own discipline. With no
-gutter the edge is the page's own leftmost UPRIGHT text — the rule
-`_margin_sideways_dropped` already measures a margin by — and the picture must
-also be SHAPED like a margin stamp (taller than wide: a rotated line of 8 pt
-type is 12-15 pt across and hundreds long) and stand BESIDE the text rather
-than above it. Each guard keeps something real: a letterhead logo is square or
-wider than tall, and a stamp pasted above the first line of text is inside the
-text's own x range to begin with. `_SIDEBAR_GUTTER_TOL` runs the CONSERVATIVE
-way here, unlike `_sidebar_spans`' own use of it — there it widens the margin,
-where this decides whether to DISCARD a reading, and a picture wrongly refused
-is real words nothing recovers. Residual, and stated: a label a filing really
-printed sideways in its left margin goes unread with the stamp, exactly as it
-goes unexported on a pleading page.
+gutter the picture must clear three guards. It stands in the OUTER margin
+(`_SIDEBAR_IMG_MARGIN`, an inch), so nothing in the body is ever in reach. It
+is SHAPED like a margin stamp — taller than wide, a rotated line of 8 pt type
+being 12-15 pt across and hundreds long, where a letterhead logo is square or
+wider. And it ends left of the text standing BESIDE it, in its OWN band
+(`_margin_text_edge`) and not anywhere on the page.
+**That last one is where this first shipped wrong, and the delivered page
+measures it.** The edge was the page's leftmost upright text, and that page's
+Docusign envelope header opens at x 17 ACROSS THE TOP while the stamp it was
+being measured against runs x 13-25 with the form's own text beside it at
+x 35: so the leftmost text on the PAGE was the header, the edge came out at
+17, and the stamp was never outside it — the rule shipped, and the soup came
+back unchanged in the next export. A margin is what a thing stands BESIDE and
+not what stands above it; asked of the stamp's own band the header is out of
+reach and the edge is 35, which is what the eye reads as the margin. The
+tolerance runs as `_sidebar_spans`' own does with it — a thing ending just
+inside the text edge is still margin furniture. It ran the CONSERVATIVE way
+while the reference was the whole page's leftmost text, where slack could
+only widen something already loose; against the text a picture actually
+stands beside, one point decided this stamp. Residual, and stated: a label a
+filing really printed sideways in its left margin goes unread with the stamp,
+exactly as it goes unexported on a pleading page.
 **…and the reading an EARLIER run already laid in is DROPPED**
 (`_margin_overlay_dropped`, `_page_margin_image_rects`, from
 `_drop_overdrawn_spans`). Refusing to READ a margin picture protects only a

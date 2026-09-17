@@ -57,13 +57,59 @@ def test_a_picture_inside_the_text_is_read(tmp_path):
         doc.close()
 
 
-def test_a_picture_that_is_not_clearly_left_of_the_text_is_read(tmp_path):
-    """The tolerance runs the conservative way: a picture wrongly refused is
-    real words nothing recovers."""
-    doc, page = _form_page()
+def _narrow_form(text_x=40.0, header_x=None):
+    """A court-form page whose text begins at `text_x`, optionally with a
+    header line further LEFT across the very top — the Docusign envelope id
+    the delivered MC-350EX carries above its own caption box."""
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    if header_x is not None:
+        page.insert_text((header_x, 14), "Docusign Envelope ID: 97CC3CE2-CB30",
+                         fontsize=7, fontname="helv")
+    for y in range(80, 700, 20):
+        page.insert_text((text_x, y), "ATTORNEY OR PARTY WITHOUT ATTORNEY",
+                         fontsize=9, fontname="helv")
+    return doc, page
+
+
+def test_a_header_above_the_stamp_does_not_set_the_margin(tmp_path):
+    """The delivered page's own shape, to the point. Its e-filing stamp runs
+    up the margin at x 13-25 and the form's text beside it begins at x 35 —
+    but the Docusign envelope header opens at x 17 ACROSS THE TOP, so the
+    leftmost text on the PAGE was the header, the edge came out at 17, and
+    the stamp was never outside it."""
+    doc, page = _narrow_form(text_x=35.5, header_x=17.3)
     try:
-        touching = fitz.Rect(40, 100, 72, 500)
-        assert P._page_margin_images(page, [touching]) == []
+        stamp = fitz.Rect(13.4, 69.6, 30.0, 301.0)
+        assert min(sp["bbox"][0] for sp in P._page_text_spans(page)) < 20, \
+            "the header really is the page's leftmost text"
+        assert P._page_margin_images(page, [stamp]) == [stamp]
+    finally:
+        doc.close()
+
+
+def test_a_picture_reaching_past_the_text_beside_it_is_read(tmp_path):
+    """The band rule on its own: the picture must END left of the text it
+    stands beside."""
+    doc, page = _narrow_form(text_x=40.0)
+    try:
+        over = fitz.Rect(10, 100, 60, 500)      # inside the margin bound, but
+        assert P._page_margin_images(page, [over]) == []   # past the text edge
+    finally:
+        doc.close()
+
+
+def test_a_picture_in_the_BODY_is_read_whatever_stands_beside_it(tmp_path):
+    """The outer-margin bound on its own. Without it, text standing to the
+    RIGHT of a picture would make that picture "wholly left of the text
+    beside it" wherever on the page it sat."""
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    try:
+        for y in range(80, 700, 20):
+            page.insert_text((300, y), "a column of body text", fontsize=9)
+        body = fitz.Rect(100, 100, 140, 500)   # left of that text, not a margin
+        assert P._page_margin_images(page, [body]) == []
     finally:
         doc.close()
 
