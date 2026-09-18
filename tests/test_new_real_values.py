@@ -213,3 +213,63 @@ def test_a_kept_value_comes_back_unfaked_on_the_next_run(tmp_path, monkeypatch):
                      "--term", "Acme Widgets Inc", "--term", "Stockton Theatres") == 0
     again = export.read_text(encoding="utf-8")
     assert "Stockton Theatres" in again and "Acme Widgets" not in again
+
+
+# ── the fast path: a flag needs no full re-run ───────────────────────────────
+# `--fix-leaks` has always read this file. What was missing was the BUTTON: the
+# launcher was the LEAKS worksheet's companion, written beside one and deleted
+# with it, so a folder that came out clean had nothing to double-click and the
+# only remedy was a full re-run — every PDF reopened to scrub a value the
+# operator had already named, which needs no pre-scan and no re-read to reach.
+
+def _launchers(folder):
+    return [p.name for p in folder.iterdir()
+            if p.suffix in (".bat", ".command")]
+
+
+def test_a_clean_folder_keeps_the_fix_launcher(tmp_path, monkeypatch):
+    folder = tmp_path / "Smith v Jones"
+    folder.mkdir()
+    _docx(folder / "Filing.docx", "Acme Widgets Inc sued over the lease.")
+    assert _run_main(folder, monkeypatch, "--pseudonymize",
+                     "--term", "Acme Widgets Inc") == 0
+    assert not (folder / "LEAKS.xlsx").exists()        # nothing to triage
+    assert (folder / "pseudonym_key.xlsx").is_file()   # ...but there IS a key
+    assert any(n.startswith("Apply Fixes") for n in _launchers(folder))
+
+
+def test_a_flag_is_applied_with_no_worksheet_in_the_folder(tmp_path, monkeypatch):
+    # The whole shape of the complaint: a folder with no leaks left, a name
+    # spotted in the reader, and a text-only pass that cures it.
+    folder = tmp_path / "Smith v Jones"
+    folder.mkdir()
+    _docx(folder / "Filing.docx",
+          "Acme Widgets Inc sued. The tenant Rosa Delgado signed the lease.")
+    assert _run_main(folder, monkeypatch, "--pseudonymize",
+                     "--term", "Acme Widgets Inc") == 0
+    # The triage is answered and gone — the state the folder is in when the
+    # operator finally reads the exports and spots what the scans missed.
+    (folder / "LEAKS.xlsx").unlink(missing_ok=True)
+    assert any(n.startswith("Apply Fixes") for n in _launchers(folder))
+    export = folder / "Text Files" / "Filing.txt"
+    assert "Rosa Delgado" in export.read_text(encoding="utf-8")
+    (folder / NAME).write_text("Rosa Delgado\n", encoding="utf-8")
+    assert _run_main(folder, monkeypatch, "--fix-leaks") == 0
+    body = export.read_text(encoding="utf-8")
+    assert "Rosa Delgado" not in body and "signed the lease" in body
+    assert "Rosa Delgado" in {str(r[1]) for r in _key_rows(folder)}
+
+
+def test_a_bail_out_says_the_flags_are_waiting(tmp_path):
+    # Two branches of `--fix-leaks` return before this file is read, and both
+    # promise the folder is left EXACTLY as it stands. Nothing is consumed, so
+    # the lines survive to the next click — what they lose is the run, and
+    # saying so is the whole of the fix.
+    folder = tmp_path / "Smith v Jones"
+    folder.mkdir()
+    (folder / NAME).write_text("Rosa Delgado\nnever: Ford\n", encoding="utf-8")
+    said = pl._pn_reader_flags_unapplied(folder)
+    assert NAME in said and "1 flagged value(s)" in said and "1 keep(s)" in said
+    assert "NOT applied" in said
+    (folder / NAME).unlink()
+    assert pl._pn_reader_flags_unapplied(folder) == ""

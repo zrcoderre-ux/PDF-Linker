@@ -176,9 +176,8 @@ def test_word_only_folder_is_stamped_done(tmp_path, monkeypatch):
 
 def test_word_only_folder_gets_the_fix_launcher_when_there_is_triage(
         tmp_path, monkeypatch):
-    # The leak-fix launcher is the companion of the LEAKS worksheet — it exists
-    # to apply that worksheet's Fix? decisions — so it appears beside one and
-    # nowhere else. An all-Word folder must get it just like a PDF batch.
+    # The fix launcher applies this folder's worksheet Fix? decisions to the
+    # exports directly. An all-Word folder must get it just like a PDF batch.
     pytest.importorskip("openpyxl")
     _docx(tmp_path / "Filing.docx",
           _para("Ernest N Ramirez appeared.")
@@ -191,16 +190,21 @@ def test_word_only_folder_gets_the_fix_launcher_when_there_is_triage(
         pass
     assert (tmp_path / "pseudonym_key.xlsx").is_file()
     assert (tmp_path / "LEAKS.xlsx").is_file()          # something to triage
-    assert any(n.startswith("Apply Leak Fixes") for n in _launchers(tmp_path))
+    assert any(n.startswith("Apply Fixes") for n in _launchers(tmp_path))
     # and the export really was scrubbed
     txt = (tmp_path / "Text Files" / "Filing.txt")
     assert "Ernest N Ramirez" not in txt.read_text(encoding="utf-8")
 
 
-def test_fix_launcher_absent_when_there_is_nothing_to_triage(tmp_path,
-                                                             monkeypatch):
-    # No worksheet -> no launcher. A launcher left behind after a clean run
-    # implies there is still something to triage.
+def test_the_fix_launcher_stays_when_there_is_nothing_to_triage(tmp_path,
+                                                                monkeypatch):
+    # It used to go with the worksheet — "no worksheet, no launcher", on the
+    # ground that a launcher left behind implies there is still triage waiting.
+    # That left a CLEAN folder with no way to apply a value flagged in the text
+    # reader afterwards, and the only remedy was a full re-run: every PDF
+    # reopened to scrub a value the operator had already named. The launcher
+    # belongs beside the KEY, which is all `--fix-leaks` needs; the worksheet's
+    # own absence is what says there is nothing to triage.
     pytest.importorskip("openpyxl")
     _docx(tmp_path / "Filing.docx", _para("Ernest N Ramirez appeared."))
     monkeypatch.setattr(sys, "argv", ["pdf_linker.py", str(tmp_path),
@@ -210,7 +214,10 @@ def test_fix_launcher_absent_when_there_is_nothing_to_triage(tmp_path,
     except SystemExit:
         pass
     assert (tmp_path / "pseudonym_key.xlsx").is_file()   # the run did scrub
-    assert not (tmp_path / "LEAKS.xlsx").exists()
+    assert not (tmp_path / "LEAKS.xlsx").exists()        # nothing to triage
+    assert any(n.startswith("Apply Fixes") for n in _launchers(tmp_path))
+    # ...and never under the name it used to have, or the folder carries two
+    # files that run the same pass.
     assert not any(n.startswith("Apply Leak Fixes") for n in _launchers(tmp_path))
     # the re-run launcher is unaffected — that one always belongs
     assert any(n.startswith("Re-run PDF-Linker") for n in _launchers(tmp_path))
@@ -243,11 +250,12 @@ def test_rerun_drops_the_quarantine_it_supersedes(tmp_path, monkeypatch):
     assert not any(p.name.endswith(".LEAK") for p in td.iterdir())
 
 
-def test_rerun_deletes_worksheet_and_launcher_once_triage_is_resolved(
+def test_rerun_deletes_the_worksheet_once_triage_is_resolved(
         tmp_path, monkeypatch):
-    # End to end: run 1 flags a value, the operator marks it yes, run 2 scrubs it
-    # — and the folder is left with neither the worksheet nor the launcher, since
-    # there is nothing left to triage or to apply.
+    # End to end: run 1 flags a value, the operator marks it yes, run 2 scrubs
+    # it — and the worksheet goes, since there is nothing left to answer. The
+    # LAUNCHER stays: the text reader can still flag a value in the clean
+    # exports, and that is the pass which applies one.
     openpyxl = pytest.importorskip("openpyxl")
     _docx(tmp_path / "Filing.docx",
           _para("Ernest N Ramirez appeared.")
@@ -260,7 +268,7 @@ def test_rerun_deletes_worksheet_and_launcher_once_triage_is_resolved(
         pass
     sheet = tmp_path / "LEAKS.xlsx"
     assert sheet.is_file()
-    assert any(n.startswith("Apply Leak Fixes") for n in _launchers(tmp_path))
+    assert any(n.startswith("Apply Fixes") for n in _launchers(tmp_path))
 
     wb = openpyxl.load_workbook(sheet)
     ws = wb.active
@@ -275,7 +283,7 @@ def test_rerun_deletes_worksheet_and_launcher_once_triage_is_resolved(
     except SystemExit:
         pass
     assert not sheet.exists()
-    assert not any(n.startswith("Apply Leak Fixes") for n in _launchers(tmp_path))
+    assert any(n.startswith("Apply Fixes") for n in _launchers(tmp_path))
     body = (tmp_path / "Text Files" / "Filing.txt").read_text(encoding="utf-8")
     assert "TRAVELERS CASUALTY" not in body and "Ernest N Ramirez" not in body
 

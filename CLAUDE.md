@@ -6568,6 +6568,49 @@ capped near 2 GB however much the machine has; split the folder or move to a
 OS kills outright leaves no line at all, which is why the long phases time
 themselves — see the performance notes.
 
+**The run's WARNINGS get a file of their own**
+(`_WARNINGS_REPORT_FILE` = `PDF-Linker Warnings.txt`, `_WarningCollector`,
+`_write_warnings_report`). `pdf_linker.log` is the run narrating its own work,
+and on a real folder that is hundreds of INFO lines. Everything that wants the
+operator's attention is a WARNING somewhere among them — a page nothing could
+read, an export quarantined, a key row that could not be written, a REVIEW
+banner, a `yes` refused as vocabulary — and the diagnosis that cost three
+rounds turned on two WARNING lines at line 66 of a 535-line file. Nobody reads
+a log to find out whether a run went well; they read it once they already know
+it did not. So the warnings are collected as they are emitted (a
+`logging.Handler` on the root logger, installed before the first line is
+written and RESET per run, since `main` is called more than once in a process)
+and written beside the log.
+
+It describes the LAST run and nothing else: every run REWRITES it, and a run
+that warns about nothing REMOVES it — so the file's own existence answers "did
+anything want looking at?" before it is opened, which is the same thing the
+worksheet's presence says about triage. A line the previous report also carried
+is left plain and a line it did not is marked `[NEW]`, which separates "still
+the same three REVIEW pages" from "this run broke something", and the header
+counts how many of the previous report's lines are GONE. Repeats fold to one
+entry with an `(xN)`: one REVIEW banner per page of a 200-page exhibit set is
+one thing to look at, not two hundred. ONE ENTRY IS ONE LINE, its own
+whitespace folded, because the file is read back (`_WARN_ENTRY_RE`) to answer
+the NEW question on the next run — a second, machine-readable copy of itself
+would be a second thing that can disagree with the first. A file that does not
+open with `_WARNINGS_REPORT_MARK` is not ours: never read as our history and
+never deleted as one.
+
+Written from TWO places, for one reason each. `_copy_folder_after_run`, so the
+copy of a finished folder carries the report that folder has — that copy is how
+the case reaches the operator's other machine. And a `finally` in `main`, which
+is what covers the runs whose warnings are most worth reading: the leak gate
+and the key-completeness gate both exit non-zero from the MIDDLE of the run,
+`--fix-leaks` exits through `sys.exit(rc)`, and an unhandled error unwinds past
+everything — a report only a clean run produced would be a report of the runs
+that had nothing to say. That wrapper also records the death itself, because
+`sys.excepthook` logs the traceback AFTER the run unwinds and the collector
+would never see that line. Not gated on a config setting: the file costs
+nothing, deletes itself, and a setting that hides warnings is a setting that
+hides warnings. Residual, and stated: a C-level abort (`faulthandler`'s case)
+runs no `finally`, so the raw line in the log is still the only trace of one.
+
 **The log's first line names the MACHINE and the PYTHON that wrote it**
 (`_machine_name`, in `main`'s run-started line). The log recorded the folder
 and nothing about where it came from — so a log read on one computer says
@@ -7331,6 +7374,16 @@ reader shows the keep at once — the highlight goes, the tooltip says the file
 still carries the fake — and the FULL re-run is what restores the export,
 since the text-only pass never reverses a fake. Pinned in
 `test_new_real_values.py`, end to end through both passes and for a keep.
+**A flagged value never needs the FULL run**, and the folder now says so: the
+value is authoritative, so it needs no pre-scan to discover it, no detector to
+shape it and no re-read of the PDFs to reach it — the PDF is never scrubbed at
+all — and `_pn_build_terms` gives it the same deterministic fake, the same bare
+tokens, the same `_pn_name_variants` near-misses and the same break tolerance
+on either pass. What used to force the re-run was the BUTTON: see the fix
+launcher under "Folder artifacts", which is written beside the KEY now rather
+than beside the worksheet. The one flag that still wants a full re-run is a
+scan GARBLE — a `*` correction patches the PDF's own text layer, and the
+reader writes plain values and `no:` / `never:` keeps, not stars.
 
 **…and the file is CONSUMED by the run that reads it**
 (`_pn_consume_reader_file`), at the owner's direction. It is TRIAGE, the
@@ -7397,13 +7450,9 @@ console, which is about to close, so a run that fell back to `python.exe` could
 take a close event with it — a new minimized window is inert. POSIX uses
 `nohup … &` so the work survives the Terminal window closing.
 
-`Re-run PDF-Linker.bat` (`_write_rerun_launcher`), `Apply Leak Fixes.bat`
-(`_write_fix_launcher` — it needs `pseudonym_key.xlsx`, which is what
-`--fix-leaks` reads, AND a `LEAKS.xlsx` to apply: it is that worksheet's
-companion, so it is written beside one and REMOVED when there is none. The
-end-of-run block settles it, after `_pn_write_leak_report` has decided the
-worksheet's fate — the up-front copy can only see the previous run's state) and the `ETA …`/`DONE …` markers (`_write_eta_marker` /
-`_write_done_marker`). Gate them on **`pdfs or word_texts`**, never `pdfs`
+`Re-run PDF-Linker.bat` (`_write_rerun_launcher`), `Apply Fixes.bat`
+(`_write_fix_launcher`, `_FIX_LAUNCHER_STEM`) and the `ETA …`/`DONE …` markers
+(`_write_eta_marker` / `_write_done_marker`). Gate them on **`pdfs or word_texts`**, never `pdfs`
 alone: an **all-Word folder is a real batch** — same scrubbed exports, same
 key, same LEAKS worksheet — and gating on the PDF list left it with leaks to
 triage and nothing to double-click. The live ETA stays PDF-only (it projects
@@ -7411,6 +7460,42 @@ from per-page OCR weights and Word has no OCR to project from), but a Word run
 still stamps `DONE` so a finished folder is distinguishable from an untouched
 one. `_pdfs_in_folder` is **non-recursive** — case subfolders are not walked, so
 pointing the launcher at a parent folder does nothing at all.
+
+**The fix launcher is named for BOTH its jobs and lives beside the KEY**
+(`_FIX_LAUNCHER_STEM`, `_FIX_LAUNCHER_OLD_STEMS`,
+`_pn_remove_stale_fix_launchers`). It was `Apply Leak Fixes`, written beside
+`LEAKS.xlsx` and deleted with it — the worksheet's companion, on the ground
+that a launcher left standing implies there is still triage waiting. That is
+one job too few. The pass it runs also applies the values flagged in the text
+reader (`_NEW_REAL_VALUES_FILE`), and those arrive with no worksheet in sight:
+the operator reads a CLEAN folder, spots a name the run missed, flags it, and
+finds no button — because the run that resolved the last leak removed the
+launcher with the worksheet. The only remedy left was the full re-run: every
+PDF reopened and every page re-extracted to apply a value the operator had
+already NAMED, which needs no pre-scan, no detectors and no re-read to reach,
+and which the text-only pass has read all along (`_pn_read_new_real_values`,
+called from `_fix_leaks_mode`). So the precondition is the one `--fix-leaks`
+actually has — `pseudonym_key.xlsx` — and the launcher is written beside it and
+removed only where there is none. What is GIVEN UP is the signal the launcher's
+ABSENCE used to carry; the worksheet's own absence carries it, and that is the
+file the operator opens. `_pn_remove_leak_workflow` therefore drops the
+worksheet alone. The old name is swept as the new one is written, or a synced
+folder ends up carrying two files that run the same pass, and
+`_pn_fix_launcher_paths` still names every spelling both have used so a removal
+reaches an older folder's.
+
+**…and a `--fix-leaks` branch that BAILS OUT names what it is leaving**
+(`_pn_reader_flags_unapplied`). That pass reads the reader's file near the end,
+after the worksheet decisions are settled, so the two branches that bail out
+ahead of it — a `~` alias / `phrase` / `*` fix typed into the KEY, which needs
+the full re-run, and nothing-applied-plus-a-rejected-cell, which leaves the
+folder exactly as it stands — left those values unapplied in silence. Nothing
+is LOST either way: `_pn_consume_reader_file` runs only where the key was
+written, so the lines survive to the next click; what they lose is the run, and
+the operator who flagged a name and clicked is owed the sentence. Reported and
+not applied, deliberately: both branches promise the folder is untouched, and
+half-applying one input while reporting that nothing was applied is the shape
+this project refuses everywhere else.
 
 **A run can be DEFERRED to a launcher, for the folder that is about to MOVE**
 (`defer_run` in the config, `--defer`/`--no-defer`). ON means starting the tool

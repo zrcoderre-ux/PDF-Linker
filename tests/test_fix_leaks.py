@@ -1,7 +1,7 @@
 """
 --fix-leaks applies the worksheet Fix?=yes decisions to the .txt/.LEAK exports
 directly (no PDFs), un-quarantines files that are now clean, and preserves +
-extends the key. A companion 'Apply Leak Fixes' launcher runs it on the folder.
+extends the key. A companion 'Apply Fixes' launcher runs it on the folder.
 
 Run:  cd PDF-Linker && python3 -m pytest tests/test_fix_leaks.py -v
 """
@@ -90,11 +90,14 @@ def test_no_decision_scrubs_nothing_but_still_releases(tmp_path):
 
 def test_fix_launcher_spec_windows_and_frozen():
     n, c, _ = P._fix_launcher_spec(r"C:\Py\python.exe", r"C:\T\pdf_linker.py", True)
-    assert n == "Apply Leak Fixes.bat"
+    assert n == "Apply Fixes.bat"
     assert "--fix-leaks" in c and '"%~dp0."' in c
+    # It applies BOTH of the pass's inputs, and the header says so — the
+    # reader's flags arrive in a folder that may have no worksheet at all.
+    assert "LEAKS.xlsx" in c and P._NEW_REAL_VALUES_FILE in c
     # Detached and minimized, like the re-run: this pass used to run in the
     # foreground and hold the window open on a `pause`.
-    assert 'start "PDF-Linker leak fixes" /min ' in c
+    assert 'start "PDF-Linker fixes" /min ' in c
     assert "pause" not in c and c.endswith("exit /b\r\n")
     _n, cf, _e = P._fix_launcher_spec(r"C:\App\app.exe", r"C:\x.py", True, frozen=True)
     assert "x.py" not in cf and "--fix-leaks" in cf       # no script arg when frozen
@@ -159,7 +162,7 @@ def _fixable_folder(tmp_path):
     w2.append(["File", "Type", "Value", "Where (page:line)", "Fix? (yes/no)", "Notes"])
     w2.append(["Brief.txt.LEAK", "LEAK", "Raytheon Technologies", "p.1", "yes", ""])
     wb2.save(tmp_path / "LEAKS.xlsx")
-    (tmp_path / "Apply Leak Fixes.command").write_text("#!/bin/sh\n", encoding="utf-8")
+    (tmp_path / "Apply Fixes.command").write_text("#!/bin/sh\n", encoding="utf-8")
     return td
 
 
@@ -168,13 +171,28 @@ def _fl_args(folder):
     return types.SimpleNamespace(term=[], key=str(folder / "pseudonym_key.xlsx"))
 
 
-def test_resolved_run_deletes_worksheet_and_launcher(tmp_path):
+def test_resolved_run_deletes_the_worksheet_and_keeps_the_launcher(tmp_path):
     td = _fixable_folder(tmp_path)
     rc = P._fix_leaks_mode(tmp_path, _fl_args(tmp_path), {}, log)
     assert rc == 0
     assert not (td / "Brief.txt.LEAK").exists()          # un-quarantined
     assert not (tmp_path / "LEAKS.xlsx").exists()         # worksheet removed
-    assert not (tmp_path / "Apply Leak Fixes.command").exists()   # launcher removed
+    # The launcher is NOT part of the triage it was named after: this same
+    # pass applies a value flagged in the text reader, and one of those arrives
+    # in a folder with no worksheet at all.
+    assert (tmp_path / "Apply Fixes.command").exists()
+
+
+def test_a_folder_carrying_the_old_launcher_name_is_swept(tmp_path):
+    # A folder an earlier version ran carries "Apply Leak Fixes"; two files
+    # running the same pass is the confusing shape, so the old one goes as the
+    # new one is written.
+    _fixable_folder(tmp_path)
+    (tmp_path / "Apply Leak Fixes.command").write_text("#!/bin/sh\n",
+                                                       encoding="utf-8")
+    assert P._fix_leaks_mode(tmp_path, _fl_args(tmp_path), {}, log) == 0
+    assert (tmp_path / "Apply Fixes.command").exists()
+    assert not (tmp_path / "Apply Leak Fixes.command").exists()
 
 
 def test_unresolved_run_keeps_worksheet_and_launcher(tmp_path):
@@ -194,15 +212,15 @@ def test_unresolved_run_keeps_worksheet_and_launcher(tmp_path):
     w2.append(["Brief.txt.LEAK", "LEAK", "Omega Dynamics", "p.1",
                "Omega Dynamics", ""])
     wb2.save(tmp_path / "LEAKS.xlsx")
-    (tmp_path / "Apply Leak Fixes.command").write_text("#!/bin/sh\n", encoding="utf-8")
+    (tmp_path / "Apply Fixes.command").write_text("#!/bin/sh\n", encoding="utf-8")
     P._fix_leaks_mode(tmp_path, _fl_args(tmp_path), {}, log)
     assert (td / "Brief.txt.LEAK").exists()               # still quarantined
     assert (tmp_path / "LEAKS.xlsx").exists()             # worksheet kept
-    assert (tmp_path / "Apply Leak Fixes.command").exists()
+    assert (tmp_path / "Apply Fixes.command").exists()
 
 
 def test_fix_leaks_writes_eta_then_done_marker(tmp_path, monkeypatch):
-    # Apply Leak Fixes projects a finish time (ETA marker) up front and replaces
+    # Apply Fixes projects a finish time (ETA marker) up front and replaces
     # it with a DONE stamp when the pass completes — no ETA marker lingers.
     seen = {}
     real_eta = P._write_eta_marker
@@ -235,9 +253,10 @@ def test_nothing_to_apply_still_stamps_done(tmp_path):
     assert P._fix_leaks_mode(tmp_path, _fl_args(tmp_path), {}, log) == 0
     assert any(m.startswith("DONE ") for m in _markers(tmp_path))
     assert not any(m.startswith("ETA ") for m in _markers(tmp_path))
-    # ...and the resolved workflow's own files are gone
+    # ...and the resolved triage's own worksheet is gone (the launcher stays:
+    # it is also how a value flagged in the text reader gets applied).
     assert not (tmp_path / "LEAKS.xlsx").exists()
-    assert not (tmp_path / "Apply Leak Fixes.command").exists()
+    assert (tmp_path / "Apply Fixes.command").exists()
 
 
 def test_rejected_fix_holds_its_own_file_but_not_the_batch(tmp_path):
@@ -263,12 +282,12 @@ def test_rejected_fix_holds_its_own_file_but_not_the_batch(tmp_path):
     ws.append(["Opp.txt.LEAK", "LEAK", "Gregory Yu", "p.1", "yes", ""])
     ws.append(["Reply.txt.LEAK", "LEAK", "M & M", "p.1", "M & M", ""])
     wb.save(tmp_path / "LEAKS.xlsx")
-    (tmp_path / "Apply Leak Fixes.command").write_text("#!/bin/sh\n")
+    (tmp_path / "Apply Fixes.command").write_text("#!/bin/sh\n")
     P._fix_leaks_mode(tmp_path, _fl_args(tmp_path), {}, log)
     assert not (td / "Opp.txt.LEAK").exists()          # the applied row released
     assert (td / "Reply.txt.LEAK").exists()            # the dropped row held
     assert (tmp_path / "LEAKS.xlsx").exists()          # cell still to correct
-    assert (tmp_path / "Apply Leak Fixes.command").exists()
+    assert (tmp_path / "Apply Fixes.command").exists()
 
 
 def test_rejected_fix_alone_leaves_the_folder_untouched(tmp_path):
@@ -288,11 +307,11 @@ def test_rejected_fix_alone_leaves_the_folder_untouched(tmp_path):
     ws.append(["File", "Type", "Value", "Where", "Fix? (yes/no)", "Notes"])
     ws.append(["Reply.txt.LEAK", "LEAK", "M & M", "p.1", "M & M", ""])
     wb.save(tmp_path / "LEAKS.xlsx")
-    (tmp_path / "Apply Leak Fixes.command").write_text("#!/bin/sh\n")
+    (tmp_path / "Apply Fixes.command").write_text("#!/bin/sh\n")
     assert P._fix_leaks_mode(tmp_path, _fl_args(tmp_path), {}, log) == 0
     assert (td / "Reply.txt.LEAK").exists()
     assert (tmp_path / "LEAKS.xlsx").exists()
-    assert (tmp_path / "Apply Leak Fixes.command").exists()
+    assert (tmp_path / "Apply Fixes.command").exists()
 
 
 # ── a Fix?=yes may not rename a cited decision ──────────────────────────────
