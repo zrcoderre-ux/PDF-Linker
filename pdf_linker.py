@@ -36707,13 +36707,15 @@ def _combined_sections(text):
 
 def _is_tool_txt_artifact(p):
     """The tool's OWN .txt files in a folder — the leak worksheet's plain-text
-    companion and the empty ETA/DONE run markers. Never exports, so never
-    scrubbed and never tracked."""
+    companion, the reader's flag list, this run's warnings report and the empty
+    ETA/DONE run markers. Never exports, so never scrubbed and never
+    tracked."""
     leak_txts = {f"{_PN_LEAK_STEM}.txt"} | {
         f"{stem}.txt" for stem in _PN_LEAK_LEGACY_STEMS}
     if p.name in leak_txts or p.name in (_COMBINED_TEXT_NAME,
                                          _COMBINED_ORIGINAL_NAME,
-                                         _NEW_REAL_VALUES_FILE):
+                                         _NEW_REAL_VALUES_FILE,
+                                         _WARNINGS_REPORT_FILE):
         return True
     if (p.name.startswith(_ETA_MARKER_PREFIX + " ")
             or p.name.startswith(_DONE_MARKER_PREFIX + " ")):
@@ -39133,6 +39135,225 @@ def _install_crash_logging(log):
         pass
 
 
+
+# ── The run's warnings, in a file of their own ──────────────────────────────
+# `pdf_linker.log` is the run narrating its own work, and on a real folder that
+# is hundreds of lines of INFO. Everything that wants the operator's attention
+# is a WARNING somewhere among them — a page nothing could read, an export
+# quarantined, a key row that could not be written, a REVIEW banner, a `yes`
+# refused as vocabulary — and the diagnosis that cost three rounds turned on
+# two WARNING lines at line 66 of a 535-line file. Nobody reads a log to find
+# out whether a run went well; they read it once they already know it did not.
+#
+# So the warnings are collected as they are emitted and written beside the log
+# as a file of their own. It describes the LAST run and nothing else: every run
+# rewrites it, and a run that warns about nothing REMOVES it, so the file's own
+# existence answers "did anything want looking at?" before it is opened. A line
+# the previous report also carried is left plain and a line it did not is
+# marked NEW, which is what separates "still the same three REVIEW pages" from
+# "this run broke something", and the header says how many of the previous
+# report's lines are gone.
+#
+# Written from TWO places, for one reason each: `_copy_folder_after_run`, so
+# the copy of a finished folder carries the report the folder has (that copy is
+# how the case reaches the operator's other machine), and a `finally` in `main`,
+# which is what covers a run that exits through a gate, is killed, or dies —
+# the runs most likely to have warnings worth reading.
+_WARNINGS_REPORT_FILE = "PDF-Linker Warnings.txt"
+# How a report of OURS is recognised, so a file the operator happened to write
+# under this name is never read as our history and never deleted as one.
+_WARNINGS_REPORT_MARK = "PDF-Linker warnings"
+# One entry is one line: the two marker fields, then the message with its own
+# whitespace folded, so the file can be read back to answer "which of these are
+# new?" without a second machine-readable copy of itself.
+_WARN_ENTRY_RE = re.compile(r"^ {2}(?:\[NEW\])? *(?:\(x\d+\))? *(.*\S)[ \t]*$")
+
+
+def _warnings_report_path(folder):
+    return Path(folder) / _WARNINGS_REPORT_FILE
+
+
+def _read_warnings_report(path):
+    """The message texts a previous report of ours carries, as a set — None
+    when there is no report, it cannot be read, or the file is not ours."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return None
+    if not text.lstrip().startswith(_WARNINGS_REPORT_MARK):
+        return None
+    out = set()
+    for line in text.splitlines():
+        m = _WARN_ENTRY_RE.match(line)
+        if m:
+            out.add(m.group(1))
+    return out
+
+
+def _warn_entry_line(message, count, is_new):
+    """One entry: `  [NEW]  (x3)  <message>`, both markers fixed-width and
+    blank where they do not apply, so `_WARN_ENTRY_RE` reads it back."""
+    mark = "[NEW]" if is_new else ""
+    tally = f"(x{count})" if count > 1 else ""
+    return f"  {mark:<6} {tally:<6} {message}".rstrip()
+
+
+# `previous` not given: read the report on disk. The COLLECTOR passes what it
+# read when the run STARTED instead, because the report is written twice in a
+# run (see above) and a second write that read the first one back would compare
+# this run against itself — every line carried over, nothing ever [NEW], and a
+# "no longer occur" count taken against a snapshot of the same run.
+_WARN_PREV_UNREAD = object()
+
+
+def _write_warnings_report(folder, records, started=None, log=None,
+                           previous=_WARN_PREV_UNREAD):
+    """Write, refresh or REMOVE `PDF-Linker Warnings.txt` for this run.
+
+    `records` is [(levelno, message), …] in the order the run emitted them.
+    `previous` is the message set the PREVIOUS RUN's report carried (None where
+    it had none). Returns the path when a report was written, None when the run
+    had nothing to report (in which case any report of ours already there is
+    removed — a stale one says work is waiting that is not).
+    """
+    path = _warnings_report_path(folder)
+    if previous is _WARN_PREV_UNREAD:
+        previous = _read_warnings_report(path)
+    if not records:
+        if previous is not None:
+            try:
+                path.unlink()
+                if log:
+                    log.info(f"  This run warned about nothing — removed "
+                             f"{_WARNINGS_REPORT_FILE}.")
+            except OSError:
+                pass
+        return None
+
+    # Group by severity and fold repeats: one REVIEW banner per page of a
+    # 200-page exhibit set is one thing to look at, not two hundred.
+    order, seen = [], {}
+    for levelno, message in records:
+        text = " ".join(str(message).split())
+        if not text:
+            continue
+        bucket = "ERRORS" if levelno >= logging.ERROR else "WARNINGS"
+        keyed = (bucket, text)
+        if keyed in seen:
+            seen[keyed] += 1
+        else:
+            seen[keyed] = 1
+            order.append(keyed)
+    if not order:
+        return None
+
+    # With no previous report NOTHING is new: a first report has nothing
+    # to be new against, and marking every line would say only that the
+    # file did not exist a moment ago.
+    gone = 0 if previous is None else len(previous - {t for _b, t in order})
+    n_err = sum(seen[k] for k in order if k[0] == "ERRORS")
+    n_warn = sum(seen[k] for k in order if k[0] == "WARNINGS")
+    now = datetime.datetime.now()
+    out = [_WARNINGS_REPORT_MARK, "=" * 70,
+           f"Folder:  {Path(folder).name}",
+           f"Run:     {'started ' + _fmt_clock(started) + ', ' if started else ''}"
+           f"finished {_fmt_clock(now)} on {now:%Y-%m-%d} ({_machine_name()})",
+           "Totals:  " + ", ".join(
+               f"{n} {w}{'' if n == 1 else 's'}"
+               for n, w in ((n_err, "error"), (n_warn, "warning")) if n)
+           + f" ({len(order)} distinct)"]
+    if previous is not None:
+        out.append(f"Cleared: {gone} line(s) from the previous report no longer "
+                   f"occur." if gone else
+                   "Cleared: nothing from the previous report is gone.")
+    out += ["",
+            "Every line below is also in pdf_linker.log, with its timestamp and",
+            "the rest of the run around it. This file describes the LAST run",
+            "only: each run rewrites it, and a run that warns about nothing",
+            "deletes it. [NEW] marks a line the previous report did not carry;",
+            "(xN) is how many times the run said it."]
+    for bucket in ("ERRORS", "WARNINGS"):
+        rows = [k for k in order if k[0] == bucket]
+        if not rows:
+            continue
+        out += ["", f"---- {bucket} ({sum(seen[k] for k in rows)}) "
+                    + "-" * max(0, 52 - len(bucket))]
+        for keyed in rows:
+            text = keyed[1]
+            is_new = previous is not None and text not in previous
+            out.append(_warn_entry_line(text, seen[keyed], is_new))
+    try:
+        path.write_text("\n".join(out) + "\n", encoding="utf-8")
+    except OSError as e:
+        if log:
+            log.info(f"  Could not write {_WARNINGS_REPORT_FILE}: {e}")
+        return None
+    return path
+
+
+class _WarningCollector(logging.Handler):
+    """Every WARNING-or-worse record of the run in hand, with the folder its
+    report belongs in.
+
+    Best-effort throughout, and deliberately so: this is a diagnostic, and a
+    diagnostic that raises ends the run it was meant to explain."""
+
+    def __init__(self):
+        super().__init__(level=logging.WARNING)
+        self.folder = None
+        self.started = None
+        self.records = []
+        self.previous = None
+
+    def install(self, folder):
+        """Start collecting for `folder`. `main` can be called more than once
+        in a process (the tests do), so this RESETS rather than accumulating,
+        and attaches itself only once.
+
+        The PREVIOUS run's report is read here, once, before this run has
+        written a line of its own — that snapshot is what every write of this
+        run's report compares against, so "[NEW]" means new since the last RUN
+        and not since the last write."""
+        self.folder = Path(folder)
+        self.started = datetime.datetime.now()
+        self.records = []
+        self.previous = _read_warnings_report(_warnings_report_path(folder))
+        try:
+            root = logging.getLogger()
+            if self not in root.handlers:
+                root.addHandler(self)
+        except Exception:
+            pass
+
+    def note(self, levelno, message):
+        """Record a line the logger never saw — the crash wrapper's own."""
+        try:
+            self.records.append((levelno, str(message)))
+        except Exception:
+            pass
+
+    def emit(self, record):
+        try:
+            if record.levelno >= logging.WARNING:
+                self.records.append((record.levelno, record.getMessage()))
+        except Exception:
+            pass
+
+    def write(self, log=None):
+        """Write / refresh / remove this folder's report. No folder means no
+        run has started yet, so there is nothing to describe."""
+        if self.folder is None:
+            return None
+        try:
+            return _write_warnings_report(self.folder, self.records,
+                                          started=self.started, log=log,
+                                          previous=self.previous)
+        except Exception:
+            return None
+
+
+_WARNINGS = _WarningCollector()
+
 # ── One run per folder ──────────────────────────────────────────────────────
 # Both launchers start the work detached and silent, so "nothing happened, click
 # it again" is an easy mistake — and a real log shows it being made three times
@@ -40619,6 +40840,12 @@ def _copy_folder_after_run(folder, dest_root, log, hold=None, provider=None):
     the real names in a second place and invite the operator to work from a
     folder the gate is holding. `--fix-leaks` makes the copy once the last leak
     is released, which is the moment the folder finally is what it promised."""
+    # The warnings report is refreshed HERE, before the copy is made, because
+    # the copy is of the folder as the operator would find it and this is the
+    # one file in it that says whether anything wants looking at. `main`'s
+    # `finally` writes it again at the true end of the run — twice is free, the
+    # content being derived from the same collector either way.
+    _WARNINGS.write()
     if not dest_root:
         return None
     if hold:
@@ -40688,42 +40915,88 @@ def _dump_protected_terms(out=None):
     return text
 
 
-# ── Leak-fix launcher (companion to the re-run launcher) ─────────────────────
+# ── Text-only fix launcher (companion to the re-run launcher) ────────────────
+# It was "Apply Leak Fixes", written beside `LEAKS.xlsx` and deleted with it —
+# the worksheet's companion and nothing else. That is one job too few. The pass
+# it runs also applies the values flagged in the text reader
+# (`_NEW_REAL_VALUES_FILE`), and those arrive with no worksheet in sight: the
+# operator reads a clean folder, spots a name the run missed, flags it, and
+# finds no button, because the last run removed the launcher when it removed
+# the worksheet. The remedy was a full re-run — every PDF reopened, every page
+# re-extracted — to apply a value the operator had already named, which needs
+# no pre-scan, no detectors and no re-read to reach.
+#
+# So it is named for both jobs and written wherever `pseudonym_key.xlsx` is,
+# which is the pass's one real precondition. What is given up is the signal the
+# launcher's ABSENCE used to carry ("nothing left to triage"); that signal is
+# carried better by the worksheet itself being gone, which is what the operator
+# opens.
+_FIX_LAUNCHER_STEM = "Apply Fixes"
+_FIX_LAUNCHER_OLD_STEMS = ("Apply Leak Fixes",)   # swept on sight
+
+
 def _fix_launcher_spec(exe, script, windows, frozen=False):
-    """(filename, content, make_executable) for the 'Apply Leak Fixes' launcher —
-    a double-clickable file that runs --fix-leaks on this folder."""
+    """(filename, content, make_executable) for the 'Apply Fixes' launcher — a
+    double-clickable file that runs --fix-leaks on this folder."""
     prog = f'"{exe}"' if frozen else f'"{exe}" "{script}"'
-    notes = ["PDF-Linker - apply the Fix? decisions saved in LEAKS.xlsx to the",
-             ".txt/.LEAK exports (no PDFs touched).",
+    notes = ["PDF-Linker - apply, to the .txt/.LEAK exports and no PDFs:",
+             "  * the Fix? decisions saved in LEAKS.xlsx, and",
+             '  * the values flagged in the text reader ("New Real Values.txt").',
              "Nothing appears on screen: the run is detached and minimized.",
              'Progress -> pdf_linker.log; a "DONE <time>.txt" file appears',
              "in this folder when the pass finishes."]
     if windows:
         content = _bg_launcher_bat(
-            "PDF-Linker leak fixes", notes,
+            "PDF-Linker fixes", notes,
             f'{prog} "%~dp0." --fix-leaks --key "%~dp0pseudonym_key.xlsx"')
-        return "Apply Leak Fixes.bat", content, False
+        return f"{_FIX_LAUNCHER_STEM}.bat", content, False
     content = _bg_launcher_sh(
         notes, f'{prog} "$(dirname "$0")" --fix-leaks '
                '--key "$(dirname "$0")/pseudonym_key.xlsx"')
-    return "Apply Leak Fixes.command", content, True
+    return f"{_FIX_LAUNCHER_STEM}.command", content, True
 
 
 def _pn_fix_launcher_paths(folder):
-    """Both possible 'Apply Leak Fixes' launcher paths — a folder synced across
-    OSes may carry either the .command or the .bat."""
-    return [folder / "Apply Leak Fixes.command", folder / "Apply Leak Fixes.bat"]
+    """Every path this launcher has ever been written to — both extensions,
+    since a folder synced across OSes may carry either, and the old
+    'Apply Leak Fixes' name, so a folder that already has one does not end up
+    carrying two files that run the same pass."""
+    stems = (_FIX_LAUNCHER_STEM,) + _FIX_LAUNCHER_OLD_STEMS
+    return [folder / f"{stem}{ext}"
+            for stem in stems for ext in (".command", ".bat")]
+
+
+def _pn_remove_stale_fix_launchers(folder):
+    """Drop a launcher under a name this version no longer writes (the old
+    'Apply Leak Fixes'). Best-effort; returns the names removed."""
+    keep = {f"{_FIX_LAUNCHER_STEM}.command", f"{_FIX_LAUNCHER_STEM}.bat"}
+    out = []
+    for path in _pn_fix_launcher_paths(folder):
+        if path.name in keep:
+            continue
+        try:
+            if path.exists():
+                path.unlink()
+                out.append(path.name)
+        except OSError:
+            pass
+    return out
 
 
 def _pn_remove_leak_workflow(folder, log):
-    """Delete the leak-triage worksheet (under every name it has used) and the
-    Apply-Leak-Fixes launcher. Called once no quarantined *.LEAK export remains:
-    the leak workflow is resolved, so its own files must not linger and imply
-    there is still something to triage. Best-effort; returns the names removed."""
+    """Delete the leak-triage worksheet, under every name it has used. Called
+    once no quarantined *.LEAK export remains: the triage is resolved, so its
+    own files must not linger and imply there is still something to answer.
+    Best-effort; returns the names removed.
+
+    The FIX LAUNCHER is deliberately not among them any more. It used to be —
+    it was the worksheet's companion and went with it — and that is what left a
+    clean folder with no way to apply a value flagged in the text reader
+    afterwards (see `_fix_launcher_spec`). What the launcher's absence used to
+    say, the worksheet's absence says."""
     victims = [_pn_leak_xlsx_path(folder), _pn_leak_txt_path(folder)]
     victims += [folder / f"{stem}.xlsx" for stem in _PN_LEAK_LEGACY_STEMS]
     victims += [folder / f"{stem}.txt" for stem in _PN_LEAK_LEGACY_STEMS]
-    victims += _pn_fix_launcher_paths(folder)
     removed = []
     for p in victims:
         try:
@@ -40751,9 +41024,37 @@ def _write_fix_launcher(folder, log):
         path.write_text(content, encoding="utf-8", newline="")
         if make_exec:
             os.chmod(path, 0o755)
-        log.info(f"  Wrote leak-fix launcher: {name}")
+        log.info(f"  Wrote fix launcher: {name}")
     except OSError as e:
-        log.warning(f"  Could not write leak-fix launcher: {e}")
+        log.warning(f"  Could not write fix launcher: {e}")
+    # A folder run by an earlier version carries the old name. Swept after the
+    # replacement is on disk, so the folder is never left with neither.
+    for stale in _pn_remove_stale_fix_launchers(folder):
+        log.info(f"  Replaced the old {stale} with {name}.")
+
+
+def _pn_reader_flags_unapplied(folder):
+    """The sentence a `--fix-leaks` bail-out owes the operator when the text
+    reader's file is sitting in the folder: this pass reads that file near the
+    end, so a branch that returns before it leaves those values unapplied and
+    would otherwise do so in silence.
+
+    Nothing is CONSUMED by such a branch — `_pn_consume_reader_file` runs only
+    where the key was written — so the lines survive to the next click; what
+    they lose is the run, and saying so is the whole of the fix. Empty string
+    when there is nothing waiting."""
+    values, keeps = _pn_read_reader_file(folder)
+    if not values and not keeps:
+        return ""
+    parts = []
+    if values:
+        parts.append(f"{len(values)} flagged value(s)")
+    if keeps:
+        parts.append(f"{len(keeps)} keep(s)")
+    return (f" {_NEW_REAL_VALUES_FILE} is waiting here with "
+            + " and ".join(parts)
+            + ": those are NOT applied either, and the file is left as it is "
+              "so the next run still has them.")
 
 
 def _fix_leaks_mode(folder, args, cfg, log):
@@ -40838,7 +41139,8 @@ def _fix_leaks_mode(folder, args, cfg, log):
                + f" carry {what} in the pseudonym key's Replacement column. "
                  "That changes a fake the exports already carry, and this pass "
                  "never re-reads the PDFs — click 'Re-run PDF-Linker' instead. "
-                 "Nothing has been changed.")
+                 "Nothing has been changed."
+               + _pn_reader_flags_unapplied(folder))
         log.warning(msg)
         _warn(msg)
         _copy_folder_after_run(
@@ -40987,7 +41289,8 @@ def _fix_leaks_mode(folder, args, cfg, log):
         # all stand — and point at the cell to correct.
         log.warning("--fix-leaks: nothing applied — correct the Fix? cell(s) "
                     "for " + ", ".join(rejected[:6]) + " and click again. The "
-                    "export(s) stay quarantined until a fix actually applies.")
+                    "export(s) stay quarantined until a fix actually applies."
+                    + _pn_reader_flags_unapplied(folder))
         # ...and say it ON THE ROW as well. This branch leaves the worksheet
         # standing precisely because nothing was resolved, so without this the
         # sheet comes back byte-identical to the one the operator just filled
@@ -41323,6 +41626,11 @@ def _fix_leaks_mode(folder, args, cfg, log):
         # This pass reads the reader's file too, so it consumes it too — the
         # key it just rewrote carries the bindings those lines produced.
         _pn_consume_reader_file(folder, log)
+        # ...and the launcher is refreshed beside that key, so a folder an
+        # earlier version left with the old 'Apply Leak Fixes' name — or with
+        # none, its worksheet having taken it — comes out of this pass able to
+        # run the pass again.
+        _write_fix_launcher(folder, log)
 
     # Record this pass's throughput so the next run's ETA is sharper, then
     # replace the ETA marker with a DONE stamp (the actual finish time) — and
@@ -41386,6 +41694,34 @@ def _fix_leaks_mode(folder, args, cfg, log):
 # Entry point
 # ────────────────────────────────────────────────────────────────────────────
 def main():
+    """The run, wrapped so the warnings report is written whatever happens to
+    it.
+
+    A `finally` and not a line at the end of `_main`, because the runs whose
+    warnings are most worth reading are exactly the ones that never reach the
+    end: the leak gate and the key-completeness gate both exit non-zero from
+    the middle of the run, `--fix-leaks` exits through `sys.exit(rc)`, and an
+    unhandled error unwinds past everything. A report only a clean run produced
+    would be a report of the runs that had nothing to say.
+    """
+    try:
+        _main()
+    except SystemExit:
+        raise
+    except BaseException as exc:
+        # `sys.excepthook` logs the traceback, but it runs AFTER this unwinds,
+        # so the collector would never see that line. Recorded here instead,
+        # short — the log has the traceback and this file points at it.
+        _WARNINGS.note(logging.CRITICAL,
+                       f"Run ended on an unhandled error: {exc!r} — see "
+                       f"pdf_linker.log for the traceback. Nothing after that "
+                       f"point was done.")
+        raise
+    finally:
+        _WARNINGS.write()
+
+
+def _main():
     # Backward-compatible CLI: positional <folder>, plus optional --provider.
     # The mail-merge macro calls `pythonw pdf_linker.py "<folder>"` with no
     # flag, which keeps the historical Westlaw-default behaviour.
@@ -41579,6 +41915,10 @@ def main():
         except Exception:
             pass
     log = logging.getLogger("pdf_linker")
+    # Collect this run's warnings for the report beside the log — installed
+    # before the first line is written, and RESET here rather than accumulated,
+    # since `main` can be called more than once in one process.
+    _WARNINGS.install(folder)
     _install_crash_logging(log)
     log.info("=" * 60)
     # …and say WHICH MACHINE and WHICH PYTHON, on the line that opens the log.
@@ -42217,10 +42557,11 @@ def main():
         _want_key = (pseudonymizer is not None
                      and (folder / "pseudonym_key.xlsx").is_file())
         _write_rerun_launcher(folder, args.provider, _want_key, log)
-        # Only if a worksheet from a prior run is already waiting — otherwise
-        # an interrupted run would leave a launcher for a triage that does not
-        # exist. The end-of-run block settles it either way.
-        if _want_key and _pn_leak_xlsx_path(folder).is_file():
+        # Beside a key and nothing else, which is the only thing `--fix-leaks`
+        # actually needs: it applies this folder's worksheet decisions AND the
+        # values flagged in the text reader, and a reader flag arrives with no
+        # worksheet in sight. The end-of-run block settles it either way.
+        if _want_key:
             _write_fix_launcher(folder, log)
 
     if pseudonymizer is not None and (pdfs or word_texts):
@@ -42478,21 +42819,23 @@ def main():
         want_key = (pseudonymizer is not None
                     and (folder / "pseudonym_key.xlsx").is_file())
         _write_rerun_launcher(folder, args.provider, want_key, log)
-        # Companion launcher: apply the worksheet Fix? decisions to the exports
-        # directly (no source document reopened) — the fast path after triaging
-        # leaks, and the only one that exists for an all-Word folder. It exists
-        # to apply THAT worksheet, so it belongs beside it and nowhere else:
-        # written when there is something to triage, removed when there is not.
-        # This runs after the report is written, so it sees THIS run's verdict
-        # (the up-front copy is written from the previous run's state).
-        if want_key and _pn_leak_xlsx_path(folder).is_file():
+        # Companion launcher: apply, to the exports directly and with no source
+        # document reopened, this folder's worksheet Fix? decisions AND any
+        # value flagged in the text reader — the fast path after triaging
+        # leaks, and the only one that exists for an all-Word folder. Written
+        # beside the KEY rather than beside the worksheet: the reader's flags
+        # land in a folder that has no worksheet at all, and a full re-run to
+        # apply a value the operator has already named is every PDF reopened
+        # for nothing. Removed only where there is no key, which is where the
+        # pass cannot run.
+        if want_key:
             _write_fix_launcher(folder, log)
         else:
             for _p in _pn_fix_launcher_paths(folder):
                 try:
                     if _p.exists():
                         _p.unlink()
-                        log.info(f"  Nothing left to triage — removed "
+                        log.info(f"  No pseudonym key here — removed "
                                  f"{_p.name}.")
                 except OSError:
                     pass
@@ -42569,9 +42912,10 @@ def main():
             extra = ""
             if no_sheet:
                 extra += (" NOTE: no LEAKS.xlsx was written for this run, so "
-                          "there is nothing to triage and no Apply Leak Fixes "
-                          "launcher — add the survivor(s) with --term and "
-                          "re-run.")
+                          f"there is nothing to triage — add the survivor(s) "
+                          f"with --term and re-run, or name them in "
+                          f"{_NEW_REAL_VALUES_FILE} and click "
+                          f"'{_FIX_LAUNCHER_STEM}'.")
             _warn(f"!! Pseudonymize FAILED: party name(s) survived in the "
                   f"exports ({shown}) — the case is recognizable on sight. "
                   f"{len(quarantined)} .txt export(s) with a leak quarantined to "
