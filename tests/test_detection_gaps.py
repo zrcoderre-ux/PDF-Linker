@@ -174,10 +174,20 @@ def test_a_surviving_date_of_birth_is_a_reid_row():
 
 def test_an_age_is_a_review_row_and_a_page_is_not():
     vals = {v for k, v in P._pn_review_findings(
-        "Rosa Delgado, 67, of Fresno was age 67 and a 67-year-old. "
+        "Rosa Delgado, 67, of Fresno was age 67 and lives there. "
         "Page 12 and Stage 2.") if k == "age"}
-    assert {"Rosa Delgado, 67,", "age 67", "67-year-old"} <= vals, vals
+    assert {"Rosa Delgado, 67,", "age 67"} <= vals, vals
     assert not any("Page" in v or "Stage" in v for v in vals)
+
+
+def test_the_adjective_form_of_an_age_is_never_a_row():
+    # "a 4-year-old child", "the 50-year-old plaintiff": a description, not a
+    # record, and a row no operator would ever answer differently. Dropped at
+    # the owner's direction.
+    vals = {v for k, v in P._pn_review_findings(
+        "A 50-year-old plaintiff and a 4-year-old child, 4 years old.")
+        if k == "age"}
+    assert not vals, vals
 
 
 # ── 4. Driver licence and plate ──────────────────────────────────────────────

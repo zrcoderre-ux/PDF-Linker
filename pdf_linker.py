@@ -4896,7 +4896,13 @@ def _page_flowing_text(page):
     # the citation parse's and the ordinary export's — would be the one
     # reading of the page still carrying the OCR's spelling.
     before = [sp["text"] for sp in spans]
-    kept = _drop_overdrawn_spans(spans, page)
+    # …less the SIGNATURE NOTES that seam adds. This rendering is the citation
+    # parse's and the `orig_pages` copy's, so a description of what is written
+    # on a line has no business in it — and counted, one would read as evidence
+    # of a re-draw and rebuild a page that has none, which is exactly what the
+    # positive-evidence gate below exists to refuse.
+    kept = [sp for sp in _drop_overdrawn_spans(spans, page)
+            if not sp.get("_sig_note")]
     if len(kept) == len(spans) and [sp["text"] for sp in kept] == before:
         return text
     rows = _cluster_rows(_reading_frame_spans(page, kept))
@@ -4973,6 +4979,11 @@ def _drop_overdrawn_spans(spans, page=None):
     # read the label the scrub and the leak scan read.
     if page is not None:
         out = _restore_template_labels(out, page)
+        # …and a SIGNATURE LINE nothing read says what is written on it
+        # (`_signature_note_spans`). Here, at the seam every rendering takes
+        # its spans through, so the export, the form grid and the detection
+        # copy describe one line one way.
+        out = out + _signature_note_spans(out, page)
     return out
 
 
@@ -13696,6 +13707,11 @@ _PN_NEVER_FAKE = frozenset({
     "typeorprintname", "signatureofdeclarant", "dateandtime",
     "formapprovedforoptionaluse", "judicialcouncilofcalifornia",
     "codeofcivilprocedure",
+    # …and this tool's OWN description of a signature line. It stands in the
+    # export as ordinary text, so without this a worksheet `yes` could mint it
+    # as a party and a re-run would scrub the note it wrote itself.
+    "signedbutnotocrreadable", "possiblesignaturenotocrreadable",
+    "nosignaturedetected",
 })
 
 # ...and the SHAPE of a Judicial Council form id, so the whole catalogue is
@@ -14356,6 +14372,9 @@ _PN_FORM_LABEL_WORDS = frozenset({
     "attachments", "title", "titles", "short", "page", "pages", "print",
     "printed", "address", "addresses", "bar", "item", "items", "box", "boxes",
     "check", "form", "forms", "declarant", "deponent", "amount", "amounts",
+    # The one capitalised word in this tool's own signature-line note, so no
+    # harvest can read it as a bare token of somebody's name.
+    "ocr",
 })
 
 # The vocabulary of the TRADE a case is about, which is exactly what a business
@@ -15861,15 +15880,22 @@ def _pn_identifier_values(text):
 # difference.
 _PN_REVIEW_RES = {
     "url/domain": _PN_DETECTORS["url"][0],
-    # An AGE — "age 67", "67-year-old", "Rosa Delgado, 67," — is not faked
-    # (a number is not a name and the year of birth already stays) and is
-    # not nothing beside a name and a city, so it is a row. The "age" word
-    # must stand alone ("Page 12" and "Stage 2" are refused by the
-    # lookbehind), and the appositive form needs a Title-case run of two
-    # words in front of the comma.
+    # An AGE — "age 67", "Rosa Delgado, 67," — is not faked (a number is not
+    # a name and the year of birth already stays) and is not nothing beside
+    # a name and a city, so it is a row. The "age" word must stand alone
+    # ("Page 12" and "Stage 2" are refused by the lookbehind), and the
+    # appositive form needs a Title-case run of two words in front of the
+    # comma.
+    #
+    # The ADJECTIVE form — "50-year-old", "4-year-old" — is NOT read, at the
+    # owner's direction. It is how a pleading writes a description rather
+    # than a record ("a 4-year-old child", "the 50-year-old plaintiff"), so
+    # the shape is ordinary prose in every filing that carries it and every
+    # occurrence was a row no operator would ever answer differently — the
+    # cost of a tier is the reading of it, and this one was all cost.
     "age": re.compile(
         r"(?<![A-Za-z])(?:(?i:aged?|at[ \t]+the[ \t]+age[ \t]+of)[ \t]+\d{1,2}"
-        r"(?![\d/.\-%])|\b\d{1,2}[ \t-]years?[ \t-]old\b"
+        r"(?![\d/.\-%])"
         r"|\b[A-Z][a-z]+(?:[ \t]+[A-Z][a-z]+)+,[ \t]*\d{1,2},)"),
     # An IP ADDRESS: an e-signature audit trail prints the signer's, and
     # nothing read it. Dotted-quad only, the octets bounded, and refused
@@ -29765,6 +29791,505 @@ def _ink_state_from_fill(fill):
     if fill <= _INK_EMPTY_FILL:
         return False
     return None
+
+
+# ── A SIGNATURE LINE: WHAT WAS WRITTEN THERE, WHERE NOTHING READ IT ──────────
+#
+# A handwritten signature is the one mark on a filing that OCR cannot read and
+# must not try to. What a recogniser makes of a scrawl is letter-soup, and that
+# soup does not merely sit in the export looking wrong: it is harvested as a
+# name, draws a pool word, earns a key row, and ships as a party of the case —
+# the tool's own guess at a signature standing in a deliverable as though it
+# were the document's text. The export's other answer is worse still, and is
+# what a reader actually got: a blank. A signature that leaves no text layer
+# exports as an empty line, which is indistinguishable from an UNSIGNED one —
+# and whether a declaration was signed is frequently the whole question about
+# it.
+#
+# So the line is described rather than read: SOMETHING is written here and it
+# is not machine readable, or NOTHING is. The same voice as the low-dpi,
+# rebuilt-layer and ink-form banners — an inferred reading is never presented
+# as equal to a read one — and the same three-way verdict `_ink_state_from_fill`
+# gives a checkbox, because the middle of the measurement is exactly where
+# guessing is worst.
+#
+# A TYPED signature is untouched, at the owner's direction: "/s/ Jane Doe", a
+# DocuSign cursive rendered as text, a name typed on the line — the text layer
+# has read it, and the pass is for the line the text layer says nothing about.
+# That is the screen and not a preference: an anchor whose writing area carries
+# any word at all yields no note, so OCR works as usual wherever OCR worked.
+#
+# THE ANCHOR IS THE PAGE'S OWN WORD, never a shape. A pleading's signature
+# block prints no label at all — a rule, a name under it, a role — and reading
+# every rule on every page as a signature line would put a note under every
+# heading underline and every table edge in the batch. So the label must say
+# so: the word "signature", or a cell that is exactly "Signed by". Held to a
+# CELL (`_sig_row_cells`, the row split at a printed gap the positional
+# renderer already reads its columns by), because a sentence carrying the word
+# — "the signature of the parties was forged" — runs on with no gap in it,
+# while "(SIGNATURE OF DECLARANT)", "Signature:" and "SIGNATURE OF ATTORNEY OR
+# PARTY WITHOUT ATTORNEY" are each a cell of their own. And held to CASE: a
+# printed label is capitalised (its connectors aside), prose is not, which is
+# the screen `prune_heading_only_terms` states and needs no word list. A
+# "Signed by" cell must carry NOTHING after the label, which is its whole
+# corroboration — the phrase is a passive verb and prose always gives it its
+# agent ("signed by the parties"), so a cell that stops there is a form's
+# label and nothing else.
+#
+# THE LINE IS READ OFF THE RASTER, so one mechanism answers for three pages. A
+# born-digital form rules its line in vector art, a typed one rules it with a
+# run of underscores, and a SCAN — the page this pass exists for — carries the
+# same line as ink in a picture, where `_page_rules` reads nothing at all. All
+# three are a long unbroken row of dark pixels, so the line is found the way
+# `_raster_rules` finds one, in the render this pass has to make anyway.
+#
+# The WRITING AREA is the band above that line (a signature sits on its line),
+# clear of the line's own ink; for a "Signed by" label, whose line is the
+# stamp's and not the page's, it is the band below the label. What is measured
+# there is not ink but STROKES (`_sig_band_shape`): a dirty page carries as
+# much ink as a signed one, so the dark pixels are grouped into connected
+# components, a component too small either way is dirt and counts for nothing,
+# and the longest one's reach is what separates a written mark from a scatter
+# of specks. A band with ink and no stroke in it is called possible, never
+# signed — asserting that a filing was signed is not a guess this tool makes.
+
+_SIG_NOTE_SIGNED = "[signed, but not OCR readable]"
+_SIG_NOTE_MAYBE = "[possible signature, not OCR readable]"
+_SIG_NOTE_NONE = "[no signature detected]"
+_SIG_NOTES = (_SIG_NOTE_SIGNED, _SIG_NOTE_MAYBE, _SIG_NOTE_NONE)
+
+# The cheap page gate: no page carrying neither word pays anything beyond one
+# search of its own text.
+_SIG_HINT_RE = re.compile(r"signature|signed[ \t]+by", re.I)
+# A cell that IS a signature label. At most a few words of label around the
+# word itself, a form's list letter and parentheses stepped over, and a
+# trailing fill rule allowed — "Signature: ______" is one cell, not two.
+_SIG_LABEL_RE = re.compile(r"""
+    ^[\s(\[]*
+    (?:[A-Za-z0-9]{1,2}[.)][ \t]+)?
+    (?:
+        (?P<signed>signed[ \t]+by)
+      |
+        (?:[A-Za-z][A-Za-z'’-]*[ \t]+){0,3}
+        signatures?
+        (?:[ \t]+(?:of|by|for)\b(?:[ \t]+[A-Za-z'’./&-]+){1,6})?
+    )
+    [\s:)\].,;-]*[_\s]*$
+""", re.I | re.X)
+# The words a label may print in lower case. Every other word of it must be
+# capitalised, which is what separates the label from the sentence.
+_SIG_LABEL_LOWER = frozenset(
+    "of by for or and the a an to in on without".split())
+_SIG_LABEL_MAX = 60          # characters; a label, never a sentence
+
+_SIG_RULE_MIN = 40.0         # pt; the shortest run of ink read as a LINE
+_SIG_RULE_THICK = 3.0        # pt; a deeper dark band is shading or type
+_SIG_ABOVE_MAX = 34.0        # pt; how far above a label its own line may sit
+_SIG_SLOT_MAX = 340.0        # pt; how far beside a label its line may run
+_SIG_PAD = 30.0              # pt; the window reaches this far past a label
+_SIG_BAND = 24.0             # pt of writing room measured above the line
+_SIG_RULE_CLEAR = 1.5        # pt above the line, dropped with the line's ink
+_SIG_MIN_WIDTH = 50.0        # pt; a narrower band is no signature slot
+# A form prints its own pointer into the signature band — the Judicial Council
+# "►" beside the line is an IMAGE nine points across, and measured it is a mark
+# in the writing space. An image that narrow is furniture: a signature image
+# has to span its line to be one, so the width is the whole screen, and it is
+# asked of IMAGES alone. Not of vector art, which is what an e-signing tool
+# and a tablet draw a real signature as, one short path per stroke.
+_SIG_GLYPH_IMG_MAX = 40.0    # pt wide; a narrower image is printed furniture
+_SIG_SPECK_PT = 2.5          # pt; a mark smaller than this both ways is dirt
+_SIG_STROKE_MIN = 18.0       # pt; the reach a written mark has and dirt has not
+_SIG_INK_MARK = 0.006        # band ink fraction that reads as WRITTEN
+_SIG_INK_EMPTY = 0.002       # ...and below this as blank; between, unsure
+_SIG_DEDUP = 4.0             # pt; two labels this close describe one line
+# The verdicts, kept on the Document per page as `_LOW_DPI_ATTR` is: every
+# rendering of a page goes through `_drop_overdrawn_spans` and would otherwise
+# render the page again for each, six 200-dpi renders to answer one question.
+_SIG_NOTE_ATTR = "_pdf_linker_signature_notes"
+
+
+def _sig_row_cells(spans):
+    """`spans` grouped into rows and each row split into CELLS at a printed
+    gap: [(x0, y0, x1, y1, text, span)], the span being the cell's first.
+
+    The unit a label is asked of. Prose runs on with no gap in it, so a
+    sentence carrying "signature" is one long cell and fails the label test on
+    its length and its case alone, while a form's label band is one cell per
+    label."""
+    out = []
+    for row in _cluster_rows(spans):
+        cell, prev_x1 = None, None
+        for sp in sorted(row["spans"], key=lambda s: s["bbox"][0]):
+            t = str(sp.get("text", ""))
+            if not t.strip():
+                continue
+            x0, y0, x1, y1 = (float(v) for v in sp["bbox"])
+            if cell is None or (prev_x1 is not None
+                                and x0 - prev_x1 >= _VIS_GAP_PT):
+                if cell is not None:
+                    out.append(cell)
+                cell = [x0, y0, x1, y1, t, sp]
+            else:
+                cell[1], cell[2] = min(cell[1], y0), max(cell[2], x1)
+                cell[3] = max(cell[3], y1)
+                sep = ("" if cell[4][-1:].isspace() or t[:1].isspace()
+                       or prev_x1 is None or x0 - prev_x1 <= 0.2 * (y1 - y0)
+                       else " ")
+                cell[4] += sep + t
+            prev_x1 = x1
+        if cell is not None:
+            out.append(cell)
+    return [tuple(c) for c in out]
+
+
+def _sig_label_kind(text):
+    """"signed" or "signature" for a cell that IS a signature label, else None.
+
+    Three screens, and none of them is a word list. The cell must READ as a
+    label (`_SIG_LABEL_RE`, which allows a few words of label around the word
+    and nothing after "Signed by"); it must be SHORT; and every word of it but
+    a connector must be capitalised, since a printed label is and the sentence
+    that merely mentions a signature is not."""
+    t = " ".join(str(text).split())
+    if not t or len(t) > _SIG_LABEL_MAX:
+        return None
+    m = _SIG_LABEL_RE.match(t)
+    if not m:
+        return None
+    words = re.findall(r"[A-Za-z][A-Za-z'’.-]*", t)
+    if not words:
+        return None
+    for w in words:
+        if w.lower() not in _SIG_LABEL_LOWER and not w[:1].isupper():
+            return None
+    return "signed" if m.group("signed") else "signature"
+
+
+def _sig_runs(xs, gap=0):
+    """Maximal runs [start, end] of dark pixels in one raster row, a light gap
+    of `gap` px stepped over — the scan breaking a printed line rather than the
+    line ending, the rule `_raster_rules` reads its own runs by."""
+    runs = []
+    for x in xs:
+        if runs and x - runs[-1][1] <= gap + 1:
+            runs[-1][1] = x
+        else:
+            runs.append([x, x])
+    return runs
+
+
+def _sig_dark_rows(raster, rect):
+    """(`_dark_rows`' per-row dark x lists, x bounds, the window's pixel top)
+    for `rect` in PAGE points. The pixel top is what lets a row index be read
+    back as a place on the page, the arithmetic `box_fill` already does."""
+    import fitz
+    rows, (x0, x1) = raster._dark_rows(fitz.Rect(rect))
+    disp = fitz.Rect(rect) * raster.mat
+    disp.normalize()
+    return rows, x0, x1, max(0, int((disp.y0 - raster.oy) * raster.k))
+
+
+def _sig_px_rect(raster, px0, py0, px1, py1):
+    """A rect given in raster (DISPLAY) pixels, handed back in the page's own
+    unrotated points — the frame every span bbox is in."""
+    import fitz
+    r = fitz.Rect(raster.ox + px0 / raster.k, raster.oy + py0 / raster.k,
+                  raster.ox + px1 / raster.k, raster.oy + py1 / raster.k)
+    r = fitz.Rect(r * raster.inv)
+    r.normalize()
+    return r
+
+
+def _sig_display_rect(raster, rect):
+    """`rect` (page points) in the raster's DISPLAY frame, where "above" means
+    above as the page is READ — a /Rotate scan included."""
+    import fitz
+    r = fitz.Rect(rect) * raster.mat
+    r.normalize()
+    return r
+
+
+def _sig_line_band(raster, window):
+    """The writing band above the printed LINE lowest in `window`, as a rect in
+    page points, or None where the window holds no line.
+
+    A rule, a run of underscores and a scanned line are all a long row of dark
+    pixels, so one measurement answers for all three. The LOWEST line is taken
+    — it is the one the label is the label of — and a dark band deeper than
+    `_SIG_RULE_THICK` is shading or a line of type, never a rule, so the search
+    steps over it and keeps looking up."""
+    rows, _wx0, _wx1, wy0 = _sig_dark_rows(raster, window)
+    if not rows:
+        return None
+    k = raster.k
+    min_px = max(2, int(_SIG_RULE_MIN * k))
+    thick = max(1, int(round(_SIG_RULE_THICK * k)))
+    hits = []
+    for xs in rows:
+        best = None
+        for a, b in _sig_runs(xs, _RASTER_RULE_GAP):
+            if b - a + 1 >= min_px and (best is None or b - a > best[1] - best[0]):
+                best = (a, b)
+        hits.append(best)
+    i = len(rows) - 1
+    while i >= 0:
+        if hits[i] is None:
+            i -= 1
+            continue
+        j = i
+        while j - 1 >= 0 and hits[j - 1] is not None:
+            j -= 1
+        if i - j + 1 <= thick:
+            a, b = hits[j]
+            if (b - a + 1) / k < _SIG_MIN_WIDTH:
+                return None
+            top = wy0 + j - _SIG_RULE_CLEAR * k
+            return _sig_px_rect(raster, a, top - _SIG_BAND * k, b + 1, top)
+        i = j - 1          # a shaded band: keep looking above it
+    return None
+
+
+def _sig_page_furniture(page):
+    """The rects of the small IMAGES a page prints — a form's own pointer into
+    the signature band, a bullet, a rule drawn as a picture. Ink inside one is
+    the form's and not the signer's."""
+    out = []
+    try:
+        for img in page.get_images(full=True):
+            try:
+                r = page.get_image_bbox(img)
+            except Exception:
+                continue
+            if r and 0 < r.width <= _SIG_GLYPH_IMG_MAX:
+                out.append(r)
+    except Exception:
+        return []
+    return out
+
+
+def _sig_band_shape(raster, band, furniture=()):
+    """(ink fraction, the longest STROKE in points) for `band`, a rect in page
+    points, or None where it cannot be measured.
+
+    Ink alone cannot tell a signature from a dirty page: measured, a blank line
+    under 1 mm blobs at fifty to the square inch is as inked as a signed one,
+    and calling that page signed asserts a fact about a filing that is not
+    there. So the dark pixels are grouped into CONNECTED COMPONENTS — a run of
+    dark in one row joined to the runs it touches in the row above — and the
+    two things a stroke has that dirt does not are read off them: a component
+    smaller than `_SIG_SPECK_PT` both ways is dirt and contributes no ink at
+    all, and the longest component's own reach is what a signature has tens of
+    points of and a speck has one. Cheap: a few hundred runs over a band this
+    size, linked in one pass."""
+    rows, wx0, wx1, _wy0 = _sig_dark_rows(raster, band)
+    if not rows or wx1 <= wx0:
+        return None
+    parent = {}
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    boxes, prev = {}, []
+    for i, xs in enumerate(rows):
+        cur = []
+        for a, b in _sig_runs(xs):
+            lab = len(parent)
+            parent[lab] = lab
+            boxes[lab] = [a, b, i, i, b - a + 1]
+            for pa, pb, plab in prev:
+                if pa <= b and a <= pb:          # the runs touch: one stroke
+                    union(plab, lab)
+            cur.append((a, b, lab))
+        prev = cur
+    merged = {}
+    for lab, (a, b, y0, y1, n) in boxes.items():
+        root = find(lab)
+        got = merged.get(root)
+        if got is None:
+            merged[root] = [a, b, y0, y1, n]
+        else:
+            got[0], got[1] = min(got[0], a), max(got[1], b)
+            got[2], got[3] = min(got[2], y0), max(got[3], y1)
+            got[4] += n
+    speck = _SIG_SPECK_PT * raster.k
+    ink = reach = 0
+    for a, b, y0, y1, n in merged.values():
+        w, h = b - a + 1, y1 - y0 + 1
+        if max(w, h) < speck:
+            continue                              # dirt, not a stroke
+        if furniture:
+            box = _sig_px_rect(raster, a, _wy0 + y0, b + 1, _wy0 + y1 + 1)
+            if any(r.x0 - 1.0 <= box.x0 and box.x1 <= r.x1 + 1.0
+                   and r.y0 - 1.0 <= box.y0 and box.y1 <= r.y1 + 1.0
+                   for r in furniture):
+                continue                          # the form's own mark
+        ink += n
+        reach = max(reach, w, h)
+    return (ink / float(len(rows) * (wx1 - wx0 + 1)), reach / raster.k)
+
+
+def _sig_verdict(shape):
+    """The note a measured band earns. Three-way for `_ink_state_from_fill`'s
+    reason: the middle of the measurement is where a guess is worst, and a
+    reader told the line may carry a mark can go and look, where one told it is
+    blank will not. A band with ink but no long stroke in it lands there too —
+    that is a dirty page or a stray speck as readily as a small initial, and
+    which it is, is exactly what this cannot see."""
+    if shape is None:
+        return _SIG_NOTE_NONE
+    fill, reach = shape
+    if fill >= _SIG_INK_MARK and reach >= _SIG_STROKE_MIN:
+        return _SIG_NOTE_SIGNED
+    if fill <= _SIG_INK_EMPTY:
+        return _SIG_NOTE_NONE
+    return _SIG_NOTE_MAYBE
+
+
+def _sig_area_has_text(band, spans, label_span):
+    """True when the text layer already says what is on this line — a typed
+    name, a "/s/", a DocuSign cursive rendered as type, an OCR reading of the
+    scrawl. The note is for the line nothing read, so an area carrying a word
+    yields none and OCR works as usual.
+
+    A span is IN the band when its own centre is, not merely when its box
+    clips it: a descender from the row above overlaps every band there is."""
+    for sp in spans:
+        if sp is label_span or sp.get("_sig_note"):
+            continue
+        t = str(sp.get("text", ""))
+        if not any(ch.isalnum() for ch in t):
+            continue              # the rule itself: underscores, dots, dashes
+        x0, y0, x1, y1 = sp["bbox"]
+        cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+        if band.x0 <= cx <= band.x1 and band.y0 <= cy <= band.y1:
+            return True
+    return False
+
+
+def _sig_label_note(raster, kind, cell, spans, furniture=()):
+    """(note text, band) for one signature label, or None where the line is
+    already read, cannot be found, or is not a signature slot at all."""
+    import fitz
+    x0, y0, x1, y1, _text, span = cell
+    d = _sig_display_rect(raster, fitz.Rect(x0, y0, x1, y1))
+    page_w = raster.pix.width / raster.k
+    if kind == "signed":
+        # A "Signed by" stamp writes UNDER its label and rules no line of the
+        # page's own, so the band is the label's own width of room below it.
+        band = _sig_px_rect(
+            raster, (d.x0 - 2.0) * raster.k, (d.y1 + 1.0) * raster.k,
+            min(d.x0 + _SIG_SLOT_MAX, page_w) * raster.k,
+            (d.y1 + 1.0 + _SIG_BAND) * raster.k)
+        bands = [band]
+    else:
+        # A line ABOVE the label is the Judicial Council convention — the
+        # label is printed UNDER the rule it names — and is asked FIRST,
+        # because that rule runs past the label's right edge as well and the
+        # window beside the label would find its tail: the band measured
+        # would be the empty end of the line, and the typed name standing on
+        # the line's own stretch would be outside it, so a signature the text
+        # layer had read perfectly came back described as missing. A line
+        # BESIDE the label ("Signature: ______") lies on the label's own
+        # band, where nothing above it overlaps, so the two never compete.
+        above = fitz.Rect(d.x0 - _SIG_PAD, d.y0 - _SIG_ABOVE_MAX,
+                          d.x1 + _SIG_PAD, d.y0 - 0.5)
+        beside = fitz.Rect(d.x1 + 2.0, d.y0 - 2.0,
+                           min(d.x1 + _SIG_SLOT_MAX, page_w), d.y1 + 2.0)
+        bands = []
+        for win in (above, beside):
+            if win.x1 - win.x0 < _SIG_MIN_WIDTH or win.y1 <= win.y0:
+                continue
+            got = _sig_line_band(raster, fitz.Rect(win * raster.inv))
+            if got is not None:
+                bands.append(got)
+                break
+    for band in bands:
+        if band.x1 - band.x0 < _SIG_MIN_WIDTH or band.y1 <= band.y0:
+            continue
+        if _sig_area_has_text(band, spans, span):
+            return None
+        return _sig_verdict(_sig_band_shape(raster, band, furniture)), band
+    return None
+
+
+def _signature_note_spans(spans, page):
+    """The signature notes `page` earns, as spans of their own — laid at the
+    writing band's own place, so every rendering that takes its spans through
+    `_drop_overdrawn_spans` says the same thing about the same line.
+
+    A SPAN and not a rendering of its own, the rule `_ink_state_spans` follows:
+    the note rides through the row split, the column bands and the join exactly
+    as a printed word would, so the pleading page keeps its gutter numbers, the
+    form keeps its grid, and the exhibit keeps its layout."""
+    if not spans:
+        return []
+    try:
+        if not _SIG_HINT_RE.search(" ".join(str(sp.get("text", ""))
+                                            for sp in spans)):
+            return []
+        labels = []
+        for cell in _sig_row_cells(spans):
+            kind = _sig_label_kind(cell[4])
+            if kind is not None:
+                labels.append((kind, cell))
+        if not labels:
+            return []
+        memo = getattr(page.parent, _SIG_NOTE_ATTR, None)
+        if memo is None:
+            memo = {}
+            try:
+                setattr(page.parent, _SIG_NOTE_ATTR, memo)
+            except Exception:
+                pass
+        raster, furniture, out, placed = None, (), [], []
+        for kind, cell in labels:
+            key = (page.number, kind) + tuple(round(v, 1) for v in cell[:4])
+            if key in memo:
+                got = memo[key]
+            else:
+                if raster is None:
+                    raster = _InkRaster(page)
+                    furniture = _sig_page_furniture(page)
+                got = _sig_label_note(raster, kind, cell, spans, furniture)
+                if got is not None:
+                    note, band = got
+                    got = (note, (band.x0, band.y0, band.x1, band.y1))
+                memo[key] = got
+            if got is None:
+                continue
+            note, (bx0, by0, bx1, by1) = got
+            # One printed line, one note: a form that prints "Signature" and
+            # "(SIGNATURE OF DECLARANT)" under one rule has two labels for it,
+            # and each reads the same line through its own window, so the
+            # bands share a baseline and overlap rather than coinciding.
+            if any(abs(by1 - py1) <= _SIG_DEDUP and bx0 <= px1 and px0 <= bx1
+                   for px0, px1, py1 in placed):
+                continue
+            placed.append((bx0, bx1, by1))
+            size = float(cell[5].get("size") or 10.0)
+            out.append({"text": note,
+                        "bbox": (bx0, max(by0, by1 - size * 1.2),
+                                 bx0 + len(note) * 0.5 * size, by1),
+                        "origin": (bx0, by1), "size": size, "font": "",
+                        "flags": 0, "_dir": cell[5].get("_dir", (1.0, 0.0)),
+                        "_sig_note": True})
+            if "_ln" in cell[5]:
+                # `_form_raw_spans` maps its spans back onto the line they came
+                # from; a span with no line of its own would be dropped there,
+                # and the widget-form page would be the one rendering that did
+                # not say what its signature line holds.
+                out[-1]["_ln"] = cell[5]["_ln"]
+        return out
+    except Exception:
+        return []
 
 
 def _ink_square_drawings(page):

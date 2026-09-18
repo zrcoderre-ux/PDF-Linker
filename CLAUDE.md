@@ -1658,10 +1658,21 @@ the party), so its row stays reversible.
   per spelling, the two-spellings-one-docket rule), so the numeric and the
   worded form agree and each keeps its own reversible row. In
   `_PN_REID_CLASSES`, so one left standing is a REID row. An AGE is a
-  REVIEW row (`_PN_REVIEW_RES["age"]`: `age 67`, `67-year-old`, `Rosa
-  Delgado, 67,` hard against a Title-case run; "Page 12" and "Stage 2" are
-  refused by the lookbehind) — a number is not a name and cannot be faked,
-  and beside a name and a city it is not nothing.
+  REVIEW row (`_PN_REVIEW_RES["age"]`: `age 67`, `Rosa Delgado, 67,` hard
+  against a Title-case run; "Page 12" and "Stage 2" are refused by the
+  lookbehind) — a number is not a name and cannot be faked, and beside a
+  name and a city it is not nothing.
+  **…but the ADJECTIVE form is NOT read, at the owner's direction**
+  (`50-year-old`, `4-year-old`, `4 years old`). That shape is how a pleading
+  writes a DESCRIPTION rather than a record — "a 4-year-old child", "the
+  50-year-old plaintiff" — so it is ordinary prose in every filing that
+  carries it, and every occurrence was a worksheet row no operator would
+  ever answer differently. The cost of a REVIEW tier is the READING of it:
+  a row that is always the same answer buries the rows that are not, which
+  is the reasoning `_finding_already_bound` and the carry-forward rule
+  already state from the other side. The labelled form (`age 67`) and the
+  appositive (`Rosa Delgado, 67,`) are unmoved — those stand beside a name
+  in a record, which is what makes an age a key.
 - **A DRIVER LICENCE carries a letter, and the licence class took digits
   only** (`_PN_ID_RES["driver license"]`, `["license plate"]`). "Driver
   License No.: D1234567" and "CA DL B7654321" matched nothing. The class is
@@ -4421,6 +4432,124 @@ extraction, which is what keeps the numbering.
   nobody should take on trust, so it is never presented as equal to a widget's.
 - Cost of the widget path: one `doc.is_form_pdf` check per document, and a
   ~0.02 ms per-page widget probe.
+
+### A HANDWRITTEN SIGNATURE is DESCRIBED, never read
+
+A signature is the one mark on a filing that OCR cannot read and must not try
+to (`_signature_note_spans`, `_sig_label_kind`, `_sig_line_band`,
+`_sig_band_shape`). What a recogniser makes of a scrawl is letter-soup, and
+that soup does not merely sit in the export looking wrong: it is harvested as a
+name, draws a pool word, earns a key row and ships as a party of the case — the
+tool's own guess at a signature standing in a deliverable as though it were the
+document's text. The export's other answer is worse, and is the one a reader
+actually got: a signature that leaves no text layer exports as an EMPTY LINE,
+indistinguishable from an UNSIGNED one, and whether a declaration was signed is
+frequently the whole question about it.
+
+So the line is DESCRIBED. `[signed, but not OCR readable]`, or
+`[no signature detected]` where nothing is written there, with the middle of
+the measurement reported as `[possible signature, not OCR readable]` rather
+than rounded to the nearer answer — `_ink_state_from_fill`'s own rule, for its
+own reason: asserting that a filing was signed is not a guess this tool makes.
+Same voice as the low-dpi, rebuilt-layer and ink-form banners, and the same
+doctrine: an inferred reading is never presented as equal to a read one.
+
+**A TYPED signature is untouched, at the owner's direction.** "/s/ Jane Doe", a
+DocuSign cursive rendered as type, a name typed on the line — the text layer
+has read it, and this pass is for the line the text layer says nothing about.
+That is enforced as a SCREEN and not as a preference (`_sig_area_has_text`): an
+anchor whose writing band carries any word at all yields no note at all, so OCR
+works exactly as usual wherever OCR worked. Asked on the word's own CENTRE
+rather than on its box, since a descender from the row above overlaps every
+band there is.
+
+**The anchor is the page's OWN WORD, never a shape.** A pleading's signature
+block prints no label — a rule, a name under it, a role — and reading every
+rule on every page as a signature line would put a note under every heading
+underline and every table edge in the batch. So the page has to say so: the
+word "signature", or a cell that is exactly "Signed by". Held to a CELL
+(`_sig_row_cells`, the row split at a printed gap the positional renderer
+already reads its columns by), because prose runs on with no gap in it — "the
+signature of the parties was forged" is one long cell — while
+`(SIGNATURE OF DECLARANT)`, `Signature:` and `SIGNATURE OF ATTORNEY OR PARTY
+WITHOUT ATTORNEY` are each a cell of their own. Held to CASE as well: a printed
+label is capitalised, its connectors aside, and prose is not, which is the
+screen `prune_heading_only_terms` states and which needs no word list. And a
+"Signed by" cell must carry NOTHING after the label, which is the whole of its
+corroboration — the phrase is a passive verb and prose always gives it its
+agent ("signed by the parties"), so a cell that stops there is a stamp's label
+and nothing else. Measured over this repo's own 1.5 MB of capitalised technical
+prose, split into 97,927 cells: ONE hit, and it is the module's own worked
+example of a signature label.
+
+**The LINE is read off the RASTER, so one mechanism answers for three pages.**
+A born-digital form rules its line in vector art, a typed one rules it with a
+run of underscores, and a SCAN — the page this pass exists for — carries the
+same line as ink in a picture, where `_page_rules` reads nothing at all. All
+three are a long unbroken row of dark pixels, so the line is found the way
+`_raster_rules` finds one, in the render this pass has to make anyway. A dark
+band deeper than `_SIG_RULE_THICK` is shading or a line of type and the search
+steps over it. The line ABOVE the label is asked FIRST — that is the Judicial
+Council convention, the label printed under the rule it names — because that
+rule runs past the label's right edge too, and the window BESIDE the label
+would find its tail: the band measured would be the empty end of the line, the
+typed name standing on the line's own stretch would be outside it, and a
+signature the text layer had read perfectly came back described as missing. A
+line beside the label (`Signature: ______`) lies on the label's own band, where
+nothing above it overlaps, so the two never compete.
+
+**What is measured in the band is STROKES, not ink** (`_sig_band_shape`). Ink
+alone cannot tell a signature from a dirty page: measured, a blank line under
+1 mm blobs at fifty to the square inch is as inked as a signed one. So the dark
+pixels are grouped into CONNECTED COMPONENTS — a run of dark in one row joined
+to the runs it touches in the row above — and the two things a stroke has that
+dirt does not are read off them: a component smaller than `_SIG_SPECK_PT` both
+ways is dirt and contributes no ink at all, and the longest component's own
+reach is what a written mark has tens of points of and a speck has one. A band
+with ink and no stroke in it is called POSSIBLE, never signed. Measured: a full
+signature at a 0.8-1.2 pt pen fills 4-6% of its band with a 35 pt reach, a
+25 pt initial 0.8% at 24 pt, and scanner dirt up to a fifth of the band's area
+reaches 3-8 pt and is refused.
+
+**A form prints its own POINTER into the band, and it is an IMAGE**
+(`_sig_page_furniture`, `_SIG_GLYPH_IMG_MAX`). The Judicial Council "►" beside
+a signature line is a nine-point picture standing in the writing space, and
+measured it is a mark: every blank form in `Form Templates/` reported
+`[possible signature]` on the lines that carry one. An image that narrow is
+furniture — a signature image has to span its line to BE one — so the width is
+the whole screen, and it is asked of IMAGES alone. Never of vector art: one
+short path per stroke is exactly what an e-signing tool and a tablet draw a
+REAL signature as, and excluding drawings would report a signed page as
+unsigned, which is the worst of the three answers. Measured after: all 39
+committed blanks, 67 pages, every signature line `[no signature detected]`, in
+0.56 s.
+
+**The note is a SPAN, laid at the one seam every rendering reads**
+(`_drop_overdrawn_spans`). The rule `_ink_state_spans` follows: the note rides
+through the row split, the column bands and the join exactly as a printed word
+would, so the pleading page keeps its gutter numbers, the form keeps its grid
+and the exhibit keeps its layout, and the export, the form rendering and the
+detection copy cannot describe one line three ways. It carries its label's
+`_ln` so `_form_raw_spans`, which maps its spans back onto the line they came
+from, keeps it. The ONE rendering it never reaches is `_page_flowing_text`:
+that one is the citation parse's and the unscrubbed copy's, a description of
+what is written on a line has no business in it, and counted it would read as
+evidence of a re-draw and rebuild a page that has none — the positive-evidence
+gate that rendering stands on. The note's own words are in `_PN_NEVER_FAKE` and
+"ocr" in `_PN_FORM_LABEL_WORDS`, so a worksheet `yes` can never mint this
+tool's own sentence as a party.
+
+**Cost is one render per page, and only for a page that says the word.** The
+gate is one search of the page's own text (`_SIG_HINT_RE`); past it the
+verdicts are memoised per page on the Document (`_SIG_NOTE_ATTR`), because
+every rendering goes through the seam and six 200-dpi renders to answer one
+question is what the template fit's memo already exists to refuse. Residual,
+and stated: a signature line the page does not LABEL earns nothing, which is
+most pleading signature blocks; a "Signed by" stamp whose label is printed
+lower-case is refused by the case screen; the raster renders with `annots=False`
+as every other caller of `_InkRaster` does, so a signature that lives only in an
+ANNOTATION is not seen; and a page whose label a scan garbled past the word is
+not an anchor at all.
 
 ## Pleading-page extraction (what reaches the export at all)
 
