@@ -29450,6 +29450,109 @@ def _form_text_x(x0, text, size, vis_x0=None):
     return x0 + lead * _FORM_SPACE_EM * float(size or 0.0)
 
 
+# ...and a form pads INSIDE one span as readily as in front of it. MC-350EX
+# sets the whole of item 18b as a single text object — "The attorney", 152
+# spaces, "attorney's fees or" — with the two checkboxes it asks about drawn
+# over the gap between them. Cut to its visible text that is ONE cell of 174
+# characters opening at column 7, and two things followed. The row's own
+# checkbox was pushed to column 182, every column right of it on the page
+# went with it (`_column_stops` moves a stop for every row, which is what
+# keeps a ledger aligned), and the page came out 280 characters wide on a
+# 140-column sheet, its `$` column 143 columns right of the rule drawn under
+# it. And the whole span took the x of its FIRST word, so the tail of the
+# sentence sorted ahead of the boxes it belongs to: "The attorney
+# attorney's fees or [ ] has neither received nor expects to receive [ ] has
+# received or expects to receive". A span is cut at every internal gap wide
+# enough to be LAYOUT — `_VIS_GAP_PT`, the width the positional renderer
+# already parts a line at, so the two agree about what a gap is — and each
+# piece stands at its own x, which is where it prints and in the order it is
+# read. Nothing narrower is touched: a double space after a full stop is
+# 5 pt at 9 pt type, so running prose is one cell as before.
+def _form_text_pieces(x0, text, size, x1=None, chars=None):
+    """[(x, right edge, piece)] for one span of text: the pieces a wide
+    internal gap separates, each with the extent it stands at, leading and
+    trailing space gone.
+
+    EXACT where the caller read the characters' own boxes (`_form_raw_spans`),
+    since the gap is then measured between the printed glyphs and no advance
+    is guessed at. Otherwise it is estimated: a space is `_FORM_SPACE_EM` of
+    the em and the REST of the span's own width is shared out over its visible
+    characters, so both ends are anchored on the span's bbox and only the
+    proportional variation between one piece and the next is inferred
+    (measured under 5 pt — about one column — on the committed blanks)."""
+    if chars:
+        out, cur, cur_x, cur_r, prev_r = [], "", None, None, None
+        for cx0, cx1, ch in chars:
+            if not ch or ch.isspace():
+                if cur_x is not None:
+                    cur += " "
+                continue
+            if cur_x is None or (prev_r is not None
+                                 and float(cx0) - prev_r >= _VIS_GAP_PT):
+                if cur.strip():
+                    out.append((cur_x, cur_r, cur.strip()))
+                cur, cur_x = "", float(cx0)
+            cur += ch
+            prev_r = cur_r = float(cx1)
+        if cur.strip():
+            out.append((cur_x, cur_r, cur.strip()))
+        return out
+    blanks = sum(1 for ch in text if ch.isspace())
+    shown = len(text) - blanks
+    if shown <= 0:
+        return []
+    space_w = _FORM_SPACE_EM * float(size or 0.0)
+    adv = 0.0
+    if x1 is not None and float(x1) > float(x0):
+        adv = ((float(x1) - float(x0)) - blanks * space_w) / shown
+    if adv <= 0:
+        adv = 0.5 * float(size or 0.0) or _FORM_CHAR_W
+    out, cur, cur_x, cur_r, x, gap = [], "", None, None, float(x0), 0.0
+    for ch in text:
+        if ch.isspace():
+            x += space_w
+            if cur_x is not None:
+                gap += space_w
+                cur += " "
+            continue
+        if cur_x is None or gap >= _VIS_GAP_PT:
+            if cur.strip():
+                out.append((cur_x, cur_r, cur.strip()))
+            cur, cur_x = "", x
+        cur += ch
+        x += adv
+        cur_r = x
+        gap = 0.0
+    if cur.strip():
+        out.append((cur_x, cur_r, cur.strip()))
+    return out
+
+
+def _form_span_cells(sp, bb, text, y0, h, k, single, skip=()):
+    """The cells one line of one span contributes, at `_form_text_pieces`'
+    columns. `single` says the span is one printed line, so its bbox states
+    where the line ENDS and the estimate has both ends to work from; a span
+    the extractor merged over several lines states only where it opens.
+
+    A piece standing inside one of `skip` is dropped — the copy a widget or a
+    state box now stands for. Asked of the PIECE and not of the span, because
+    a form sets a whole line as one span with its own field box in the middle
+    of it: measured on the span's midpoint, MC-350EX's item 19a(2) fell inside
+    the amount field and the page exported with the sentence gone and a bare
+    `$` on the line where it had been."""
+    import fitz
+    chars = sp.get("_chars") if single and text == sp.get("_chars_text") else None
+    y_mid, cells = y0 + h * (k + 0.5), []
+    for px, pr, piece in _form_text_pieces(bb[0], text, sp.get("size"),
+                                           x1=bb[2] if single else None,
+                                           chars=chars):
+        mid = fitz.Point((px + (pr if pr is not None else px)) / 2, y_mid)
+        if any(r.contains(mid) for r in skip):
+            continue
+        cells.append(_form_cell(y_mid, h / 2, px, piece))
+    return cells
+
+
 def _form_raw_spans(page):
     """`page.get_text("dict")`'s blocks, each span carrying `_vis_x0`: the x
     of its first non-space character, read off the characters' own boxes.
@@ -29464,6 +29567,15 @@ def _form_raw_spans(page):
                 sp["text"] = "".join(c.get("c", "") for c in chars)
                 vis = next((c for c in chars if not c.get("c", " ").isspace()), None)
                 sp["_vis_x0"] = float(vis["bbox"][0]) if vis else None
+                # …and the boxes themselves, so `_form_text_pieces` can cut
+                # the span at a printed gap without estimating an advance.
+                # Kept beside the text they were read from: a scan's labels
+                # are RESTORED from the template afterwards, and a box list
+                # that no longer describes the text would place its pieces at
+                # another spelling's columns.
+                sp["_chars"] = [(float(c["bbox"][0]), float(c["bbox"][2]),
+                                 c.get("c", "")) for c in chars]
+                sp["_chars_text"] = sp["text"]
                 sp["_ln"] = (bi, li)
                 flat.append(sp)
     # The static layer with every re-draw removed, as the rows path reads it
@@ -30502,9 +30614,6 @@ def _ink_form_cells(page):
     # Static text, minus whatever the state boxes above now stand for.
     for idx, sp in enumerate(spans):
         bb = sp["bbox"]
-        mid = fitz.Point((bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2)
-        if any(r.contains(mid) for r in consumed):
-            continue
         text = _MARKER_DETECT_RE.sub("", sp["text"])
         if idx in uscore:
             # The leading underscores ARE the box, and a state cell now stands
@@ -30513,10 +30622,8 @@ def _ink_form_cells(page):
         parts = text.split("\n")
         h = max((bb[3] - bb[1]) / max(len(parts), 1), 1.0)
         for k, part in enumerate(parts):
-            if part.strip():
-                cells.append(_form_cell(bb[1] + h * (k + 0.5), h / 2,
-                                        _form_text_x(bb[0], part, sp.get("size")),
-                                        part.strip()))
+            cells.extend(_form_span_cells(sp, bb, part, bb[1], h, k,
+                                          len(parts) == 1, consumed))
     return cells, boxes, marked, unsure, exact, consumed
 
 
@@ -30541,22 +30648,16 @@ def _form_page_cells(page):
         for line in blk.get("lines", []):
             for sp in line.get("spans", []):
                 bb = sp["bbox"]
-                mid = fitz.Point((bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2)
-                # Painted by a widget's appearance stream — the widget object is
-                # re-emitted below and is authoritative, so this copy (a check
-                # glyph, or a value with no label beside it) is dropped.
-                if any(r.contains(mid) for r in rects):
-                    continue
                 text = _MARKER_DETECT_RE.sub("", sp["text"])
                 parts = text.split("\n")
                 h = max((bb[3] - bb[1]) / max(len(parts), 1), 1.0)
+                # A piece painted by a widget's appearance stream — the widget
+                # object is re-emitted below and is authoritative, so that copy
+                # (a check glyph, or a value with no label beside it) is
+                # dropped, piece by piece (`_form_span_cells`).
                 for k, part in enumerate(parts):
-                    if part.strip():
-                        cells.append(_form_cell(
-                            bb[1] + h * (k + 0.5), h / 2,
-                            _form_text_x(bb[0], part, sp.get("size"),
-                                         sp.get("_vis_x0")),
-                            part.strip()))
+                    cells.extend(_form_span_cells(sp, bb, part, bb[1], h, k,
+                                                  len(parts) == 1, rects))
     choice = (fitz.PDF_WIDGET_TYPE_CHECKBOX, fitz.PDF_WIDGET_TYPE_RADIOBUTTON)
     boxes = checked = 0
     for w, r in zip(widgets, rects):

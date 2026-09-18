@@ -3902,6 +3902,52 @@ answerable at the top of the page.
   anything else to keep the order right. Asked at both static-span cell
   sites, the widget path and the ink path, so the two cannot answer
   differently.
+- **…and a form pads INSIDE one span as readily as in front of it, so a span
+  is CUT at a wide internal gap** (`_form_text_pieces`, `_form_span_cells`,
+  `_VIS_GAP_PT`). MC-350EX sets the whole of item 18b as a SINGLE text object
+  — "The attorney", 152 spaces, "attorney's fees or" — with the two
+  checkboxes it asks about drawn over the gap between them. Cut to its
+  visible text that is ONE cell of 174 characters opening at column 7, and
+  two things followed from it. The row's own checkbox was pushed to column
+  182 and every column right of it on the page went with it — `_column_stops`
+  moves a stop for every ROW, which is exactly what keeps a ledger aligned
+  and what makes one overflowing prose cell catastrophic — so the page came
+  out 280 characters wide on a 140-column sheet, with its `$` column 143
+  columns right of the rule drawn under it and the cascade carrying items 15,
+  16, 17 and 19 with it. And the whole span took the x of its FIRST word, so
+  the tail of the sentence sorted ahead of the boxes it belongs to: `The
+  attorney  attorney's fees or [ ] has neither received nor expects to
+  receive [ ] has received or expects to receive` — a form asking its
+  question backwards, on the one kind of document where the checkbox IS the
+  pleading. The cut is made at every internal gap wide enough to be LAYOUT,
+  which is `_VIS_GAP_PT` — the width the positional renderer already parts a
+  line at, so the two renderers cannot answer differently about what a gap
+  is — and each piece stands at its own x. Nothing narrower is touched: a
+  double space after a full stop is 5 pt at 9 pt type, so running prose is
+  one cell exactly as before. EXACT on the widget path, where
+  `_form_raw_spans` keeps the characters' own boxes beside the text they were
+  read from (a scan's labels are RESTORED from the template afterwards, and a
+  box list that no longer describes the text would place its pieces at
+  another spelling's columns) — measured between the printed glyphs, so a
+  span drawn with no space characters at all is cut just the same. ESTIMATED
+  on the ink path, which reads `get_text("dict")` and has no boxes: a space
+  is `_FORM_SPACE_EM` of the em and the REST of the span's width is shared
+  out over its visible characters, so BOTH ends are anchored on the span's
+  own bbox and only the proportional variation between one piece and the next
+  is inferred — measured against the exact boxes over all seven pages of the
+  committed blank, every split identical and the worst x off by 4.8 pt, about
+  one column.
+- **…and the copy a WIDGET stands for is dropped piece by piece, not span by
+  span** (`_form_span_cells`'s `skip`). The widget path drops a static span
+  painted by a widget's appearance stream, and asked the question of the
+  span's MIDPOINT — which a form defeats the same way: item 19a(2) sets its
+  sentence as one span with the amount field in the middle of it, so the
+  midpoint fell inside the field and the page exported with the whole
+  sentence GONE and a bare `$` standing on the line where it had been. Asked
+  of each PIECE, the words on either side of the box stand and only the box's
+  own copy is dropped. The ink path's `consumed` rects — the mark glyph a
+  state box now stands for — take the same treatment, so the two paths
+  cannot answer differently.
 - **The form path wins over the pleading-rows path only when the page carries a
   checkbox state** (`_form_has_state_boxes`, asked of the rendered text so it
   holds for a widget form and an ink one alike). That state is invisible to every other rendering, which is
