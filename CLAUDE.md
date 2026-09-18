@@ -1815,6 +1815,57 @@ the party), so its row stays reversible.
   11-digit ones did not; the "loan number" class is what makes that
   deliberate, and the phone detector is unchanged. Measured: zero rows on the
   corpus for every class.
+- **A DocuSign ENVELOPE ID is an identifier and nothing else**
+  (`_PN_ID_RES["envelope id"]`, `_PN_GUID_STRICT`, `_PN_GUID_LOOSE`). A GUID —
+  8-4-4-4-12 — means nothing on its own and everything as the handle to one
+  signing transaction, and DocuSign stamps it up the left margin of EVERY PAGE
+  of an e-signed filing, so one left standing is left standing everywhere.
+  **TWO cues, at the owner's direction, and the second is what makes the first
+  optional.** The LABEL, read tolerantly: the stamp is small sideways type, so
+  a scan puts marks and spaces through "DocuSign Envelope ID:" and reads the I
+  of ID as an l, a 1 or a bar. Behind it the value is read LOOSELY — the
+  hyphens as whatever marks the page gave up (".", ",", "~"), padded or not,
+  one of them lost or doubled, the groups a character or two out — because a
+  scan that garbled the label garbled the GUID beside it. A MARK is still
+  required at every seam, or the run walks out of the identifier into the
+  words printed next to it ("… F7A8 Page 1 of 4"), and the alphanumeric count
+  is held near a GUID's own 32 (`_PN_GUID_ALNUM_MIN`/`MAX`, screened in
+  `_pn_identifier_values` beside the other class-specific screens) so a run
+  the marks let it over-reach is refused rather than faked half-way. And the
+  SHAPE on its own is a fingerprint: nothing else a filing prints is eight
+  alphanumerics and four hyphenated groups of 4, 4, 4 and 12 — measured over
+  this repo's notes, its module and its tests (4.7 MB), ZERO matches — so the
+  bare shape needs no label, which is what reaches the envelope id a garbled
+  label would have hidden. The MBI's reasoning, and read ALPHANUMERIC rather
+  than as hex for the same reason the MBI is read by shape: the O for 0 and
+  the l for 1 a scan invents must not cost the value its match. Faked
+  char-wise (`_PN_ALNUM_IDS`), so the printed shape survives and the letters
+  are drawn from the WHOLE alphabet rather than from hex — a hex-valid
+  stand-in could be somebody's real envelope, which is the `_PN_CASENO_MARK`
+  rule. In `_PN_REID_CLASSES`, since the shape is readable in the finished
+  output with no label at all, so the adversarial pass costs nothing.
+- **…and ONE VALUE, ONE CATEGORY, ONE FAKE is now ENFORCED and not merely
+  stated** (`_pn_identifier_values`' span claim). A GUID whose first or last
+  group happens to be capitals then digits ("ABCD1234-…", "…-ABCDEF012345")
+  was matched by the production-stamp shape and registered as a Bates stamp —
+  four characters of thirty-six, the half-scrub this tool refuses, with the
+  rest of the envelope id shipping in the clear beside its own fake. A match
+  lying INSIDE one another class already claimed is the same printed run read
+  twice, so it is dropped; the classes are tried in the order they are
+  written, and the envelope id is listed FIRST because it claims the widest
+  run. The span is claimed whether or not the VALUE is new — an identifier
+  printed twice has its second occurrence deduped out of the list, and leaving
+  that occurrence unclaimed let the narrower class read a piece of it there,
+  which reported our OWN stand-in back as a surviving Bates stamp. A value
+  standing SOMEWHERE ELSE in the text is at its own span and is untouched:
+  measured differentially against the old reader over the same 4.7 MB and
+  every worked example in these notes, the claim changes NOTHING for any
+  existing class. `_pn_identifier_values` also reads the first group that
+  MATCHED rather than group 1, since this class is read two ways; every other
+  class has exactly one group, so for them it is the read it always was.
+  Residual, and stated: an envelope id with a space inserted INSIDE a group
+  is not reached (a mark is required at the seams), and an all-letter GUID is
+  refused by the standing must-contain-a-digit screen.
 - **A payment CARD was HALF-faked** (`_PN_DETECTORS["card"]`, `_pn_luhn_ok`,
   `_fake_card`). "Account No. 4111 1111 1111 1111": the account-id capture
   stopped at the first space and rewrote four digits of sixteen — the

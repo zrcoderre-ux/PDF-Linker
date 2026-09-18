@@ -15232,15 +15232,68 @@ _PN_DEFAULT_DETECTORS = ["ssn", "email", "phone", "address", "url", "pobox",
 # the value is registered as a whole-word term, so bare repeats elsewhere in the
 # document (a caption's "Res. I.D." echoed on an exhibit) are scrubbed too — and
 # `surviving_reals` can then report it if one gets through.
+# The hyphen and the dashes a scan or a word processor writes for one.
+_PN_GUID_HYPHEN = r"[-\u2010-\u2015\u2212]"
+# A GUID as it is PRINTED: 8-4-4-4-12 alphanumerics behind hyphens. Read as
+# ALPHANUMERIC and not as hex, so the letters a scan invents for hex digits
+# ("O" for 0, "l" for 1, "S" for 5) do not cost the value its match — the
+# SHAPE is the whole of the corroboration and no hex-ness test adds to it.
+_PN_GUID_STRICT = (rf"[A-Za-z0-9]{{8}}(?:{_PN_GUID_HYPHEN}[A-Za-z0-9]{{4}}){{3}}"
+                   rf"{_PN_GUID_HYPHEN}[A-Za-z0-9]{{12}}")
+# …and as a SCAN prints it behind the label: the hyphens read as whatever
+# marks the page gave up (".", ",", "~"), padded with a space or not, one of
+# them lost or doubled, the groups a character or two out. A MARK is still
+# required at every seam — a bare space may not separate two groups, or the
+# run would walk out of the identifier into the words beside it ("… F7A8
+# Page 1 of 4"). Bounded further by the alphanumeric count in
+# `_pn_identifier_values`, where the other class-specific screens live.
+_PN_GUID_MARK = r"[^A-Za-z0-9\s]"
+_PN_GUID_LOOSE = (rf"[A-Za-z0-9]{{1,14}}"
+                  rf"(?:[ \t]?{_PN_GUID_MARK}[ \t]?[A-Za-z0-9]{{1,14}}){{3,6}}")
+# A GUID carries 32 alphanumerics; the loose arm is held near that, so a run
+# the marks let it over-reach is refused rather than faked half-way.
+_PN_GUID_ALNUM_MIN, _PN_GUID_ALNUM_MAX = 24, 40
+
 _PN_ID_RES = {
+    # A DOCUSIGN ENVELOPE ID is a GUID — 8-4-4-4-12 — and an envelope id is
+    # an IDENTIFIER and nothing else: it means nothing on its own and
+    # everything as the handle to one signing transaction, so it is exactly
+    # the value this pipeline exists to replace. It rides on EVERY PAGE of an
+    # e-signed filing, in the stamp DocuSign prints up the left margin, so
+    # one left standing is left standing everywhere.
+    #
+    # TWO cues, at the owner's direction, and the second is what makes the
+    # first optional. The LABEL — "DocuSign Envelope ID:", tolerantly read,
+    # since the stamp is set sideways in small type and a scan puts marks and
+    # spaces through it and reads the "I" of ID as an l, a 1 or a bar — says
+    # that what follows is an envelope id whatever shape the scan left it in,
+    # so behind it the value is read LOOSELY. And the SHAPE on its own is a
+    # fingerprint: nothing else a filing prints is eight alphanumerics and
+    # four hyphenated groups of 4, 4, 4 and 12. Measured over this repo's
+    # notes, its module and its tests — 4.7 MB — ZERO matches, so the bare
+    # shape needs no label, which is what reaches the envelope id a garbled
+    # label would otherwise have hidden. Same reasoning as the MBI below,
+    # which is read by shape for the same reason.
+    #
+    # Listed FIRST so its span is claimed before any other class reads a
+    # piece of it: a GUID whose first or last group happens to be capitals
+    # then digits ("ABCD1234-…", "…-ABCDEF012345") was matched by the
+    # production-stamp shape and faked as a Bates stamp — four characters of
+    # thirty-six, the half-scrub this tool refuses, with the rest of the
+    # envelope id shipping in the clear beside its own fake.
+    "envelope id": re.compile(
+        rf"(?i)(?:\bdocu[^A-Za-z0-9\n]{{0,4}}sign[^A-Za-z0-9\n]{{0,6}}"
+        rf"envelope[^A-Za-z0-9\n]{{0,6}}[Il1|]d[^A-Za-z0-9\n]{{0,6}}"
+        rf"({_PN_GUID_LOOSE})(?![A-Za-z0-9])"
+        rf"|(?<![A-Za-z0-9])({_PN_GUID_STRICT})(?![A-Za-z0-9]))"),
     # A DRIVER LICENSE is a letter and seven digits in California ("D1234567")
     # and the bare licence class below takes digits only, so "Driver License
     # No.: D1234567" and "CA DL B7654321" reached nothing. Anchored on the
     # spelled-out label or the bare DL/CDL abbreviation (case-SENSITIVE — "dl"
     # is inside ordinary words), an optional state code stepped over, and the
-    # value's letter faked with its digits (`_PN_ALNUM_IDS`). Listed FIRST so
-    # a digits-only licence behind a driver's label is claimed here rather
-    # than by the generic class — one value, one category, one fake.
+    # value's letter faked with its digits (`_PN_ALNUM_IDS`). Listed BEFORE
+    # the generic licence class so a digits-only licence behind a driver's
+    # label is claimed here — one value, one category, one fake.
     "driver license": re.compile(
         r"(?i)\b(?:driver['’]?s?[ \t]+licen[cs]e|(?-i:DL|CDL))"
         r"(?:[ \t]*(?:no\.?|number|#))?[ \t]*:?[ \t]*(?:(?-i:[A-Z]{2})[ \t]+)?"
@@ -15452,7 +15505,15 @@ _PN_ID_RES = {
 _PN_ALNUM_IDS = {"confirmation code", "production number", "driver license",
                  "license plate", "claim number", "policy number",
                  "bond number", "patient id", "employee id",
-                 "passport number", "medicare number", "loan number"}
+                 "passport number", "medicare number", "loan number",
+                 # A GUID is letters AND digits, and both halves are the
+                 # identifier. The stand-in keeps the printed shape (the
+                 # hyphens are not alphanumeric and are left where they are)
+                 # and is drawn from the WHOLE alphabet rather than from hex,
+                 # so it cannot itself be a real envelope id — the
+                 # `_PN_CASENO_MARK` reasoning, which refuses to mint a
+                 # well-formed identifier that may belong to somebody.
+                 "envelope id"}
 
 # Identifier classes that are RE-IDENTIFICATION KEYS: each resolves to a real
 # name/asset in one public lookup (State Bar search, DMV/title records, court
@@ -15469,6 +15530,11 @@ _PN_REID_CLASSES = frozenset({
     "medicare number", "instrument number", "charge number",
     "commission number", "loan number", "medicare beneficiary id",
     "case identification number", "icn number", "npi number", "csr number",
+    # An envelope id resolves to one signing transaction — every signer, the
+    # document and the audit trail — and its SHAPE is readable in the
+    # finished output with no label at all, so the adversarial pass costs
+    # nothing and catches the one that only materialises in the rendering.
+    "envelope id",
 })
 # Identifier classes that are read WITHOUT a word boundary on the left: the
 # MBI is a fixed eleven-character shape that a ledger glues to the surname
@@ -15829,14 +15895,35 @@ def _pn_mask_case_numbers(text):
 
 def _pn_identifier_values(text):
     """[(class, value), ...] — label-anchored identifiers found in `text`.
-    A "file no." value must contain a digit, so a stray word cannot qualify."""
+    A "file no." value must contain a digit, so a stray word cannot qualify.
+
+    A class may read its value TWO ways — the envelope id is read behind its
+    label and again by its bare shape — so the value is the first group that
+    matched rather than group 1. Every other class has exactly one group, so
+    for them this is the same read it always was
+    (`test_envelope_id.py::test_every_id_class_yields_its_value`).
+
+    **ONE VALUE, ONE CATEGORY, ONE FAKE**, which this used to state and not
+    enforce: a match lying INSIDE one another class already claimed is the
+    same printed run read twice, and registering both halves is how four
+    characters of a thirty-six-character envelope id came to be faked as a
+    Bates stamp while the rest of it shipped in the clear. The classes are
+    tried in the order they are written, so the one that claims the widest
+    run is listed first; a value standing SOMEWHERE ELSE in the text is at
+    its own span and is untouched by this."""
     text = _NFKC(text)
-    out, seen = [], set()
+    out, seen, spans = [], set(), []
     for cls, rx in _PN_ID_RES.items():
         for m in rx.finditer(text):
-            val = m.group(1).strip()
+            grp = next((i for i, g in enumerate(m.groups(), 1) if g), None)
+            if grp is None:
+                continue
+            val = m.group(grp).strip()
             if not re.search(r"\d", val):
                 continue
+            lo, hi = m.span(grp)
+            if any(lo >= s0 and hi <= s1 for s0, s1 in spans):
+                continue          # the same printed run, already claimed
             # A bare 1-3 digit "account number" carries no distinguishing
             # entropy and collides with ubiquitous document numbers: a separate
             # statement's "Response No. 101" / "Material Fact No. 110", a page,
@@ -15860,11 +15947,28 @@ def _pn_identifier_values(text):
             if (cls == "registration number"
                     and len(re.sub(r"\D", "", val)) < 4):
                 val = re.sub(r"\s+", " ", m.group(0)).strip()
+            # A GUID carries 32 alphanumerics. The LOOSE arm's marks let it
+            # reach a little either way for a scan that dropped a hyphen or
+            # split a group, and no further: a run this far from an envelope
+            # id's own length is something else the label happened to stand
+            # in front of, and faking it would rewrite that instead.
+            if cls == "envelope id" and not (
+                    _PN_GUID_ALNUM_MIN
+                    <= len(re.sub(r"[^A-Za-z0-9]", "", val))
+                    <= _PN_GUID_ALNUM_MAX):
+                continue
             # A diagnosis or procedure code is not a stamp.
             if ((cls == "production number" and _PN_MEDICAL_CODE_RE.fullmatch(val))
                     or (cls == "account id"
                         and _PN_MEDICAL_CODE_LETTERED_RE.fullmatch(val))):
                 continue
+            # The span is claimed whether or not the VALUE is new: an
+            # identifier printed twice has its second occurrence deduped out
+            # of the list, and leaving that occurrence unclaimed let a
+            # narrower class read a piece of it there — our own envelope-id
+            # stand-in was reported as a surviving Bates stamp off its
+            # second line, a row no answer can clear.
+            spans.append((lo, hi))
             if val.lower() in seen:
                 continue
             seen.add(val.lower())
