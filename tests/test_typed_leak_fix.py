@@ -232,9 +232,11 @@ def test_partial_keep_fakes_only_the_unbracketed_part(tmp_path):
 
 def test_partial_keep_roundtrips_the_bracket_spec_via_master(tmp_path):
     # A bracket keep-spec is a KEEP: it lives in the cross-folder master KEEP
-    # sheet (not the transient per-folder LEAKS triage), and survives back
-    # verbatim — NOT collapsed to "yes" (which would fake the whole phrase, kept
-    # words and all). PDF_LINKER_MASTER (set by the conftest) isolates it here.
+    # sheet (not the transient per-folder LEAKS triage). It is stored under the
+    # KEPT PART alone — "Raytheon" is this matter's party and the bracket says
+    # nothing about it, so the permanent workbook does not carry it — and the
+    # bracket round-trips verbatim, NOT collapsed to "yes" (which would fake
+    # the phrase, kept words and all). PDF_LINKER_MASTER (conftest) isolates it.
     cfg = {}
     d = {"value": "Raytheon Technologies", "type": "KEEP-PART", "fix": "yes",
          "replacement": None, "fake_values": ["Raytheon"],
@@ -242,6 +244,10 @@ def test_partial_keep_roundtrips_the_bracket_spec_via_master(tmp_path):
     P._pn_update_master_keep(cfg, {"raytheon technologies": d},
                              "Case A", "2026-01-01", log)
     back = P._pn_read_master_keep(cfg)
-    got = back["raytheon technologies"]
+    assert "raytheon technologies" not in back     # the remainder is not stored
+    got = back["technologies"]
     assert got["fixcell"] == "[Technologies]"      # round-trips verbatim
-    assert got["fake_values"] == ["Raytheon"]      # keep "Technologies", fake rest
+    # …and reads back as the STRICT keep the bracket promised: kept even next
+    # to a name, where a soft `no` would be released inside a name run.
+    strict, soft, nuclear = P._pn_keep_values(back)
+    assert "Technologies" in strict and "Technologies" not in soft

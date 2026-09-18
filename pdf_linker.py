@@ -21512,6 +21512,17 @@ class Pseudonymizer:
         self.kept_hits = set()   # kept strings (lowercased) that ACTUALLY matched
                                  # text this run — so the master KEEP log can bump
                                  # only the decisions a run really used
+        # {kept value lower: [sample, ...]} — the EXPORT's own sentence for a
+        # value an operator keep leaves standing, collected per file and
+        # written to the master workbook's KEEP Context sheet at the end of
+        # the run (`note_keep_context`). Pseudonymized by construction: the
+        # only real value left in it is the flagged one.
+        self.keep_context = {}
+        # The value_lowers of the keeps made in THIS folder — its worksheet or
+        # its key. Set by both run sites beside `_keep_decisions`; empty here
+        # so a caller that does not make the distinction samples nothing
+        # rather than sampling every inherited keep on the master sheet.
+        self._keep_local = set()
         # `--fix-leaks` works on text this tool already scrubbed, so an
         # open-world MINT there reads our own output as a fresh real value. The
         # detectors are switched off for that reason; a display-name mint is the
@@ -25292,6 +25303,112 @@ class Pseudonymizer:
             else:
                 out.append(str(v))
         return out
+
+    def _keep_sample_is_clean(self, quote):
+        """True when `quote` carries no real value but the kept one(s).
+
+        A sample is a substring of the EXPORT, so it is already exactly as
+        shareable as the deliverable the operator sends — every other tracked
+        value in the sentence stands there as its stand-in. This is the one
+        thing that is not yet true of the export at the moment the master
+        workbook is written: the file may be about to be QUARANTINED for a
+        leak, and a leaked real name must never reach a permanent cross-case
+        workbook that outlives every folder it describes. Asked of the
+        SENTENCE rather than of the file, so a clean sentence out of a held
+        export is still a usable sample and a leak three pages away costs
+        nothing.
+
+        `_surviving_records` is the single eligibility rule the leak scan and
+        the cure share, so this asks the same question they do and cannot
+        drift from it. It says nothing about a kept value — the write side
+        protects one and the scan mirrors that refusal — which is why the
+        flagged value itself does not have to be excluded here, and why
+        another keep's value standing in the same sentence is left alone: it
+        is in the shared export for the same declared reason.
+
+        It clears that scan's two-entry memo, which is why this is asked only
+        of the handful of quotes that reach it and only after the file's own
+        leak scans are done."""
+        return not self._surviving_records(quote)
+
+    def note_keep_context(self, parsed):
+        """Record the EXPORT's own sentence for every value an operator KEEP
+        leaves standing in `parsed` (a `_pn_body_lines` of the scrubbed body).
+
+        A `no` or a `never` — typed into `LEAKS.xlsx`, or into the pseudonym
+        key's Replacement column before a re-run — is the operator saying the
+        tool flagged or faked something it should not have. The master KEEP
+        sheet records that verdict and nothing about the text it was reached
+        from, and the word alone cannot say why one: "Charge" is boilerplate in
+        "CHARGE OF DISCRIMINATION" and a surname in "served on Charge at his
+        residence". So the sentence is kept beside it, accumulated across
+        matters, and the review tiers can be tuned from real false positives.
+
+        Read from the SCRUBBED export and never from the original — the whole
+        of what makes a permanent cross-case sample safe to hold. Quoted under
+        the value the master sheet will hold the decision as
+        (`_pn_master_keep_rows`), so the two sheets name one thing one way: a
+        keep-spec's rows are its KEPT PARTS, and a part is looked for as a
+        WHOLE WORD, which is how a keep matches in the first place.
+
+        LOCAL decisions only — the keeps typed in THIS folder. The sample is
+        evidence for the decision being MADE, and the flagging is what the
+        decision answers; in a folder that merely INHERITS the keep nothing was
+        flagged, so there is no false positive there to record. It is also what
+        keeps this cheap: a master sheet carries hundreds of inherited keeps,
+        several of them ordinary vocabulary ("and", "of", "court"), and every
+        one of those stands in every export — so sampling them would spend the
+        screen below hundreds of times a run to fill the sheet with sentences
+        nobody decided anything from.
+
+        Self-selecting, deliberately: a value that does not STAND in this
+        export yields no sample — a keep that protected nothing here has
+        nothing to show, and a partial keep whose remainder was faked is found
+        by its kept part alone. Capped per value, so a filing that names a
+        kept word on every page costs one row."""
+        decisions = getattr(self, "_keep_decisions", None) or {}
+        local = getattr(self, "_keep_local", None) or set()
+        if not decisions or not local or not parsed:
+            return
+        for vl, d in decisions.items():
+            if vl not in local:
+                continue
+            kind = str(d.get("type") or "").strip()
+            for value, keep, _vtype in _pn_master_keep_rows(d):
+                if not str(value).strip():
+                    continue
+                got = self.keep_context.setdefault(str(value).lower(), [])
+                if len(got) >= _PN_KEEP_CONTEXT_MAX:
+                    continue
+                quote, _site = _pn_context_hit(parsed, value,
+                                               bounded_only=True)
+                if not quote:
+                    continue
+                key = _pn_context_key(quote)
+                if any(g["key"] == key for g in got):
+                    continue
+                if not self._keep_sample_is_clean(quote):
+                    continue
+                got.append({"value": str(value), "keep": str(keep),
+                            # What FLAGGED it, which is the refinement signal:
+                            # the worksheet's own Type cell names the tier that
+                            # produced the row, and a keep typed into the KEY
+                            # has no tier, so the record's category and source
+                            # stand in — the same thing the LEAK warning names
+                            # a value by (`describe_reals`).
+                            "kind": kind or self._keep_sample_kind(value),
+                            "quote": quote, "key": key})
+
+    def _keep_sample_kind(self, value):
+        """How a KEY-typed keep's value came to be faked — "entity-token, from
+        prescan" — for a sample with no worksheet tier behind it. Empty where
+        the row was retired and no record is left, which is honest: nothing in
+        the run still says which pass built the term."""
+        vl = str(value).lower()
+        for rec in self.records.values():
+            if str(rec.get("real", "")).lower() == vl:
+                return f"{rec.get('category', '?')}, from {rec.get('source') or '?'}"
+        return ""
 
     def note_original(self, text):
         """Record the UNSCRUBBED text of an export as EVIDENCE for
@@ -34100,7 +34217,20 @@ def _pn_keep_values(decisions):
         braces = _pn_decision_nuclear_parts(d)
         nuclear.update(braces)
         if d.get("fix") == "no":
-            if d.get("value") and not braces:
+            # A bracket covering the WHOLE value parses as a `no` — the cut
+            # left nothing over to fake — and it is still a BRACKET: "this
+            # fragment is never a name" is the STRICT promise whether or not
+            # the value had a remainder. Reading it as a soft `no` cost
+            # nothing while a whole-value bracket was a strange thing to type;
+            # it is now the form every keep-SPEC is stored in on the master
+            # KEEP sheet, whose rows name the kept part alone
+            # (`_pn_master_keep_parts`), so the tier has to survive the
+            # reduction or an inherited `[Human Resources]` would quietly
+            # weaken to a keep released beside a name.
+            whole = _pn_keep_spec_parts(d.get("fixcell") or "")[0]
+            if whole:
+                strict.update(whole)
+            elif d.get("value") and not braces:
                 soft.add(d["value"])
         elif d.get("fake_values") is not None and d.get("fixcell"):
             strict.update(_pn_keep_spec_parts(d["fixcell"])[0])
@@ -34374,6 +34504,134 @@ _PN_MASTER_KEEP_HEADERS = ("Value", "Fix? (yes/no)", "Type", "Times Seen",
                            # real history but not authorship — and only the
                            # author fakes a keep-spec's remainder.
                            "Origin")
+
+# ── The KEEP sheet carries the KEPT TEXT and nothing else ────────────────────
+# A `no` or a `never` names the WHOLE value, and that string IS the instruction
+# — there is nothing to reduce and the row cannot work without it. A keep-SPEC
+# is the other shape, and it says two things at once: `Alder Law, P.C. -> [Law]`
+# records a lesson that generalises ("Law is never a name") and a remainder that
+# does not ("Alder" is this matter's law firm). The sheet stored the whole value
+# anyway — so a permanent workbook that lives OUTSIDE every case folder, is
+# routinely on a synced drive and is never pruned carried that matter's party
+# name, to record a lesson the remainder plays no part in. It plays none by
+# design: an INHERITED keep-spec builds no fragment terms, so only the bracket
+# has ever applied anywhere else (`_pn_decision_is_ours`). That is the same
+# thing `_pn_case_label` exists to keep this file from becoming, arriving
+# through the Value column instead of the Cases one.
+#
+# So a spec is written under its KEPT PARTS, one row each, under an instruction
+# rebuilt from that part alone; and an existing sheet HEALS, since the reduction
+# is applied to the rows already on it as well as to this run's.
+# `_pn_keep_values` reads a whole-value bracket back as the STRICT keep it is.
+#
+# The ONE exception is a spec riding with an OCR fix (`*David {said}`): there
+# the value is the GARBLE the correction is defined against, so a row reduced
+# to its kept part would no longer say what it corrects. An ALIAS spec
+# (`~David {said}`) takes the reduction, its alias half being case-local and
+# inherited by nobody.
+#
+# Not reduced, and stated: a `never` or a `no` (the whole value is the
+# instruction), a `phrase` and its `(parenthesised)` part form (the phrase IS a
+# party's own words — that is what the control means), and a `*`/`**` OCR row
+# (the value is the scanned garble). Those still put real text on the sheet.
+_PN_KEEP_PART_TYPE = "KEEP-PART"
+_PN_KEEP_PLAIN_TYPE = "KEEP"
+
+# ── …and the SENTENCE each keep was reached from ─────────────────────────────
+# A `no`/`never` — typed into the worksheet, or into the key's Replacement
+# column before a re-run — is the operator saying the tool flagged or faked
+# something it should not have. The KEEP sheet records the verdict and nothing
+# about the text it was reached from, and the word alone cannot say why:
+# "Charge" is boilerplate in "CHARGE OF DISCRIMINATION" and a surname in
+# "served on Charge at his residence". That is the question the LEAKS Context
+# column already answers for a decision NOT YET made; this sheet asks it of a
+# decision already made, and accumulates the answers across matters so the
+# review tiers can be tuned from real false positives instead of from guesses.
+#
+# The quote is read from the SCRUBBED EXPORT and never from the original, and
+# that is the whole of what makes it safe to keep here: every other real value
+# in the sentence has already been replaced by its stand-in, and the one real
+# value left standing is the flagged value itself — which the operator has just
+# declared is not a name. A sample is a substring of the deliverable, so it is
+# exactly as shareable as the export; `Pseudonymizer._keep_sample_is_clean`
+# adds the one thing the export is not yet known to be free of when this is
+# written, and drops a sentence carrying any OTHER tracked real.
+_PN_MASTER_KEEP_CONTEXT_SHEET = "KEEP Context"
+_PN_MASTER_KEEP_CONTEXT_HEADERS = ("Value", "Keep", "Flagged As", "Context",
+                                   "Case", "Seen")
+# How many sentences are kept for one value. Several, because the point is a
+# CORPUS — one word across several matters is what says whether a tier is
+# wrong about the word or about one sentence — and bounded, because a workbook
+# that gains a row per value per run grows for ever. Counted over the
+# ACCUMULATED sheet, not per run.
+_PN_KEEP_CONTEXT_MAX = 5
+
+
+def _pn_context_key(quote):
+    """The identity of a Context sample: case- and whitespace-insensitive, so
+    one folder re-run does not add the same sentence twice and two exports of
+    one filing count once."""
+    return " ".join(str(quote or "").lower().split())
+
+
+def _pn_master_keep_notes(notes):
+    """A keep's Notes as the master sheet may hold them: the parts that name
+    ANOTHER real value are dropped.
+
+    A pre-fill note names the tracked value a row's spelling was read as a
+    misspelling of (`_PN_PREFILL_NOTE`), and one survives onto a keep wherever
+    the operator typed `no` over a pre-filled alias — so the cell that explains
+    the row would carry the party name the row itself no longer does. The
+    authority note names a PUBLISHED decision, which is public record and the
+    one thing this pipeline preserves byte-for-byte, so it stays; so does an
+    operator's own text."""
+    parts = [n for n in str(notes or "").split(_PN_NOTE_SEP)
+             if not _pn_prefill_canonical(n)]
+    return _PN_NOTE_SEP.join(p for p in parts if p.strip())
+
+
+def _pn_master_keep_parts(value, cell, vtype):
+    """The master KEEP sheet's (value, instruction, type) row(s) for a keep
+    stored as `value` under the instruction `cell` — the value itself for
+    every control but a keep-SPEC, and one row per KEPT PART for a spec. See
+    the block above for why the spec's remainder is not written."""
+    cell = str(cell or "")
+    brackets, braces = _pn_keep_spec_parts(cell)
+    if not (brackets or braces) or _pn_cell_is_ocr_keep(cell):
+        return [(value, cell or "no", vtype)]
+    out = [(b, f"[{b}]", _PN_KEEP_PART_TYPE) for b in brackets]
+    out += [(b, "{" + b + "}", _PN_KEEP_NUCLEAR_TYPE) for b in braces]
+    return out or [(value, cell or "no", vtype)]
+
+
+def _pn_master_keep_rows(d):
+    """`_pn_master_keep_parts` for a live decision: the row(s) the master KEEP
+    sheet holds it as. The TYPE is the decision's own promise — a `{braced}`
+    or `never` keep is KEEP-ALWAYS, a `phrase` its own inverse, an OCR fix
+    durable or case-local — and is what a spec's part rows then override per
+    part, since a bracket and a brace in one cell are two different promises
+    about two different fragments."""
+    value = d.get("value") or ""
+    cell = d.get("fixcell") or ""
+    if _pn_decision_nuclear_parts(d):
+        vtype = _PN_KEEP_NUCLEAR_TYPE
+    elif _pn_decision_is_phrase(d):
+        # The keeps' inverse, on the keeps' own sheet: the value is faked
+        # WHOLE in every folder that binds it, a kept word included.
+        vtype = _PN_PHRASE_TYPE
+    elif d.get("ocr_durable"):
+        # A `**` correction: a scan's habitual garble of a generic term,
+        # corrected in every folder it turns up in — see `_PN_OCR_MARK`.
+        vtype = _PN_OCR_FIX_TYPE
+    elif d.get("ocr_fix"):
+        # A `*` correction: applied in the case that typed it and nowhere
+        # else, kept here as evidence of what this scan misread. Typing a
+        # second star into this row's instruction cell promotes it.
+        vtype = _PN_OCR_FIX_CASE_TYPE
+    else:
+        vtype = d.get("type") or (_PN_KEEP_PART_TYPE if d.get("fake_values")
+                                  else _PN_KEEP_PLAIN_TYPE)
+    return _pn_master_keep_parts(value, cell or "no", vtype)
 
 
 def _pn_master_path(cfg):
@@ -35149,20 +35407,87 @@ def _pn_read_master_keep(cfg, log=None):
             if not _pn_decision_is_ocr_log(d)}
 
 
+def _pn_keep_context_samples(pz):
+    """This run's KEEP Context samples, flattened for `_pn_update_master_keep`
+    — the sentence each kept value was left standing in, one list however many
+    files carried it (`Pseudonymizer.note_keep_context`)."""
+    out = []
+    for got in (getattr(pz, "keep_context", None) or {}).values():
+        out.extend(got)
+    return out
+
+
+def _pn_master_keep_context(wb, samples, case_name, today, aliases):
+    """Merge this run's KEEP Context samples into the workbook's own sheet —
+    the sentence each kept value was reached from, in the pseudonymized form
+    the export ships, accumulated across matters.
+
+    One row per (value, sentence): a folder re-run finds its own sample already
+    there and adds nothing, while the same word met in another matter's prose
+    adds the sample that makes the pair worth having. Capped per value
+    (`_PN_KEEP_CONTEXT_MAX`) over the ACCUMULATED sheet, so a keep that
+    protects text in twenty folders does not cost twenty rows.
+
+    The Case cell is this folder's PSEUDONYM and is migrated on READ like every
+    other case name in this workbook, so one run in a folder heals its label on
+    rows this run had nothing to say about."""
+    rows, per_value, seen = [], {}, set()
+
+    def _add(val, keep, kind, quote, case, when):
+        vl = str(val).lower()
+        key = (vl, _pn_context_key(quote))
+        if not str(quote).strip() or key in seen:
+            return
+        if per_value.get(vl, 0) >= _PN_KEEP_CONTEXT_MAX:
+            return
+        seen.add(key)
+        per_value[vl] = per_value.get(vl, 0) + 1
+        rows.append([str(val), str(keep), str(kind), str(quote), str(case),
+                     str(when)])
+
+    for r in _pn_master_sheet_rows(wb, _PN_MASTER_KEEP_CONTEXT_SHEET)[1:]:
+        if not r or r[0] in (None, "") or len(r) < 4 or not r[3]:
+            continue
+        stored = str(r[4]) if len(r) > 4 and r[4] else ""
+        case = "; ".join(sorted(_pn_case_migrate(
+            [stored] if stored else [], aliases, case_name))) or stored
+        _add(str(r[0]), r[1] or "", r[2] or "", str(r[3]), case,
+             (str(r[5]) if len(r) > 5 and r[5] else today))
+    for s in samples or ():
+        _add(s.get("value", ""), s.get("keep", ""), s.get("kind", ""),
+             s.get("quote", ""), case_name, today)
+
+    rows.sort(key=lambda r: (str(r[0]).lower(), str(r[5]), str(r[3])))
+    _pn_master_replace_sheet(wb, _PN_MASTER_KEEP_CONTEXT_SHEET,
+                             _PN_MASTER_KEEP_CONTEXT_HEADERS, rows,
+                             (26, 14, 22, 110, 24, 12))
+    return len(rows)
+
+
 def _pn_update_master_keep(cfg, record_map, case_name, today, log,
-                           aliases=(), origin=None):
+                           aliases=(), origin=None, contexts=()):
     """Merge this run's KEEP decisions into the master workbook's KEEP sheet
     (single persistent sheet across folders and runs), WITHOUT disturbing the
     'Master Leaks' sheet. `record_map` is {value_lower: decision} for the keeps
     made or re-affirmed this run; Times Seen / Cases / dates accumulate so the
     screening can be tuned from real history. Returns the KEEP-sheet row count.
 
+    A row names the KEPT TEXT and not the value it was cut out of
+    (`_pn_master_keep_rows`), and the rows ALREADY on the sheet are put through
+    the same reduction, so an older workbook sheds a keep-spec's remainder on
+    the next run in any folder rather than carrying that matter's party name
+    for ever. A split row's Notes go with the value they described.
+
+    `contexts` are this run's Context samples (`Pseudonymizer.keep_context`),
+    written to their own sheet beside the decisions — the sentence each keep
+    was reached from, pseudonymized.
+
     `case_name` is this folder's PSEUDONYM (`_pn_case_label`) and `origin` the
     same thing carrying its id (`_pn_case_origin`) — the real folder name never
     reaches this workbook. `aliases` are the forms it may already stand as, so
     a row written by an older version is migrated onto them rather than gaining
     a second entry for the same matter."""
-    if not record_map and not _pn_master_path(cfg).exists():
+    if not record_map and not contexts and not _pn_master_path(cfg).exists():
         return 0
     try:
         import openpyxl  # noqa: F401
@@ -35176,6 +35501,26 @@ def _pn_update_master_keep(cfg, record_map, case_name, today, log,
     case_id = _m.group(1) if _m else ""
 
     rows = {}   # value_lower -> {value, instruction, type, times, cases, first, last, notes}
+
+    def _merge(row):
+        """Fold one row in under its value. A reduction can land two stored
+        rows on one kept part ("[Law]" off two matters' firms), so the counts
+        are merged rather than overwritten — the LARGER Times Seen, the union
+        of the cases, the widest date span. Times Seen counts RUNS, so taking
+        the larger under-counts where summing would double-count a folder the
+        split has already been applied in."""
+        key = str(row["value"]).lower()
+        g = rows.get(key)
+        if g is None:
+            rows[key] = row
+            return
+        g["times"] = max(g["times"], row["times"])
+        g["cases"] |= row["cases"]
+        g["first"] = min(g["first"], row["first"])
+        g["last"] = max(g["last"], row["last"])
+        g["notes"] = g["notes"] or row["notes"]
+        g["origin"] = g["origin"] or row["origin"]
+
     for r in _pn_master_sheet_rows(wb, _PN_MASTER_KEEP_SHEET)[1:]:
         if not r or r[0] in (None, ""):
             continue
@@ -35183,7 +35528,7 @@ def _pn_update_master_keep(cfg, record_map, case_name, today, log,
         times = r[3] if len(r) > 3 else 1
         cases_raw = r[4] if len(r) > 4 else ""
         instr = (str(r[1]) if len(r) > 1 and r[1] else "no")
-        rows[val.lower()] = {
+        base = {
             "value": val,
             "instruction": instr,
             # The INSTRUCTION CELL is what decides whether an OCR fix applies
@@ -35199,50 +35544,46 @@ def _pn_update_master_keep(cfg, record_map, case_name, today, log,
                  if c.strip() and "cases" not in c), aliases, case_name),
             "first": (str(r[5]) if len(r) > 5 and r[5] else today),
             "last": (str(r[6]) if len(r) > 6 and r[6] else today),
-            "notes": (str(r[7]) if len(r) > 7 and r[7] else ""),
+            "notes": _pn_master_keep_notes(
+                str(r[7]) if len(r) > 7 and r[7] else ""),
             # An Origin naming this folder in an older form is OURS and is
             # rewritten to today's — `_pn_decision_is_ours` recognises both, so
             # authorship survives the migration it triggers.
             "origin": _pn_case_migrate_origin(
                 (str(r[8]) if len(r) > 8 and r[8] else ""), aliases, origin,
                 case_id)}
+        for part, cell, ptype in _pn_master_keep_parts(val, instr,
+                                                       base["type"]):
+            row = dict(base, value=part, instruction=cell, type=ptype,
+                       cases=set(base["cases"]))
+            if part != val:
+                # The note described the value this row is no longer about —
+                # a cited-authority note, a pre-fill note naming the canonical
+                # — and carrying it onto the fragment would put back exactly
+                # the text the reduction takes out.
+                row["notes"] = ""
+            _merge(row)
 
     for vl, d in record_map.items():
-        instruction = d.get("fixcell") or ("no" if d.get("fix") == "no" else "no")
-        # A `{braced}` keep is a different promise from a `[bracket]` — it holds
-        # in every folder and inside a party name — so the sheet says so plainly
-        # rather than filing it as an ordinary KEEP-PART.
-        if _pn_decision_nuclear_parts(d):
-            vtype = _PN_KEEP_NUCLEAR_TYPE
-        elif _pn_decision_is_phrase(d):
-            # The keeps' inverse, on the keeps' own sheet: the value is faked
-            # WHOLE in every folder that binds it, a kept word included.
-            vtype = _PN_PHRASE_TYPE
-        elif d.get("ocr_durable"):
-            # A `**` correction: a scan's habitual garble of a generic term,
-            # corrected in every folder it turns up in — see `_PN_OCR_MARK`.
-            vtype = _PN_OCR_FIX_TYPE
-        elif d.get("ocr_fix"):
-            # A `*` correction: applied in the case that typed it and nowhere
-            # else, kept here as evidence of what this scan misread. Typing a
-            # second star into this row's instruction cell promotes it.
-            vtype = _PN_OCR_FIX_CASE_TYPE
-        else:
-            vtype = d.get("type") or ("KEEP-PART" if d.get("fake_values") else "KEEP")
-        g = rows.get(vl)
-        if g is None:
-            # First folder to record a value is the one that decided it — an
-            # inherited decision already has its row, so it can never land here.
-            rows[vl] = {"value": d["value"], "instruction": instruction,
-                        "type": vtype, "times": 1, "cases": {case_name},
-                        "first": today, "last": today,
-                        "notes": d.get("notes", ""), "origin": origin}
-        else:
-            g["times"] += 1
-            g["cases"].add(case_name)
-            g["last"] = today
-            g["instruction"] = instruction     # newest instruction wins
-            g["type"] = vtype
+        for value, instruction, vtype in _pn_master_keep_rows(d):
+            g = rows.get(str(value).lower())
+            if g is None:
+                # First folder to record a value is the one that decided it —
+                # an inherited decision already has its row, so it can never
+                # land here.
+                rows[str(value).lower()] = {
+                    "value": value, "instruction": instruction,
+                    "type": vtype, "times": 1, "cases": {case_name},
+                    "first": today, "last": today,
+                    "notes": (_pn_master_keep_notes(d.get("notes", ""))
+                              if value == d.get("value") else ""),
+                    "origin": origin}
+            else:
+                g["times"] += 1
+                g["cases"].add(case_name)
+                g["last"] = today
+                g["instruction"] = instruction     # newest instruction wins
+                g["type"] = vtype
 
     data = []
     for g in sorted(rows.values(), key=lambda g: g["value"].lower()):
@@ -35252,6 +35593,8 @@ def _pn_update_master_keep(cfg, record_map, case_name, today, log,
                      cell, g["first"], g["last"], g["notes"], g["origin"]])
     _pn_master_replace_sheet(wb, _PN_MASTER_KEEP_SHEET, _PN_MASTER_KEEP_HEADERS,
                              data, (34, 16, 11, 11, 40, 12, 12, 26, 22))
+    if contexts or _pn_master_sheet_rows(wb, _PN_MASTER_KEEP_CONTEXT_SHEET):
+        _pn_master_keep_context(wb, contexts, case_name, today, aliases)
     if _pn_master_save(wb, master_path, log, "KEEP log") and record_map:
         log.info(f"  Master KEEP log updated: {master_path} "
                  f"({len(rows)} kept value(s) tracked).")
@@ -36273,6 +36616,11 @@ def _write_text_version(pdf_path: Path, doc, log: logging.Logger,
         # column reads (`_pn_leak_context`).
         parsed = _pn_body_lines(body)
         orig_parsed = _pn_body_lines(original)
+        # The sentence each operator KEEP left standing, from this same
+        # scrubbed body — the false-positive sample the master workbook
+        # accumulates (`note_keep_context`). Asked here, AFTER the leak
+        # scans, because its screen clears their memo.
+        pseudonymizer.note_keep_context(parsed)
         for real in sorted(survivors):
             # A pure pleading phrase ("Opposition", "Plaintiff's Opposition to
             # Mot.") is a document type, never a party — never worth a worksheet
@@ -37577,6 +37925,11 @@ def _write_word_text_version(src_path, text, log, pseudonymizer=None,
         # rule `_pn_leak_context` states, shared with the PDF path.
         scrub_parsed = _pn_body_lines(body)
         orig_parsed = _pn_body_lines(text)
+        # The sentence each operator KEEP left standing, from this same
+        # scrubbed body — the false-positive sample the master workbook
+        # accumulates (`note_keep_context`). Asked here, AFTER the leak
+        # scans, because its screen clears their memo.
+        pseudonymizer.note_keep_context(scrub_parsed)
         for real in sorted(survivors):
             if _pn_is_procedural_phrase(real) or _pn_is_email_value(real):
                 continue
@@ -41084,11 +41437,8 @@ def _fix_leaks_mode(folder, args, cfg, log):
     case_aliases = _pn_case_aliases(folder.name, case_label)
     log.info(f'  This folder is named "{case_label}" on the cross-case master '
              f'workbook.')
-    if _keep_rec:
-        _pn_update_master_keep(cfg, _keep_rec, case_label,
-                               datetime.date.today().isoformat(), log,
-                               aliases=case_aliases,
-                               origin=_pn_case_origin(folder.name, case_label))
+    # (The master KEEP sheet is written at the END of this pass, below: its
+    # Context samples are read off the exports this loop has yet to write.)
 
     # The tool's OWN .txt files in the folder — the worksheet's text companion
     # and the ETA/DONE run markers — are not exports and must not be scrubbed
@@ -41236,6 +41586,12 @@ def _fix_leaks_mode(folder, args, cfg, log):
         survivors |= set(pz.surviving_reals_reduced(scrubbed, spliced=is_leak))
         pz.written.append(f)
         low = scrubbed.lower()
+        scrub_parsed = _pn_body_lines(scrubbed)
+        # The sentence each operator KEEP left standing, from this same
+        # scrubbed body — the false-positive sample the master workbook
+        # accumulates (`note_keep_context`). Asked here, AFTER the scans
+        # above, because its screen clears their memo.
+        pz.note_keep_context(scrub_parsed)
         # A rejected decision's value is a row the worksheet MUST keep: the
         # fix was dropped, the file is held for it, and the cell is the one
         # thing the operator has to correct. The scans below may not report
@@ -41247,8 +41603,7 @@ def _fix_leaks_mode(folder, args, cfg, log):
                 held.add(f)
                 pz.leak_report.append(
                     dict(zip(("context", "scrubbed_context"),
-                              _pn_leak_quotes(orig_parsed,
-                                              _pn_body_lines(scrubbed), pz,
+                              _pn_leak_quotes(orig_parsed, scrub_parsed, pz,
                                               v, aligned=False)),
                          **{"file": _pn_export_source_name(
                                 f, export_sources),
@@ -41259,7 +41614,6 @@ def _fix_leaks_mode(folder, args, cfg, log):
         if survivors:
             pz.leaked_by_file[f] = {s.lower() for s in survivors}
             pz.note_leaks(survivors)
-            scrub_parsed = _pn_body_lines(scrubbed)
             for real in sorted(survivors):
                 if _pn_is_email_value(real):
                     continue          # always faked — never a triage decision
@@ -41336,6 +41690,18 @@ def _fix_leaks_mode(folder, args, cfg, log):
         "fix-leaks", folder, len(files), total_bytes, rate, _fix_eta, None,
         _fix_started, datetime.datetime.now(), _elapsed,
         total_bytes / _elapsed if _elapsed > 0 else 0)
+
+    # Record this pass's LOCAL keep decisions into the cross-folder master KEEP
+    # sheet, with the sentence each one was reached from beside them. AFTER the
+    # export loop, as the full run does it: the samples are read off the
+    # scrubbed exports that loop writes, and nothing between there and here can
+    # return early, so a keep typed in this folder still reaches the sheet.
+    if _keep_rec:
+        _pn_update_master_keep(cfg, _keep_rec, case_label,
+                               datetime.date.today().isoformat(), log,
+                               aliases=case_aliases,
+                               origin=_pn_case_origin(folder.name, case_label),
+                               contexts=_pn_keep_context_samples(pz))
 
     still = len(offenders)
     if still:
@@ -42389,11 +42755,12 @@ def main():
                 # is never re-stamped with ours.
                 _record[vl] = d
         if _record:
-            _pn_update_master_keep(cfg, _record, case_label,
-                                   datetime.date.today().isoformat(), log,
-                                   aliases=case_aliases,
-                                   origin=_pn_case_origin(folder.name,
-                                                          case_label))
+            _pn_update_master_keep(
+                cfg, _record, case_label,
+                datetime.date.today().isoformat(), log,
+                aliases=case_aliases,
+                origin=_pn_case_origin(folder.name, case_label),
+                contexts=_pn_keep_context_samples(pseudonymizer))
         # Two addresses on one street with adjacent numbers were faked to two
         # unrelated streets — the failure that moved an ADU off its parcel.
         for w in _pn_address_adjacency(pseudonymizer.records.values()):

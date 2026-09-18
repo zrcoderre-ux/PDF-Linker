@@ -1004,6 +1004,95 @@ its own local keeps back (`_pn_update_master_keep`, accumulating Times Seen /
 Cases / dates) so the screening can learn from real history. This — NOT the
 per-folder `LEAKS.xlsx` — is the preservation vehicle: the transient LEAKS triage
 can be auto-deleted freely without ever dropping a keep.
+**…and a row on it names the KEPT TEXT and not the value it was cut out of**
+(`_pn_master_keep_rows`, `_pn_master_keep_parts`). A `no` or a `never` names the
+WHOLE value and that string IS the instruction — there is nothing to reduce and
+a row without it could not be re-applied. A keep-SPEC is the other shape, and it
+says two things at once: `Alder Law, P.C. -> [Law]` records a lesson that
+generalises ("Law is never a name") and a remainder that does not ("Alder" is
+this matter's law firm). The sheet stored the whole value anyway — so the one
+workbook that outlives every folder it describes, lives outside every case
+folder, sits routinely on a synced drive and is never pruned carried that
+matter's party name, to record a lesson the remainder plays no part in. It plays
+none BY DESIGN: an inherited keep-spec builds no fragment terms, so only the
+bracket has ever applied elsewhere. Same failure `_pn_case_label` exists to
+prevent, arriving through the `Value` column instead of the `Cases` one. So a
+spec is written under its KEPT PARTS, one row each — a bracket and a brace in
+one cell are two different promises about two different fragments — under an
+instruction rebuilt from that part alone, and a split row's `Notes` go with the
+value they described (a cited-authority note, a pre-fill note naming the
+canonical, would put back exactly the text the reduction takes out). An existing
+sheet HEALS: the reduction is applied to the rows already on it as well as to
+this run's, so an older workbook sheds its remainders on the next run in any
+folder, the accumulated Times Seen / Cases / dates carried onto the part (the
+LARGER count where two stored rows land on one part, since Times Seen counts
+RUNS and summing would double-count a folder the split has already been applied
+in). `_pn_keep_values` had to move with it: a bracket covering the whole value
+parses as a `no` — the cut left nothing over — and is still a BRACKET, so it
+reads back as the STRICT keep it promised rather than the softer `no` it now
+looks like. NOT reduced, and stated: a `phrase` and its `(parenthesised)` part
+form (the phrase IS a party's own words — that is what the control means), and a
+`*`/`**` OCR row, including the combined `*David {said}` form, where the VALUE is
+the garble the correction is defined against and a row reduced to its kept part
+would no longer say what it corrects. An ALIAS spec (`~David {said}`) takes the
+reduction, its alias half being case-local and inherited by nobody.
+**…and a row's `Notes` never name ANOTHER party** (`_pn_master_keep_notes`). A
+pre-fill note names the tracked value a spelling was read as a misspelling of
+(`_PN_PREFILL_NOTE`), and one survives onto a keep wherever the operator typed
+`no` over a pre-filled alias — so the cell that explains the row carried the
+party name the row itself no longer does. Dropped at the same seam, on read and
+on write, so an older sheet sheds it too. The AUTHORITY note names a PUBLISHED
+decision, which is public record and the one thing this pipeline preserves
+byte-for-byte, so it stays, and so does an operator's own text.
+**…and every keep carries the SENTENCE it was reached from, pseudonymized**
+(`_PN_MASTER_KEEP_CONTEXT_SHEET`, `Pseudonymizer.note_keep_context`,
+`_pn_master_keep_context`). A `no`/`never` — typed into `LEAKS.xlsx`, or into the
+key's `Replacement` column before a re-run — is the operator saying the tool
+FLAGGED OR FAKED SOMETHING IT SHOULD NOT HAVE, which is the one kind of evidence
+that could tune the review tiers, and the KEEP sheet recorded the verdict and
+nothing about the text it was reached from. The word alone cannot say why:
+"Charge" is boilerplate in "CHARGE OF DISCRIMINATION" and a surname in "served on
+Charge at his residence" — the question the LEAKS `Context` column already
+answers for a decision NOT YET made, asked here of one already made and kept
+across matters. The quote is read from the SCRUBBED EXPORT and never from the
+original, which is the whole of what makes a permanent cross-case sample safe to
+hold: every other real value in the sentence already stands as its stand-in, and
+the one real value left standing is the flagged value itself — which the operator
+has just declared is not a name. Quoted under the value the KEEP sheet holds the
+decision as, so the two sheets name one thing one way, and as a WHOLE WORD, which
+is how a keep matches in the first place. Self-selecting, deliberately: a value
+that does not STAND in this export yields no sample, so a keep that protected
+nothing here shows nothing and a partial keep whose remainder was faked is found
+by its kept part alone. One row per (value, sentence) — a folder re-run finds its
+own sample already there, while the same word met in another matter's prose adds
+the sample that makes the pair worth having — capped per value over the
+ACCUMULATED sheet (`_PN_KEEP_CONTEXT_MAX`), so a keep that protects text in
+twenty folders does not cost twenty rows. The `Flagged As` column is the
+refinement signal: the worksheet's own `Type` cell names the TIER that produced
+the row, and a keep typed into the KEY has no tier, so the record's category and
+source stand in (`_keep_sample_kind`, the same thing the LEAK warning names a
+value by). Collected per file from the same scrubbed body the leak evidence is
+built from, at all three export writers (the PDF path, the Word path and
+`--fix-leaks`) — pinned on the SOURCE, because a pass missing from one of several
+paths is this project's oldest shape of bug — and AFTER that file's leak scans,
+because the screen below clears their memo.
+**…and a sentence carrying any OTHER tracked real is not kept**
+(`_keep_sample_is_clean`). A sample is a substring of the deliverable, so it is
+exactly as shareable as the export the operator sends. The one thing that is not
+yet true of the export when this workbook is written is the gate: the file may be
+about to be QUARANTINED for a leak, and a leaked real name must never reach a
+file that outlives every folder it describes. Asked of the SENTENCE and not of
+the file, so a clean sentence out of a held export is still a usable sample and a
+leak three pages away costs nothing. Through `_surviving_records`, the single
+eligibility rule the leak scan and the cure already share, so this cannot drift
+from them — it says nothing about a KEPT value (the write side protects one and
+the scan mirrors that refusal), which is why the flagged value itself needs no
+exclusion and why another keep's value standing in the same sentence is left
+alone: it is in the shared export for the same declared reason. Residual, and
+stated: the `Master Leaks` TALLY sheet still holds real values, which is what
+that sheet is FOR (it is opt-in, and a value that keeps leaking across matters is
+the thing it exists to name), and the shapes listed above as not reduced still
+put real text on the KEEP sheet.
 **…and a case folder is named on BOTH sheets by a PSEUDONYM, never by its own
 name** (`_pn_case_label`, `_pn_case_id`, `_pn_case_origin`). This workbook is
 permanent, lives OUTSIDE every case folder — next to the config, routinely on a

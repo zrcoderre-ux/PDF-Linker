@@ -185,11 +185,15 @@ def test_a_brace_typed_into_the_key_is_a_keep_spec(tmp_path):
 
 
 def test_the_master_sheet_labels_a_brace_row(tmp_path, monkeypatch):
+    """…under the BRACED PART alone. "Mulliken" is this matter's hospital and
+    the brace says nothing about it, so the permanent cross-case workbook does
+    not carry it."""
     monkeypatch.setenv("PDF_LINKER_MASTER", str(tmp_path / "master_leaks.xlsx"))
     d = _decision("Mulliken Medical Center", "{Medical Center}")
     P._pn_update_master_keep({}, d, "26STCV00001 Test", "2026-07-31", log)
     wb = openpyxl.load_workbook(tmp_path / "master_leaks.xlsx")
-    row = [r for r in wb[P._PN_MASTER_KEEP_SHEET].iter_rows(values_only=True)
-           if r[0] == "Mulliken Medical Center"][0]
+    rows = [r for r in wb[P._PN_MASTER_KEEP_SHEET].iter_rows(values_only=True)][1:]
+    assert not any("Mulliken" in str(r[0]) for r in rows)
+    row = [r for r in rows if r[0] == "Medical Center"][0]
     assert row[1] == "{Medical Center}"     # the instruction round-trips
     assert row[2] == P._PN_KEEP_NUCLEAR_TYPE
