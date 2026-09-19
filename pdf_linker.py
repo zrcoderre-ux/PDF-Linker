@@ -36707,14 +36707,25 @@ def _combined_sections(text):
 
 def _is_tool_txt_artifact(p):
     """The tool's OWN .txt files in a folder — the leak worksheet's plain-text
-    companion, the reader's flag list, this run's warnings report and the empty
-    ETA/DONE run markers. Never exports, so never scrubbed and never
-    tracked."""
+    companion, the reader's flag list, the authorities list, this run's
+    warnings report and the empty ETA/DONE run markers. Never exports, so never
+    scrubbed and never tracked.
+
+    `Authorities Cited.txt` is the one whose exclusion is load-bearing rather
+    than tidy. It is written into the CASE FOLDER, which IS `text_dir` under
+    the older single-folder layout — and it is REAL CITATION TEXT by design,
+    published authority the whole pipeline preserves byte-for-byte precisely so
+    a cite is never renamed. Read as an export it would be scrubbed like one:
+    the list that exists to name the decisions the parties cited, with the
+    decisions renamed. It would also be folded into `Combined Text.txt`, which
+    would hand the drafting model the folder's authorities a second time as
+    though they were another filing."""
     leak_txts = {f"{_PN_LEAK_STEM}.txt"} | {
         f"{stem}.txt" for stem in _PN_LEAK_LEGACY_STEMS}
     if p.name in leak_txts or p.name in (_COMBINED_TEXT_NAME,
                                          _COMBINED_ORIGINAL_NAME,
                                          _NEW_REAL_VALUES_FILE,
+                                         _AUTHORITIES_FILE,
                                          _WARNINGS_REPORT_FILE):
         return True
     if (p.name.startswith(_ETA_MARKER_PREFIX + " ")
