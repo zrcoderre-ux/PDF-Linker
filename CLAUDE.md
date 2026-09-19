@@ -7341,6 +7341,16 @@ costs no extra citation pass; the Word path has no appendix and asks directly.
 Rewritten whole every run and REMOVED when a folder cites nothing, so it never
 describes a batch that has moved on, and it carries nothing volatile so an
 unchanged folder reproduces it.
+**And it is never read as an EXPORT** (`_is_tool_txt_artifact`). It lives in
+the case folder, which IS `text_dir` under the older single-folder layout — so
+every pass that walks the exports would walk this one. That matters more here
+than for the other artifacts on that list: the file is REAL CITATION TEXT by
+design, published authority the pipeline preserves byte-for-byte precisely so a
+cite is never renamed, and read as an export it would be SCRUBBED like one —
+the list that exists to name the decisions the parties cited, with the
+decisions renamed. It would also be folded into `Combined Text.txt`, handing
+the drafting model the folder's authorities a second time as though they were
+another filing.
 
 **`New Real Values.txt` is the READER's way back in** (`_NEW_REAL_VALUES_FILE`,
 `_pn_read_new_real_values`). The pdf-viewer repo's text reader

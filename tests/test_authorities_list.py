@@ -67,6 +67,20 @@ def test_the_file_lands_in_the_case_folder_not_the_exports(tmp_path):
     assert not list((tmp_path / "Text Files").glob("*.txt"))
 
 
+def test_it_is_never_read_as_an_export(tmp_path):
+    # `text_dir` falls back to the CASE FOLDER under the older single-folder
+    # layout, where every .txt in it is read as an export — so this file, which
+    # lives in the case folder by design, would be scrubbed like one. It is
+    # real citation text: the list naming the decisions the parties cited,
+    # with the decisions renamed. It would be folded into `Combined Text.txt`
+    # too, handing the drafting model the folder's authorities a second time
+    # as though they were another filing.
+    got = _collect(("Motion.pdf", MOTION), ("Opposition.pdf", OPPO))
+    out = P._write_authorities_list(tmp_path, got, log)
+    assert P._is_tool_txt_artifact(out)
+    assert not P._is_tool_txt_artifact(tmp_path / "Motion.txt")
+
+
 def test_it_groups_by_kind(tmp_path):
     got = _collect(("Motion.pdf", MOTION), ("Opposition.pdf", OPPO))
     body = P._write_authorities_list(tmp_path, got, log).read_text()
