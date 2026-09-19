@@ -7881,5 +7881,25 @@ reads as "fully scrubbed".
   logs, leaks/key xlsx, ETA/DONE
   markers, launchers) are gitignored — never commit them (a stray one broke a
   user's `git pull`).
+- **A test that bounds a REVIEW tier's noise on this repo's own prose bounds a
+  RATE, not a count** (`_NOISE_PER_100KB` in
+  `test_defined_and_narrative_names.py`). Several tiers are calibrated by
+  measuring how many rows they turn up on these notes and on the module's own
+  docstrings — the densest capitalised technical prose to hand, and the shape
+  a name scan is likeliest to misread. A COUNT is a date stamp rather than an
+  assertion: the corpus grows with every change the project documents, so the
+  bound goes red on whichever commit happens to cross it, with the scan
+  unmoved. `narrative_name_scan`'s did (set at exactly the 5 rows then
+  observed on a 409 KB CLAUDE.md; red at 6 once the notes reached 562 KB),
+  and measured per 100 KB the scan was QUIETER by then than when the bound was
+  written — 1.22 rows per 100 KB against 1.07. Re-bumping such a bound each
+  time it trips makes it a rubber stamp. What those rows ARE is worth knowing
+  before reaching for a word list: these notes PERSONIFY the tool's own parts
+  in the exact grammar the scan reads ("the EXPORT says it too", "MuPDF calls
+  `abort()`"), which is a capitalised word in the subject position of an
+  acting verb and therefore precisely what the tier exists to report. No
+  filing writes that way, the tier is REVIEW, and naming the words in an
+  exemption list is the hand-kept gazetteer this file spends a section saying
+  does not scale.
 - Run tests: `cd PDF-Linker && python3 -m pytest tests/ -q`. `fitz` (PyMuPDF),
   `openpyxl` needed; OCR tests stub `pytesseract`/`PIL`.

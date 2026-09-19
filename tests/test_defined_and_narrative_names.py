@@ -308,12 +308,48 @@ def test_neither_tier_reads_ordinary_pleading_prose_as_a_name():
     assert pz.narrative_name_scan(_PLEADING_PROSE) == []
 
 
+# Rows per 100 KB of prose, NOT a row count — see the test below. Calibrated
+# by MEASURING the two dense technical corpora this repo has, rather than
+# picked: CLAUDE.md runs at 1.07 rows per 100 KB and the module's own
+# docstrings and comments at 1.78, so 2.0 sits just above the observed range.
+# Tight enough to bite — a loosening of this class measures 5-10x, which is
+# the order the notes record for every widened tier — and loose enough that
+# documenting another few features cannot trip it.
+_NOISE_PER_100KB = 2.0
+# Below this the denominator is too small for a rate to mean anything, and a
+# corpus that has shrunk that far is not the one this measures.
+_NOISE_MIN_KB = 100
+
+
 def test_both_tiers_stay_quiet_on_dense_technical_prose():
-    """This repo's own notes are 200 KB of capitalised technical vocabulary in
-    running sentences — the shape both scans are most likely to misread. What
-    they DO report there is the document's own worked examples ("Susan
-    Spellman", "Spellman confirmed", "Ashely Langley"), which is the scans
-    working; the bound is on everything else."""
+    """This repo's own notes are half a megabyte of capitalised technical
+    vocabulary in running sentences — the shape both scans are most likely to
+    misread. What they DO report there is the document's own worked examples
+    ("Susan Spellman", "Spellman confirmed", "Ashely Langley"), which is the
+    scans working; the bound is on everything else.
+
+    THE BOUND IS A RATE, and it has to be. It was `len(noise) <= 5`, set at
+    exactly the count observed when it was written — five rows on a 409 KB
+    CLAUDE.md, no headroom at all — and these notes grow with every change the
+    project documents. So it went red on whichever commit happened to cross
+    the line, and the scan had not moved: measured per 100 KB it was QUIETER
+    at that point than when the bound was set (1.22 rows per 100 KB then, 1.07
+    after the notes had grown by 37%). A count against a growing corpus is a
+    date stamp, not an assertion, and re-bumping it each time it trips makes
+    it a rubber stamp. The docstring above promises that growing the notes
+    never moves the bound, and only a rate keeps that promise.
+
+    What the rows themselves are, and why no list of words can help: the notes
+    PERSONIFY this tool's own parts in the exact grammar the scan reads —
+    "the EXPORT says it too", "Extraction reports every coordinate", "MuPDF
+    calls abort()", "the PDF says ’". A capitalised word in the subject
+    position of an acting verb is precisely what `narrative_name_scan` exists
+    to report, and it cannot tell those from "Spellman confirmed" — nor should
+    it. No filing writes that way, so none of it reaches a case, and the tier
+    is REVIEW: one worksheet row to answer `no`, never a rewrite. Naming the
+    six words in an exemption list would be the hand-kept gazetteer this whole
+    section of CLAUDE.md exists to say does not scale.
+    """
     import pathlib
     root = pathlib.Path(P.__file__).resolve().parent
     text = (root / "CLAUDE.md").read_text(encoding="utf-8")
@@ -330,4 +366,10 @@ def test_both_tiers_stay_quiet_on_dense_technical_prose():
         "Sunbelt Rentals", "Providence Holy Cross Medical",
     }
     noise = found - examples
-    assert len(noise) <= 5, sorted(noise)
+    kb = len(text.encode("utf-8")) / 1024
+    assert kb >= _NOISE_MIN_KB, (
+        f"the notes are {kb:.0f} KB — too short to measure a noise rate on")
+    rate = len(noise) / (kb / 100)
+    assert rate <= _NOISE_PER_100KB, (
+        f"{len(noise)} noise row(s) over {kb:.0f} KB = {rate:.2f} per 100 KB, "
+        f"over the {_NOISE_PER_100KB} bound: {sorted(noise)}")
